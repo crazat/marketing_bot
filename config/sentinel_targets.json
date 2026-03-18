@@ -1,0 +1,26 @@
+{
+    "brand_keywords": [
+        "청주 규림",
+        "청주 규림한의원",
+        "규림한의원 청주점"
+    ],
+    "battleground_keywords": [
+        "청주 다이어트",
+        "청주 다이어트 한약",
+        "청주 한의원 추천",
+        "청주 교통사고 한의원",
+        "청주 여드름 한의원"
+    ],
+    "competitors": [
+        "미올한의원",
+        "자생한의원",
+        "나비솔"
+    ],
+    "selectors": {
+        "naver_view": {
+            "container": [".view_wrap", ".total_wrap"],
+            "title": [".title_link", ".api_txt_lines"],
+            "description": [".dsc_link", ".api_txt_lines.dsc_txt"]
+        }
+    }
+}

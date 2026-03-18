@@ -1,0 +1,70 @@
+{
+  "enabled_tasks": [
+    "rank_insights",
+    "view_rank_insights",
+    "community_insights",
+    "competitor_activity",
+    "strategic_insights",
+    "seasonal_insights",
+    "keyword_opportunities",
+    "visual_trend",
+    "prophet_insights",
+    "ambassador_insights"
+  ],
+  "max_workers": 3,
+  "notify_on_start": true,
+  "notify_on_complete": true,
+  "notify_on_failure": true,
+  "task_descriptions": {
+    "rank_insights": {
+      "name": "순위 체크",
+      "description": "네이버 플레이스 순위 모니터링",
+      "phase": "visibility"
+    },
+    "view_rank_insights": {
+      "name": "VIEW 탭 순위",
+      "description": "네이버 VIEW 탭 검색 순위 분석",
+      "phase": "visibility"
+    },
+    "community_insights": {
+      "name": "커뮤니티 분석",
+      "description": "맘카페 여론 분석 (Cafe Spy)",
+      "phase": "intelligence"
+    },
+    "competitor_activity": {
+      "name": "경쟁사 동향",
+      "description": "경쟁사 리뷰/활동 모니터링",
+      "phase": "intelligence"
+    },
+    "strategic_insights": {
+      "name": "전략 제안",
+      "description": "Tactician 기반 공격 벡터 분석",
+      "phase": "intelligence"
+    },
+    "seasonal_insights": {
+      "name": "시즌 키워드",
+      "description": "월별 시즌 키워드 알림",
+      "phase": "discovery"
+    },
+    "keyword_opportunities": {
+      "name": "키워드 기회",
+      "description": "Pathfinder 블루오션 키워드 탐색",
+      "phase": "discovery"
+    },
+    "visual_trend": {
+      "name": "비주얼 트렌드",
+      "description": "이미지 기반 트렌드 분석",
+      "phase": "discovery"
+    },
+    "prophet_insights": {
+      "name": "트렌드 예측",
+      "description": "급상승 키워드 예측",
+      "phase": "discovery"
+    },
+    "ambassador_insights": {
+      "name": "인플루언서 발굴",
+      "description": "지역 인플루언서 스카우팅",
+      "phase": "discovery"
+    }
+  }
+}

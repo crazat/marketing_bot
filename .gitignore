@@ -1,0 +1,74 @@
+# Marketing Bot - Git Ignore
+# ===========================
+
+# Secrets & Configuration
+config/secrets.json
+.env
+.env.*
+*.pem
+*.key
+*_secret*
+*_credentials*
+
+# Database files
+db/*.db
+db/*.db-wal
+db/*.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Backups
+db/backups/
+*.backup
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Scraped Data (can be regenerated)
+scraped_data/
+data/images_scraped/
+
+# Reports (optional - may want to keep)
+# reports_cafe/
+# reports_competitor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.temp
+*.bak
+
+# Selenium/Chrome
+*.wdm/
+
+# Export files
+*.csv
+!config/*.csv

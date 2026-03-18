@@ -1,0 +1,107 @@
+{
+    "cafe_spy": {
+        "portal_search": {
+            "post_list_items": "li.bx, .view_wrap",
+            "title_link": ".title_link, a.api_txt_lines",
+            "source_name": ".name, .sub_txt"
+        },
+        "cafe_search": {
+            "article_list": "div.article-board > table > tbody > tr",
+            "article_title": "a.article",
+            "article_author": "td.td_name .m-tcol-c"
+        },
+        "deep_read": {
+            "author": [
+                ".nickname",
+                ".nick_box",
+                ".WriterInfo .nick",
+                ".profile_info .nick",
+                "a.nick",
+                "[class*='nickname']"
+            ],
+            "date": [
+                ".date",
+                ".article_info .date",
+                ".WriterInfo .date",
+                "time",
+                ".datetime",
+                "[class*='date']"
+            ],
+            "content": [
+                ".se-main-container",
+                ".ContentRenderer",
+                ".article_viewer",
+                "#tbody",
+                ".article_container",
+                ".se-module-text",
+                ".NHN_Writeform_Main",
+                "#postContent",
+                ".post_content",
+                "div[class*='article']",
+                "div[class*='content']"
+            ]
+        }
+    },
+    "naver_place": {
+        "card_list": "[data-entry-id], [data-naver-card], li",
+        "review_tab": "//*[contains(text(), '리뷰')]",
+        "review_items": "li",
+        "review_text": ".review_text, .text"
+    },
+    "google_search": {
+        "result_container": ".tF2Cxc, .g, div[data-hveid]",
+        "title": "h3",
+        "link": "a",
+        "snippet": ".VwiC3b, span.st, div[style*='-webkit-line-clamp']"
+    },
+    "pathfinder": {
+        "total_count": ".total_option, .total_sub, .total_count, span.sub_txt, div.total_area",
+        "result_items": "li.bx, .view_wrap, .list_item"
+    },
+    "youtube": {
+        "search_results": {
+            "video_title": "#video-title, a#video-title",
+            "video_link": "a#video-title"
+        },
+        "video_page": {
+            "comment_section": "#comments, ytd-comments",
+            "comment_thread": "ytd-comment-thread-renderer",
+            "comment_text": "#content-text, yt-formatted-string#content-text"
+        }
+    },
+    "tiktok_creative_center": {
+        "hashtag": {
+            "item_list": [
+                "table tbody tr",
+                "[class*='CardPc_cardWrapper']",
+                "[class*='RankingCard']",
+                "[class*='trendItem']",
+                ".ranking-list > div"
+            ],
+            "name": "[class*='hashtag'], [class*='name'], a",
+            "stats": "[class*='stats'], [class*='count']"
+        },
+        "music": {
+            "item_list": [
+                "table tbody tr",
+                "[class*='MusicCard']",
+                "[class*='SoundCard']",
+                "[class*='trendItem']"
+            ],
+            "name": "[class*='title'], [class*='name']",
+            "artist": "[class*='artist'], [class*='author']",
+            "cover": "img"
+        },
+        "creator": {
+            "item_list": [
+                "table tbody tr",
+                "[class*='CreatorCard']",
+                "[class*='UserCard']",
+                "[class*='trendItem']"
+            ],
+            "name": "[class*='name'], [class*='nickname']",
+            "handle": "[class*='handle'], [class*='username']",
+            "avatar": "img"
+        }
+    }
+}

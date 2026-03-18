@@ -1,0 +1,160 @@
+{
+    "description": "경쟁사 인텔리전스 설정 - Pathfinder ULTRA 자동 업데이트",
+    "last_updated": "2026-02-02",
+    "auto_discovery_enabled": true,
+    "category_competitors": {
+        "다이어트": {
+            "main_competitors": [
+                {
+                    "name": "자연과한의원 청주점",
+                    "blog_url": "https://blog.naver.com/jayeon-cheongju",
+                    "naver_place_id": "13322046",
+                    "priority": "critical"
+                },
+                {
+                    "name": "봄온담한의원 청주점",
+                    "naver_place_id": "12860161",
+                    "priority": "high"
+                }
+            ],
+            "keywords_to_monitor": [
+                "청주 다이어트", "청주 다이어트 한약", "청주 비만",
+                "청주 다이어트 한의원", "청주 비만클리닉", "청주 한방다이어트",
+                "청주 뱃살", "청주 하체비만", "청주 다이어트 후기"
+            ]
+        },
+        "안면비대칭_교정": {
+            "main_competitors": [
+                {
+                    "name": "미올한의원 청주점",
+                    "naver_place_id": "36855147",
+                    "priority": "high"
+                }
+            ],
+            "keywords_to_monitor": [
+                "청주 안면비대칭", "청주 체형교정", "청주 골반교정",
+                "청주 안면비대칭 교정", "청주 얼굴비대칭", "청주 턱비대칭",
+                "청주 안면교정", "청주 비대칭교정", "청주 안면비대칭 한의원"
+            ]
+        },
+        "여드름_피부": {
+            "main_competitors": [
+                {
+                    "name": "하늘체한의원 청주점",
+                    "blog_url": "https://blog.naver.com/skycheongju",
+                    "naver_place_id": "13162793",
+                    "priority": "critical"
+                },
+                {
+                    "name": "후한의원 청주점",
+                    "naver_place_id": "13511195",
+                    "priority": "high"
+                }
+            ],
+            "keywords_to_monitor": [
+                "청주 여드름", "청주 새살침", "청주 여드름흉터",
+                "청주 여드름 한의원", "청주 성인여드름", "청주 턱여드름",
+                "청주 여드름자국", "청주 흉터치료", "청주 여드름 치료",
+                "청주 피부한의원", "청주 여드름침"
+            ]
+        },
+        "교통사고_입원": {
+            "main_competitors": [
+                {
+                    "name": "본앤장한의원",
+                    "naver_place_id": "1155455806",
+                    "priority": "critical"
+                },
+                {
+                    "name": "리치한방병원 청주동남점",
+                    "naver_place_id": "1730030230",
+                    "priority": "critical"
+                },
+                {
+                    "name": "청주필한방병원",
+                    "naver_place_id": "1844577823",
+                    "priority": "high"
+                }
+            ],
+            "keywords_to_monitor": [
+                "청주 교통사고", "청주 교통사고 한의원", "청주 교통사고 입원",
+                "청주 교통사고 치료", "청주 자보 한의원", "청주 교통사고 보험",
+                "청주 교통사고 후유증", "청주 한방병원 교통사고", "청주 교통사고 병원"
+            ]
+        },
+        "통증_디스크": {
+            "main_competitors": [
+                {
+                    "name": "청주바로척한의원",
+                    "naver_place_id": "37829837",
+                    "priority": "medium"
+                }
+            ],
+            "keywords_to_monitor": ["청주 허리디스크", "청주 추나요법", "청주 도수치료"]
+        },
+        "면역_보약": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 공진단", "청주 경옥고", "청주 보약"]
+        },
+        "갱년기_호르몬": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 갱년기", "청주 갱년기 한의원"]
+        },
+        "불면증_수면": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 불면증", "청주 수면장애"]
+        },
+        "소화불량_위장": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 소화불량", "청주 위장 한의원"]
+        },
+        "두통_어지럼증": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 두통", "청주 어지럼증"]
+        },
+        "알레르기_아토피": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 비염", "청주 아토피"]
+        },
+        "자율신경_스트레스": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 공황장애", "청주 스트레스 한의원"]
+        },
+        "산후조리_여성": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 산후조리", "청주 산후보약"]
+        },
+        "다한증_냉증": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 다한증", "청주 수족냉증"]
+        },
+        "수험생_집중력": {
+            "main_competitors": [],
+            "keywords_to_monitor": ["청주 수험생 한약", "청주 총명탕"]
+        },
+        "리프팅_탄력": {
+            "main_competitors": [],
+            "keywords_to_monitor": [
+                "청주 매선", "청주 리프팅", "청주 한방리프팅",
+                "청주 매선리프팅", "청주 침리프팅", "청주 피부탄력",
+                "청주 주름", "청주 팔자주름", "청주 동안침"
+            ]
+        }
+    },
+    "benchmark_clinics": [
+        {
+            "name": "리샘한의원 본점",
+            "instagram": "resam_main",
+            "category": "안면비대칭",
+            "note": "전국 단위 벤치마크 (청주 경쟁사 아님)"
+        }
+    ],
+    "blacklist": {
+        "exclude_from_analysis": [
+            "피부과", "성형외과", "정형외과", "산부인과", "치과", "안과"
+        ],
+        "exclude_keywords": [
+            "보톡스", "필러", "레이저", "울쎄라", "써마지"
+        ]
+    }
+}

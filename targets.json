@@ -1,0 +1,151 @@
+{
+    "project_name": "Kyurim Cheongju Marketing Intelligence",
+    "scraper_settings": {
+        "naver_place": {
+            "review_container": "li.place_apply_pui",
+            "review_text": ".pui__vn15t2",
+            "date": "time",
+            "nickname": ".pui__NMi-Dp",
+            "more_button": "a._3iTUo"
+        },
+        "naver_blog": {
+            "post_container": ".list_post_article",
+            "title": ".title_link",
+            "date": ".date"
+        }
+    },
+    "community_scan_keywords": [
+        "청주 다이어트", "청주 한의원", "청주 교통사고", "청주 야간진료", "청주 추나",
+        "청주 피부과", "청주 여드름", "청주 입원", "율량동 한의원"
+    ],
+    "targets": [
+        {
+            "name": "자연과한의원 청주점",
+            "category": "Diet",
+            "priority": "High",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/1886173440"
+            },
+            "keywords": [
+                "청주다이어트",
+                "지방분해",
+                "식욕억제"
+            ]
+        },
+        {
+            "name": "하늘체한의원 청주점",
+            "category": "Sky",
+            "priority": "High",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/12994836"
+            },
+            "keywords": [
+                "새살침",
+                "여드름흉터",
+                "인모드"
+            ]
+        },
+        {
+            "name": "봄온담한의원 (구 나비솔)",
+            "category": "Diet",
+            "priority": "High",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/12071988"
+            },
+            "keywords": [
+                "본온담",
+                "다이어트환",
+                "요요방지"
+            ]
+        },
+        {
+            "name": "후한의원 청주점",
+            "category": "Skin",
+            "priority": "Medium",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/12949526"
+            },
+            "keywords": [
+                "등여드름",
+                "피부재생"
+            ]
+        },
+        {
+            "name": "미올한의원 청주점",
+            "category": "Diet/Face",
+            "priority": "Medium",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/36609588"
+            },
+            "keywords": [
+                "핑크환",
+                "턱관절",
+                "안면비대칭"
+            ]
+        },
+        {
+            "name": "본앤장한의원",
+            "category": "Pain/Body",
+            "priority": "Critical",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/1243004481"
+            },
+            "keywords": [
+                "입원실",
+                "교통사고",
+                "365일진료"
+            ]
+        },
+        {
+            "name": "리치한방병원 청주점",
+            "category": "Pain/Traffic",
+            "priority": "High",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/1201974747"
+            },
+            "keywords": [
+                "동남지구",
+                "교통사고입원",
+                "도수치료"
+            ]
+        },
+        {
+            "name": "청주필한방병원",
+            "category": "Pain/Rehab",
+            "priority": "Medium",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/1558861346"
+            },
+            "keywords": [
+                "재활치료",
+                "수술후관리"
+            ]
+        },
+        {
+            "name": "청주바로척한의원",
+            "category": "Pain/Chuna",
+            "priority": "Medium",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/1294824886"
+            },
+            "keywords": [
+                "추나요법",
+                "야간진료",
+                "일요일진료"
+            ]
+        },
+        {
+            "name": "리샘한의원 본점 (압구정)",
+            "category": "Benchmark",
+            "priority": "Low",
+            "monitor_urls": {
+                "naver_place": "https://m.place.naver.com/place/36090555"
+            },
+            "keywords": [
+                "3D교정",
+                "순수본",
+                "안면비대칭"
+            ]
+        }
+    ]
+}

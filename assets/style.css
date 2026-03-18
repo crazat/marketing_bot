@@ -1,0 +1,114 @@
+/* Main Background */
+.stApp {
+    background-color: #0e1117;
+    background-image: radial-gradient(circle at 50% 0%, #1c2333 0%, #0e1117 70%);
+    color: #ffffff;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background-color: #161b22;
+    border-right: 1px solid #30363d;
+}
+
+/* Cards (Glassmorphism containers) */
+.css-1r6slb0,
+.css-12oz5g7,
+.stExpander,
+.stMetric {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 16px;
+    backdrop-filter: blur(10px);
+    transition: transform 0.2s;
+}
+
+.stMetric:hover {
+    transform: translateY(-2px);
+    border-color: #7B61FF;
+}
+
+/* Metrics Label */
+[data-testid="stMetricLabel"] {
+    color: #8b949e;
+    font-size: 0.85rem;
+}
+
+/* Metrics Value */
+[data-testid="stMetricValue"] {
+    color: #ffffff;
+    font-weight: 700;
+}
+
+/* Buttons (Primary - Premium Purple) */
+.stButton>button[kind="primary"] {
+    background: linear-gradient(90deg, #7B61FF 0%, #61A0FF 100%);
+    border: none;
+    color: white;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    transition: opacity 0.2s;
+}
+
+.stButton>button[kind="primary"]:hover {
+    opacity: 0.9;
+    box-shadow: 0 4px 12px rgba(123, 97, 255, 0.3);
+}
+
+/* Buttons (Secondary) */
+.stButton>button[kind="secondary"] {
+    background: transparent;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+}
+
+.stButton>button[kind="secondary"]:hover {
+    border-color: #7B61FF;
+    color: #7B61FF;
+}
+
+/* Inputs */
+.stTextInput>div>div>input,
+.stTextArea>div>div>textarea {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    color: white;
+    border-radius: 8px;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background-color: transparent;
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 3rem;
+    white-space: pre-wrap;
+    background-color: transparent;
+    border-radius: 4px;
+    color: #8b949e;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background-color: rgba(123, 97, 255, 0.1);
+    color: #7B61FF;
+    font-weight: 600;
+}
+
+/* Dataframe header */
+div[data-testid="stDataFrame"] table thead tr th {
+    background-color: #161b22 !important;
+    color: #c9d1d9 !important;
+}
+
+/* Headers */
+h1,
+h2,
+h3 {
+    font-family: 'Inter', sans-serif;
+    color: #ffffff;
+    letter-spacing: -0.5px;
+}

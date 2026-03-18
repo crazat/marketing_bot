@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 바이럴 헌터 워크스테이션</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- 헤더 -->
+    <header class="app-header">
+        <h1 class="app-title">🎯 바이럴 헌터 워크스테이션</h1>
+        <p class="app-subtitle">카테고리별 우선순위 작업 시스템</p>
+    </header>
+
+    <!-- 메인 컨테이너 -->
+    <main class="container">
+        <!-- 홈 화면 -->
+        <div id="home-screen" class="screen active">
+            <!-- 전체 통계 -->
+            <section class="stats-section">
+                <h2>📊 전체 현황</h2>
+                <div class="stats-grid" id="overall-stats">
+                    <div class="stat-card">
+                        <div class="stat-number" id="stat-total">-</div>
+                        <div class="stat-label">총 타겟</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="stat-pending">-</div>
+                        <div class="stat-label">⏳ 대기중</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="stat-posted">-</div>
+                        <div class="stat-label">✅ 완료</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="stat-skipped">-</div>
+                        <div class="stat-label">⏭️ 건너뜀</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 카테고리 목록 -->
+            <section class="categories-section">
+                <h2>📂 카테고리별 작업</h2>
+                <p class="section-subtitle">우선순위가 높은 순서로 정렬되어 있습니다</p>
+                <div id="categories-list" class="categories-grid">
+                    <!-- 카테고리 카드가 동적으로 추가됨 -->
+                </div>
+            </section>
+        </div>
+
+        <!-- 작업 화면 -->
+        <div id="work-screen" class="screen">
+            <div class="work-header">
+                <button id="back-btn" class="btn btn-secondary">← 홈으로</button>
+                <h2 id="work-category-title">카테고리 작업</h2>
+            </div>
+
+            <!-- 통계 및 일괄 작업 -->
+            <div class="work-controls">
+                <div class="work-stats">
+                    <p><strong>📦 총 타겟:</strong> <span id="work-total">0</span>개</p>
+                    <p><strong>✅ 선택:</strong> <span id="work-selected">0</span>개</p>
+                    <p><strong>⏳ 대기:</strong> <span id="work-pending">0</span>개</p>
+                </div>
+                <div class="batch-actions">
+                    <button id="select-all-btn" class="btn btn-secondary">☑️ 전체 선택</button>
+                    <button id="batch-generate-btn" class="btn btn-primary" disabled>💬 일괄 댓글 생성</button>
+                    <button id="batch-approve-btn" class="btn btn-success" disabled>✅ 일괄 승인</button>
+                    <button id="batch-skip-btn" class="btn btn-secondary" disabled>⏭️ 일괄 건너뛰기</button>
+                </div>
+            </div>
+
+            <!-- 2단 레이아웃: 리스트 + 상세 -->
+            <div class="work-layout">
+                <!-- 왼쪽: 타겟 리스트 -->
+                <div class="target-list-panel">
+                    <div class="panel-header">
+                        <h3>📋 타겟 리스트</h3>
+                        <input type="text" id="search-input" placeholder="🔍 검색..." class="search-input">
+                    </div>
+                    <div id="target-list" class="target-list">
+                        <!-- 타겟 항목들이 동적으로 추가됨 -->
+                    </div>
+                </div>
+
+                <!-- 오른쪽: 타겟 상세 -->
+                <div class="target-detail-panel">
+                    <div id="no-selection" class="no-selection">
+                        <p>👈 왼쪽 리스트에서 타겟을 선택하세요</p>
+                    </div>
+
+                    <div id="target-detail" class="target-detail hidden">
+                        <!-- 타겟 정보 -->
+                        <div class="target-card">
+                <div class="target-header">
+                    <h3 id="target-title">타겟 제목</h3>
+                    <div id="target-score" class="target-score">⭐⭐⭐⭐⭐ (0점)</div>
+                </div>
+
+                <div class="target-info">
+                    <p><strong>📍 플랫폼:</strong> <span id="target-platform">-</span></p>
+                    <p><strong>🔗 URL:</strong> <a id="target-url" href="#" target="_blank">링크</a></p>
+                    <p><strong>📅 발견일:</strong> <span id="target-date">-</span></p>
+                    <p><strong>🏷️ 키워드:</strong> <span id="target-keywords">-</span></p>
+                </div>
+
+                <div class="target-content">
+                    <button id="toggle-content-btn" class="btn btn-link">📄 내용 미리보기 펼치기</button>
+                    <div id="target-content-preview" class="content-preview hidden">
+                        <textarea id="content-text" readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 댓글 섹션 -->
+            <div class="comment-section">
+                <h3>💬 AI 댓글</h3>
+
+                <div id="comment-not-generated" class="comment-status">
+                    <p class="info-box">🤖 AI가 이 타겟에 최적화된 댓글을 생성합니다</p>
+                    <button id="generate-btn" class="btn btn-primary btn-large">
+                        🤖 AI 댓글 생성하기
+                    </button>
+                </div>
+
+                <div id="comment-generated" class="comment-status hidden">
+                    <p class="success-box">✅ AI 댓글이 생성되었습니다. 필요시 수정하세요.</p>
+                    <div class="comment-box">
+                        <textarea id="comment-text" rows="10"></textarea>
+                    </div>
+                    <button id="regenerate-btn" class="btn btn-secondary">🔄 댓글 재생성</button>
+                </div>
+
+                <div id="comment-loading" class="comment-status hidden">
+                    <div class="loader"></div>
+                    <p>🤖 AI가 완벽한 댓글을 작성하고 있습니다...</p>
+                </div>
+            </div>
+
+            <!-- 액션 버튼 -->
+            <div class="action-section">
+                <h3>⚡ 다음 액션</h3>
+                <div id="action-buttons-with-comment" class="action-buttons hidden">
+                    <button id="approve-btn" class="btn btn-success btn-large">✅ 승인하고 다음</button>
+                    <button id="skip-btn-with-comment" class="btn btn-secondary btn-large">⏭️ 건너뛰기</button>
+                    <button id="delete-btn-with-comment" class="btn btn-danger btn-large">🗑️ 삭제</button>
+                </div>
+
+                <div id="action-buttons-no-comment" class="action-buttons">
+                    <button id="skip-btn-no-comment" class="btn btn-primary btn-large">⏭️ 건너뛰기</button>
+                    <button id="delete-btn-no-comment" class="btn btn-danger btn-large">🗑️ 삭제</button>
+                </div>
+            </div>
+
+                        <p class="hint">💡 팁: 작업 후 다음 타겟을 선택하거나 일괄 작업을 사용하세요.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 완료 화면 -->
+        <div id="completion-screen" class="screen">
+            <div class="completion-header">
+                <h1 class="completion-title">🎉 축하합니다!</h1>
+                <p id="completion-message" class="completion-message">모든 작업을 완료했습니다!</p>
+            </div>
+
+            <div class="stats-section">
+                <h2>📊 작업 통계</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number" id="completion-total">0</div>
+                        <div class="stat-label">총 처리</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="completion-approved">0</div>
+                        <div class="stat-label">✅ 승인</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="completion-skipped">0</div>
+                        <div class="stat-label">⏭️ 건너뜀</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="completion-deleted">0</div>
+                        <div class="stat-label">🗑️ 삭제</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="approval-rate">
+                <h3>승인율</h3>
+                <div class="progress-bar">
+                    <div id="approval-rate-fill" class="progress-fill"></div>
+                </div>
+                <p id="approval-rate-text">0%</p>
+            </div>
+
+            <button id="completion-home-btn" class="btn btn-primary btn-large">🏠 홈으로 돌아가기</button>
+        </div>
+    </main>
+
+    <!-- 토스트 알림 -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

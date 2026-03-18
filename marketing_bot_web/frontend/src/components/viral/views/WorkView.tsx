@@ -1,0 +1,457 @@
+/**
+ * Viral Hunter - 작업 화면 (아코디언 방식)
+ * 개별 타겟 상세보기 및 액션 처리
+ */
+
+import { UseMutationResult } from '@tanstack/react-query'
+import Button from '@/components/ui/Button'
+import { PlatformBadge } from '@/components/viral/PlatformBadge'
+import { ScanCountBadge } from '@/components/viral/ScanCountBadge'
+import { EngagementMetrics } from '@/components/viral/EngagementMetrics'
+import { EmptyState } from '@/components/viral/EmptyState'
+import { CommentPreview } from '@/components/viral/CommentPreview'
+import { TargetContext } from '@/components/viral/TargetContext'
+import { ViralTargetData } from '@/types/viral'
+import { formatRelativeTime, formatDateTime } from '@/utils/dateFormat'
+import { viralApi } from '@/services/api'
+
+interface Template {
+  id: number
+  name: string
+  content: string
+}
+
+interface CompletionStats {
+  approved: number
+  skipped: number
+  deleted: number
+}
+
+interface CommentStyle {
+  id: string
+  name: string
+  icon: string
+  description: string
+}
+
+interface WorkViewProps {
+  // 데이터
+  selectedCategory: string | null
+  categoryTargets: ViralTargetData[]
+  templates: Template[]
+  completionStats: CompletionStats
+  expandedTargetId: string | null
+  expandedComments: Record<string, string>
+  generatingTargetId: string | null
+  commentStyles: CommentStyle[]
+  selectedCommentStyle: string
+
+  // 핸들러
+  onGoHome: () => void
+  onToggleExpand: (targetId: string) => void
+  onSetExpandedTargetId: (targetId: string | null) => void
+  onSetExpandedComments: (fn: (prev: Record<string, string>) => Record<string, string>) => void
+  onGenerateComment: (targetId: string, style?: string) => void
+  onSetSelectedCommentStyle: (style: string) => void
+  onTargetAction: (targetId: string, action: string) => void
+  onVerifyTarget: (targetId: string) => void
+  verifyTargetMutation: UseMutationResult<unknown, Error, string, unknown>
+  toast: {
+    success: (msg: string) => void
+    error: (msg: string) => void
+    warning: (msg: string) => void
+  }
+}
+
+const platformIcons: Record<string, string> = {
+  cafe: '☕ 네이버 카페',
+  blog: '📝 블로그',
+  kin: '❓ 지식iN',
+  youtube: '📺 유튜브',
+  instagram: '📸 인스타그램',
+  tiktok: '🎵 틱톡',
+  place: '📍 플레이스',
+  karrot: '🥕 당근',
+}
+
+export function WorkView({
+  selectedCategory,
+  categoryTargets,
+  templates,
+  completionStats,
+  expandedTargetId,
+  expandedComments,
+  generatingTargetId,
+  commentStyles,
+  selectedCommentStyle,
+  onGoHome,
+  onToggleExpand,
+  onSetExpandedTargetId,
+  onSetExpandedComments,
+  onGenerateComment,
+  onSetSelectedCommentStyle,
+  onTargetAction,
+  onVerifyTarget,
+  verifyTargetMutation,
+  toast,
+}: WorkViewProps) {
+  return (
+    <div className="space-y-6">
+      {/* 헤더 */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <Button onClick={onGoHome} variant="outline">
+            ← 홈으로
+          </Button>
+          <h1 className="text-3xl font-bold">🎯 {selectedCategory} ({categoryTargets.length}개)</h1>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          단축키:{' '}
+          <kbd className="px-1 py-0.5 bg-muted border border-border rounded">A</kbd> 승인,{' '}
+          <kbd className="px-1 py-0.5 bg-muted border border-border rounded">S</kbd> 건너뛰기,{' '}
+          <kbd className="px-1 py-0.5 bg-muted border border-border rounded">D</kbd> 삭제,{' '}
+          <kbd className="px-1 py-0.5 bg-muted border border-border rounded">Esc</kbd> 접기
+        </div>
+      </div>
+
+      {/* 통계 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-card border border-border rounded-lg p-4 text-center">
+          <div className="text-2xl font-bold">{categoryTargets.length}</div>
+          <div className="text-xs text-muted-foreground">남은 타겟</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-4 text-center">
+          <div className="text-2xl font-bold text-green-500">{completionStats.approved}</div>
+          <div className="text-xs text-muted-foreground">✅ 승인</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-4 text-center">
+          <div className="text-2xl font-bold text-yellow-500">{completionStats.skipped}</div>
+          <div className="text-xs text-muted-foreground">⏭️ 건너뜀</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-4 text-center">
+          <div className="text-2xl font-bold text-red-500">{completionStats.deleted}</div>
+          <div className="text-xs text-muted-foreground">🗑️ 삭제</div>
+        </div>
+      </div>
+
+      {/* 타겟 목록 (아코디언) */}
+      <div className="space-y-2">
+        {categoryTargets.length === 0 ? (
+          <EmptyState type="all-done" onAction={onGoHome} />
+        ) : (
+          categoryTargets.map((target, index) => {
+            const isExpanded = expandedTargetId === target.id
+            const comment = expandedComments[target.id]
+            const isGenerating = generatingTargetId === target.id
+
+            return (
+              <div
+                key={target.id || index}
+                className={`bg-card border rounded-lg overflow-hidden transition-all ${
+                  isExpanded ? 'border-primary' : 'border-border'
+                }`}
+              >
+                {/* 헤더 (클릭하면 펼침) */}
+                <div
+                  onClick={() => onToggleExpand(target.id)}
+                  className="flex items-center gap-4 p-4 cursor-pointer hover:bg-muted/50"
+                >
+                  <span className="text-xl">{isExpanded ? '▼' : '▶'}</span>
+                  <PlatformBadge platform={target.platform} size="sm" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold truncate">{target.title || '제목 없음'}</span>
+                      {target.scan_count && target.scan_count >= 2 && (
+                        <ScanCountBadge scanCount={target.scan_count} lastScannedAt={target.last_scanned_at} />
+                      )}
+                      {target.is_commentable !== undefined && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            target.is_commentable
+                              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                          }`}
+                          title={target.is_commentable ? '댓글 작성 가능' : '댓글 불가'}
+                        >
+                          {target.is_commentable ? '✓ 댓글 가능' : '✗ 댓글 불가'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="text-muted-foreground">
+                        {Array.isArray(target.matched_keywords) && target.matched_keywords.length > 0
+                          ? target.matched_keywords.slice(0, 3).join(', ')
+                          : '키워드 없음'}
+                      </span>
+                      <EngagementMetrics
+                        likes={target.like_count}
+                        comments={target.comment_count}
+                        views={target.view_count}
+                        size="sm"
+                      />
+                      {target.discovered_at && (
+                        <span className="text-muted-foreground" title={formatDateTime(target.discovered_at)}>
+                          {formatRelativeTime(target.discovered_at)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div
+                    className={`font-bold text-lg ${
+                      (target.priority_score || 0) >= 80
+                        ? 'text-red-500'
+                        : (target.priority_score || 0) >= 50
+                          ? 'text-yellow-500'
+                          : 'text-blue-500'
+                    }`}
+                  >
+                    {target.priority_score?.toFixed(0) || 0}점
+                  </div>
+                  {/* 퀵 액션 버튼 */}
+                  <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="xs"
+                      onClick={() => onVerifyTarget(target.id)}
+                      loading={verifyTargetMutation.isPending}
+                      className="bg-blue-500 hover:bg-blue-600 text-white"
+                      title="댓글 가능 여부 확인"
+                    >
+                      🔍
+                    </Button>
+                    <Button
+                      size="xs"
+                      onClick={() => onTargetAction(target.id, 'skip')}
+                      className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                      title="건너뛰기"
+                    >
+                      ⏭️
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="danger"
+                      onClick={() => onTargetAction(target.id, 'delete')}
+                      title="삭제"
+                    >
+                      🗑️
+                    </Button>
+                  </div>
+                </div>
+
+                {/* 펼쳐진 상세 내용 */}
+                {isExpanded && (
+                  <div className="border-t border-border p-4 sm:p-6 bg-muted/30">
+                    {/* 기본 정보 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-6">
+                      <div className="space-y-3">
+                        <div>
+                          <span className="text-muted-foreground text-sm">📍 플랫폼:</span>{' '}
+                          <span className="font-semibold">{platformIcons[target.platform] || '📌 기타'}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground text-sm">🔗 URL:</span>{' '}
+                          <a
+                            href={target.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline text-sm break-all"
+                          >
+                            {target.url}
+                          </a>
+                        </div>
+                        {target.matched_keywords && target.matched_keywords.length > 0 && (
+                          <div>
+                            <span className="text-muted-foreground text-sm">🏷️ 매칭 키워드:</span>{' '}
+                            <span className="text-sm">{target.matched_keywords.slice(0, 10).join(', ')}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-right">
+                          {(target.priority_score || 0) >= 90 ? (
+                            <div className="text-red-500">
+                              <div className="text-2xl">⭐⭐⭐⭐⭐</div>
+                              <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 최우선</div>
+                            </div>
+                          ) : (target.priority_score || 0) >= 70 ? (
+                            <div className="text-yellow-500">
+                              <div className="text-2xl">⭐⭐⭐⭐</div>
+                              <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 우선</div>
+                            </div>
+                          ) : (
+                            <div className="text-blue-500">
+                              <div className="text-2xl">⭐⭐⭐</div>
+                              <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 일반</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 내용 미리보기 */}
+                    {target.content_preview && (
+                      <details className="mb-6">
+                        <summary className="cursor-pointer text-sm font-semibold text-muted-foreground mb-2">
+                          📄 내용 미리보기
+                        </summary>
+                        <div className="bg-background rounded-lg p-4 text-sm border border-border">
+                          {target.content_preview.substring(0, 800)}
+                        </div>
+                      </details>
+                    )}
+
+                    {/* 컨텍스트 인사이트 */}
+                    <details className="mb-6" open>
+                      <summary className="cursor-pointer text-sm font-semibold text-muted-foreground mb-2">
+                        💡 컨텍스트 인사이트
+                      </summary>
+                      <TargetContext
+                        targetId={target.id}
+                        onSelectTarget={(id) => onSetExpandedTargetId(id)}
+                      />
+                    </details>
+
+                    {/* AI 댓글 섹션 */}
+                    <div className="mb-4">
+                      {!comment ? (
+                        <div className="bg-card border border-border rounded-lg p-6">
+                          {/* 스타일 선택 */}
+                          {commentStyles.length > 0 && (
+                            <div className="mb-4">
+                              <p className="text-sm text-muted-foreground mb-2">댓글 스타일 선택:</p>
+                              <div className="flex flex-wrap gap-2">
+                                {commentStyles.map((style) => (
+                                  <button
+                                    key={style.id}
+                                    onClick={() => onSetSelectedCommentStyle(style.id)}
+                                    className={`px-3 py-2 rounded-lg text-sm transition-all flex items-center gap-1.5 ${
+                                      selectedCommentStyle === style.id
+                                        ? 'bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2'
+                                        : 'bg-muted hover:bg-muted/80 text-foreground'
+                                    }`}
+                                    title={style.description}
+                                  >
+                                    <span>{style.icon}</span>
+                                    <span>{style.name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                              {selectedCommentStyle && selectedCommentStyle !== 'default' && (
+                                <p className="text-xs text-muted-foreground mt-2">
+                                  {commentStyles.find(s => s.id === selectedCommentStyle)?.description}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="text-center mb-4">
+                            <div className="text-4xl mb-3">
+                              {commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'}
+                            </div>
+                            <p className="text-muted-foreground mb-4">
+                              {selectedCommentStyle !== 'default'
+                                ? `"${commentStyles.find(s => s.id === selectedCommentStyle)?.name}" 스타일로 댓글을 생성합니다`
+                                : 'AI가 자연스러운 댓글을 생성합니다'}
+                            </p>
+                            <Button
+                              variant="primary"
+                              size="lg"
+                              onClick={() => onGenerateComment(target.id, selectedCommentStyle)}
+                              loading={isGenerating}
+                            >
+                              {commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'} AI 댓글 생성하기
+                            </Button>
+                          </div>
+
+                          {/* 템플릿 선택 */}
+                          {templates.length > 0 && (
+                            <div className="border-t border-border pt-4 mt-4">
+                              <p className="text-sm text-muted-foreground mb-2">또는 템플릿 사용:</p>
+                              <div className="flex flex-wrap gap-2">
+                                {templates.slice(0, 5).map((template) => (
+                                  <Button
+                                    key={template.id}
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={async () => {
+                                      onSetExpandedComments((prev) => ({
+                                        ...prev,
+                                        [target.id]: template.content,
+                                      }))
+                                      await viralApi.useTemplate(template.id)
+                                      toast.success(`"${template.name}" 템플릿 적용`)
+                                    }}
+                                    title={template.content}
+                                  >
+                                    📝 {template.name}
+                                  </Button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <CommentPreview
+                          comment={comment}
+                          onChange={(newComment) =>
+                            onSetExpandedComments((prev) => ({ ...prev, [target.id]: newComment }))
+                          }
+                          onRegenerate={() => {
+                            onSetExpandedComments((prev) => {
+                              const newComments = { ...prev }
+                              delete newComments[target.id]
+                              return newComments
+                            })
+                            onGenerateComment(target.id, selectedCommentStyle)
+                          }}
+                          isGenerating={isGenerating}
+                          targetTitle={target.title}
+                          matchedKeywords={Array.isArray(target.matched_keywords) ? target.matched_keywords : []}
+                        />
+                      )}
+                    </div>
+
+                    {/* 액션 버튼 */}
+                    <div className="flex gap-3">
+                      <Button
+                        onClick={() => onTargetAction(target.id, 'approve')}
+                        disabled={!comment}
+                        variant="success"
+                        size="lg"
+                        fullWidth
+                      >
+                        ✅ 승인 (댓글 저장)
+                      </Button>
+                      <Button
+                        onClick={() => onTargetAction(target.id, 'skip')}
+                        size="lg"
+                        fullWidth
+                        className="bg-yellow-500 hover:bg-yellow-600"
+                      >
+                        ⏭️ 건너뛰기
+                      </Button>
+                      <Button
+                        onClick={() => onTargetAction(target.id, 'delete')}
+                        variant="danger"
+                        size="lg"
+                        fullWidth
+                      >
+                        🗑️ 삭제
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* 하단 안내 */}
+      {categoryTargets.length > 0 && (
+        <div className="text-center text-sm text-muted-foreground">
+          💡 제목을 클릭하면 상세 정보가 펼쳐집니다. 목록에서 바로 ⏭️ 건너뛰기, 🗑️ 삭제도 가능합니다.
+        </div>
+      )}
+    </div>
+  )
+}

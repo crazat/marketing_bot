@@ -1,0 +1,185 @@
+{
+  "project_name": "Kyurim Cheongju Marketing Intelligence",
+  "community_scan_keywords": [
+    "청주 다이어트",
+    "청주 한의원",
+    "청주 교통사고",
+    "청주 야간진료",
+    "청주 추나",
+    "청주 피부과",
+    "청주 여드름",
+    "청주 입원",
+    "율량동 한의원"
+  ],
+  "instagram_keywords": [
+    "청주 한의원",
+    "청주 다이어트",
+    "청주 피부과",
+    "청주 맛집",
+    "청주 데일리",
+    "한방 다이어트",
+    "한의원 다이어트",
+    "여드름 치료",
+    "피부 관리",
+    "체중 감량"
+  ],
+  "hunting_grounds": [
+    "청주 성안길",
+    "청주 지웰시티",
+    "청주 율량동",
+    "동남지구 맛집",
+    "강서동 카페"
+  ],
+  "targets": [
+    {
+      "name": "자연과한의원 청주점",
+      "category": "Diet",
+      "priority": "High",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/13322046/home",
+        "blog": "https://blog.naver.com/jayeon-cheongju"
+      },
+      "keywords": [
+        "청주다이어트",
+        "지방분해",
+        "식욕억제"
+      ]
+    },
+    {
+      "name": "하늘체한의원 청주점",
+      "category": "Sky",
+      "priority": "High",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/13162793/home",
+        "blog": "https://blog.naver.com/skycheongju"
+      },
+      "keywords": [
+        "새살침",
+        "여드름흉터",
+        "인모드"
+      ]
+    },
+    {
+      "name": "봄온담한의원 청주점",
+      "category": "Diet",
+      "priority": "High",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/12860161/home"
+      },
+      "keywords": [
+        "봄온담",
+        "다이어트환",
+        "요요방지"
+      ]
+    },
+    {
+      "name": "후한의원 청주점",
+      "category": "Skin",
+      "priority": "Medium",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/13511195/home"
+      },
+      "keywords": [
+        "등여드름",
+        "피부재생"
+      ]
+    },
+    {
+      "name": "로랑한의원",
+      "category": "Diet/Face",
+      "priority": "Medium",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/36855147/home"
+      },
+      "keywords": [
+        "핑크환",
+        "턱관절",
+        "안면비대칭"
+      ]
+    },
+    {
+      "name": "본앤장한의원",
+      "category": "Pain/Body",
+      "priority": "Critical",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/1155455806/home"
+      },
+      "keywords": [
+        "입원실",
+        "교통사고",
+        "365일진료"
+      ]
+    },
+    {
+      "name": "리치한방병원 청주동남점",
+      "category": "Pain/Traffic",
+      "priority": "High",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/1730030230/home"
+      },
+      "keywords": [
+        "동남지구",
+        "교통사고입원",
+        "도수치료"
+      ]
+    },
+    {
+      "name": "청주필한방병원",
+      "category": "Pain/Rehab",
+      "priority": "Medium",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/1844577823/home"
+      },
+      "keywords": [
+        "재활치료",
+        "수술후관리"
+      ]
+    },
+    {
+      "name": "청주바로척한의원",
+      "category": "Pain/Chuna",
+      "priority": "Medium",
+      "monitor_urls": {
+        "naver_place": "https://m.place.naver.com/hospital/37829837/home"
+      },
+      "keywords": [
+        "추나요법",
+        "야간진료",
+        "일요일진료"
+      ]
+    },
+    {
+      "name": "리샘한의원 본점 (벤치마크)",
+      "category": "Benchmark",
+      "priority": "Low",
+      "monitor_urls": {
+        "instagram": "https://www.instagram.com/resam_main"
+      },
+      "keywords": [
+        "3D교정",
+        "순수본",
+        "안면비대칭"
+      ]
+    }
+  ],
+  "instagram_competitors": [
+    {
+      "name": "리샘한의원",
+      "username": "resam_main",
+      "priority": "High",
+      "category": "안면비대칭"
+    },
+    {
+      "name": "미올한의원",
+      "username": "miol_clinic",
+      "priority": "Medium",
+      "category": "다이어트/안면"
+    },
+    {
+      "name": "자연과한의원",
+      "username": "jayeon_clinic",
+      "priority": "Medium",
+      "category": "다이어트"
+    }
+  ]
+}

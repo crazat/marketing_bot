@@ -1,0 +1,67 @@
+{
+  "lead_scoring": {
+    "description": "리드 스코어링 키워드 설정",
+
+    "high_relevance_keywords": {
+      "description": "고관련성 키워드 (6점/개, 최대 18점)",
+      "business": ["규림", "규림한의원"],
+      "location": ["청주"],
+      "service": ["한의원", "한약", "다이어트", "다이어트한약"],
+      "intent": ["추천", "후기", "효과", "상담", "진료"],
+      "condition": ["체중", "비만", "살빼기"]
+    },
+
+    "medium_relevance_keywords": {
+      "description": "중관련성 키워드 (3점/개, 최대 9점)",
+      "general": ["병원", "의원", "치료", "건강", "약"],
+      "weight": ["감량", "식이", "운동", "몸무게"]
+    },
+
+    "negative_keywords": {
+      "description": "부정 키워드 (-5점/개)",
+      "ads": ["광고", "협찬", "제공", "원고료", "체험단"],
+      "other_regions": ["서울", "부산", "대구", "인천", "대전", "광주", "울산", "세종"]
+    },
+
+    "engagement_keywords": {
+      "description": "참여도 키워드 (4점/개, 최대 12점)",
+      "questions": ["질문", "궁금", "어디", "추천해주세요", "알려주세요"],
+      "intent": ["가격", "비용", "얼마", "예약", "연락"]
+    }
+  },
+
+  "trust_scoring": {
+    "description": "신뢰도 스코어링 설정",
+
+    "trust_indicators": {
+      "description": "신뢰 지표 키워드",
+      "keywords": ["후기", "경험", "직접", "방문", "진료", "추천", "감사", "선생님", "원장님"]
+    },
+
+    "spam_content_patterns": {
+      "description": "스팸 콘텐츠 패턴 (정규식)",
+      "patterns": [
+        "클릭.*하세요|지금.*신청",
+        "무료.*상담|무료.*체험",
+        "카톡.*상담|카톡.*문의"
+      ]
+    }
+  },
+
+  "source_scores": {
+    "description": "소스별 기본 신뢰도 점수 (30점 만점)",
+    "cafe": 30,
+    "naver_cafe": 30,
+    "mom_cafe": 30,
+    "youtube": 28,
+    "youtube_comment": 25,
+    "instagram": 22,
+    "tiktok": 20,
+    "blog": 18,
+    "naver_blog": 18,
+    "carrot": 15,
+    "influencer": 25,
+    "kin": 28,
+    "naver_kin": 28
+  }
+}
