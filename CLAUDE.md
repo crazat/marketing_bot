@@ -16,7 +16,7 @@
 ### 백엔드
 - **FastAPI** (Python 3.11+)
 - **SQLite** 데이터베이스
-- **Gemini AI** (gemini-3-flash-preview 모델만 사용)
+- **Gemini 2.5 Flash Lite + 3.1 Flash Lite Preview** (google-genai SDK, 중앙 클라이언트: `services/ai_client.py`)
 
 ### 프론트엔드
 - **React 18** + TypeScript
@@ -175,27 +175,73 @@ python pathfinder_v3_legion.py --target 500 --save-db
 
 ---
 
-## Gemini AI 사용 규칙
+## AI 모델 사용 규칙
 
-**반드시 `gemini-3-flash-preview` 모델만 사용**
+**Gemini (google-genai SDK) — 중앙 클라이언트 사용. 용도별 2단 구성.**
+
+| 함수 | 모델 | 가격 (1M tok) | 용도 |
+|------|------|:---:|------|
+| `ai_generate()` | **gemini-2.5-flash-lite** (GA) | $0.10 / $0.40 | 분류·판단·요약 (바이럴 적합성 등) |
+| `ai_generate_json()` | **gemini-2.5-flash-lite** (GA) | $0.10 / $0.40 | 구조화 JSON (response_mime_type) |
+| `ai_generate_korean()` | **gemini-3.1-flash-lite-preview** | $0.25 / $1.50 | 한국어 댓글·창작 (자연스러움 우선) |
+
+모든 AI 호출은 `services/ai_client.py`를 통해 이루어집니다. 모델 변경 시 이 파일만 수정.
 
 ```python
-# 올바른 사용법 (google.genai - 신규 API)
-from google import genai
-from google.genai import types
+# 올바른 사용법 (중앙 클라이언트)
+from services.ai_client import ai_generate, ai_generate_json, ai_generate_korean
 
-client = genai.Client(api_key=api_key)
-response = client.models.generate_content(
-    model='gemini-3-flash-preview',
-    contents=prompt,
-    config=types.GenerateContentConfig(temperature=0.7)
-)
+# 텍스트 생성 / 분류 / 판단 (저렴한 기본 모델)
+result = ai_generate(prompt, temperature=0.7, max_tokens=4096)
+
+# JSON 생성 (자동 파싱 + 복구)
+data = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
+
+# 한국어 댓글·창작 (더 자연스러운 preview 모델)
+comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800)
 
 # 잘못된 사용 (금지)
-import google.generativeai as genai  # X - deprecated 패키지
-model = genai.GenerativeModel('gemini-1.5-flash')  # X
-model = genai.GenerativeModel('gemini-pro')        # X
+from google import genai              # X - 직접 호출 금지
+from openai import OpenAI             # X - 사용 안 함 (Qwen 전환 완료)
+client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
 ```
+
+**환경변수**:
+- `GEMINI_API_KEY` (필수) — `config/secrets.json`에 있음, 자동 폴백
+- `GEMINI_CLASSIFY_MODEL` (선택) — 기본 모델 오버라이드
+- `GEMINI_KOREAN_MODEL` (선택) — 한국어 모델 오버라이드
+
+**예외**: `vision_analyst.py`만 Gemini Vision (이미지 분석)을 직접 사용
+
+**폴백 동작**: `ai_generate_korean()` 호출 실패 시 자동으로 `ai_generate()`(기본 모델)로 재시도
+
+---
+
+## 최근 개선 사항 (2026-04-25)
+
+### Qwen → Gemini 전면 마이그레이션
+
+Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로 비용과 품질 양쪽 최적화.
+
+**모델 선정 근거**:
+- **분류/판단 (대량)**: `gemini-2.5-flash-lite` — GA, 최저가, 10k 타겟 스캔 1회 $0.36
+- **한국어 댓글 생성**: `gemini-3.1-flash-lite-preview` — 2.5 Flash보다 **싸고**(-17%/-40%), **빠르고**(+64%), **우수** (Intelligence Index +62%, GPQA +4p, SimpleQA +16p)
+- 세대 차이(3.1 vs 2.5)가 등급 차이(Lite vs 표준)를 압도. 단 FACTS Grounding이 85→41로 급락하므로 팩트는 프롬프트에 RAG 주입 필수
+
+**변경된 파일**: `marketing_bot_web/backend/services/ai_client.py` 전면 재작성
+
+**호출부 호환성**: 모든 기존 함수 시그니처 유지. 호출자 코드 변경 불필요 (21개 파일).
+
+**SDK 변경**:
+- 이전: `openai.OpenAI` + DashScope 엔드포인트
+- 현재: `google.genai.Client` (v1.60.0)
+
+**환경변수 이전**:
+- `QWEN_API_KEY` 제거 → `GEMINI_API_KEY` 재사용 (`config/secrets.json`에 이미 있음)
+
+**레거시 방어**: 호출자가 실수로 `model="qwen-..."` 넘겨도 자동으로 기본 Gemini 모델로 대체.
+
+**스모크 검증 통과**: `ai_generate` / `ai_generate_json` / `ai_generate_korean` 3개 함수 모두 실 API 호출 성공 확인.
 
 ---
 
