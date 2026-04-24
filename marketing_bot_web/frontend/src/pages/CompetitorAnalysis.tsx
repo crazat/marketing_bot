@@ -11,6 +11,7 @@ import WeaknessRadar from '@/components/competitors/WeaknessRadar'
 import ReviewResponseAssistant from '@/components/reviews/ReviewResponseAssistant'
 import { useToast } from '@/components/ui/Toast'
 import MissionProgress from '@/components/ui/MissionProgress'
+import TabNavigation from '@/components/ui/TabNavigation'
 import ErrorState from '@/components/ui/ErrorState'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import { RefreshCw, Copy } from 'lucide-react'
@@ -265,38 +266,21 @@ export default function CompetitorAnalysis() {
         />
       )}
 
-      {/* 탭 */}
-      <div className="flex gap-2 border-b border-border overflow-x-auto" role="tablist" aria-label="경쟁사 분석 탭">
-        {[
-          { id: 'weaknesses', label: '🎯 약점 공략', icon: '🎯' },
-          { id: 'opportunities', label: '🔑 기회 키워드', icon: '🔑' },
-          { id: 'content-gap', label: '📊 콘텐츠 갭', icon: '📊' },
-          { id: 'weakness-radar', label: '📡 약점 레이더', icon: '📡' },
-          { id: 'instagram', label: '📸 Instagram', icon: '📸' },
-          { id: 'review-response', label: '💬 리뷰 응답', icon: '💬' },
-          { id: 'competitors', label: '🏢 경쟁사 관리', icon: '🏢' }
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls={`tabpanel-${tab.id}`}
-            onClick={() => setActiveTab(tab.id)}
-            className={`
-              px-4 py-3 font-medium transition-colors relative whitespace-nowrap
-              ${activeTab === tab.id
-                ? 'text-primary'
-                : 'text-muted-foreground hover:text-foreground'
-              }
-            `}
-          >
-            {tab.label}
-            {activeTab === tab.id && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-            )}
-          </button>
-        ))}
-      </div>
+      {/* 탭 — 공용 TabNavigation 사용 */}
+      <TabNavigation
+        tabs={[
+          { id: 'weaknesses', label: '🎯 약점 공략' },
+          { id: 'opportunities', label: '🔑 기회 키워드' },
+          { id: 'content-gap', label: '📊 콘텐츠 갭' },
+          { id: 'weakness-radar', label: '📡 약점 레이더' },
+          { id: 'instagram', label: '📸 Instagram' },
+          { id: 'review-response', label: '💬 리뷰 응답' },
+          { id: 'competitors', label: '🏢 경쟁사 관리' },
+        ]}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        ariaLabel="경쟁사 분석 탭"
+      />
 
       {/* 탭 컨텐츠 */}
       <div>

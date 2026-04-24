@@ -217,6 +217,98 @@ client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
 
 ---
 
+## 최근 개선 사항 (2026-04-25) — UX 대규모 정비 (4 ultrathink 라운드)
+
+4회 연속 UX 감사를 통해 Critical 5건, High 8건, Medium 7건의 사용성 문제를 해결. 각 라운드마다 문제를 찾고 → 검증 → 구현 → TypeScript 체크 → 다음 라운드 루프.
+
+### 1차 — 구조적 마찰 제거
+
+- Dashboard 중복 "📊 상세 분석" Collapsible 2개 → 1개로 병합
+- Dashboard 섹션 순서 재배치 (배너 → 메트릭 → 목표 → 스마트액션 → 알림/빠른실행 → 상세분석)
+- Settings 탭 **10개 → 7개** (알림+외부알림, 자동화+연동, 시스템+설정파일 병합)
+- LeadManager 뷰 모드 3개 → **2개** (카드뷰 제거, 테이블/칸반만 유지)
+- ViralHunter "전체 목록 보기" → **"일괄 작업 모드"**로 라벨 명확화
+- 모바일 햄버거 메뉴 열림 시 MobileTabBar 자동 숨김
+
+### 2차 — MarketingHub 통합 (1차에서 놓친 발견)
+
+- MarketingHub 탭 **8개 → 5개** (golden-time+lead-quality→performance 등 병합)
+- MarketingHub Overview compact 위젯 **6개 → 3개**로 축소
+- MarketingHub 탭을 공용 `TabNavigation` 컴포넌트로 전환
+- Dashboard ROI·WeeklyReport → MarketingHub로 이관 (Dashboard에서 링크만 안내)
+- Pathfinder 필터 그리드 반응형 (`grid-cols-1 md:grid-cols-4` → `sm:grid-cols-2 lg:grid-cols-4`)
+- LeadManager "잠재 고객" → "리드" 용어 통일
+- BattleIntelligence 예측 카드 부가 지표 모바일 숨김 (`hidden sm:block`)
+- CompetitorAnalysis 탭 밑줄 겹침 수정 (`-bottom-px`)
+
+### 3차 — Analytics 페이지 폐지 (A안 선택)
+
+- **Analytics 페이지 완전 흡수** → Marketing Hub에 통합. Sidebar "마케팅 분석" 메뉴 제거
+- MarketingHub 탭 **5개 → 6개** (🔗 어트리뷰션 신설)
+- Analytics 흡수 컴포넌트 8종: AIInsights, PerformanceFeedback, AttributionChain, KeywordLifecycle, ResponseGoldenTime, ChannelROI, CompetitorMovements, WeeklyBriefing
+- `/analytics?tab=*` → `/marketing?tab=*` 자동 리다이렉트 (레거시 북마크 호환)
+- 전역 단축키 `g+a` (Analytics) → `g+m` (Marketing Hub) 재매핑
+- Toast `defaultDuration` **4000ms → 5500ms** (연속 액션 시 빨리 사라지는 문제 해결)
+- LeadTable 컬럼 **11개 → 9개** (감성 제거, 발견일은 xl 이상만)
+- ConversionModal ESC/오버레이 클릭 보호 (입력값 있을 때 차단)
+- WorkView 자동 다음 타겟 `scrollIntoView` 추가 (연속 A/S/D 처리 시 화면 자동 스크롤)
+
+### 4차 — 탭 일관성 완성
+
+- `TabNavigation` 컴포넌트에 `badge?: number` prop 지원 추가
+- BattleIntelligence 7탭 → `TabNavigation` 전환 (하락 알림 badge 유지)
+- CompetitorAnalysis 7탭 → `TabNavigation` 전환
+- Dashboard "오늘 할 일" 위젯 **3개 → 2개** (`SuggestedActions` 제거, `SmartActionPanel` 상시 노출로 승격)
+
+### 누적 효과
+
+| 항목 | Before | After |
+|------|:----:|:----:|
+| Dashboard 중복 "상세 분석" Collapsible | 2개 | 1개 |
+| Dashboard 중복 "오늘 할 일" 위젯 | 3개 | 2개 |
+| Settings 탭 | 10 | 7 |
+| MarketingHub 탭 | 8 | 6 (Analytics 흡수 포함) |
+| LeadManager 뷰 모드 | 3 | 2 |
+| LeadTable 컬럼 | 11 | 9 |
+| 페이지 탭 `TabNavigation` 통일 | 6/8 | **8/8** |
+| 사이드바 최상위 메뉴 | 12 | 11 |
+| Toast 표시 시간 | 4초 | 5.5초 |
+
+### URL 마이그레이션 (모두 자동 리다이렉트)
+
+**Analytics 폐지**:
+- `/analytics?tab=ai-insights` → `/marketing?tab=growth`
+- `/analytics?tab=golden-time` → `/marketing?tab=performance`
+- `/analytics?tab=competitor` → `/marketing?tab=monitoring`
+- `/analytics?tab=lifecycle` → `/marketing?tab=attribution`
+- `/analytics?tab=roi|attribution|performance|overview` → 같은 ID 재사용
+
+**MarketingHub 탭 통합**:
+- `?tab=golden-time|lead-quality` → `performance`
+- `?tab=campaigns|ab-tests` → `growth`
+- `?tab=competitor-radar|alerts` → `monitoring`
+
+**Settings 탭 통합**:
+- `?tab=external-notifications` → `notifications`
+- `?tab=integrations` → `automation`
+- `?tab=config` → `system`
+
+**LeadManager 뷰**: `?view=card` → `table`
+
+### 기능 삭제 0건
+
+- Analytics의 모든 컴포넌트는 MarketingHub 내부 탭/섹션으로 유지
+- 제거된 것은 **중복 위젯·중복 개념**만 (SuggestedActions, 2번 렌더되던 Collapsible)
+- 폐지된 Analytics 페이지도 리다이렉트 셔임으로 보존
+
+### 감사 프로세스 교훈
+
+1·2·3차 라운드에서 false positive를 경험함 → 에이전트 보고를 **파일 내용으로 직접 검증** 후에만 구현. 이미 구현돼 있던 것들 (ConversionModal 라벨, Pathfinder 빈 상태, WorkView 자동 이동 로직)은 잘못된 플래그였음.
+
+특히 **1차에서 MarketingHub(8탭)를 놓친 것**과 **2차에서 Analytics(8탭)를 놓친 것**이 큰 교훈 — 사이드바의 모든 페이지를 체크리스트로 순회해야 함.
+
+---
+
 ## 최근 개선 사항 (2026-04-25)
 
 ### Qwen → Gemini 전면 마이그레이션

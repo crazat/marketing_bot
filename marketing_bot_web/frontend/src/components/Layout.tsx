@@ -5,12 +5,19 @@ import { useSidebarPrefetch } from '@/hooks/usePrefetch'
 import { Menu, X, AlertTriangle, Users, Clock, ChevronDown, ChevronRight, BarChart3, Megaphone, Briefcase, Wrench, Settings, Target, Swords, Flame, Music, ClipboardList, Coins, MessageSquare, Bot, LineChart, Eye } from 'lucide-react'
 import { ThemeToggle } from '@/components/ui/ThemeProvider'
 import useKeyboardShortcuts from '@/hooks/useKeyboardShortcuts'
+import { useGlobalNav } from '@/hooks/useGlobalNav'
 import KeyboardShortcutsHelp from '@/components/ui/KeyboardShortcutsHelp'
 import CommandPalette from '@/components/ui/CommandPalette'
 import KeywordHub from '@/components/ui/KeywordHub'
 import WebSocketIndicator from '@/components/WebSocketIndicator'
 import BackToTop from '@/components/ui/BackToTop'
 import { NotificationBell } from '@/components/NotificationCenter'
+import Breadcrumb from '@/components/Breadcrumb'
+import OnboardingTour from '@/components/OnboardingTour'
+import { useToast } from '@/components/ui/Toast'
+import MobileTabBar from '@/components/MobileTabBar'
+import GlobalSearchBar from '@/components/GlobalSearchBar'
+import FeedbackWidget from '@/components/FeedbackWidget'
 import { DashboardSettingsButton } from '@/components/DashboardSettings'
 import { OfflineBanner } from '@/components/ui/OfflineBanner'
 import { leadsApi, configApi } from '@/services/api'
@@ -49,7 +56,7 @@ const navigationGroups: NavGroup[] = [
       { name: 'Pathfinder', href: '/pathfinder', icon: <Target className="w-4 h-4 text-blue-500" /> },
       { name: 'Battle Intelligence', href: '/battle', icon: <Swords className="w-4 h-4 text-red-500" /> },
       { name: '경쟁사 분석', href: '/competitors', icon: <Eye className="w-4 h-4 text-purple-500" /> },
-      { name: '마케팅 분석', href: '/analytics', icon: <LineChart className="w-4 h-4 text-green-500" /> },
+      // [A안] '마케팅 분석'은 Marketing Hub에 통합됨 — 항목 제거. /analytics는 리다이렉트 셔임만 유지.
     ],
     defaultOpen: true,
   },
@@ -198,6 +205,30 @@ export default function Layout() {
 
   // [Phase 1.5] 키보드 단축키
   const { showHelp, setShowHelp, shortcuts } = useKeyboardShortcuts()
+
+  // [X6] 전역 g-prefix 네비
+  const [navHint, setNavHint] = useState<string | null>(null)
+  useGlobalNav({
+    onPrefixStart: () =>
+      setNavHint('다음 키: H 홈 · V Viral · L Leads · P Pathfinder · B Battle · C 경쟁사 · Q Q&A · M Marketing · S 설정'),
+    onCancel: () => setNavHint(null),
+  })
+
+  // [EE3] 인증 실패 이벤트 수신 → 사용자 안내 토스트
+  const authToast = useToast()
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { status: number } | undefined
+      const status = detail?.status ?? 0
+      if (status === 401) {
+        authToast.error('인증이 만료되었습니다. API 키를 확인하거나 다시 로그인하세요.', 10000)
+      } else if (status === 403) {
+        authToast.error('이 작업에 대한 권한이 없습니다.', 8000)
+      }
+    }
+    window.addEventListener('api:auth-failure', handler)
+    return () => window.removeEventListener('api:auth-failure', handler)
+  }, [authToast])
 
   // [Phase 4.0] Hot Lead 긴급 알림 조회 (사이드바 배지용)
   const { data: pendingAlerts } = useQuery({
@@ -445,7 +476,7 @@ export default function Layout() {
         {/* 메인 컨텐츠 - 사이드바 너비만큼 왼쪽 마진 (md: 축소, lg: 전체) */}
         <main
           id="main-content"
-          className="min-h-screen pt-16 md:pt-0 md:ml-16 lg:ml-64"
+          className="min-h-screen pt-16 md:pt-0 md:ml-16 lg:ml-64 pb-16 md:pb-0"
           role="main"
           tabIndex={-1}
         >
@@ -457,6 +488,8 @@ export default function Layout() {
             />
           )}
           <div className="max-w-7xl mx-auto p-6">
+            <Breadcrumb />
+            <GlobalSearchBar onOpen={() => setCommandPaletteOpen(true)} />
             <Outlet />
           </div>
         </main>
@@ -472,6 +505,29 @@ export default function Layout() {
         onClick={() => setSidebarOpen(false)}
         aria-hidden="true"
       />
+
+      {/* [X6] g-prefix 힌트 */}
+      {navHint && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[70] bg-card border border-primary/40 shadow-lg px-4 py-2 rounded animate-slide-down"
+        >
+          <div className="flex items-center gap-2 text-xs">
+            <kbd className="px-1.5 py-0.5 font-mono text-[10px] bg-primary/20 text-primary rounded">g</kbd>
+            <span className="text-muted-foreground">{navHint}</span>
+          </div>
+        </div>
+      )}
+
+      {/* [AA5] 피드백 플로팅 버튼 + 모달 */}
+      <FeedbackWidget />
+
+      {/* [X4] 모바일 하단 탭바 — 사이드바 열려있을 땐 숨김 (시각 간섭 방지) */}
+      {!sidebarOpen && <MobileTabBar />}
+
+      {/* [Z9] 첫 방문 온보딩 (localStorage 1회) */}
+      <OnboardingTour />
 
       {/* [Phase 1.5] 키보드 단축키 도움말 */}
       <KeyboardShortcutsHelp

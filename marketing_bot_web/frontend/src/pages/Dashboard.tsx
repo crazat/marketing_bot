@@ -17,16 +17,20 @@ import MetricCard from '@/components/MetricCard'
 import ChronosTimeline from '@/components/ChronosTimeline'
 import HotLeadBanner from '@/components/ui/HotLeadBanner'
 import MarketingFunnel from '@/components/ui/MarketingFunnel'
-import RoiAnalysis from '@/components/ui/RoiAnalysis'
-import SuggestedActions from '@/components/ui/SuggestedActions'
 import SmartActionPanel from '@/components/ui/SmartActionPanel'
 import WorkflowAlerts from '@/components/ui/WorkflowAlerts'
-import WeeklyReport from '@/components/ui/WeeklyReport'
 import AlertCenter from '@/components/ui/AlertCenter'
 import RecommendedKeywords from '@/components/ui/RecommendedKeywords'
 import TopKeiKeywords from '@/components/pathfinder/TopKeiKeywords'
 import PipelineOverview from '@/components/dashboard/PipelineOverview'
 import AiBriefing from '@/components/dashboard/AiBriefing'
+import TodayFocus from '@/components/dashboard/TodayFocus'
+import AnomalyAlert from '@/components/dashboard/AnomalyAlert'
+import SeasonalityHint from '@/components/dashboard/SeasonalityHint'
+import JournalSummary from '@/components/dashboard/JournalSummary'
+import PatternSuggestion from '@/components/dashboard/PatternSuggestion'
+import WidgetErrorBoundary from '@/components/ui/WidgetErrorBoundary'
+import { useTimeContext } from '@/hooks/useTimeContext'
 import { TrendInsights } from '@/components/viral/TrendInsights'
 import {
   SkeletonMetricCard,
@@ -59,6 +63,7 @@ const GOAL_TYPE_ICONS: Record<string, string> = {
 export default function Dashboard() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const timeCtx = useTimeContext()
 
   // [Phase 2-2] WebSocket 구독으로 실시간 업데이트 (폴링 95% 감소)
   const { lastMessage } = useWebSocket()
@@ -223,215 +228,286 @@ export default function Dashboard() {
 
   return (
     <PageTransition>
-      <div className="space-y-6">
-        {/* 헤더 */}
-        <div>
-        <h1 className="text-3xl font-bold mb-2">대시보드</h1>
-        <p className="text-muted-foreground">
-          실시간 마케팅 현황을 한눈에 확인하세요
-        </p>
-      </div>
-
-      {/* [Phase 8.0] 마케팅 파이프라인 개요 */}
-      <PipelineOverview />
-
-      {/* [Decision Intelligence] AI 브리핑 */}
-      <AiBriefing />
-
-      {/* 빠른 실행 */}
-      <QuickActions />
-
-      {/* [Phase 6.0] 핫리드 배너 */}
-      <HotLeadBanner />
-
-      {/* [Phase 4.0] 통합 알림 센터 */}
-      <AlertCenter />
-
-      {/* [Phase E-2] 스마트 액션 패널 */}
-      <div id="actions" className="bg-card rounded-lg border border-border p-4">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <span className="text-xl">💡</span>
-          스마트 액션
-          <span className="text-xs text-muted-foreground font-normal">
-            상황 기반 추천
-          </span>
-        </h2>
-        <SmartActionPanel compact maxItems={5} />
-      </div>
-
-      {/* [Phase F-1] 자동 워크플로우 알림 */}
-      <div className="bg-card rounded-lg border border-border p-4">
-        <WorkflowAlerts maxItems={3} />
-      </div>
-
-      {/* [Decision Intelligence] 트렌드 인사이트 (컴팩트) */}
-      <TrendInsights compact />
-
-      {/* [Phase 5.0] 오늘의 추천 키워드 + KEI 상위 키워드 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <RecommendedKeywords />
-        <TopKeiKeywords
-          compact
-          limit={5}
-          onNavigate={() => navigate('/pathfinder')}
-        />
-      </div>
-
-      {/* 메트릭 카드 */}
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-lg font-semibold">핵심 메트릭</h2>
-        <DataFreshness
-          lastUpdated={metricsUpdatedAt ? new Date(metricsUpdatedAt) : null}
-          onRefresh={() => refetchMetrics()}
-          isRefreshing={metricsRefreshing}
-          compact
-        />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {metricsLoading ? (
-          <>
-            <SkeletonMetricCard />
-            <SkeletonMetricCard />
-            <SkeletonMetricCard />
-            <SkeletonMetricCard />
-          </>
-        ) : metricsError ? (
-          <div className="col-span-4">
-            <ErrorState
-              title="메트릭 로드 실패"
-              message="메트릭 데이터를 불러오는데 실패했습니다."
-              onRetry={() => refetchMetrics()}
-            />
+      <div className="space-y-8">
+        {/* [Z4] 편집 매거진 스타일 헤더 + [Z1] 시간 맥락 · [DD7] 반응형 보강 */}
+        <header className="border-b border-border pb-6">
+          <div className="caps text-muted-foreground mb-2 flex items-center gap-2 flex-wrap">
+            <span>Marketing Command</span>
+            <span aria-hidden className="hidden sm:inline">·</span>
+            <span className="tabular-nums">
+              {timeCtx.dayOfWeekKr}요일 {timeCtx.hour.toString().padStart(2, '0')}시
+            </span>
+            {timeCtx.isWeekend && <span className="text-accent">주말</span>}
           </div>
-        ) : (
-          <>
-            <MetricCard
-              title="총 키워드"
-              value={metrics?.total_keywords || 0}
-              icon="🎯"
-              subtitle="Pathfinder에서 관리"
-              onClick={handleNavigatePathfinder}
-              sparklineData={metricsTrend?.cumulative?.keywords}
-              previousValue={metricsTrend?.previous_values?.keywords}
-            />
-            <MetricCard
-              title="S급 키워드"
-              value={metrics?.s_grade_keywords || 0}
-              icon="🔥"
-              color="text-red-500"
-              subtitle="고가치 키워드"
-              onClick={handleNavigatePathfinderS}
-              sparklineData={metricsTrend?.cumulative?.s_grade}
-              previousValue={metricsTrend?.previous_values?.s_grade}
-            />
-            <MetricCard
-              title="A급 키워드"
-              value={metrics?.a_grade_keywords || 0}
-              icon="🟢"
-              color="text-green-500"
-              subtitle="우수 키워드"
-              onClick={handleNavigatePathfinderA}
-              sparklineData={metricsTrend?.cumulative?.a_grade}
-              previousValue={metricsTrend?.previous_values?.a_grade}
-            />
-            <MetricCard
-              title="총 리드"
-              value={metrics?.total_leads || 0}
-              icon="📋"
-              subtitle="Lead Manager에서 관리"
-              onClick={handleNavigateLeads}
-              sparklineData={metricsTrend?.cumulative?.leads}
-              previousValue={metricsTrend?.previous_values?.leads}
-            />
-          </>
+          <h1 className="font-display text-3xl sm:text-4xl md:text-5xl leading-tight tracking-tight">
+            {timeCtx.greeting}
+          </h1>
+          <p className="text-sm text-muted-foreground mt-3">
+            {timeCtx.suggestion}
+          </p>
+        </header>
+
+        {/*
+          [CC2] 배너 우선순위 (위 → 아래, 높은 우선순위부터):
+            1. AnomalyAlert — 치명적 이상 (즉시 주의)
+            2. PatternSuggestion — 자동화 기회 (코칭)
+            3. HotLeadBanner — 핫리드 (오늘 처리)
+            4. TodayFocus — 단일 CTA (상시)
+          각 배너는 조건부 렌더(null 반환). 여러 개가 동시에 뜰 수는 있으나
+          실제로는 대부분 0–2개만 활성화됨.
+        */}
+
+        {/* 1. 이상 신호 (최우선 — 치명적) */}
+        <WidgetErrorBoundary widgetName="이상 신호">
+          <AnomalyAlert />
+        </WidgetErrorBoundary>
+
+        {/* 2. 패턴 감지 (코칭) */}
+        <WidgetErrorBoundary widgetName="패턴 감지">
+          <PatternSuggestion />
+        </WidgetErrorBoundary>
+
+        {/* 3. 핫리드 배너 (있을 때만 노출 — TodayFocus보다 긴급하므로 위로) */}
+        <WidgetErrorBoundary widgetName="핫 리드 배너" minHeight="80px">
+          <HotLeadBanner />
+        </WidgetErrorBoundary>
+
+        {/* 4. 오늘의 집중 — 상시 노출 단일 CTA */}
+        <WidgetErrorBoundary widgetName="오늘의 집중" minHeight="120px">
+          <TodayFocus />
+        </WidgetErrorBoundary>
+
+        {/* 핵심 메트릭 — 배너 바로 아래로 이동 (오늘 상태 즉시 확인) */}
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">핵심 메트릭</h2>
+          <DataFreshness
+            lastUpdated={metricsUpdatedAt ? new Date(metricsUpdatedAt) : null}
+            onRefresh={() => refetchMetrics()}
+            isRefreshing={metricsRefreshing}
+            compact
+          />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {metricsLoading ? (
+            <>
+              <SkeletonMetricCard />
+              <SkeletonMetricCard />
+              <SkeletonMetricCard />
+              <SkeletonMetricCard />
+            </>
+          ) : metricsError ? (
+            <div className="col-span-4">
+              <ErrorState
+                title="메트릭 로드 실패"
+                message="메트릭 데이터를 불러오는데 실패했습니다."
+                onRetry={() => refetchMetrics()}
+              />
+            </div>
+          ) : (
+            <>
+              <MetricCard
+                title="총 키워드"
+                value={metrics?.total_keywords || 0}
+                icon="🎯"
+                subtitle="Pathfinder에서 관리"
+                onClick={handleNavigatePathfinder}
+                sparklineData={metricsTrend?.cumulative?.keywords}
+                previousValue={metricsTrend?.previous_values?.keywords}
+              />
+              <MetricCard
+                title="S급 키워드"
+                value={metrics?.s_grade_keywords || 0}
+                icon="🔥"
+                color="text-red-500"
+                subtitle="고가치 키워드"
+                onClick={handleNavigatePathfinderS}
+                sparklineData={metricsTrend?.cumulative?.s_grade}
+                previousValue={metricsTrend?.previous_values?.s_grade}
+              />
+              <MetricCard
+                title="A급 키워드"
+                value={metrics?.a_grade_keywords || 0}
+                icon="🟢"
+                color="text-green-500"
+                subtitle="우수 키워드"
+                onClick={handleNavigatePathfinderA}
+                sparklineData={metricsTrend?.cumulative?.a_grade}
+                previousValue={metricsTrend?.previous_values?.a_grade}
+              />
+              <MetricCard
+                title="총 리드"
+                value={metrics?.total_leads || 0}
+                icon="📋"
+                subtitle="Lead Manager에서 관리"
+                onClick={handleNavigateLeads}
+                sparklineData={metricsTrend?.cumulative?.leads}
+                previousValue={metricsTrend?.previous_values?.leads}
+              />
+            </>
+          )}
+        </div>
+
+        {/* 이번 달 목표 — 메트릭 바로 아래 */}
+        {goals && goals.length > 0 && (
+          <div className="bg-card rounded-lg border border-border p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">🎯 이번 달 목표</h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleNavigateGoalSettings}
+              >
+                설정 →
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {goals.map((goal) => {
+                const isComplete = goal.progress >= 100
+                const progressColor = isComplete ? 'bg-green-500' :
+                  goal.progress >= 70 ? 'bg-primary' :
+                  goal.progress >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+
+                return (
+                  <div
+                    key={goal.id}
+                    className={`rounded-lg border p-4 transition-colors ${
+                      isComplete ? 'border-green-500/50 bg-green-500/5' : 'border-border'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-2xl">{GOAL_TYPE_ICONS[goal.type] || '🎯'}</span>
+                      <span className="text-xs text-muted-foreground">
+                        D-{goal.days_remaining}
+                      </span>
+                    </div>
+                    <p className="text-sm font-medium mb-1">
+                      {goal.title || GOAL_TYPE_LABELS[goal.type] || goal.type}
+                    </p>
+                    <div className="flex items-baseline gap-1 mb-2">
+                      <span className={`text-2xl font-bold ${isComplete ? 'text-green-500' : ''}`}>
+                        {goal.current_value}
+                      </span>
+                      <span className="text-muted-foreground">/ {goal.target_value}</span>
+                    </div>
+                    <div className="h-2 bg-muted rounded-full overflow-hidden mb-1">
+                      <div
+                        className={`h-full ${progressColor} transition-all duration-500`}
+                        style={{ width: `${Math.min(100, goal.progress)}%` }}
+                      />
+                    </div>
+                    <p className={`text-xs ${isComplete ? 'text-green-500' : 'text-muted-foreground'}`}>
+                      {isComplete ? '✅ 달성 완료!' : `${goal.remaining}개 남음`}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )}
-      </div>
 
-      {/* 목표 달성률 */}
-      {goals && goals.length > 0 && (
-        <div className="bg-card rounded-lg border border-border p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold">🎯 이번 달 목표</h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleNavigateGoalSettings}
+        {/* 스마트 액션 — 상시 노출 (Dashboard 메인 CTA 위젯)
+            SuggestedActions·SmartActionPanel 2개 위젯이 "오늘 할 일" 중복이라 SmartActionPanel로 일원화 */}
+        <section aria-label="스마트 액션" id="actions" className="bg-card border border-border p-4">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="font-display text-xl flex items-center gap-2">
+              🧠 스마트 액션
+            </h2>
+            <span className="caps text-muted-foreground">AI recommendations</span>
+          </div>
+          <WidgetErrorBoundary widgetName="스마트 액션">
+            <SmartActionPanel maxItems={8} />
+          </WidgetErrorBoundary>
+        </section>
+
+        {/* 알림 허브 */}
+        <section aria-label="알림 허브" className="space-y-3">
+          <div className="flex items-baseline justify-between">
+            <h2 className="font-display text-xl flex items-center gap-2">
+              알림 허브
+            </h2>
+            <span className="caps text-muted-foreground">Events</span>
+          </div>
+          <AlertCenter />
+          <div className="bg-card border border-border p-4">
+            <WorkflowAlerts maxItems={3} />
+          </div>
+        </section>
+
+        {/* 빠른 실행 */}
+        <section aria-label="빠른 실행">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="font-display text-xl">빠른 실행</h2>
+            <span className="caps text-muted-foreground">Tools</span>
+          </div>
+          <QuickActions />
+        </section>
+
+        {/* 📊 상세 분석 — 파이프라인·브리핑·스마트액션·트렌드·키워드·퍼널
+            (ROI·주간 리포트는 Marketing Hub로 이관) */}
+        <Collapsible
+          title="📊 상세 분석"
+          summary="파이프라인, AI 브리핑, 스마트 액션, 트렌드, 키워드, 마케팅 퍼널"
+          defaultOpen={false}
+        >
+          <div className="space-y-6 pt-2">
+            <WidgetErrorBoundary widgetName="마케팅 파이프라인">
+              <PipelineOverview />
+            </WidgetErrorBoundary>
+
+            <WidgetErrorBoundary widgetName="AI 브리핑">
+              <AiBriefing />
+            </WidgetErrorBoundary>
+
+            {/* 스마트 액션은 상시 노출로 이동 (Collapsible 밖, 메트릭 아래) */}
+
+            <WidgetErrorBoundary widgetName="트렌드 인사이트">
+              <TrendInsights compact />
+            </WidgetErrorBoundary>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <RecommendedKeywords />
+              <TopKeiKeywords
+                compact
+                limit={5}
+                onNavigate={() => navigate('/pathfinder')}
+              />
+            </div>
+
+            <WidgetErrorBoundary widgetName="마케팅 퍼널">
+              <MarketingFunnel />
+            </WidgetErrorBoundary>
+
+            {/* ROI·주간 리포트 이관 안내 */}
+            <button
+              type="button"
+              onClick={() => navigate('/marketing')}
+              className="w-full bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors p-4 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              설정 →
-            </Button>
+              <p className="text-sm font-medium">💰 ROI 분석 · 주간 리포트는 Marketing Hub로 이동했습니다</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                캠페인, A/B 테스트, 경쟁사 레이더와 함께 확인 →
+              </p>
+            </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {goals.map((goal) => {
-              const isComplete = goal.progress >= 100
-              const progressColor = isComplete ? 'bg-green-500' :
-                goal.progress >= 70 ? 'bg-primary' :
-                goal.progress >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+        </Collapsible>
 
-              return (
-                <div
-                  key={goal.id}
-                  className={`rounded-lg border p-4 transition-colors ${
-                    isComplete ? 'border-green-500/50 bg-green-500/5' : 'border-border'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-2xl">{GOAL_TYPE_ICONS[goal.type] || '🎯'}</span>
-                    <span className="text-xs text-muted-foreground">
-                      D-{goal.days_remaining}
-                    </span>
-                  </div>
-                  <p className="text-sm font-medium mb-1">
-                    {goal.title || GOAL_TYPE_LABELS[goal.type] || goal.type}
-                  </p>
-                  <div className="flex items-baseline gap-1 mb-2">
-                    <span className={`text-2xl font-bold ${isComplete ? 'text-green-500' : ''}`}>
-                      {goal.current_value}
-                    </span>
-                    <span className="text-muted-foreground">/ {goal.target_value}</span>
-                  </div>
-                  <div className="h-2 bg-muted rounded-full overflow-hidden mb-1">
-                    <div
-                      className={`h-full ${progressColor} transition-all duration-500`}
-                      style={{ width: `${Math.min(100, goal.progress)}%` }}
-                    />
-                  </div>
-                  <p className={`text-xs ${isComplete ? 'text-green-500' : 'text-muted-foreground'}`}>
-                    {isComplete ? '✅ 달성 완료!' : `${goal.remaining}개 남음`}
-                  </p>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      {/* [BB1] 오늘 한 일 저널 */}
+      <WidgetErrorBoundary widgetName="오늘 한 일">
+        <JournalSummary />
+      </WidgetErrorBoundary>
 
-      {/* [Phase 4.0] AI 추천 액션 - 항상 표시 */}
-      <SuggestedActions />
-
-      {/* 상세 분석 섹션 (기본 접힘) */}
-      <Collapsible
-        title={<span className="text-lg font-bold">📊 상세 분석</span>}
-        summary="마케팅 퍼널, ROI 분석, 주간 리포트"
-        defaultOpen={false}
-        className="bg-card"
-      >
-        <div className="space-y-6 -mx-4 -my-3">
-          {/* [Phase 6.0] 마케팅 퍼널 */}
-          <MarketingFunnel />
-
-          {/* [Phase 4.0] ROI 분석 */}
-          <RoiAnalysis />
-
-          {/* [Phase 4.0] 주간 리포트 */}
-          <WeeklyReport />
-        </div>
-      </Collapsible>
+      {/* [BB6] 계절성 힌트 */}
+      <WidgetErrorBoundary widgetName="계절성 힌트">
+        <SeasonalityHint />
+      </WidgetErrorBoundary>
 
       {/* Chronos Timeline */}
-      <div className="bg-card rounded-lg border border-border p-6">
-        <h2 className="text-xl font-bold mb-4">⏰ Chronos Timeline</h2>
-        <ChronosTimeline />
-      </div>
+      <WidgetErrorBoundary widgetName="Chronos Timeline">
+        <div className="bg-card rounded-lg border border-border p-6">
+          <h2 className="text-xl font-bold mb-4">⏰ Chronos Timeline</h2>
+          <ChronosTimeline />
+        </div>
+      </WidgetErrorBoundary>
 
       {/* Briefing Dashboard - Accordion 스타일 */}
       <div className="bg-card rounded-lg border border-border p-6">

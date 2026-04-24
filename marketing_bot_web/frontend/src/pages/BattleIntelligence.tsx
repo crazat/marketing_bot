@@ -14,6 +14,7 @@ import ErrorState from '@/components/ui/ErrorState'
 import EmptyState from '@/components/ui/EmptyState'
 import { SkeletonChart, SkeletonStatsGrid, SkeletonList } from '@/components/ui/Skeleton'
 import MissionProgress from '@/components/ui/MissionProgress'
+import TabNavigation from '@/components/ui/TabNavigation'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { useToast } from '@/components/ui/Toast'
 import { useUrlState } from '@/hooks/useUrlState'
@@ -374,43 +375,23 @@ export default function BattleIntelligence() {
         </div>
       </div>
 
-      {/* 탭 네비게이션 */}
+      {/* 탭 네비게이션 — 공용 TabNavigation 사용 (badge 지원) */}
       <div className="bg-card rounded-lg border border-border">
-        <div className="border-b border-border">
-          <nav className="flex">
-            {[
-              { id: 'trends', label: '📈 순위 트렌드', icon: '📈' },
-              { id: 'forecast', label: '🔮 순위 예측', icon: '🔮' },
-              { id: 'alerts', label: '🚨 하락 알림', icon: '🚨', badge: rankDropAlerts?.alerts?.length || 0 },
-              { id: 'keywords', label: '🎯 추적 키워드', icon: '🎯' },
-              { id: 'competitors', label: '💪 경쟁사 활력', icon: '💪' },
-              { id: 'insights', label: '📊 경쟁 인사이트', icon: '📊' },
-              { id: 'local-seo', label: '📍 Local SEO', icon: '📍' },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                role="tab"
-                aria-selected={activeTab === tab.id}
-                aria-controls={`tabpanel-${tab.id}`}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-6 py-4 font-medium transition-colors relative ${
-                  activeTab === tab.id
-                    ? 'text-primary'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {tab.label}
-                {'badge' in tab && (tab.badge ?? 0) > 0 && (
-                  <span className="ml-2 px-1.5 py-0.5 text-xs bg-red-500 text-white rounded-full">
-                    {tab.badge}
-                  </span>
-                )}
-                {activeTab === tab.id && (
-                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-                )}
-              </button>
-            ))}
-          </nav>
+        <div className="px-2">
+          <TabNavigation
+            tabs={[
+              { id: 'trends', label: '📈 순위 트렌드' },
+              { id: 'forecast', label: '🔮 순위 예측' },
+              { id: 'alerts', label: '🚨 하락 알림', badge: rankDropAlerts?.alerts?.length || 0 },
+              { id: 'keywords', label: '🎯 추적 키워드' },
+              { id: 'competitors', label: '💪 경쟁사 활력' },
+              { id: 'insights', label: '📊 경쟁 인사이트' },
+              { id: 'local-seo', label: '📍 Local SEO' },
+            ]}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            ariaLabel="Battle Intelligence 탭"
+          />
         </div>
 
         <div className="p-6">
@@ -617,8 +598,9 @@ export default function BattleIntelligence() {
                               {forecast.on_track ? '✅ 목표 달성 가능' : '⚠️ 추가 노력 필요'}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between mt-2">
-                            <div className="text-xs text-muted-foreground">
+                          <div className="flex items-center justify-between mt-2 gap-2 flex-wrap">
+                            {/* 부가 지표 — 모바일에서는 숨김 (공간 절약) */}
+                            <div className="hidden sm:block text-xs text-muted-foreground">
                               일일 변화율: {forecast.slope > 0 ? '+' : ''}{forecast.slope} · 데이터 {forecast.data_points}개
                               {forecast.model_factors?.acceleration !== undefined && (
                                 <span className="ml-2">
@@ -630,6 +612,7 @@ export default function BattleIntelligence() {
                               variant="ghost"
                               size="xs"
                               onClick={() => handleViewTrend(forecast.keyword)}
+                              className="ml-auto"
                             >
                               📈 트렌드 보기
                             </Button>

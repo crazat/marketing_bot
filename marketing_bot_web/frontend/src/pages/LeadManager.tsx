@@ -17,14 +17,19 @@ import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import Button, { IconButton } from '@/components/ui/Button'
 import { Download, RefreshCw, Search } from 'lucide-react'
-// Lead Manager 뷰 모드 타입
-type LeadViewMode = 'table' | 'card' | 'kanban'
+// Lead Manager 뷰 모드 타입 — 카드 뷰 제거 (테이블이 모바일 반응형으로 동작)
+type LeadViewMode = 'table' | 'kanban'
 
 export default function LeadManager() {
   // [Phase 5.0] URL 상태 관리
   const [activeTab, setActiveTab] = useUrlState<string>('platform', { defaultValue: 'cafe' })
   const [viewMode, setViewMode] = useUrlState<LeadViewMode>('view', { defaultValue: 'table' })
   const [statusFilter, setStatusFilter] = useUrlState<string>('status', { defaultValue: '' })
+
+  // 레거시 URL(?view=card) 자동 마이그레이션 → table
+  useEffect(() => {
+    if ((viewMode as string) === 'card') setViewMode('table')
+  }, [viewMode, setViewMode])
   // [Phase 4.0] 신뢰도 필터
   const [trustFilter, setTrustFilter] = useUrlState<string>('trust', { defaultValue: '' })
   const [scanningModule, setScanningModule] = useState<string | null>(null)
@@ -381,7 +386,7 @@ if (statsLoading) {
       <div className="space-y-6">
         <div>
           <h1 className="text-3xl font-bold mb-2">📋 Lead Manager</h1>
-          <p className="text-muted-foreground">다양한 플랫폼에서 잠재 고객을 발굴합니다</p>
+          <p className="text-muted-foreground">여러 플랫폼의 리드를 발굴·관리합니다</p>
         </div>
         <SkeletonStatsGrid cards={6} />
         <div className="bg-card rounded-lg border border-border p-6">
@@ -411,7 +416,7 @@ if (statsLoading) {
         <div>
           <h1 className="text-3xl font-bold mb-2">📋 Lead Manager</h1>
           <p className="text-muted-foreground">
-            다양한 플랫폼에서 잠재 고객을 발굴합니다
+            여러 플랫폼의 리드를 발굴·관리합니다
           </p>
         </div>
         <div className="flex gap-2 items-center">
@@ -430,18 +435,6 @@ if (statsLoading) {
               📋 <span className="hidden sm:inline">테이블</span>
             </button>
             <button
-              onClick={() => setViewMode('card')}
-              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                viewMode === 'card'
-                  ? 'bg-card shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              aria-pressed={viewMode === 'card'}
-              title="카드 뷰 (모바일 친화적)"
-            >
-              🃏 <span className="hidden sm:inline">카드</span>
-            </button>
-            <button
               onClick={() => setViewMode('kanban')}
               className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
                 viewMode === 'kanban'
@@ -455,7 +448,7 @@ if (statsLoading) {
             </button>
           </div>
 
-          {(viewMode === 'table' || viewMode === 'card') && (
+          {viewMode === 'table' && (
             <>
               <select
                 value={statusFilter}
@@ -657,7 +650,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>
@@ -719,7 +712,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>
@@ -779,7 +772,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>
@@ -839,7 +832,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>
@@ -899,7 +892,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>
@@ -959,7 +952,7 @@ if (statsLoading) {
                   onUpdateStatus={handleUpdateLead}
                   onBulkUpdateStatus={handleBulkUpdateStatus}
                   onConversionWithLead={handleConversionWithLead}
-                  viewMode={viewMode === 'card' ? 'card' : 'table'}
+                  viewMode="table"
                 />
               )}
             </div>

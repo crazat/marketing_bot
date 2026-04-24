@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import Button from '@/components/ui/Button'
 import { ConfirmModal } from '@/components/ui/Modal'
+import { safeUrl } from '@/utils/safeUrl'
 import Pagination from '@/components/ui/Pagination'
 import { FilterBar, FilterState, ScanBatch } from '@/components/viral/FilterBar'
 import { SmartFilterBar } from '@/components/viral/SmartFilterBar'
@@ -47,6 +48,12 @@ interface ListViewProps {
 
   // 검증
   isVerifying: boolean
+  verifyProgress?: {
+    status: 'queued' | 'running' | 'done' | 'error'
+    total: number
+    commentable: number
+    not_commentable: number
+  } | null
   verifyLimit: number
   verifyResults: {
     total: number
@@ -72,6 +79,7 @@ interface ListViewProps {
   onToggleSelect: (targetId: string) => void
   onToggleSelectAll: () => void
   onBulkAction: (action: 'approve' | 'skip' | 'delete') => void
+  onBulkActionAll: (action: 'approve' | 'skip' | 'delete') => void  // [F3] 필터 매칭 전체
   onBulkGenerateComments: () => void
   onClearSelection: () => void
   onSetExpandedTargetId: (targetId: string | null) => void
@@ -91,7 +99,7 @@ export function ListView({
   filters,
   scanBatches,
   displayTargets,
-  allTargets,
+  allTargets: _allTargets,
   selectedTargets,
   isLoadingFiltered,
   isRefreshing = false,
@@ -100,6 +108,7 @@ export function ListView({
   totalItems,
   pageSize,
   isVerifying,
+  verifyProgress,
   verifyLimit,
   verifyResults,
   isProcessingBulk,
@@ -115,6 +124,7 @@ export function ListView({
   onToggleSelect,
   onToggleSelectAll,
   onBulkAction,
+  onBulkActionAll,
   onBulkGenerateComments,
   onClearSelection,
   onSetExpandedTargetId,
@@ -162,7 +172,12 @@ export function ListView({
         <Button onClick={onGoHome} variant="outline">
           ← 홈으로
         </Button>
-        <h1 className="text-3xl font-bold">전체 타겟 목록</h1>
+        <div>
+          <h1 className="text-3xl font-bold">📋 일괄 작업 모드</h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            여러 카테고리를 가로질러 필터링 · 일괄 승인/스킵/삭제 — 카테고리별 개별 작업은 홈에서 카테고리 선택
+          </p>
+        </div>
         <div className="ml-auto flex items-center gap-4">
           <Button
             onClick={() => {
@@ -236,7 +251,43 @@ export function ListView({
             🔍 일괄 검증
           </Button>
         </div>
-        {verifyResults && (
+        {/* [F5][U4] 검증 진행 상태 — 단계별 구체 메시지 */}
+        {isVerifying && verifyProgress && (() => {
+          const processed = verifyProgress.commentable + verifyProgress.not_commentable
+          const ratio = verifyProgress.total > 0 ? processed / verifyProgress.total : 0
+          const statusMsg =
+            verifyProgress.status === 'queued'
+              ? '큐 대기 중 — 백엔드 워커 할당 중'
+              : ratio < 0.25
+              ? 'Selenium 브라우저 시작 중…'
+              : ratio < 0.7
+              ? '댓글창 접근 가능 여부 확인 중…'
+              : ratio < 1
+              ? '마지막 타겟 검증 중…'
+              : '결과 집계 중…'
+          return (
+            <div className="flex flex-col gap-1 text-sm text-blue-600 dark:text-blue-400">
+              <div className="flex items-center gap-2">
+                <span className="animate-pulse">●</span>
+                <span>{statusMsg}</span>
+                {verifyProgress.total > 0 && (
+                  <span className="text-xs text-muted-foreground tabular-nums ml-1">
+                    · {processed}/{verifyProgress.total} (✓{verifyProgress.commentable} ✗{verifyProgress.not_commentable})
+                  </span>
+                )}
+              </div>
+              {verifyProgress.total > 0 && (
+                <div className="w-48 h-1 bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-all duration-500"
+                    style={{ width: `${ratio * 100}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )
+        })()}
+        {verifyResults && !isVerifying && (
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">결과:</span>
             <span className="text-green-500 font-medium">✓ {verifyResults.commentable}</span>
@@ -257,6 +308,40 @@ export function ListView({
           generationProgress={generationProgress || undefined}
         />
       </div>
+
+      {/* [F3] 필터 매칭 전체 대량 액션 바 (현재 페이지를 넘는 경우) */}
+      {totalItems > displayTargets.length && (
+        <div className="flex flex-wrap items-center gap-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-lg px-3 py-2 text-sm">
+          <span className="text-amber-800 dark:text-amber-300">
+            ⚠️ 필터 매칭 <strong>{totalItems.toLocaleString()}건</strong> 전체 일괄 처리
+          </span>
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            (현재 페이지 {displayTargets.length}건 외 {(totalItems - displayTargets.length).toLocaleString()}건 포함)
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={() => onBulkActionAll('approve')}
+            disabled={isProcessingBulk}
+            className="px-3 py-1 rounded bg-green-500/90 text-white hover:bg-green-500 disabled:opacity-40 text-xs"
+          >
+            전체 승인
+          </button>
+          <button
+            onClick={() => onBulkActionAll('skip')}
+            disabled={isProcessingBulk}
+            className="px-3 py-1 rounded bg-amber-500/90 text-white hover:bg-amber-500 disabled:opacity-40 text-xs"
+          >
+            전체 스킵
+          </button>
+          <button
+            onClick={() => onBulkActionAll('delete')}
+            disabled={isProcessingBulk}
+            className="px-3 py-1 rounded bg-red-500/90 text-white hover:bg-red-500 disabled:opacity-40 text-xs"
+          >
+            전체 삭제
+          </button>
+        </div>
+      )}
 
       {/* 타겟 목록 테이블 */}
       <div className="bg-card border-t-0 rounded-b-lg overflow-hidden">
@@ -346,7 +431,7 @@ export function ListView({
                           </div>
                         )}
                         <a
-                          href={target.url}
+                          href={safeUrl(target.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-xs text-primary hover:underline truncate block"
@@ -468,26 +553,26 @@ export function ListView({
         )}
       </div>
 
-      {/* 통계 요약 */}
-      {allTargets && allTargets.length > 0 && (
+      {/* 통계 요약 (총 타겟은 전체, 우선순위 breakdown은 현재 페이지) */}
+      {totalItems > 0 && (
         <div className="bg-card border border-border rounded-lg p-6">
           <h3 className="text-lg font-semibold mb-4">📊 통계 요약</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <div className="text-3xl font-bold">{allTargets.length}</div>
+              <div className="text-3xl font-bold">{totalItems.toLocaleString()}</div>
               <div className="text-sm text-muted-foreground">총 타겟</div>
             </div>
             <div>
               <div className="text-3xl font-bold text-red-500">
-                {allTargets.filter((t) => (t.priority_score || 0) >= 80).length}
+                {displayTargets.filter((t) => (t.priority_score || 0) >= 80).length}
               </div>
-              <div className="text-sm text-muted-foreground">고우선순위 (80+)</div>
+              <div className="text-sm text-muted-foreground">고우선순위 (이 페이지)</div>
             </div>
             <div>
               <div className="text-3xl font-bold text-yellow-500">
-                {allTargets.filter((t) => (t.priority_score || 0) >= 50 && (t.priority_score || 0) < 80).length}
+                {displayTargets.filter((t) => (t.priority_score || 0) >= 50 && (t.priority_score || 0) < 80).length}
               </div>
-              <div className="text-sm text-muted-foreground">중우선순위 (50-79)</div>
+              <div className="text-sm text-muted-foreground">중우선순위 (이 페이지)</div>
             </div>
           </div>
         </div>

@@ -2,6 +2,8 @@ interface Tab {
   id: string
   label: string
   icon?: string
+  /** 탭 라벨 옆에 표시할 카운트 배지 (0이면 숨김) */
+  badge?: number
 }
 
 interface TabNavigationProps {
@@ -46,8 +48,13 @@ export default function TabNavigation({
           `}
         >
           {tab.label}
+          {typeof tab.badge === 'number' && tab.badge > 0 && (
+            <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-red-500 text-white rounded-full align-middle">
+              {tab.badge}
+            </span>
+          )}
           {activeTab === tab.id && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+            <div className="absolute -bottom-px left-0 right-0 h-0.5 bg-primary" />
           )}
         </button>
       ))}

@@ -3,6 +3,7 @@
  * 개별 타겟 상세보기 및 액션 처리
  */
 
+import { useEffect, useRef } from 'react'
 import { UseMutationResult } from '@tanstack/react-query'
 import Button from '@/components/ui/Button'
 import { PlatformBadge } from '@/components/viral/PlatformBadge'
@@ -11,6 +12,10 @@ import { EngagementMetrics } from '@/components/viral/EngagementMetrics'
 import { EmptyState } from '@/components/viral/EmptyState'
 import { CommentPreview } from '@/components/viral/CommentPreview'
 import { TargetContext } from '@/components/viral/TargetContext'
+import TargetContextCard from '@/components/viral/TargetContextCard'
+import PriorityScoreExplain from '@/components/viral/PriorityScoreExplain'
+import TargetNote from '@/components/viral/TargetNote'
+import { safeUrl } from '@/utils/safeUrl'
 import { ViralTargetData } from '@/types/viral'
 import { formatRelativeTime, formatDateTime } from '@/utils/dateFormat'
 import { viralApi } from '@/services/api'
@@ -53,7 +58,7 @@ interface WorkViewProps {
   onSetExpandedComments: (fn: (prev: Record<string, string>) => Record<string, string>) => void
   onGenerateComment: (targetId: string, style?: string) => void
   onSetSelectedCommentStyle: (style: string) => void
-  onTargetAction: (targetId: string, action: string) => void
+  onTargetAction: (targetId: string, action: string, skipReason?: string) => void
   onVerifyTarget: (targetId: string) => void
   verifyTargetMutation: UseMutationResult<unknown, Error, string, unknown>
   toast: {
@@ -95,6 +100,19 @@ export function WorkView({
   verifyTargetMutation,
   toast,
 }: WorkViewProps) {
+  // 자동 다음 타겟 이동 후 해당 아코디언이 뷰포트 밖에 있으면 스크롤해서 보이게 함
+  const accordionRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  useEffect(() => {
+    if (!expandedTargetId) return
+    const el = accordionRefs.current.get(expandedTargetId)
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const outOfView = rect.top < 80 || rect.bottom > window.innerHeight - 40
+    if (outOfView) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [expandedTargetId])
+
   return (
     <div className="space-y-6">
       {/* 헤더 */}
@@ -147,6 +165,10 @@ export function WorkView({
             return (
               <div
                 key={target.id || index}
+                ref={(el) => {
+                  if (el) accordionRefs.current.set(target.id, el)
+                  else accordionRefs.current.delete(target.id)
+                }}
                 className={`bg-card border rounded-lg overflow-hidden transition-all ${
                   isExpanded ? 'border-primary' : 'border-border'
                 }`}
@@ -220,9 +242,9 @@ export function WorkView({
                     </Button>
                     <Button
                       size="xs"
-                      onClick={() => onTargetAction(target.id, 'skip')}
+                      onClick={(e) => onTargetAction(target.id, 'skip', e.shiftKey ? undefined : 'unspecified')}
                       className="bg-yellow-500 hover:bg-yellow-600 text-white"
-                      title="건너뛰기"
+                      title="건너뛰기 (Shift+클릭: 사유 선택)"
                     >
                       ⏭️
                     </Button>
@@ -240,6 +262,10 @@ export function WorkView({
                 {/* 펼쳐진 상세 내용 */}
                 {isExpanded && (
                   <div className="border-t border-border p-4 sm:p-6 bg-muted/30">
+                    {/* [U4] 컨텍스트 카드 — 과노출 경고 + 경쟁사 배지 */}
+                    <div className="mb-4">
+                      <TargetContextCard targetId={target.id} />
+                    </div>
                     {/* 기본 정보 */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-6">
                       <div className="space-y-3">
@@ -250,7 +276,7 @@ export function WorkView({
                         <div>
                           <span className="text-muted-foreground text-sm">🔗 URL:</span>{' '}
                           <a
-                            href={target.url}
+                            href={safeUrl(target.url)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-500 hover:underline text-sm break-all"
@@ -259,9 +285,18 @@ export function WorkView({
                           </a>
                         </div>
                         {target.matched_keywords && target.matched_keywords.length > 0 && (
-                          <div>
-                            <span className="text-muted-foreground text-sm">🏷️ 매칭 키워드:</span>{' '}
-                            <span className="text-sm">{target.matched_keywords.slice(0, 10).join(', ')}</span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-muted-foreground text-sm">🏷️ 매칭 키워드:</span>
+                            {target.matched_keywords.slice(0, 10).map((kw: string) => (
+                              <a
+                                key={kw}
+                                href={`/pathfinder?keyword=${encodeURIComponent(kw)}`}
+                                className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 transition-colors"
+                                title={`Pathfinder에서 "${kw}" 상세 보기`}
+                              >
+                                {kw}
+                              </a>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -283,6 +318,10 @@ export function WorkView({
                               <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 일반</div>
                             </div>
                           )}
+                          {/* [BB3] 점수 설명 */}
+                          <div className="mt-1 flex justify-end">
+                            <PriorityScoreExplain target={target} />
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -357,8 +396,10 @@ export function WorkView({
                               size="lg"
                               onClick={() => onGenerateComment(target.id, selectedCommentStyle)}
                               loading={isGenerating}
+                              className="group relative"
                             >
-                              {commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'} AI 댓글 생성하기
+                              <span>{commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'} AI 댓글 생성하기</span>
+                              <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">G</kbd>
                             </Button>
                           </div>
 
@@ -410,6 +451,11 @@ export function WorkView({
                       )}
                     </div>
 
+                    {/* [BB7] 타겟 개인 메모 */}
+                    <div className="mb-4">
+                      <TargetNote targetId={target.id} />
+                    </div>
+
                     {/* 액션 버튼 */}
                     <div className="flex gap-3">
                       <Button
@@ -418,24 +464,30 @@ export function WorkView({
                         variant="success"
                         size="lg"
                         fullWidth
+                        className="group relative"
                       >
-                        ✅ 승인 (댓글 저장)
+                        <span>✅ 승인 (댓글 저장)</span>
+                        <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">A</kbd>
                       </Button>
                       <Button
-                        onClick={() => onTargetAction(target.id, 'skip')}
+                        onClick={(e) => onTargetAction(target.id, 'skip', (e as React.MouseEvent).shiftKey ? undefined : 'unspecified')}
                         size="lg"
                         fullWidth
-                        className="bg-yellow-500 hover:bg-yellow-600"
+                        className="bg-yellow-500 hover:bg-yellow-600 group relative"
+                        title="Shift+클릭: 사유 선택"
                       >
-                        ⏭️ 건너뛰기
+                        <span>⏭️ 건너뛰기</span>
+                        <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">S</kbd>
                       </Button>
                       <Button
                         onClick={() => onTargetAction(target.id, 'delete')}
                         variant="danger"
                         size="lg"
                         fullWidth
+                        className="group relative"
                       >
-                        🗑️ 삭제
+                        <span>🗑️ 삭제</span>
+                        <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">D</kbd>
                       </Button>
                     </div>
                   </div>

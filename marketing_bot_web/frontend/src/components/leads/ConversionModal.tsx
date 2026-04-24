@@ -94,6 +94,9 @@ export default function ConversionModal({
 
   if (!lead) return null
 
+  // 입력이 시작됐으면 실수로 ESC 눌러도 닫히지 않도록 보호 (매출액 등 입력값 손실 방지)
+  const isDirty = revenue.trim() !== '' || keyword.trim() !== '' || notes.trim() !== ''
+
   return (
     <Modal
       isOpen={isOpen}
@@ -101,6 +104,8 @@ export default function ConversionModal({
       title="전환 기록"
       description="이 리드의 전환 정보를 기록합니다. 매출 데이터는 ROI 분석에 활용됩니다."
       size="md"
+      closeOnEscape={!isDirty}
+      closeOnOverlay={!isDirty}
       footer={
         <>
           <Button

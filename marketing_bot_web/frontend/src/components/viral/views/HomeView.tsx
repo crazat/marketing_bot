@@ -10,6 +10,8 @@ import { PerformanceDashboard } from '@/components/viral/PerformanceDashboard'
 import { CommentPerformance } from '@/components/viral/CommentPerformance'
 import { TrendInsights } from '@/components/viral/TrendInsights'
 import { ViralCharts } from '@/components/viral/ViralCharts'
+import TodaysQueue from '@/components/viral/TodaysQueue'
+import KpiWidget from '@/components/viral/KpiWidget'
 import { ScanBatch } from '@/components/viral/FilterBar'
 import { CategoryStatResult } from '@/types/viral'
 import { HomeStats } from '@/services/api/viral'
@@ -64,6 +66,8 @@ interface HomeViewProps {
   onSelectCategory: (category: string) => void
   onBatchVerify: (category: string | undefined, limit: number) => void
   onViewList: () => void
+  // [V2] KPI 카드 클릭 → 필터링된 ListView 이동
+  onKpiNavigate?: (target: 'pending' | 'today_processed' | 'week_processed' | 'hot_pending') => void
   onToggleScanSettings: () => void
   onScanSettingsChange: (settings: ScanSettings) => void
   onVerifyLimitChange: (limit: number) => void
@@ -105,6 +109,7 @@ export function HomeView({
   onSelectCategory,
   onBatchVerify,
   onViewList,
+  onKpiNavigate,
   onToggleScanSettings,
   onScanSettingsChange,
   onVerifyLimitChange,
@@ -121,11 +126,20 @@ export function HomeView({
         </h1>
         <p className="text-muted-foreground">카테고리별 우선순위 작업 시스템</p>
         <div className="mt-4">
-          <Button onClick={onViewList} variant="outline">
-            📋 전체 타겟 목록 보기
+          <Button onClick={onViewList} variant="outline" title="여러 카테고리를 가로질러 필터링하고 일괄 승인/스킵/삭제하는 모드">
+            📋 일괄 작업 모드 (전체 관리)
           </Button>
         </div>
       </div>
+
+      {/* [U6/V2] KPI 위젯 — 카드 클릭으로 ListView 진입 */}
+      <KpiWidget onNavigate={onKpiNavigate} />
+
+      {/* [U1] 오늘의 작업 큐 — 최우선 노출 */}
+      <TodaysQueue
+        onOpenCategory={(cat) => onSelectCategory(cat)}
+      />
+
 
       {/* 실시간 스캔 진행 상황 */}
       {scanningModule && (
@@ -386,13 +400,45 @@ export function HomeView({
         </div>
 
         {categoryStats.length === 0 ? (
-          <div className="bg-card border border-border rounded-lg p-8 text-center">
-            <div className="text-4xl mb-4">📭</div>
-            <h3 className="text-lg font-semibold mb-2">대기 중인 타겟이 없습니다</h3>
-            <p className="text-muted-foreground text-sm">
-              '스캔 실행' 버튼을 클릭하여 새로운 타겟을 발굴해보세요!
-            </p>
-          </div>
+          <section
+            aria-label="대기 타겟 없음"
+            className="relative bg-card border border-border p-10 md:p-12 overflow-hidden"
+          >
+            <span
+              aria-hidden
+              className="absolute right-6 top-2 text-[10rem] md:text-[12rem] leading-none font-display text-foreground/[0.03] select-none pointer-events-none"
+            >
+              空
+            </span>
+            <div className="relative max-w-xl">
+              <div className="caps text-muted-foreground mb-4">Empty Queue · 대기 없음</div>
+              <h3 className="font-display text-2xl md:text-3xl leading-tight mb-3">
+                오늘 처리할 타겟이 없습니다
+              </h3>
+              <p className="text-sm md:text-base text-muted-foreground leading-relaxed mb-6">
+                좋은 상태예요. 새로운 바이럴 스캔을 실행해 잠재 고객이 있는
+                블로그·카페·지식인 글을 발굴해 보세요. 스캔은 보통 1–2시간이 걸립니다.
+              </p>
+              <ol className="text-sm text-muted-foreground space-y-2 mb-7 border-l border-border pl-4">
+                <li><span className="font-display text-primary mr-2">01</span>스캔 실행 → 바이럴 타겟 수집</li>
+                <li><span className="font-display text-primary mr-2">02</span>AI 댓글 생성 → 승인/스킵</li>
+                <li><span className="font-display text-primary mr-2">03</span>네이버·카페 현장에 댓글 게시</li>
+              </ol>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  onClick={() => runScanMutation.mutate()}
+                  disabled={isScanning}
+                  variant="primary"
+                  size="lg"
+                >
+                  🚀 지금 스캔 실행
+                </Button>
+                <Button onClick={onViewList} variant="ghost" size="lg" title="필터·일괄 처리 모드">
+                  📋 일괄 작업 모드
+                </Button>
+              </div>
+            </div>
+          </section>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {categoryStats.map(({ category, count, avgScore, maxScore, priority }) => (

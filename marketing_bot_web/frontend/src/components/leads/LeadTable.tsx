@@ -7,6 +7,8 @@ import SentimentBadge from '@/components/ui/SentimentBadge'
 import LeadNoteEditor from '@/components/leads/LeadNoteEditor'
 import QAMatchPanel from '@/components/leads/QAMatchPanel'
 import LeadAttribution from '@/components/leads/LeadAttribution'
+import LeadPipelineStepper from '@/components/leads/LeadPipelineStepper'
+import { safeUrl } from '@/utils/safeUrl'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { useToast } from '@/components/ui/Toast'
 import { ResultsAnnouncer } from '@/components/ui/LiveRegion'
@@ -502,7 +504,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                   )}
                   {lead.url && (
                     <a
-                      href={lead.url}
+                      href={safeUrl(lead.url)}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
@@ -536,12 +538,13 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
             )}
             <th className="px-4 py-3 text-left text-sm font-semibold">플랫폼</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">점수</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold">감성</th>
+            {/* 감성 컬럼 제거 — 점수(grade)에 이미 반영됨, 상세는 확장 행에서 표시 */}
             <th className="px-4 py-3 text-left text-sm font-semibold">신뢰도</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">제목</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">카테고리</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">상태</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold">발견일</th>
+            {/* 발견일은 xl 이상에서만 표시 — 중소 화면에선 확장 행에서 확인 */}
+            <th className="hidden xl:table-cell px-4 py-3 text-left text-sm font-semibold">발견일</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">노트</th>
             <th className="px-4 py-3 text-left text-sm font-semibold">액션</th>
           </tr>
@@ -589,10 +592,6 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                     <span className="text-xs text-muted-foreground">-</span>
                   )}
                 </td>
-                {/* [Phase 6.0] 감성 분석 배지 */}
-                <td className="px-4 py-3">
-                  <SentimentBadge sentiment={lead.sentiment} />
-                </td>
                 {/* [Phase 4.0] 신뢰도 배지 */}
                 <td className="px-4 py-3">
                   {lead.trust_level ? (
@@ -622,7 +621,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                     <div className="font-medium truncate">{lead.title}</div>
                     {lead.url && (
                       <a
-                        href={lead.url}
+                        href={safeUrl(lead.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-xs text-blue-500 hover:underline"
@@ -643,7 +642,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                     {lead.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-sm text-muted-foreground">
+                <td className="hidden xl:table-cell px-4 py-3 text-sm text-muted-foreground">
                   {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '-'}
                 </td>
                 <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
@@ -701,8 +700,13 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
               </tr>
               {expandedLead === lead.id && (
                 <tr className="bg-muted/30">
-                  <td colSpan={onBulkUpdateStatus ? 11 : 10} className="px-4 py-4">
+                  <td colSpan={onBulkUpdateStatus ? 10 : 9} className="px-4 py-4">
                     <div className="space-y-3">
+                      {/* [Y2] 파이프라인 스테퍼 */}
+                      <div className="bg-card border border-border p-3">
+                        <div className="caps text-muted-foreground mb-2">진행 단계</div>
+                        <LeadPipelineStepper status={lead.status} />
+                      </div>
                       {/* [Phase 1.3] 점수 분석 */}
                       {lead.score_breakdown && (
                         <div>
