@@ -23,6 +23,7 @@ sys.path.insert(0, backend_dir)
 
 from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
+from backend_utils.cache import cached, invalidate_cache
 from schemas.response import success_response, error_response
 
 router = APIRouter()
@@ -50,6 +51,7 @@ class CompetitorAdd(BaseModel):
         return v.strip()
 
 @router.get("/list")
+@cached(ttl=600)
 @handle_exceptions
 async def get_competitors() -> List[Dict[str, Any]]:
     """
@@ -295,6 +297,7 @@ async def get_competitor_weaknesses(days: int = 30) -> List[Dict[str, Any]]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -363,6 +366,12 @@ async def get_competitor_weaknesses(days: int = 30) -> List[Dict[str, Any]]:
         # 테이블이 없으면 빈 배열 반환
         print(f"[Competitors Weaknesses] Error: {e}")
         return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.get("/weaknesses/summary")
 async def get_weakness_summary() -> Dict[str, Any]:
@@ -382,6 +391,7 @@ async def get_weakness_summary() -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -423,6 +433,12 @@ async def get_weakness_summary() -> Dict[str, Any]:
         # 테이블이 없으면 기본값 반환
         print(f"[Competitors Weakness Summary] Error: {e}")
         return default_response
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.get("/opportunity-keywords")
 async def get_opportunity_keywords(status: str = "pending") -> List[Dict[str, Any]]:
@@ -437,6 +453,7 @@ async def get_opportunity_keywords(status: str = "pending") -> List[Dict[str, An
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -470,6 +487,12 @@ async def get_opportunity_keywords(status: str = "pending") -> List[Dict[str, An
         # 테이블이 없으면 빈 배열 반환
         print(f"[Competitors Opportunity Keywords] Error: {e}")
         return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.patch("/opportunity-keywords/{keyword}/mark-used")
 async def mark_opportunity_used(keyword: str) -> Dict[str, str]:
@@ -484,6 +507,7 @@ async def mark_opportunity_used(keyword: str) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -517,6 +541,12 @@ async def mark_opportunity_used(keyword: str) -> Dict[str, str]:
             'status': 'error',
             'message': str(e)
         }
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.post("/analyze-reviews")
 async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
@@ -527,25 +557,11 @@ async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
     - 경쟁사별로 리뷰를 그룹화하여 일괄 분석
     - 약점 유형, 심각도, 기회 키워드 추출
     """
-    from google import genai
-    from google.genai import types
-    from utils import ConfigManager
+    from services.ai_client import ai_generate_json
 
     try:
-        # Gemini API 설정
-        config = ConfigManager()
-        api_key = config.get_api_key('GEMINI_API_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="Gemini API 키가 설정되지 않았습니다")
-
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
-        generation_config = types.GenerateContentConfig(
-            temperature=0.3,
-            max_output_tokens=4096
-        )
-
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -639,39 +655,11 @@ async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
 약점을 찾을 수 없으면 빈 배열([])을 반환하세요."""
 
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=generation_config
-                )
-                response_text = response.text.strip()
+                result = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
 
-                # JSON 추출 (마크다운 코드블록 제거)
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0]
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0]
-
-                # 불완전한 JSON 복구 시도
-                response_text = response_text.strip()
-                try:
-                    result = json.loads(response_text)
-                except json.JSONDecodeError:
-                    # 끝이 잘린 경우 복구 시도
-                    # 마지막 유효한 } 또는 ] 찾기
-                    for end_char in ['}', ']']:
-                        last_idx = response_text.rfind(end_char)
-                        if last_idx > 0:
-                            try:
-                                result = json.loads(response_text[:last_idx + 1] + '}' * (response_text[:last_idx + 1].count('{') - response_text[:last_idx + 1].count('}')))
-                                print(f"[Gemini] {competitor_name} JSON 복구 성공")
-                                break
-                            except json.JSONDecodeError:
-                                continue  # 다음 end_char로 재시도
-                    else:
-                        # 복구 실패 시 빈 결과
-                        print(f"[Gemini] {competitor_name} JSON 복구 실패, 응답 길이: {len(response_text)}")
-                        result = {'weaknesses': [], 'opportunity_keywords': [], 'summary': ''}
+                if not result:
+                    print(f"[AI] {competitor_name} JSON 생성 실패")
+                    result = {'weaknesses': [], 'opportunity_keywords': [], 'summary': ''}
 
                 # 약점 저장
                 for w in result.get('weaknesses', []):
@@ -750,6 +738,12 @@ async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -772,6 +766,7 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -816,23 +811,7 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
         outlines = []
 
         try:
-            from google import genai
-            from google.genai import types
-
-            # API 키 로드
-            config_path = os.path.join(parent_dir, 'config', 'config.json')
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            api_key = config.get('gemini_api_key', os.getenv('GEMINI_API_KEY'))
-
-            if not api_key:
-                # Gemini 없이 기본 템플릿 사용
-                for w_type, items in weakness_by_type.items():
-                    outline = _generate_default_outline(w_type, items)
-                    outlines.append(outline)
-                return {"outlines": outlines, "source": "template"}
-
-            client = genai.Client(api_key=api_key)
+            from services.ai_client import ai_generate_json as _ai_generate_json
 
             for w_type, items in weakness_by_type.items():
                 weakness_text = "\n".join([f"- {item['description']} ({item['competitor']})" for item in items[:5]])
@@ -864,31 +843,25 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
 실질적이고 구체적인 내용으로 작성해주세요."""
 
                 try:
-                    response = client.models.generate_content(
-                        model="gemini-3-flash-preview",
-                        contents=prompt
-                    )
-                    response_text = response.text.strip()
+                    outline = _ai_generate_json(prompt, temperature=0.7)
 
-                    # JSON 파싱
-                    if "```json" in response_text:
-                        response_text = response_text.split("```json")[1].split("```")[0]
-                    elif "```" in response_text:
-                        response_text = response_text.split("```")[1].split("```")[0]
-
-                    outline = json.loads(response_text)
-                    outline["weakness_type"] = w_type
-                    outline["based_on_count"] = len(items)
-                    outlines.append(outline)
+                    if outline:
+                        outline["weakness_type"] = w_type
+                        outline["based_on_count"] = len(items)
+                        outlines.append(outline)
+                    else:
+                        # AI 실패 시 기본 템플릿 사용
+                        outline = _generate_default_outline(w_type, items)
+                        outlines.append(outline)
 
                 except Exception as e:
-                    print(f"[Gemini] {w_type} 콘텐츠 생성 오류: {e}")
+                    print(f"[AI] {w_type} 콘텐츠 생성 오류: {e}")
                     # 오류 시 기본 템플릿 사용
                     outline = _generate_default_outline(w_type, items)
                     outlines.append(outline)
 
         except ImportError:
-            # google-generativeai 없으면 기본 템플릿
+            # ai_client 없으면 기본 템플릿
             for w_type, items in weakness_by_type.items():
                 outline = _generate_default_outline(w_type, items)
                 outlines.append(outline)
@@ -904,6 +877,12 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _generate_default_outline(weakness_type: str, items: list) -> Dict[str, Any]:
@@ -1004,6 +983,7 @@ async def discover_competitors(
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1153,6 +1133,12 @@ async def discover_competitors(
             'message': str(e),
             'competitors': []
         }
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/discover/add")
@@ -1240,6 +1226,7 @@ async def get_monitoring_dashboard() -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1379,6 +1366,12 @@ async def get_monitoring_dashboard() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/competitor-activity/{competitor_name}")
@@ -1400,6 +1393,7 @@ async def get_competitor_activity(
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1458,6 +1452,12 @@ async def get_competitor_activity(
     except Exception as e:
         print(f"[Competitor Activity] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -1479,6 +1479,7 @@ async def get_content_gap_analysis() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1612,6 +1613,12 @@ async def get_content_gap_analysis() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -1634,6 +1641,7 @@ async def get_weakness_radar() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1804,3 +1812,9 @@ async def get_weakness_radar() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

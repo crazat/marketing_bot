@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import { Sparkles, Copy, Check } from 'lucide-react'
+
 interface CommentPreviewProps {
   comment: string
   onChange: (comment: string) => void
@@ -15,6 +18,16 @@ export function CommentPreview({
   targetTitle,
   matchedKeywords = [],
 }: CommentPreviewProps) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(comment)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // clipboard 실패 시 무시
+    }
+  }
   // 댓글 품질 분석
   const analyzeQuality = () => {
     const length = comment.length
@@ -78,19 +91,45 @@ export function CommentPreview({
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
       {/* 헤더 */}
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/30">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 bg-muted/30 flex-wrap">
         <div className="flex items-center gap-2">
           <span className="text-lg">💬</span>
-          <span className="font-semibold">AI 생성 댓글</span>
+          <span className="font-semibold">생성된 댓글</span>
+          {/* [Z4] AI 생성 명시 배지 */}
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/20 rounded">
+            <Sparkles className="w-2.5 h-2.5" aria-hidden />
+            AI 생성 · 편집 가능
+          </span>
         </div>
-        {quality && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">품질 점수:</span>
-            <span className={`font-bold ${getScoreColor(quality.score)}`}>
-              {quality.score}점 ({getScoreLabel(quality.score)})
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {quality && (
+            <>
+              <span className="text-sm text-muted-foreground">품질:</span>
+              <span className={`font-bold ${getScoreColor(quality.score)}`}>
+                {quality.score}점 ({getScoreLabel(quality.score)})
+              </span>
+            </>
+          )}
+          {/* [Z4] 복사 버튼 */}
+          <button
+            onClick={handleCopy}
+            disabled={!comment}
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-border hover:bg-muted rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-40"
+            aria-label="댓글 복사"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3 h-3 text-emerald-500" aria-hidden />
+                <span className="text-emerald-600">복사됨</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3 h-3" aria-hidden />
+                <span>복사</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* 타겟 정보 */}

@@ -28,6 +28,7 @@ from core_services.sql_builder import (
 )
 from backend_utils.error_handlers import handle_exceptions, safe_db_operation
 from backend_utils.logger import get_router_logger
+from backend_utils.database import db_conn  # [U5] 공용 DB 컨텍스트 매니저
 from schemas.response import success_response, error_response, paginated_response
 
 router = APIRouter()
@@ -220,51 +221,9 @@ def _normalize_platform(source: str) -> str:
 
 
 def _find_qa_matches(cursor, lead_text: str, max_matches: int = 3) -> List[Dict[str, Any]]:
-    """
-    [Phase 8] Q&A 매칭 헬퍼 함수 - generate_ai_response에서 분리
-
-    리드 콘텐츠에 매칭되는 Q&A를 검색합니다.
-
-    Args:
-        cursor: DB 커서
-        lead_text: 리드 제목 + 본문 텍스트
-        max_matches: 최대 반환 매칭 수 (기본 3)
-
-    Returns:
-        매칭된 Q&A 목록 (match_score 포함)
-    """
-    if not lead_text.strip():
-        return []
-
-    qa_matches = []
-    cursor.execute("""
-        SELECT id, question_pattern, question_category, standard_answer, variations, use_count
-        FROM qa_repository ORDER BY use_count DESC
-    """)
-    all_qa = cursor.fetchall()
-
-    for qa in all_qa:
-        qa_dict = dict(qa)
-        pattern = qa_dict['question_pattern'].lower()
-        score = 0
-
-        try:
-            if re.search(pattern, lead_text.lower()):
-                score += 50
-        except re.error:
-            pass
-
-        keywords = re.findall(r'[가-힣]+|\w+', pattern)
-        for keyword in keywords:
-            if len(keyword) >= 2 and keyword in lead_text.lower():
-                score += 10
-
-        if score >= 20:  # 최소 점수 임계값
-            qa_dict['match_score'] = score
-            qa_matches.append(qa_dict)
-
-    qa_matches.sort(key=lambda x: x['match_score'], reverse=True)
-    return qa_matches[:max_matches]
+    """[S4] lead_service.find_qa_matches로 위임 — thin wrapper."""
+    from services.lead_service import find_qa_matches as _svc
+    return _svc(cursor, lead_text, max_matches=max_matches)
 
 
 def _enrich_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -301,69 +260,43 @@ def _enrich_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 @router.get("/stats")
 @handle_exceptions
 async def get_lead_stats() -> Dict[str, Any]:
-    """
-    리드 통계 조회
+    """[U5] 리드 통계 — LeadRepository 위임 + 동적 컬럼 활용.
 
     Returns:
         플랫폼별, 상태별 리드 통계
     """
-    default_response = {
-        'total': 0,
-        'by_platform': {},
-        'by_status': {}
-    }
+    default_response = {'total': 0, 'by_platform': {}, 'by_status': {}}
 
+    from repositories import LeadRepository
     db = DatabaseManager()
-    conn = sqlite3.connect(db.db_path)
-    cursor = conn.cursor()
+    repo = LeadRepository(db.db_path)
 
-    # 테이블 존재 여부 확인
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='mentions'")
-    if not cursor.fetchone():
-        conn.close()
+    # 테이블 존재 여부 (컬럼 집합이 비어 있으면 테이블 없음)
+    cols = repo.columns()
+    if not cols:
         return success_response(default_response)
 
-    # 컬럼 확인
-    columns = _get_table_columns(cursor, 'mentions')
+    total = repo.count()
+    by_status = repo.group_by_status()
 
-    # 총 리드 수
-    cursor.execute("SELECT COUNT(*) FROM mentions")
-    total = cursor.fetchone()[0]
-
-    # 플랫폼/소스별 통계 - 표준화된 키로 집계
-    platform_col = select_column_safely(columns, 'platform', 'source', 'source')
-    cursor.execute(f"""
-        SELECT {platform_col}, COUNT(*) as count
-        FROM mentions
-        WHERE {platform_col} IS NOT NULL
-        GROUP BY {platform_col}
-    """)
-
-    # source 값을 표준화된 키로 변환하여 집계
-    raw_platform_data = cursor.fetchall()
-    by_platform = {}
-    for row in raw_platform_data:
-        if row[0]:
-            normalized_key = _normalize_platform(row[0])
-            by_platform[normalized_key] = by_platform.get(normalized_key, 0) + row[1]
-
-    # 상태별 통계
-    by_status = {}
-    if 'status' in columns:
-        cursor.execute("""
-            SELECT status, COUNT(*) as count
-            FROM mentions
-            WHERE status IS NOT NULL
-            GROUP BY status
-        """)
-        by_status = {row[0]: row[1] for row in cursor.fetchall() if row[0]}
-
-    conn.close()
+    # 플랫폼별: 컬럼명 동적 판정 (platform 또는 source)
+    platform_col = 'platform' if 'platform' in cols else 'source'
+    by_platform: Dict[str, int] = {}
+    with db_conn(db.db_path) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT {platform_col}, COUNT(*) FROM mentions "
+            f"WHERE {platform_col} IS NOT NULL GROUP BY {platform_col}"
+        )
+        for row in cur.fetchall():
+            if row[0]:
+                key = _normalize_platform(row[0])
+                by_platform[key] = by_platform.get(key, 0) + row[1]
 
     return success_response({
         'total': total if total else 0,
         'by_platform': by_platform,
-        'by_status': by_status
+        'by_status': by_status,
     })
 
 
@@ -382,6 +315,7 @@ async def get_conversion_rates() -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -470,6 +404,12 @@ async def get_conversion_rates() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"conversion-rates 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"전환율 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/score-distribution")
@@ -482,6 +422,7 @@ async def get_lead_score_distribution() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -559,6 +500,12 @@ async def get_lead_score_distribution() -> Dict[str, Any]:
     except Exception as e:
         print(f"[leads/score-distribution Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"점수 분포 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/quality-stats")
@@ -571,6 +518,7 @@ async def get_lead_quality_stats() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -676,6 +624,12 @@ async def get_lead_quality_stats() -> Dict[str, Any]:
     except Exception as e:
         print(f"[leads/quality-stats Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"품질 통계 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/list")
@@ -694,6 +648,7 @@ async def get_leads(
     리드 목록 조회 (정렬 지원)
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -842,6 +797,7 @@ async def get_youtube_leads(
     """YouTube 리드 조회 (정렬 지원)"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -939,6 +895,12 @@ async def get_youtube_leads(
     except Exception as e:
         print(f"[leads/youtube Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"YouTube 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/tiktok")
@@ -952,6 +914,7 @@ async def get_tiktok_leads(
     """TikTok 리드 조회 (정렬 지원)"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1049,6 +1012,12 @@ async def get_tiktok_leads(
     except Exception as e:
         print(f"[leads/tiktok Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"TikTok 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/naver")
@@ -1062,6 +1031,7 @@ async def get_naver_leads(
     """Naver 리드 조회 (블로그/카페) (정렬 지원)"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1159,6 +1129,12 @@ async def get_naver_leads(
     except Exception as e:
         print(f"[leads/naver Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"네이버 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.patch("/{lead_id}")
@@ -1175,6 +1151,7 @@ async def update_lead(lead_id: int, update_data: LeadUpdate) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1241,55 +1218,42 @@ async def update_lead(lead_id: int, update_data: LeadUpdate) -> Dict[str, str]:
     except Exception as e:
         print(f"[leads/update Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"리드 업데이트 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.patch("/batch")
 async def batch_update_leads(update_data: BatchLeadUpdate) -> Dict[str, Any]:
-    """
-    [Phase 8.0] 리드 일괄 상태 업데이트
+    """[S2] LeadRepository.bulk_update_status로 위임.
 
-    여러 리드의 상태를 한 번에 변경합니다.
+    notes 파라미터는 Repository에서 지원하지 않으므로 별도 처리.
     """
     if not update_data.lead_ids:
         raise HTTPException(status_code=400, detail="업데이트할 리드 ID가 없습니다")
 
     try:
+        from repositories import LeadRepository
         db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
+        repo = LeadRepository(db.db_path)
 
-        columns = _get_table_columns(cursor, 'mentions')
+        # 메인 일괄 상태 업데이트 (Repository 위임)
+        updated_count = repo.bulk_update_status(list(update_data.lead_ids), update_data.status.value)
 
-        # 업데이트할 필드 구성
-        update_fields = ["status = ?"]
-        if 'updated_at' in columns:
-            update_fields.append("updated_at = datetime('now')")
+        # notes가 있으면 개별 업데이트 (Repository.update 활용)
+        if update_data.notes:
+            for lid in update_data.lead_ids:
+                repo.update(lid, {"notes": update_data.notes})
 
-        # [성능 최적화] 배치 업데이트 - N+1 쿼리 방지
-        placeholders = ','.join('?' * len(update_data.lead_ids))
-        params = [update_data.status.value]
-
-        if update_data.notes and 'notes' in columns:
-            update_fields.append("notes = ?")
-            params.append(update_data.notes)
-
-        cursor.execute(f"""
-            UPDATE mentions
-            SET {', '.join(update_fields)}
-            WHERE id IN ({placeholders})
-        """, params + list(update_data.lead_ids))
-
-        updated_count = cursor.rowcount
-
-        # 실패한 ID 확인 (업데이트되지 않은 ID)
-        cursor.execute(f"""
-            SELECT id FROM mentions WHERE id IN ({placeholders})
-        """, list(update_data.lead_ids))
-        existing_ids = set(row[0] for row in cursor.fetchall())
+        # 실패한 ID 확인
+        existing_ids = set()
+        for lid in update_data.lead_ids:
+            if repo.get(lid) is not None:
+                existing_ids.add(lid)
         failed_ids = [lid for lid in update_data.lead_ids if lid not in existing_ids]
-
-        conn.commit()
-        conn.close()
 
         return {
             'status': 'success',
@@ -1300,8 +1264,14 @@ async def batch_update_leads(update_data: BatchLeadUpdate) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        print(f"[leads/batch Error] {str(e)}")
+        logger.error(f"[leads/batch Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"배치 업데이트 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/categories")
@@ -1311,6 +1281,7 @@ async def get_lead_categories() -> List[Dict[str, Any]]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1353,6 +1324,12 @@ async def get_lead_categories() -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"[leads/categories Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"카테고리 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/carrot")
@@ -1366,6 +1343,7 @@ async def get_carrot_leads(
     """당근마켓 리드 조회 (정렬 지원)"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1447,6 +1425,12 @@ async def get_carrot_leads(
     except Exception as e:
         print(f"[leads/carrot Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"당근마켓 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/influencer")
@@ -1465,6 +1449,7 @@ async def get_influencer_leads(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1537,6 +1522,12 @@ async def get_influencer_leads(
     except Exception as e:
         print(f"[leads/influencer Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"인플루언서 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/instagram")
@@ -1550,6 +1541,7 @@ async def get_instagram_leads(
     """Instagram 리드 조회 (정렬 지원)"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1647,6 +1639,12 @@ async def get_instagram_leads(
     except Exception as e:
         print(f"[leads/instagram Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Instagram 리드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1703,6 +1701,7 @@ async def add_lead_conversion(data: LeadConversionCreate) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1781,6 +1780,12 @@ async def add_lead_conversion(data: LeadConversionCreate) -> Dict[str, Any]:
     except Exception as e:
         print(f"[leads/conversions Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"전환 기록 추가 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/conversion-tracking")
@@ -1798,6 +1803,7 @@ async def get_conversion_tracking() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1920,6 +1926,12 @@ async def get_conversion_tracking() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"전환 추적 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/{lead_id}/conversions")
@@ -1929,6 +1941,7 @@ async def get_lead_conversions(lead_id: int) -> List[Dict[str, Any]]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1962,6 +1975,12 @@ async def get_lead_conversions(lead_id: int) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"[leads/{lead_id}/conversions Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"전환 기록 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2006,6 +2025,7 @@ async def get_pending_alerts() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2110,6 +2130,12 @@ async def get_pending_alerts() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"알림 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2243,6 +2269,7 @@ async def suggest_response(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2321,6 +2348,12 @@ async def suggest_response(
     except Exception as e:
         print(f"[leads/suggest-response Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"템플릿 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class ResponseTemplateCreate(BaseModel):
@@ -2338,6 +2371,7 @@ async def create_response_template(data: ResponseTemplateCreate) -> Dict[str, An
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2363,6 +2397,12 @@ async def create_response_template(data: ResponseTemplateCreate) -> Dict[str, An
     except Exception as e:
         print(f"[leads/response-templates Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"템플릿 생성 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/response-templates/{template_id}/use")
@@ -2372,6 +2412,7 @@ async def use_response_template(template_id: int) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2388,6 +2429,12 @@ async def use_response_template(template_id: int) -> Dict[str, Any]:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2408,6 +2455,7 @@ async def get_conversion_trends(days: int = 30) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2507,6 +2555,12 @@ async def get_conversion_trends(days: int = 30) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2530,6 +2584,7 @@ async def get_bottleneck_analysis() -> Dict[str, Any]:
         from datetime import datetime
 
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2634,6 +2689,12 @@ async def get_bottleneck_analysis() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2655,6 +2716,7 @@ async def get_roi_analysis() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2798,6 +2860,12 @@ async def get_roi_analysis() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2830,6 +2898,7 @@ async def get_goal_forecast(
         from datetime import datetime, timedelta
 
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2960,6 +3029,12 @@ async def get_goal_forecast(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3008,6 +3083,7 @@ async def add_keyword_attribution(data: KeywordAttribution) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -3041,6 +3117,12 @@ async def add_keyword_attribution(data: KeywordAttribution) -> Dict[str, Any]:
     except Exception as e:
         print(f"[keyword-attribution Error] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/keyword-lead-analysis")
@@ -3057,6 +3139,7 @@ async def get_keyword_lead_analysis() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -3128,6 +3211,12 @@ async def get_keyword_lead_analysis() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # =====================================
@@ -3179,6 +3268,7 @@ async def get_quality_trends(days: int = 14) -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -3251,6 +3341,12 @@ async def get_quality_trends(days: int = 14) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/platform-quality")
@@ -3268,6 +3364,7 @@ async def get_platform_quality_comparison() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -3336,6 +3433,12 @@ async def get_platform_quality_comparison() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -3369,21 +3472,14 @@ async def generate_ai_response(request: AIResponseRequest) -> Dict[str, Any]:
     Returns:
         생성된 응답 메시지와 분석 결과
     """
-    from google import genai
-    from google.genai import types
+    from services.ai_client import ai_generate, ai_generate_json
 
     try:
-        # [Phase 8] API 키 로드 - 중앙화된 헬퍼 사용
         import json
-        api_key = get_api_key('gemini')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="Gemini API 키가 설정되지 않았습니다")
-
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
 
         # 리드 정보 조회
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -3481,19 +3577,8 @@ async def generate_ai_response(request: AIResponseRequest) -> Dict[str, Any]:
 응답 메시지만 작성하세요. 설명이나 부연 설명은 필요 없습니다.
 """
 
-        # Gemini API 호출
-        generation_config = types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=500
-        )
-
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=generation_config
-        )
-
-        generated_message = response.text.strip()
+        # AI API 호출
+        generated_message = ai_generate(prompt, temperature=0.7, max_tokens=500)
 
         # 메시지 분석 (키워드 추출)
         analysis_prompt = f"""다음 메시지를 분석하여 JSON 형식으로 결과를 반환하세요:
@@ -3511,24 +3596,9 @@ JSON 형식:
 JSON만 반환하세요.
 """
 
-        analysis_response = client.models.generate_content(
-            model=model_name,
-            contents=analysis_prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=300
-            )
-        )
-
-        analysis_text = analysis_response.text.strip()
-        # JSON 추출
-        json_match = re.search(r'\{[\s\S]*\}', analysis_text)
-        analysis = {}
-        if json_match:
-            try:
-                analysis = json.loads(json_match.group())
-            except json.JSONDecodeError:
-                analysis = {"error": "분석 파싱 실패"}
+        analysis = ai_generate_json(analysis_prompt, temperature=0.1, max_tokens=300)
+        if not analysis:
+            analysis = {"error": "분석 파싱 실패"}
 
         # [Phase 7.0] Q&A 매칭 정보 정리
         qa_matches_info = []
@@ -3565,6 +3635,12 @@ JSON만 반환하세요.
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"AI 응답 생성 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/duplicates")
@@ -3579,6 +3655,7 @@ async def get_duplicate_leads() -> Dict[str, Any]:
         중복 리드 그룹 목록 (URL별로 그룹화)
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -3685,6 +3762,7 @@ async def merge_duplicate_leads(merge_ids: List[int], keep_id: int) -> Dict[str,
         raise HTTPException(status_code=400, detail="keep_id must be in merge_ids")
 
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -3741,6 +3819,7 @@ async def get_contact_history(lead_id: int) -> Dict[str, Any]:
         컨택 히스토리 목록
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -3792,6 +3871,7 @@ async def add_contact_history(request: ContactHistoryCreate) -> Dict[str, Any]:
         생성된 컨택 히스토리
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -3863,6 +3943,7 @@ async def update_contact_response(history_id: int, response: str, status: str = 
         업데이트 결과
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -3932,6 +4013,7 @@ async def get_unified_contacts(
         통합 연락처 목록 (연결된 리드 수 포함)
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -3984,6 +4066,7 @@ async def create_unified_contact(data: UnifiedContactCreate) -> Dict[str, Any]:
     여러 리드를 하나의 통합 연락처로 그룹핑합니다.
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -4036,6 +4119,7 @@ async def get_unified_contact_detail(contact_id: int) -> Dict[str, Any]:
     연결된 모든 리드 정보와 상호작용 히스토리를 반환합니다.
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -4113,6 +4197,7 @@ async def update_unified_contact(contact_id: int, data: UnifiedContactUpdate) ->
     [Phase 7.0] 통합 연락처 수정
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -4161,6 +4246,7 @@ async def link_lead_to_unified_contact(contact_id: int, lead_id: int) -> Dict[st
     [Phase 7.0] 리드를 통합 연락처에 연결
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -4203,6 +4289,7 @@ async def unlink_lead_from_unified_contact(contact_id: int, lead_id: int) -> Dic
     [Phase 7.0] 리드를 통합 연락처에서 연결 해제
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 
@@ -4236,6 +4323,7 @@ async def delete_unified_contact(contact_id: int) -> Dict[str, Any]:
     연결된 리드는 삭제되지 않고 연결만 해제됩니다.
     """
     db = DatabaseManager()
+    conn = None
     conn = sqlite3.connect(db.db_path)
     cursor = conn.cursor()
 

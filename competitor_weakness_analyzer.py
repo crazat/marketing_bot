@@ -31,6 +31,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import ConfigManager
 from db.database import DatabaseManager
 
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate_json
+
 # Logging setup
 logger = logging.getLogger("WeaknessAnalyzer")
 logger.setLevel(logging.INFO)
@@ -105,24 +109,9 @@ class CompetitorWeaknessAnalyzer:
             return []
 
     def _init_gemini(self):
-        """Gemini API 초기화"""
-        try:
-            from google import genai
-
-            api_key = self.config.get_api_key()
-            if api_key:
-                self.client = genai.Client(
-                    api_key=api_key,
-                    http_options={'timeout': 30000}
-                )
-                self.model_name = self.config.get_model_name("flash")
-                logger.info(f"Gemini initialized: {self.model_name}")
-            else:
-                self.client = None
-                logger.warning("Gemini API key not found")
-        except Exception as e:
-            self.client = None
-            logger.error(f"Gemini init failed: {e}")
+        """AI Client 초기화 (centralized)"""
+        self.ai_available = True
+        logger.info("AI Client initialized (centralized ai_client)")
 
     def _get_headers(self) -> dict:
         """랜덤 User-Agent 헤더 생성"""
@@ -243,12 +232,12 @@ class CompetitorWeaknessAnalyzer:
 
     def analyze_weakness_with_ai(self, text: str, competitor_name: str) -> Optional[WeaknessData]:
         """
-        Gemini AI로 텍스트에서 약점 분석
+        AI Client로 텍스트에서 약점 분석
 
         Returns:
             WeaknessData or None
         """
-        if not self.client:
+        if not self.ai_available:
             return self._analyze_weakness_rule_based(text, competitor_name)
 
         prompt = f"""
@@ -271,15 +260,9 @@ class CompetitorWeaknessAnalyzer:
         """
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={'response_mime_type': 'application/json'}
-            )
+            result = ai_generate_json(prompt, temperature=0.3)
 
-            result = json.loads(response.text)
-
-            if not result.get('is_negative', False):
+            if not result or not result.get('is_negative', False):
                 return None
 
             return WeaknessData(
@@ -347,7 +330,7 @@ class CompetitorWeaknessAnalyzer:
         print(f"{'='*60}")
         print(f"   경쟁사 수: {len(self.competitors)}")
         print(f"   리뷰 제한: {review_limit}/경쟁사")
-        print(f"   AI 모드: {'Gemini' if self.client else 'Rule-based'}")
+        print(f"   AI 모드: {'AI Client' if self.ai_available else 'Rule-based'}")
         print(f"{'='*60}\n")
 
         total_weaknesses = 0

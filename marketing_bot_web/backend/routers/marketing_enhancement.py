@@ -1078,3 +1078,95 @@ async def update_experiment_status(
     except Exception as e:
         logger.error(f"A/B 테스트 상태 변경 실패: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 V2-5] 시즌별 캠페인 자동화
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/seasonal-campaigns")
+async def get_seasonal_campaigns():
+    """
+    [고도화 V2-5] 현재 활성 시즌 캠페인 + 임박 캠페인
+
+    계절/시기에 맞는 마케팅 캠페인을 자동 제안합니다.
+    추천 키워드, 콘텐츠 주제, 타겟 고객층 포함.
+    """
+    try:
+        from services.seasonal_campaign import get_active_campaigns
+        return get_active_campaigns()
+    except Exception as e:
+        logger.error(f"시즌 캠페인 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/seasonal-campaigns/{campaign_id}/calendar")
+async def get_campaign_calendar(campaign_id: str, weeks: int = 4):
+    """[고도화 V2-5] 특정 캠페인의 주간 콘텐츠 캘린더"""
+    try:
+        from services.seasonal_campaign import get_campaign_content_calendar
+        return get_campaign_content_calendar(campaign_id, weeks=weeks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 V2-8] 블로그 콘텐츠 생성 파이프라인
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class BlogGenerateRequest(BaseModel):
+    keyword: str
+    clinic_name: Optional[str] = "규림한의원"
+    doctor_name: Optional[str] = "원장"
+    target_audience: Optional[str] = "일반 환자"
+
+
+@router.post("/blog/generate")
+async def generate_blog_post(request: BlogGenerateRequest):
+    """
+    [고도화 V2-8] 블로그 포스트 자동 생성 파이프라인
+
+    키워드 → 아웃라인 → 초안 → AEO 최적화 → 규정 체크 → Schema Markup
+
+    Body:
+        keyword: "환절기 한의원"
+        clinic_name: "규림한의원"
+        doctor_name: "원장"
+    """
+    try:
+        from services.content_pipeline import ContentPipeline
+
+        db = DatabaseManager()
+        pipeline = ContentPipeline(db_path=db.db_path)
+
+        result = await pipeline.full_pipeline(
+            keyword=request.keyword,
+            clinic_name=request.clinic_name,
+            doctor_name=request.doctor_name,
+            target_audience=request.target_audience,
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"블로그 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/blog/outline")
+async def generate_blog_outline(request: BlogGenerateRequest):
+    """[고도화 V2-8] 아웃라인만 생성 (초안 전 단계)"""
+    try:
+        from services.content_pipeline import ContentPipeline
+
+        db = DatabaseManager()
+        pipeline = ContentPipeline(db_path=db.db_path)
+
+        outline = await pipeline.generate_outline(
+            keyword=request.keyword,
+            target_audience=request.target_audience,
+        )
+        return outline
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -31,7 +31,7 @@ export function BulkActionBar({
   }
 
   return (
-    <div className="fixed bottom-6 left-4 right-4 md:left-1/2 md:right-auto md:-translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 duration-300">
+    <div className="fixed bottom-20 md:bottom-6 left-4 right-4 md:left-1/2 md:right-auto md:-translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 duration-300">
       <div className="bg-card border-2 border-primary rounded-lg shadow-2xl p-3 md:p-4 md:min-w-[500px]">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 md:gap-4">
           {/* 선택 정보 */}
@@ -117,27 +117,45 @@ export function BulkActionBar({
         )}
 
         {/* AI 생성 진행률 표시 */}
-        {isGenerating && generationProgress && (
-          <div className="mt-3 pt-3 border-t border-border">
-            <div className="flex items-center justify-between text-sm mb-2">
-              <span className="text-muted-foreground flex items-center gap-2">
-                <Sparkles className="w-4 h-4 animate-pulse text-purple-500" />
-                AI 댓글 생성 중...
-              </span>
-              <span className="font-medium text-foreground">
-                {generationProgress.current} / {generationProgress.total}
-              </span>
+        {isGenerating && generationProgress && (() => {
+          // [U4] 단계별 안내 메시지 — 진행률에 따라 동적 변경
+          const pct = (generationProgress.current / generationProgress.total) * 100
+          const stageMsg =
+            pct < 20
+              ? 'Qwen API에 요청 중...'
+              : pct < 50
+              ? '타겟 콘텐츠 분석 중...'
+              : pct < 80
+              ? '자연스러운 댓글 조립 중...'
+              : pct < 100
+              ? '품질 검수 중...'
+              : '마무리 중...'
+          const remaining = generationProgress.total - generationProgress.current
+          const etaSeconds = Math.max(1, Math.round(remaining * 3))
+          return (
+            <div className="mt-3 pt-3 border-t border-border">
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-muted-foreground flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 animate-pulse text-purple-500" />
+                  <span>{stageMsg}</span>
+                </span>
+                <span className="font-medium text-foreground tabular-nums">
+                  {generationProgress.current} / {generationProgress.total}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
+                <span>AI 댓글 생성 · 배치 5개씩 병렬 처리</span>
+                {remaining > 0 && <span className="tabular-nums">남은 시간 약 {etaSeconds}초</span>}
+              </div>
+              <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-purple-500 to-blue-500 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
             </div>
-            <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-purple-500 to-blue-500 h-2 rounded-full transition-all duration-300"
-                style={{
-                  width: `${(generationProgress.current / generationProgress.total) * 100}%`
-                }}
-              />
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
     </div>
   );

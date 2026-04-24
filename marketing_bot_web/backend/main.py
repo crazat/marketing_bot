@@ -37,6 +37,21 @@ from insight_manager import InsightManager
 from config.app_settings import get_settings
 app_settings = get_settings()
 
+# [고도화 A-1] Sentry 에러 모니터링
+try:
+    import sentry_sdk
+    if app_settings.sentry_dsn:
+        sentry_sdk.init(
+            dsn=app_settings.sentry_dsn,
+            traces_sample_rate=app_settings.sentry_traces_sample_rate,
+            environment=app_settings.sentry_environment,
+            release="marketing-bot@2.0.0",
+            send_default_pii=False,
+        )
+        logger.info(f"✅ Sentry 초기화 완료 (env: {app_settings.sentry_environment})")
+except ImportError:
+    pass  # sentry-sdk 미설치 시 무시
+
 # 그 후 backend 경로 추가 (백엔드 services용)
 sys.path.insert(0, backend_dir)
 
@@ -122,11 +137,16 @@ async def lifespan(app: FastAPI):
 # FastAPI 앱 설정
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# [M1] production 환경에서는 API docs 노출 금지 (API 스키마 비공개)
+_is_production = os.getenv("ENV", "").lower() in ("production", "prod")
 app = FastAPI(
     title="Marketing Bot Web API",
     description=api_description,
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # [보안 강화] CORS 설정 - 화이트리스트 기반
@@ -155,11 +175,22 @@ app.add_middleware(
 # app.add_middleware(ResponseWrapperMiddleware)
 # 참고: 기존 라우터와의 호환성 문제로 비활성화. 새 라우터는 success_response() 사용 권장
 
-# [Phase 8] API 인증 미들웨어 - 민감 엔드포인트 보호
+# [Phase 8 / C1] API 인증 미들웨어 - 민감 엔드포인트 보호
 from middleware.auth import APIKeyMiddleware
-# 환경변수 MARKETING_BOT_API_KEY 설정 필요 (미설정 시 개발용 키 사용)
-# 프로덕션에서는 반드시 설정: export MARKETING_BOT_API_KEY=your-secure-key
+# [C1] Fail-closed: MARKETING_BOT_API_KEY 미설정 시 경고 로그 + 미들웨어는 동작(요청은 500 반환)
+# DISABLE_API_AUTH는 로컬 개발 편의용 — 프로덕션에서는 사용 금지
 _api_auth_enabled = os.getenv("DISABLE_API_AUTH", "false").lower() != "true"
+if not os.getenv("MARKETING_BOT_API_KEY"):
+    logger.warning(
+        "[C1 보안] MARKETING_BOT_API_KEY 환경변수 미설정 — "
+        "보호 엔드포인트(/api/export, /api/backup 등)는 500 반환됩니다. "
+        ".env에 키를 설정하세요."
+    )
+if not _api_auth_enabled:
+    logger.warning(
+        "[보안] DISABLE_API_AUTH=true 감지 — 인증이 비활성화됐습니다. "
+        "프로덕션 환경이 아닌지 확인하세요."
+    )
 app.add_middleware(APIKeyMiddleware, enabled=_api_auth_enabled)
 
 # [Phase 3-3] Rate Limiting 미들웨어
@@ -170,6 +201,10 @@ app.add_middleware(RateLimiterMiddleware)
 # [Phase 3-4] 요청 ID 추적 미들웨어
 from middleware.request_id import RequestIdMiddleware
 app.add_middleware(RequestIdMiddleware)
+
+# [고도화 V2-4] 보안 헤더 미들웨어 (CSP, X-Frame-Options 등)
+from middleware.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # [Phase 6.2] 전역 에러 핸들러 - 일관된 에러 응답 형식
@@ -241,14 +276,17 @@ async def websocket_endpoint(websocket: WebSocket):
             # 클라이언트로부터 메시지 수신
             data = await websocket.receive_text()
 
-            # 핑 메시지 처리
+            # 핑 메시지 처리 (레거시 호환)
             if data == "ping":
                 await websocket.send_text("pong")
-                # [성능 최적화] 좀비 연결 감지를 위한 활동 시간 업데이트
                 ws_manager.update_activity(websocket)
             else:
-                # 다른 메시지 처리 (필요시 구현)
-                pass
+                # [고도화 B-5] JSON 메시지 처리 (구독/해제 등)
+                try:
+                    msg = json.loads(data)
+                    await ws_manager.handle_client_message(websocket, msg)
+                except (json.JSONDecodeError, Exception):
+                    pass
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
@@ -526,7 +564,11 @@ async def chronos_scheduler():
 # API 라우터 임포트
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-from routers import hud, pathfinder, battle, leads, viral, competitors, instagram, backup, agent, qa, export, notifications, preferences, reviews, config, analytics, intelligence, automation, feedback, marketing_enhancement, migration, health, tiktok, scheduler, data_intelligence
+from routers import hud, pathfinder, battle, leads, viral, competitors, instagram, backup, agent, qa, export, notifications, preferences, reviews, config, analytics, intelligence, automation, feedback, marketing_enhancement, migration, health, tiktok, scheduler, data_intelligence, rag, predictive, ads, kakao_channel, telegram_webhook
+# [W3] aeo: 프론트 호출자 0건 + services/aeo 미구현으로 등록 제거. _archive/routers/aeo.py 보관
+from routers import viral_utm  # [T2] UTM 하위 라우터
+from routers import viral_templates  # [U1] 템플릿 하위 라우터
+from routers import viral_comments  # [U2] 댓글 성과 하위 라우터
 
 app.include_router(hud.router, prefix="/api/hud", tags=["HUD"])
 app.include_router(pathfinder.router, prefix="/api/pathfinder", tags=["Pathfinder"])
@@ -536,6 +578,9 @@ app.include_router(export.router, prefix="/api/export", tags=["Data Export"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(preferences.router, prefix="/api/preferences", tags=["User Preferences"])
 app.include_router(viral.router, prefix="/api/viral", tags=["Viral Hunter"])
+app.include_router(viral_utm.router, prefix="/api", tags=["Viral Hunter - UTM"])  # [T2] prefix는 이미 /viral 포함
+app.include_router(viral_templates.router, prefix="/api", tags=["Viral Hunter - Templates"])  # [U1]
+app.include_router(viral_comments.router, prefix="/api", tags=["Viral Hunter - Comments"])  # [U2]
 app.include_router(competitors.router, prefix="/api/competitors", tags=["Competitor Analysis"])
 app.include_router(instagram.router, prefix="/api/instagram", tags=["Instagram"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Database Backup"])
@@ -553,6 +598,12 @@ app.include_router(health.router, prefix="/api/health", tags=["Health Check"])  
 app.include_router(tiktok.router, prefix="/api/tiktok", tags=["TikTok"])  # [고도화] 틱톡 멀티채널
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"])  # [Phase 4] 스케줄러 제어
 app.include_router(data_intelligence.router, prefix="/api/data-intelligence", tags=["Data Intelligence"])  # [Phase 9] 정보 수집 고도화
+# [W3] app.include_router(aeo.router, ...) — 미사용으로 비활성화
+app.include_router(rag.router, prefix="/api/rag", tags=["RAG Intelligence"])  # [고도화 C-2] RAG 마케팅 인텔리전스
+app.include_router(predictive.router, prefix="/api/predictive", tags=["Predictive Analytics"])  # [고도화 D-2] 시계열 예측
+app.include_router(ads.router, prefix="/api/ads", tags=["Ads Management"])  # [고도화 D-3] 통합 광고 관리
+app.include_router(kakao_channel.router, prefix="/api/kakao", tags=["Kakao Channel"])  # [고도화 D-4] 카카오톡 채널
+app.include_router(telegram_webhook.router, prefix="/api/telegram", tags=["Telegram Webhook"])  # [고도화 V2-2] 텔레그램 승인
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 프론트엔드 정적 파일 서빙 (프로덕션)

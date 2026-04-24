@@ -13,6 +13,13 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 import os
 import atexit
+
+# [고도화 A-1] Sentry 에러 모니터링
+try:
+    from scrapers.sentry_init import init_sentry
+    init_sentry("pathfinder_v3")
+except Exception:
+    pass
 import requests
 import re
 import time

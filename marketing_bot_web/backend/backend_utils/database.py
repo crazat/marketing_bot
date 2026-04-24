@@ -35,6 +35,34 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
+def db_conn(db_path: str, row_factory: bool = True) -> Generator[sqlite3.Connection, None, None]:
+    """[R1] db_path 주입형 연결 컨텍스트 매니저.
+
+    DatabaseManager 싱글톤에 의존하지 않고 임의 DB 경로로 연결할 때 사용
+    (테스트·Repository 레이어용).
+
+    사용:
+        with db_conn(db.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("...")
+    """
+    conn: sqlite3.Connection = sqlite3.connect(db_path, timeout=30.0)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    try:
+        _configure_connection(conn)
+    except Exception:
+        pass
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@contextmanager
 def get_db_connection(row_factory: bool = True) -> Generator[sqlite3.Connection, None, None]:
     """
     데이터베이스 연결 컨텍스트 매니저

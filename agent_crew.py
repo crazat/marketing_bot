@@ -1,69 +1,43 @@
 from utils import ConfigManager, logger
-from google import genai
 import json
 import os
+import sys
 import glob
 from datetime import datetime
-import sys
 
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate
 
 class BaseAgent:
     def __init__(self, role_name):
         self.config = ConfigManager()
         self.role_name = role_name
-        self.api_key = self.config.get_api_key()
-        
-        if self.api_key:
-            # New SDK Initialization
-            self.client = genai.Client(api_key=self.api_key)
-            # We don't instantiate a persistent model object anymore, we pass model name to the call
-            self.model_name = self.config.get_model_name("pro") 
-        else:
-            self.client = None
-            logger.error(f"[{role_name}] API Key missing.")
 
     def generate(self, prompt: str, max_retries: int = 3) -> str:
-        """Generate content with retry logic for transient failures."""
-        if not self.client: 
-            return "Error: AI not configured."
-        
-        delay = 1.0
-        for attempt in range(max_retries):
+        """Generate content using centralized ai_client."""
+        try:
+            result = ai_generate(prompt, temperature=0.7)
+            # Track API usage
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt
-                )
-                # Track API usage
-                try:
-                    from api_tracker import get_tracker
-                    tokens = len(prompt) // 4 + len(response.text) // 4  # Rough estimate
-                    get_tracker().log_call('gemini', f'{self.role_name}/generate', tokens=tokens, success=True)
-                except Exception:
-                    pass
-                return response.text.strip()
-            except Exception as e:
-                error_str = str(e).lower()
-                # Track failed call
-                try:
-                    from api_tracker import get_tracker
-                    get_tracker().log_call('gemini', f'{self.role_name}/generate', success=False, error=str(e)[:100])
-                except Exception:
-                    pass
-                # Retry on rate limit or transient errors
-                if any(x in error_str for x in ['quota', 'rate', '429', 'timeout', 'unavailable']):
-                    if attempt < max_retries - 1:
-                        logger.warning(f"[{self.role_name}] Transient error (retry {attempt+1}/{max_retries}): {e}")
-                        import time
-                        time.sleep(delay)
-                        delay *= 2
-                        continue
-                # Non-retryable error
-                logger.error(f"[{self.role_name}] Generation Error: {e}")
-                return f"Error: {e}"
-        return "Error: Max retries exceeded"
+                from api_tracker import get_tracker
+                tokens = len(prompt) // 4 + len(result) // 4  # Rough estimate
+                get_tracker().log_call('ai_client', f'{self.role_name}/generate', tokens=tokens, success=True)
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            # Track failed call
+            try:
+                from api_tracker import get_tracker
+                get_tracker().log_call('ai_client', f'{self.role_name}/generate', success=False, error=str(e)[:100])
+            except Exception:
+                pass
+            logger.error(f"[{self.role_name}] Generation Error: {e}")
+            return f"Error: {e}"
 
 class ResearchAgent(BaseAgent):
     def __init__(self):

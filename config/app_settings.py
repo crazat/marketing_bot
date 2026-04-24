@@ -55,6 +55,7 @@ class AppSettings:
         self.scraper_delay_seconds: float = self._get_float('SCRAPER_DELAY_SECONDS', 2.0)
         self.scraper_page_load_timeout: int = self._get_int('SCRAPER_PAGE_LOAD_TIMEOUT', 30)
         self.scraper_element_timeout: int = self._get_int('SCRAPER_ELEMENT_TIMEOUT', 10)
+        self.scraper_engine: str = self._get_str('SCRAPER_ENGINE', 'selenium')  # 'selenium' or 'playwright'
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # API 설정
@@ -110,6 +111,13 @@ class AppSettings:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         self.carrot_max_workers: int = self._get_int('CARROT_MAX_WORKERS', 3)
         self.insight_max_workers: int = self._get_int('INSIGHT_MAX_WORKERS', 3)
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Sentry 에러 모니터링 설정
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        self.sentry_dsn: str = self._get_str('SENTRY_DSN', '')
+        self.sentry_traces_sample_rate: float = self._get_float('SENTRY_TRACES_SAMPLE_RATE', 0.1)
+        self.sentry_environment: str = self._get_str('SENTRY_ENVIRONMENT', 'production')
 
     def _get_str(self, key: str, default: str) -> str:
         """문자열 환경 변수 가져오기"""

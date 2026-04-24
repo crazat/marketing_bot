@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target } from 'lucide-react'
+import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target, Clock } from 'lucide-react'
 import { pathfinderApi, battleApi, viralApi, leadsApi } from '@/services/api'
+import { useRecentItems, type RecentItem } from '@/hooks/useRecentItems'
 
 interface CommandItem {
   id: string
@@ -31,6 +32,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
+  const { items: recentItems } = useRecentItems()
 
   // [Phase E-3] 키워드 검색 (3자 이상일 때만)
   const searchEnabled = query.trim().length >= 3
@@ -62,15 +64,15 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     staleTime: 60000, // [Phase 7] 30초 → 60초
   })
 
-  // 바이럴 검색
+  // 바이럴 검색 — getTargets는 array를 반환
   const { data: viralData, isLoading: viralLoading } = useQuery({
     queryKey: ['cmd-viral', query],
     queryFn: async () => {
-      const data = await viralApi.getTargets('', undefined, 50, { search: query })
-      return data?.targets?.slice(0, 3) || []
+      const data = await viralApi.getTargets('', undefined, 10, { search: query })
+      return Array.isArray(data) ? data.slice(0, 5) : []
     },
     enabled: isOpen && searchEnabled,
-    staleTime: 60000, // [Phase 7] 30초 → 60초
+    staleTime: 60000,
   })
 
   // 리드 검색
@@ -318,6 +320,39 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     }))
   }, [searchEnabled, leadsResult, query, navigate, onClose])
 
+  // [U5] 최근 본 항목을 명령어로 변환
+  const recentCommands: CommandItem[] = useMemo(() => {
+    const kindIcon: Record<RecentItem['kind'], React.ReactNode> = {
+      lead: <Users className="w-5 h-5 text-green-500" />,
+      keyword: <Target className="w-5 h-5 text-primary" />,
+      viral_target: <MessageSquare className="w-5 h-5 text-orange-500" />,
+      competitor: <TrendingUp className="w-5 h-5 text-purple-500" />,
+      page: <Clock className="w-5 h-5 text-muted-foreground" />,
+    }
+    const kindLabel: Record<RecentItem['kind'], string> = {
+      lead: '리드',
+      keyword: '키워드',
+      viral_target: '바이럴 타겟',
+      competitor: '경쟁사',
+      page: '페이지',
+    }
+    return recentItems.slice(0, 6).map((item) => {
+      const ageMin = Math.max(1, Math.round((Date.now() - item.timestamp) / 60000))
+      const ageLabel = ageMin < 60 ? `${ageMin}분 전` : ageMin < 1440 ? `${Math.round(ageMin / 60)}시간 전` : `${Math.round(ageMin / 1440)}일 전`
+      return {
+        id: `recent-${item.kind}-${item.id}`,
+        icon: kindIcon[item.kind],
+        label: item.label,
+        description: `${kindLabel[item.kind]} · ${ageLabel}`,
+        action: () => {
+          navigate(item.path)
+          onClose()
+        },
+        category: 'keyword-result' as const,
+      }
+    })
+  }, [recentItems, navigate, onClose])
+
   // 쿼리에 따른 필터링
   const filteredCommands = useMemo(() => {
     // 검색 결과가 있으면 검색 결과 우선
@@ -329,7 +364,10 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       ]
     }
 
-    if (!query.trim()) return staticCommands
+    if (!query.trim()) {
+      // [U5] 쿼리 없을 때 최근 항목 먼저, 정적 명령 뒤에
+      return [...recentCommands, ...staticCommands]
+    }
 
     const lowerQuery = query.toLowerCase()
     return staticCommands.filter(cmd => {
@@ -338,7 +376,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       const matchKeywords = cmd.keywords?.some(k => k.toLowerCase().includes(lowerQuery))
       return matchLabel || matchDesc || matchKeywords
     })
-  }, [query, staticCommands, searchEnabled, keywordCommands, viralCommands, leadCommands])
+  }, [query, staticCommands, searchEnabled, keywordCommands, viralCommands, leadCommands, recentCommands])
 
   // 키보드 네비게이션
   const handleKeyDown = useCallback((e: KeyboardEvent) => {

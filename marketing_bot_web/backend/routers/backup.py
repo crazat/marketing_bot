@@ -317,3 +317,47 @@ async def restore_backup(filename: str) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"복구 실패: {str(e)}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 V3-4] 데이터 보존 정책
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/retention/preview")
+async def preview_retention_cleanup():
+    """[고도화 V3-4] 보존 정책 적용 시 삭제 예정 데이터 미리보기 (dry run)"""
+    try:
+        from services.data_retention import run_retention_cleanup, get_table_sizes
+        db = DatabaseManager()
+        preview = run_retention_cleanup(db.db_path, dry_run=True)
+        preview["table_sizes"] = get_table_sizes(db.db_path)[:15]
+        return preview
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/retention/execute")
+async def execute_retention_cleanup():
+    """[고도화 V3-4] 보존 정책 실행 (오래된 데이터 삭제 + VACUUM)"""
+    try:
+        from services.data_retention import run_full_maintenance
+        db = DatabaseManager()
+        return run_full_maintenance(db.db_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/retention/table-sizes")
+async def get_all_table_sizes():
+    """[고도화 V3-4] 전체 테이블 행 수 및 보존 기간"""
+    try:
+        from services.data_retention import get_table_sizes
+        db = DatabaseManager()
+        sizes = get_table_sizes(db.db_path)
+        return {
+            "tables": sizes,
+            "total_tables": len(sizes),
+            "total_rows": sum(t["rows"] for t in sizes),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

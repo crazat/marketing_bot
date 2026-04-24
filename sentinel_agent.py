@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import random
@@ -9,10 +10,13 @@ import functools
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-from google import genai
 from utils import ConfigManager
 from db.database import DatabaseManager
 from alert_bot import TelegramBot
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate_json
 
 # --- CONFIGURATION ---
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'sentinel.log')
@@ -74,7 +78,6 @@ def retry_on_error(max_retries=3, base_delay=2):
 class SentinelBrain:
     def __init__(self):
         self.config = ConfigManager()
-        self.api_key = self.config.get_api_key()
 
         # P0: Load targets file for competitors
         targets_path = os.path.join(self.config.root_dir, 'config', 'sentinel_targets.json')
@@ -84,28 +87,15 @@ class SentinelBrain:
                 targets = json.load(f)
                 self.competitors = targets.get('competitors', [])
 
-        if not self.api_key:
-            logger.error("[Sentinel] Gemini API Key missing!")
-            self.client = None
-        else:
-            # 수정안 1: HTTP 타임아웃 30초 설정
-            self.client = genai.Client(
-                api_key=self.api_key,
-                http_options={'timeout': 30000}  # 30초 (밀리초)
-            )
-            self.model_name = self.config.get_model_name("flash")
-            logger.info(f"[Sentinel] Brain Initialized with {self.model_name}")
-            logger.info(f"[Sentinel] Monitoring competitors: {self.competitors}")
+        logger.info(f"[Sentinel] Brain Initialized with centralized ai_client")
+        logger.info(f"[Sentinel] Monitoring competitors: {self.competitors}")
 
     def analyze_threat(self, query, text_snippet):
         """
-        Analyzes a text snippet for threats using Gemini Flash.
+        Analyzes a text snippet for threats using centralized AI client.
         P0: Uses dynamic competitors list from config.
         P0: Returns UNKNOWN on error instead of SAFE.
         """
-        if not self.client:
-            return {"classification": "UNKNOWN", "danger_score": 0, "reason": "No Brain (API key missing)", "competitor_name": None}
-
         # P0: Build competitors string for prompt
         competitors_str = ", ".join(self.competitors) if self.competitors else "None specified"
 
@@ -137,19 +127,12 @@ class SentinelBrain:
         """
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={'response_mime_type': 'application/json'}
-            )
-            result = json.loads(response.text)
-            return result
-        except json.JSONDecodeError as e:
-            # P0: Return UNKNOWN instead of SAFE on JSON parse error
-            logger.error(f"[Brain] JSON Parse Error: {e}")
-            return {"classification": "UNKNOWN", "danger_score": 50, "reason": f"JSON Parse Error: {str(e)[:50]}", "competitor_name": None}
+            result = ai_generate_json(prompt, temperature=0.3)
+            if result:
+                return result
+            logger.error("[Brain] AI returned None")
+            return {"classification": "UNKNOWN", "danger_score": 50, "reason": "AI returned empty response", "competitor_name": None}
         except Exception as e:
-            # P0: Return UNKNOWN instead of SAFE on any error
             logger.error(f"[Brain] Analysis Error: {e}")
             return {"classification": "UNKNOWN", "danger_score": 50, "reason": f"Analysis Error: {str(e)[:50]}", "competitor_name": None}
 

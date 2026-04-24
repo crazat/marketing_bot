@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import { Lead } from '@/services/api'
 import Button from '@/components/ui/Button'
+import { safeUrl } from '@/utils/safeUrl'
 import {
   PLATFORM_ICONS,
   getScoreBadgeStyle,
@@ -202,7 +203,7 @@ function LeadCardComponent({
         <div className="flex items-center gap-2">
           {lead.url && (
             <a
-              href={lead.url}
+              href={safeUrl(lead.url)}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}

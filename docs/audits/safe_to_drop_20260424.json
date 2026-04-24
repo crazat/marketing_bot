@@ -1,0 +1,37 @@
+{
+  "safe_to_drop": [
+    "ab_assignments",
+    "agent_actions",
+    "ai_search_visibility",
+    "alert_logs",
+    "campaign_kpis",
+    "campaign_targets",
+    "channel_roi_stats",
+    "competitor_viral_mentions",
+    "content_performance_stats",
+    "counter_attack_opportunities",
+    "daily_roi_snapshot",
+    "golden_time_stats",
+    "influencer_collaborations",
+    "lead_alerts",
+    "lead_quality_stats",
+    "roi_recommendations",
+    "scheduled_posts"
+  ],
+  "has_insert": [
+    "ab_experiments",
+    "ab_variants",
+    "agent_actions_log",
+    "alert_rules",
+    "call_tracking",
+    "campaigns",
+    "comment_effectiveness",
+    "commercial_district_data",
+    "goals",
+    "hira_clinics",
+    "medical_platform_reviews",
+    "sentinel_threats",
+    "viral_adaptive_penalties",
+    "viral_skip_reasons"
+  ]
+}

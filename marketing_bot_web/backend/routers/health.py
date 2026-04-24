@@ -353,6 +353,33 @@ async def liveness_check() -> Dict[str, Any]:
     }
 
 
+@router.get("/scraper-health")
+@handle_exceptions
+async def scraper_health_check(
+    scraper: str = None,
+) -> Dict[str, Any]:
+    """
+    [고도화 V3-2] 스크래퍼 헬스 모니터
+
+    전체 스크래퍼 건강 상태 + 이상 감지 결과.
+    scraper 파라미터로 특정 스크래퍼만 조회 가능.
+    """
+    try:
+        from services.scraper_health import ScraperHealthMonitor
+        from db.database import DatabaseManager
+
+        db = DatabaseManager()
+        monitor = ScraperHealthMonitor(db.db_path)
+
+        if scraper:
+            return monitor.check_health(scraper_name=scraper)
+        else:
+            return monitor.get_dashboard_summary()
+
+    except Exception as e:
+        return {"overall": "error", "detail": str(e)}
+
+
 @router.get("/performance")
 @handle_exceptions
 async def performance_stats() -> Dict[str, Any]:

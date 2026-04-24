@@ -13,6 +13,13 @@ Phase: Viral Hunter V1
 
 import sys
 import os
+
+# [고도화 A-1] Sentry 에러 모니터링
+try:
+    from scrapers.sentry_init import init_sentry
+    init_sentry("viral_hunter")
+except Exception:
+    pass
 import json
 import time
 import re
@@ -28,9 +35,12 @@ from bs4 import BeautifulSoup
 
 # Path setup
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
 
 from db.database import DatabaseManager
 from utils import ConfigManager, logger
+from services.ai_client import ai_generate, ai_generate_korean
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -174,7 +184,14 @@ class NaverUnifiedSearch:
     - 검색 결과 캐싱 (24시간)
     """
 
-    def __init__(self, delay: float = 2.0, max_retries: int = 3, use_cache: bool = True):
+    # 공식 Naver Search API 엔드포인트
+    API_ENDPOINTS = {
+        'cafe': 'https://openapi.naver.com/v1/search/cafearticle.json',
+        'blog': 'https://openapi.naver.com/v1/search/blog.json',
+        'kin':  'https://openapi.naver.com/v1/search/kin.json',
+    }
+
+    def __init__(self, delay: float = 0.3, max_retries: int = 3, use_cache: bool = True):
         self.delay = delay
         self.max_retries = max_retries
         self.session = requests.Session()
@@ -187,22 +204,86 @@ class NaverUnifiedSearch:
         self.use_cache = use_cache
         self.cache = SearchCache() if use_cache else None
 
-        # User-Agent 로테이션 (더 다양하게)
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        ]
-        self.ua_index = 0
+        # 네이버 공식 API 키 로테이션 (최대 5개)
+        cfg = ConfigManager()
+        self.api_keys = cfg.get_api_key_list("NAVER_SEARCH_KEYS")
+        if not self.api_keys:
+            cid = cfg.get_api_key("NAVER_CLIENT_ID")
+            sec = cfg.get_api_key("NAVER_CLIENT_SECRET")
+            if cid and sec:
+                self.api_keys = [{"id": cid, "secret": sec}]
+        self._key_index = 0
+        if self.api_keys:
+            logger.info(f"✅ Naver Search API 키 {len(self.api_keys)}개 로드 (공식 API 모드)")
+        else:
+            logger.error("❌ Naver Search API 키가 없습니다 (.env NAVER_SEARCH_CLIENT_ID_1 등 확인)")
 
-        # 🛡️ 차단 감지 및 방어 메커니즘
-        self._consecutive_empty_results = 0  # 연속 0개 결과 카운터
-        self._total_searches = 0  # 총 검색 수
-        self._successful_searches = 0  # 성공한 검색 수 (1개 이상 결과)
-        self._is_blocked = False  # 차단 상태 플래그
-        self._adaptive_delay = delay  # 적응형 대기 시간
+        # 하위 호환용 (사용 안 하지만 get_stats 등이 참조)
+        self.user_agents = []
+        self.ua_index = 0
+        self._consecutive_empty_results = 0
+        self._total_searches = 0
+        self._successful_searches = 0
+        self._is_blocked = False
+        self._adaptive_delay = delay
+
+    def _rotate_key(self):
+        if self.api_keys:
+            self._key_index = (self._key_index + 1) % len(self.api_keys)
+
+    def _api_headers(self) -> dict:
+        key = self.api_keys[self._key_index]
+        return {
+            "X-Naver-Client-Id": key["id"],
+            "X-Naver-Client-Secret": key["secret"],
+        }
+
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r'<[^>]+>', '', text)
+        # HTML entity 디코드
+        import html as _html
+        return _html.unescape(text).strip()
+
+    def _api_fetch(self, platform: str, keyword: str, display: int = 100,
+                   start: int = 1) -> List[dict]:
+        """공식 API 호출. 실패 시 키 로테이션 + 재시도."""
+        if not self.api_keys:
+            return []
+        endpoint = self.API_ENDPOINTS.get(platform)
+        if not endpoint:
+            return []
+
+        params = {"query": keyword, "display": display, "start": start, "sort": "date"}
+        max_attempts = min(len(self.api_keys) + 1, 6)
+
+        for attempt in range(max_attempts):
+            self._rate_limit()
+            self._request_count += 1
+            try:
+                r = self.session.get(endpoint, headers=self._api_headers(),
+                                     params=params, timeout=10)
+                if r.status_code == 200:
+                    return r.json().get("items", [])
+                if r.status_code in (401, 403, 429):
+                    logger.warning(f"[API] {platform} '{keyword}' {r.status_code} → 키 로테이션")
+                    self._error_count += 1
+                    self._rotate_key()
+                    time.sleep(0.5)
+                    continue
+                logger.warning(f"[API] {platform} '{keyword}' {r.status_code}: {r.text[:120]}")
+                self._error_count += 1
+                break
+            except requests.exceptions.Timeout:
+                self._error_count += 1
+                time.sleep(1.0)
+            except requests.exceptions.RequestException as e:
+                self._error_count += 1
+                logger.warning(f"[API] 요청 예외 {platform}/{keyword}: {e}")
+                break
+        return []
 
     def _calculate_dynamic_limit(self, keyword: str, platform: str, search_volume: int = None) -> int:
         """
@@ -447,6 +528,58 @@ class NaverUnifiedSearch:
             "current_delay": f"{self._adaptive_delay:.1f}초"
         }
 
+    def _api_collect(self, platform: str, keyword: str, max_results: int) -> List[ViralTarget]:
+        """공식 API로 N개까지 수집. 페이지당 display=100, start는 1/101/201…"""
+        targets: List[ViralTarget] = []
+        seen = set()
+        display = 100
+        # Naver API는 start + display ≤ 1000까지만 허용
+        max_results = min(max_results, 900)
+
+        start = 1
+        while len(targets) < max_results and start <= 1000:
+            fetch_n = min(display, max_results - len(targets), 1001 - start)
+            if fetch_n <= 0:
+                break
+            items = self._api_fetch(platform, keyword, display=fetch_n, start=start)
+            if not items:
+                break
+
+            for item in items:
+                link = item.get('link', '') or ''
+                if not link or link in seen:
+                    continue
+                title = self._strip_html(item.get('title', ''))
+                if not title or len(title) < 5:
+                    continue
+                desc = self._strip_html(item.get('description', ''))
+
+                if platform == 'cafe':
+                    author = item.get('cafename', '') or ''
+                elif platform == 'blog':
+                    author = item.get('bloggername', '') or ''
+                else:
+                    author = ''
+
+                seen.add(link)
+                targets.append(ViralTarget(
+                    platform=platform,
+                    url=link,
+                    title=title,
+                    content_preview=desc[:300],
+                    matched_keywords=[keyword],
+                    author=author,
+                    date_str=item.get('postdate', '') or '',
+                ))
+                if len(targets) >= max_results:
+                    break
+
+            if len(items) < fetch_n:
+                break  # 결과 끝
+            start += fetch_n
+
+        return targets
+
     def search_cafe(self, keyword: str, max_results: int = 200, max_pages: int = 10) -> List[ViralTarget]:
         """
         네이버 카페 전용 검색 (페이지네이션 지원)
@@ -465,79 +598,13 @@ class NaverUnifiedSearch:
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = []
-        seen_urls = set()
-
-        for page in range(max_pages):
-            if len(targets) >= max_results:
-                break
-
-            # 카페 전용 검색 (article)
-            url = "https://search.naver.com/search.naver"
-            params = {
-                "where": "article",
-                "query": keyword,
-                "start": page * 10 + 1,
-                "nso": "so:r,p:all"
-            }
-
-            response = self._request_with_retry(url, params)
-            if not response:
-                break
-
-            # 🛡️ 응답 검증 (차단 감지) - 첫 페이지만 체크
-            if page == 0 and not self._validate_response(response, 'cafe'):
-                logger.warning(f"[Cafe] '{keyword}' 응답 검증 실패 - 검색 중단")
-                break
-
-            try:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                page_count = 0
-
-                for link in soup.find_all('a', href=True):
-                    if len(targets) >= max_results:
-                        break
-
-                    href = link.get('href', '')
-                    if 'cafe.naver.com' not in href:
-                        continue
-
-                    base_url = href.split('?')[0]
-                    if base_url in seen_urls:
-                        continue
-
-                    title = link.get_text(strip=True)
-                    if not title or len(title) < 5:
-                        continue
-
-                    seen_urls.add(base_url)
-                    page_count += 1
-
-                    cafe_match = re.search(r'cafe\.naver\.com/([^/\?]+)', href)
-                    cafe_name = cafe_match.group(1) if cafe_match else ""
-
-                    targets.append(ViralTarget(
-                        platform="cafe",
-                        url=href,
-                        title=title,
-                        matched_keywords=[keyword],
-                        author=cafe_name
-                    ))
-
-                if page_count == 0:
-                    break
-
-            except Exception as e:
-                logger.error(f"Cafe parse failed for '{keyword}' page {page+1}: {e}")
-                break
+        targets = self._api_collect("cafe", keyword, max_results)
 
         # 캐시 저장
         if self.use_cache and self.cache and targets:
             self.cache.set("cafe", keyword, [t.to_dict() for t in targets])
 
-        # 🛡️ 차단 상태 체크
         self._check_blocking_status(len(targets))
-
         logger.info(f"[Cafe] '{keyword}' -> {len(targets)}개 발견")
         return targets
 
@@ -559,74 +626,12 @@ class NaverUnifiedSearch:
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = []
-        seen_urls = set()
-        blog_pattern = re.compile(r'blog\.naver\.com/(\w+)/(\d+)')
+        targets = self._api_collect("blog", keyword, max_results)
 
-        for page in range(max_pages):
-            if len(targets) >= max_results:
-                break
-
-            url = "https://search.naver.com/search.naver"
-            params = {
-                "where": "blog",
-                "query": keyword,
-                "start": page * 10 + 1,
-                "nso": "so:r,p:all"
-            }
-
-            response = self._request_with_retry(url, params)
-            if not response:
-                break
-
-            # 🛡️ 응답 검증 (차단 감지) - 첫 페이지만 체크
-            if page == 0 and not self._validate_response(response, 'blog'):
-                logger.warning(f"[Blog] '{keyword}' 응답 검증 실패 - 검색 중단")
-                break
-
-            try:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                page_count = 0
-
-                for link in soup.find_all('a', href=True):
-                    if len(targets) >= max_results:
-                        break
-
-                    href = link.get('href', '')
-                    match = blog_pattern.search(href)
-                    if not match or href in seen_urls:
-                        continue
-
-                    title = link.get_text(strip=True)
-                    if not title or len(title) < 5:
-                        continue
-
-                    seen_urls.add(href)
-                    page_count += 1
-                    username = match.group(1)
-
-                    targets.append(ViralTarget(
-                        platform="blog",
-                        url=href,
-                        title=title,
-                        matched_keywords=[keyword],
-                        author=username
-                    ))
-
-                if page_count == 0:
-                    break
-
-            except Exception as e:
-                logger.error(f"Blog parse failed for '{keyword}' page {page+1}: {e}")
-                break
-
-        # 캐시 저장
         if self.use_cache and self.cache and targets:
             self.cache.set("blog", keyword, [t.to_dict() for t in targets])
 
-        # 🛡️ 차단 상태 체크
         self._check_blocking_status(len(targets))
-
         logger.info(f"[Blog] '{keyword}' -> {len(targets)}개 발견")
         return targets
 
@@ -648,77 +653,12 @@ class NaverUnifiedSearch:
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = []
-        seen_urls = set()
+        targets = self._api_collect("kin", keyword, max_results)
 
-        for page in range(max_pages):
-            if len(targets) >= max_results:
-                break
-
-            url = "https://search.naver.com/search.naver"
-            params = {
-                "where": "kin",
-                "query": keyword,
-                "start": page * 10 + 1,
-            }
-
-            response = self._request_with_retry(url, params)
-            if not response:
-                break
-
-            # 🛡️ 응답 검증 (차단 감지) - 첫 페이지만 체크
-            if page == 0 and not self._validate_response(response, 'kin'):
-                logger.warning(f"[Kin] '{keyword}' 응답 검증 실패 - 검색 중단")
-                break
-
-            try:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                page_count = 0
-
-                for link in soup.find_all('a', href=True):
-                    if len(targets) >= max_results:
-                        break
-
-                    href = link.get('href', '')
-                    if 'kin.naver.com/qna/detail' not in href:
-                        continue
-
-                    if 'answerNo=' in href:
-                        continue
-
-                    base_url = href.split('&')[0] if '&' in href else href
-                    if base_url in seen_urls:
-                        continue
-
-                    title = link.get_text(strip=True)
-                    if not title or len(title) < 5:
-                        continue
-
-                    seen_urls.add(base_url)
-                    page_count += 1
-
-                    targets.append(ViralTarget(
-                        platform="kin",
-                        url=href,
-                        title=title,
-                        matched_keywords=[keyword],
-                        is_commentable=True
-                    ))
-
-                if page_count == 0:
-                    break
-
-            except Exception as e:
-                logger.error(f"Kin parse failed for '{keyword}' page {page+1}: {e}")
-                break
-
-        # 캐시 저장
         if self.use_cache and self.cache and targets:
             self.cache.set("kin", keyword, [t.to_dict() for t in targets])
 
-        # 🛡️ 차단 상태 체크
         self._check_blocking_status(len(targets))
-
         logger.info(f"[Kin] '{keyword}' -> {len(targets)}개 발견")
         return targets
 
@@ -768,11 +708,31 @@ class CommentableFilter:
 
     # NON_RELEVANT: 비관련 업종 - 무조건 제외
     NON_RELEVANT_EXCLUDE = [
+        # 기존
         "강아지", "반려견", "성형외과", "분양", "아파트",
         "주식", "코인", "부동산", "매매", "임대",
-        "케이크", "베이커리", "맛집", "카페",
-        "성형", "쌍수", "코수술", "지방흡입"
+        "케이크", "베이커리", "맛집",
+        "성형", "쌍수", "코수술", "지방흡입",
+        # 확장 - 업계 외
+        "대출", "신용", "보증", "카지노", "바카라", "슬롯", "도박", "토토",
+        "분양권", "청약", "경매", "전세", "월세",
+        "취업", "구인", "알바", "채용공고",
+        "중고", "판매합니다", "나눔", "양도",
+        "자동차보험료", "자차보험", "차보험 견적",
     ]
+
+    # 사업 권역 지역 키워드 (제목 또는 본문에 하나 이상 포함돼야 통과)
+    # 청주·세종·충주·제천·증평·보은·진천·옥천·영동·음성 및 동/지구 단위
+    REGION_KEYWORDS = [
+        "청주", "세종", "충주", "제천", "증평", "보은", "진천", "옥천", "영동", "음성",
+        "율량", "가경", "복대", "산남", "오창", "오송", "사창", "성안길",
+        "내덕", "우암", "흥덕", "용암", "용정", "개신", "분평", "수곡",
+        "상당", "서원", "흥덕", "청원", "용암동", "봉명",
+        "충북",
+    ]
+
+    # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
+    MIN_CONTENT_LENGTH = 100
 
     # 기존 호환용 (STRICT + NON_RELEVANT)
     AD_EXCLUDE = STRICT_AD_PATTERNS + NON_RELEVANT_EXCLUDE
@@ -880,28 +840,53 @@ class CommentableFilter:
             댓글 가능한 타겟만 (priority_score 계산됨)
         """
         filtered = []
+        stats = {'ad': 0, 'non_relevant': 0, 'too_short': 0, 'no_region': 0,
+                 'title_only': 0, 'not_inquiry_health': 0}
 
         for target in targets:
-            text = f"{target.title} {target.content_preview}".lower()
+            title_lower = (target.title or '').lower()
+            body_lower = (target.content_preview or '').lower()
+            text = f"{title_lower} {body_lower}"
 
-            # 1. 광고글 제외 (개선: STRICT만 제외, SOFT는 감점)
-            is_strict_ad = any(ad in text for ad in self.STRICT_AD_PATTERNS)
-            is_non_relevant = any(ad in text for ad in self.NON_RELEVANT_EXCLUDE)
-            if is_strict_ad or is_non_relevant:
-                logger.debug(f"🚫 광고/비관련 제외: {target.title[:30]}...")
+            # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
+            if any(ad in text for ad in self.STRICT_AD_PATTERNS):
+                stats['ad'] += 1
+                continue
+            if any(ad in text for ad in self.NON_RELEVANT_EXCLUDE):
+                stats['non_relevant'] += 1
                 continue
 
-            # SOFT 광고 키워드는 감점만 (제외하지 않음)
+            # 2. 본문 최소 길이
+            if len(target.content_preview or '') < self.MIN_CONTENT_LENGTH:
+                stats['too_short'] += 1
+                continue
+
+            # 3. 지역 키워드 필수 (제목 OR 본문)
+            if not any(rk in text for rk in self.REGION_KEYWORDS):
+                stats['no_region'] += 1
+                continue
+
+            # 4. 제목-본문 동시 매칭 (검색 키워드가 본문에도 있어야 의미 있음)
+            if target.matched_keywords:
+                base_kw = target.matched_keywords[0].lower()
+                # 키워드 토큰화 (공백 기준)하여 주요 토큰 하나라도 본문에 있으면 통과
+                tokens = [t for t in base_kw.split() if len(t) >= 2]
+                if tokens and not any(tok in body_lower for tok in tokens):
+                    stats['title_only'] += 1
+                    continue
+
+            # SOFT 광고 키워드는 감점만
             soft_ad_penalty = sum(-5 for kw in self.SOFT_AD_INDICATORS if kw in text)
 
-            # 2. 질문글 여부
+            # 5. 질문글 여부
             is_inquiry = any(pat in text for pat in self.INQUIRY_PATTERNS)
 
-            # 3. 건강 관련 여부
+            # 6. 건강 관련 여부
             is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
 
-            # 4. 댓글 가능 여부 결정
+            # 7. 댓글 가능 여부 결정
             if not (is_inquiry or is_health):
+                stats['not_inquiry_health'] += 1
                 target.is_commentable = False
                 continue
 
@@ -971,7 +956,12 @@ class CommentableFilter:
         # 우선순위로 정렬
         filtered.sort(key=lambda x: x.priority_score, reverse=True)
 
-        logger.info(f"✅ 필터링 완료: {len(targets)}개 -> {len(filtered)}개 (댓글 가능)")
+        logger.info(
+            f"✅ 필터링 완료: {len(targets)}개 -> {len(filtered)}개 (댓글 가능) "
+            f"[제외: 광고 {stats['ad']}, 비관련 {stats['non_relevant']}, "
+            f"단문 {stats['too_short']}, 지역외 {stats['no_region']}, "
+            f"제목만 {stats['title_only']}, 무관 {stats['not_inquiry_health']}]"
+        )
         return filtered
 
 
@@ -982,24 +972,13 @@ class AICommentGenerator:
     """
     AI 기반 맞춤 댓글 생성
 
-    Gemini API 사용 (기존 agent_crew.py 패턴)
+    Centralized ai_client 사용
     카테고리별 프롬프트 템플릿
     """
 
     def __init__(self):
         self.cfg = ConfigManager()
-        self.api_key = self.cfg.get_api_key('GEMINI_API_KEY')
-        self.client = None
-        self.model_name = None
-
-        if self.api_key:
-            try:
-                from google import genai
-                self.model_name = self.cfg.get_model_name('flash')
-                self.client = genai.Client(api_key=self.api_key)
-                logger.info("✅ Gemini API 초기화 완료")
-            except Exception as e:
-                logger.warning(f"Gemini API 초기화 실패: {e}")
+        logger.info("✅ AI Client 초기화 완료 (centralized ai_client)")
 
     def _load_prompts(self) -> dict:
         """prompts.json에서 viral_hunter 프롬프트 로드"""
@@ -1020,9 +999,6 @@ class AICommentGenerator:
         Returns:
             생성된 댓글 텍스트
         """
-        if not self.client:
-            return "[AI 미설정] 수동 작성 필요"
-
         prompts = self._load_prompts()
         comment_config = prompts.get('comment_generation', {})
         prompt_template = comment_config.get('template', '')
@@ -1065,13 +1041,7 @@ class AICommentGenerator:
             if style_suffix:
                 prompt += style_suffix
 
-            from google.genai import types
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.6)
-            )
-            comment = response.text.strip() if response.text else ""
+            comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800)
 
             # 댓글 정제
             comment = comment.replace("댓글:", "").strip()
@@ -1120,10 +1090,6 @@ class AICommentGenerator:
         Returns:
             경쟁사 탐지 결과가 반영된 타겟 리스트
         """
-        if not self.model:
-            logger.warning("⚠️ AI 모델 미설정, 경쟁사 탐지 건너뜀")
-            return targets
-
         prompts = self._load_prompts()
         competitor_config = prompts.get('competitor_detection', {})
         template = competitor_config.get('template', '')
@@ -1152,8 +1118,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                response = self.client.generate_content(prompt)
-                result_text = response.text.strip() if response.text else ""
+                result_text = ai_generate(prompt, temperature=0.3)
 
                 # 결과 파싱
                 self._parse_competitor_results(batch, result_text)
@@ -1256,10 +1221,6 @@ POST_ID: {i}
         Returns:
             침투적합도가 평가된 타겟 리스트 (적합한 것만 반환)
         """
-        if not self.model:
-            logger.warning("⚠️ AI 모델 미설정, 침투적합도 평가 건너뜀")
-            return targets
-
         prompts = self._load_prompts()
         eval_config = prompts.get('infiltration_evaluation', {})
         template = eval_config.get('template', '')
@@ -1291,8 +1252,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                response = self.client.generate_content(prompt)
-                result_text = response.text.strip() if response.text else ""
+                result_text = ai_generate(prompt, temperature=0.3)
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable = self._parse_infiltration_results(batch, result_text)
@@ -1332,9 +1292,7 @@ POST_ID: {i}
         Returns:
             분석 완료된 타겟 리스트 (침투 적합한 것만)
         """
-        if not self.client:
-            logger.warning("⚠️ AI 모델 미설정, 통합 분석 건너뜀")
-            return targets
+        # AI client is always available via centralized ai_client
 
         prompts = self._load_prompts()
         unified_config = prompts.get('unified_analysis', {})
@@ -1375,8 +1333,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                response = self.client.generate_content(prompt)
-                result_text = response.text.strip() if response.text else ""
+                result_text = ai_generate(prompt, temperature=0.3)
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable, batch_competitor = self._parse_unified_results(batch, result_text)
@@ -1404,6 +1361,116 @@ POST_ID: {i}
         suitable_targets.sort(key=lambda x: x.priority_score, reverse=True)
 
         return suitable_targets
+
+    def unified_analysis_parallel(
+        self,
+        targets: List[ViralTarget],
+        batch_size: int = 25,
+        max_workers: int = 5,
+        db=None,
+        skip_batch_indices: Optional[set] = None,
+        on_batch_done=None,
+    ) -> List[ViralTarget]:
+        """
+        병렬 + 증분 저장 버전의 unified_analysis.
+
+        배치 단위 Qwen 호출을 ThreadPoolExecutor로 병렬 처리하고,
+        매 N배치마다 `db.insert_viral_target()`으로 즉시 저장한다.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        prompts = self._load_prompts()
+        unified_config = prompts.get('unified_analysis', {})
+        template = unified_config.get('template', '')
+        if not template:
+            logger.warning("⚠️ unified_analysis 프롬프트 없음 — 순차 모드로 폴백")
+            return self.unified_analysis(targets, batch_size=batch_size)
+
+        batch_size = unified_config.get('batch_size', batch_size)
+        total_batches = (len(targets) + batch_size - 1) // batch_size
+        skip = skip_batch_indices or set()
+
+        logger.info(
+            f"🔬 AI 통합 분석 시작(병렬): {len(targets)}개, 배치 {batch_size}, "
+            f"총 {total_batches}배치, 동시 {max_workers}, 건너뛸 배치 {len(skip)}"
+        )
+
+        def run_batch(batch_idx: int, batch: List[ViralTarget]):
+            posts_formatted = ""
+            for i, t in enumerate(batch, 1):
+                posts_formatted += (
+                    f"\n---\nPOST_ID: {i}\n플랫폼: {t.platform}\n"
+                    f"제목: {t.title}\n"
+                    f"내용: {t.content_preview[:150] if t.content_preview else '(없음)'}\n---\n"
+                )
+            try:
+                prompt = template.format(posts_formatted=posts_formatted)
+                result_text = ai_generate(prompt, temperature=0.3)
+                suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
+                return batch_idx, suitable, unsuit, comp, None
+            except Exception as e:
+                # 실패 시 보수적: 배치 전체를 적합으로 반환
+                return batch_idx, list(batch), 0, 0, e
+
+        suitable_all: List[ViralTarget] = []
+        done_batches = set(skip)
+        lock = threading.Lock()
+        save_every = 10  # 10배치마다 체크포인트 + DB 저장 로그
+
+        # 제출할 배치만 선별
+        pending = []
+        for batch_idx, batch_start in enumerate(range(0, len(targets), batch_size), 1):
+            if batch_idx in skip:
+                continue
+            pending.append((batch_idx, targets[batch_start:batch_start + batch_size]))
+
+        processed_since_checkpoint = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(run_batch, idx, b): idx for idx, b in pending}
+            for fut in as_completed(futures):
+                batch_idx, suitable, unsuit, comp, err = fut.result()
+                if err:
+                    logger.warning(f"   ⚠️ 배치 {batch_idx} 실패({err}) → 보수적 적합 처리")
+
+                # 즉시 DB 저장
+                newly_saved = 0
+                if db is not None:
+                    for t in suitable:
+                        try:
+                            if db.insert_viral_target(t.to_dict()):
+                                newly_saved += 1
+                        except Exception as e:
+                            logger.warning(f"DB 저장 실패: {e}")
+
+                with lock:
+                    suitable_all.extend(suitable)
+                    done_batches.add(batch_idx)
+                    processed_since_checkpoint += 1
+                    logger.info(
+                        f"   ✅ 배치 {batch_idx}/{total_batches} 완료 "
+                        f"(적합 {len(suitable)}, 부적합 {unsuit}, 경쟁사 {comp}, 저장 {newly_saved}) "
+                        f"[누적 {len(done_batches)}/{total_batches}]"
+                    )
+                    # 체크포인트 저장
+                    if on_batch_done and processed_since_checkpoint >= save_every:
+                        try:
+                            on_batch_done(done_batches.copy())
+                            processed_since_checkpoint = 0
+                        except Exception as e:
+                            logger.warning(f"체크포인트 콜백 실패: {e}")
+
+        # 마지막 체크포인트
+        if on_batch_done:
+            try:
+                on_batch_done(done_batches.copy())
+            except Exception:
+                pass
+
+        suitable_all.sort(key=lambda x: x.priority_score, reverse=True)
+        logger.info(f"✅ 병렬 통합 분석 완료: 적합 {len(suitable_all)}개")
+        return suitable_all
 
     def _parse_unified_results(self, targets: List[ViralTarget], result_text: str) -> tuple:
         """
@@ -1780,8 +1847,73 @@ class ViralHunter:
 
         return list(keywords)
 
+    # ── 체크포인트 유틸 ────────────────────────────────────────────────
+
+    def _checkpoint_path(self) -> str:
+        return os.path.join(self.cfg.root_dir, 'db', 'viral_hunter_checkpoint.json')
+
+    def _save_checkpoint(self, keywords_hash: str, processed: List[str],
+                         all_targets: List[ViralTarget], seen_urls: set):
+        """체크포인트 저장 (raw 검색 결과 + 진행 상태)."""
+        try:
+            data = {
+                'keywords_hash': keywords_hash,
+                'total_keywords': len(processed) if processed else 0,
+                'processed_keywords': processed,
+                'seen_urls': list(seen_urls),
+                'all_targets': [t.to_dict() for t in all_targets],
+                'saved_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            tmp = self._checkpoint_path() + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, self._checkpoint_path())
+        except Exception as e:
+            logger.warning(f"체크포인트 저장 실패: {e}")
+
+    def _load_checkpoint(self, keywords_hash: str) -> Optional[dict]:
+        """동일 키워드 세트의 체크포인트 로드, 없으면 None."""
+        path = self._checkpoint_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if data.get('keywords_hash') != keywords_hash:
+                logger.info(f"체크포인트 키워드 세트 불일치 → 무시")
+                return None
+            return data
+        except Exception as e:
+            logger.warning(f"체크포인트 로드 실패: {e}")
+            return None
+
+    def _clear_checkpoint(self):
+        path = self._checkpoint_path()
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                logger.warning(f"체크포인트 삭제 실패: {e}")
+
+    @staticmethod
+    def _viral_target_from_dict(d: dict) -> ViralTarget:
+        """체크포인트 복원용. to_dict()의 'id'는 property이므로 제외."""
+        return ViralTarget(
+            platform=d.get('platform', ''),
+            url=d.get('url', ''),
+            title=d.get('title', ''),
+            content_preview=d.get('content_preview', ''),
+            matched_keywords=d.get('matched_keywords') or [],
+            category=d.get('category', '기타'),
+            is_commentable=d.get('is_commentable', True),
+            generated_comment=d.get('generated_comment', ''),
+            priority_score=d.get('priority_score', 0.0),
+        )
+
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
-             max_per_platform: int = 100, progress_callback=None) -> List[ViralTarget]:
+             max_per_platform: int = 100, progress_callback=None,
+             fresh: bool = False, checkpoint_every: int = 20,
+             top_n_for_ai: int = 10000, ai_parallel: int = 5) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -1790,6 +1922,8 @@ class ViralHunter:
             limit_keywords: 키워드 제한 수
             max_per_platform: 플랫폼당 최대 결과 수
             progress_callback: 진행 상황 콜백 함수 (stage, current, total, message)
+            fresh: True면 체크포인트 무시하고 처음부터 시작
+            checkpoint_every: N개 키워드마다 체크포인트 저장
 
         Returns:
             발견된 ViralTarget 리스트
@@ -1800,25 +1934,55 @@ class ViralHunter:
         if limit_keywords:
             keywords = keywords[:limit_keywords]
 
+        # 키워드 세트 해시 (순서 무관)
+        kw_hash = hashlib.md5(
+            ('|'.join(sorted(keywords))).encode('utf-8')
+        ).hexdigest()[:16]
+
+        # 체크포인트 복원
+        all_targets: List[ViralTarget] = []
+        seen_urls: set = set()
+        processed_set: set = set()
+
+        if not fresh:
+            cp = self._load_checkpoint(kw_hash)
+            if cp:
+                processed_set = set(cp.get('processed_keywords') or [])
+                seen_urls = set(cp.get('seen_urls') or [])
+                all_targets = [
+                    self._viral_target_from_dict(d)
+                    for d in (cp.get('all_targets') or [])
+                ]
+                print(f"\n♻️  체크포인트 복원: 처리 완료 {len(processed_set)}/{len(keywords)}, "
+                      f"수집 {len(all_targets)}개 (저장 시각 {cp.get('saved_at')})")
+
         print(f"\n{'='*60}")
         print(f"🎯 Viral Hunter 스캔 시작")
-        print(f"   키워드: {len(keywords)}개")
+        print(f"   키워드: {len(keywords)}개 (남은 {len(keywords) - len(processed_set)}개)")
         print(f"   플랫폼: 카페, 블로그, 지식인")
+        print(f"   체크포인트: 매 {checkpoint_every}개마다 저장")
         print(f"{'='*60}\n")
 
         if progress_callback:
-            progress_callback("초기화", 0, len(keywords), f"키워드 {len(keywords)}개 로드 완료")
+            progress_callback("초기화", len(processed_set), len(keywords),
+                              f"키워드 {len(keywords)}개 로드 완료")
 
-        all_targets = []
-        seen_urls = set()
+        checkpoint_counter = 0
 
         for i, kw in enumerate(keywords, 1):
+            if kw in processed_set:
+                continue  # 이미 처리됨
+
             print(f"\n[{i}/{len(keywords)}] '{kw}' 검색 중...")
 
             if progress_callback:
                 progress_callback("검색중", i, len(keywords), f"'{kw}' 검색 | 수집: {len(all_targets)}개")
 
-            results = self.searcher.search_all(kw, max_per_platform)
+            try:
+                results = self.searcher.search_all(kw, max_per_platform)
+            except Exception as e:
+                logger.error(f"'{kw}' 검색 중 예외: {e} — 다음 키워드로 진행")
+                results = []
 
             # 중복 제거
             for target in results:
@@ -1826,9 +1990,25 @@ class ViralHunter:
                     seen_urls.add(target.url)
                     all_targets.append(target)
 
+            processed_set.add(kw)
+            checkpoint_counter += 1
+
             # 진행 상황
             if i % 5 == 0:
                 print(f"   📊 진행: {i}/{len(keywords)} | 수집: {len(all_targets)}개")
+
+            # 체크포인트 저장
+            if checkpoint_counter >= checkpoint_every:
+                self._save_checkpoint(
+                    kw_hash, list(processed_set), all_targets, seen_urls
+                )
+                checkpoint_counter = 0
+                print(f"   💾 체크포인트 저장: {len(processed_set)}/{len(keywords)}, 수집 {len(all_targets)}개")
+
+        # 검색 단계 끝 — 최종 체크포인트 (AI 분석 전 안전장치)
+        self._save_checkpoint(
+            kw_hash, list(processed_set), all_targets, seen_urls
+        )
 
         # 필터링
         print(f"\n🔍 필터링 중...")
@@ -1854,45 +2034,134 @@ class ViralHunter:
             except Exception as e:
                 logger.warning(f"중복 체크 실패 (계속 진행): {e}")
 
-        # AI 통합 분석 (경쟁사 탐지 + 침투적합도 평가를 하나로)
+        # [D2] Adaptive penalty 적용 — 반복 skip된 도메인/작성자 감점
         if filtered:
-            print(f"\n🔬 AI 통합 분석 중 (경쟁사 탐지 + 침투적합도)...")
-            if progress_callback:
-                progress_callback("AI분석중", len(keywords), len(keywords), f"{len(filtered)}개 타겟 AI 분석 중...")
-            filtered = self.generator.unified_analysis(filtered, batch_size=25)
+            try:
+                import sqlite3 as _sql
+                from urllib.parse import urlparse as _urlparse
+                conn = _sql.connect(os.path.join(self.cfg.root_dir, 'db', 'marketing_data.db'))
+                c = conn.cursor()
+                c.execute(
+                    "SELECT key_type, key_value, skip_count FROM viral_adaptive_penalties WHERE skip_count >= 3"
+                )
+                penalties = {(r[0], r[1]): r[2] for r in c.fetchall()}
+                conn.close()
+                if penalties:
+                    penalized = 0
+                    for t in filtered:
+                        domain = _urlparse(t.url or '').netloc.replace('www.', '')
+                        dpen = penalties.get(('domain', domain), 0)
+                        apen = penalties.get(('author', t.author or ''), 0)
+                        total_pen = min(30, dpen * 3) + min(20, apen * 3)
+                        if total_pen > 0:
+                            t.priority_score = max(0, (t.priority_score or 0) - total_pen)
+                            penalized += 1
+                    if penalized:
+                        filtered.sort(key=lambda x: x.priority_score, reverse=True)
+                        print(f"   ⚙️ Adaptive penalty 적용: {penalized}개 타겟 점수 조정")
+            except Exception as e:
+                logger.debug(f"adaptive penalty skip: {e}")
 
-        # HOT LEAD 즉시 알림 (Telegram)
-        if filtered:
-            hot_leads = [t for t in filtered if "🔥" in t.content_preview or "🔥HOT" in t.content_preview]
-            if hot_leads:
+        # 상위 N개만 AI 분석 대상, 나머지는 raw 저장
+        ai_targets = filtered[:top_n_for_ai]
+        rest_targets = filtered[top_n_for_ai:]
+
+        # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
+        raw_saved = 0
+        if rest_targets:
+            print(f"\n💾 Raw 저장 (AI 제외 {len(rest_targets)}개, 휴리스틱 점수 기준)...")
+            for t in rest_targets:
+                if self.db.insert_viral_target(t.to_dict()):
+                    raw_saved += 1
+            print(f"   ✅ Raw {raw_saved}개 저장 완료")
+
+        # AI 통합 분석 (병렬 + 증분 DB 저장)
+        analyzed_targets: List[ViralTarget] = []
+        if ai_targets:
+            print(f"\n🔬 AI 통합 분석 중 (상위 {len(ai_targets)}개, 병렬 {ai_parallel})...")
+            if progress_callback:
+                progress_callback("AI분석중", len(keywords), len(keywords),
+                                  f"{len(ai_targets)}개 타겟 AI 분석 중...")
+
+            # 체크포인트에서 이미 분석한 배치 인덱스 로드 (ai_processed_batches)
+            cp_path = self._checkpoint_path()
+            already_done_batches: set = set()
+            if os.path.exists(cp_path):
+                try:
+                    with open(cp_path, 'r', encoding='utf-8') as f:
+                        cp = json.load(f)
+                    already_done_batches = set(cp.get('ai_processed_batches') or [])
+                except Exception:
+                    pass
+
+            def save_progress(done_batch_indices: set):
+                """현재까지 분석된 배치 인덱스를 체크포인트에 저장"""
+                try:
+                    cp_data = {}
+                    if os.path.exists(cp_path):
+                        with open(cp_path, 'r', encoding='utf-8') as f:
+                            cp_data = json.load(f)
+                    cp_data['ai_processed_batches'] = sorted(done_batch_indices)
+                    cp_data['ai_saved_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                    tmp = cp_path + '.tmp'
+                    with open(tmp, 'w', encoding='utf-8') as f:
+                        json.dump(cp_data, f, ensure_ascii=False)
+                    os.replace(tmp, cp_path)
+                except Exception as e:
+                    logger.warning(f"AI 체크포인트 저장 실패: {e}")
+
+            analyzed_targets = self.generator.unified_analysis_parallel(
+                ai_targets,
+                batch_size=25,
+                max_workers=ai_parallel,
+                db=self.db,
+                skip_batch_indices=already_done_batches,
+                on_batch_done=save_progress,
+            )
+
+        # 총 저장 수: raw + AI로 분석되어 이미 저장된 것
+        saved = raw_saved + len(analyzed_targets)
+        filtered = analyzed_targets + rest_targets  # 리포팅용 (정렬 순서 유지 안 됨)
+
+        # HOT LEAD 즉시 알림 (Telegram) — Tier 구분
+        # Tier 1 (점수 120+ 또는 경쟁사 탐지): 즉시 상위 10건 푸시
+        # Tier 2 (100~119): daily_brief.py가 오전 09:00 요약
+        # Tier 3 (그 외): 대시보드에서만 확인
+        if analyzed_targets:
+            tier1 = [
+                t for t in analyzed_targets
+                if (t.priority_score or 0) >= 120 or getattr(t, 'category', '') == '경쟁사_역공략'
+            ]
+            if tier1:
                 try:
                     from alert_bot import TelegramBot
                     bot = TelegramBot()
 
-                    # 메시지 작성 (상위 3개만)
-                    message = f"🔥 **HOT LEAD {len(hot_leads)}건 발견!**\n\n"
-                    for i, lead in enumerate(hot_leads[:3], 1):
+                    top = sorted(tier1, key=lambda x: x.priority_score or 0, reverse=True)[:10]
+                    message = (
+                        f"🔥 **Tier 1 HOT LEAD {len(tier1)}건 발견** (점수 120+ 또는 경쟁사 탐지)\n"
+                        f"상위 {len(top)}건만 표시, 나머지는 대시보드에서 확인:\n\n"
+                    )
+                    for i, lead in enumerate(top, 1):
                         platform_icon = {"cafe": "☕", "blog": "📝", "kin": "❓"}.get(lead.platform, "📌")
-                        message += f"{i}. {platform_icon} [{lead.platform.upper()}]\n"
-                        message += f"   {lead.title[:60]}...\n"
-                        message += f"   점수: {lead.priority_score:.0f} | {lead.url}\n\n"
+                        badge = "⚔️" if getattr(lead, 'category', '') == '경쟁사_역공략' else ""
+                        message += f"{i}. {platform_icon}{badge} [{lead.platform.upper()}] 점수 {lead.priority_score:.0f}\n"
+                        message += f"   {lead.title[:60]}\n"
+                        message += f"   {lead.url}\n\n"
 
-                    if len(hot_leads) > 3:
-                        message += f"... 외 {len(hot_leads) - 3}건 더 (Dashboard 확인)"
+                    total_rest = len(analyzed_targets) - len(tier1)
+                    if total_rest > 0:
+                        message += f"ℹ️ Tier 2/3 {total_rest}건은 오전 Daily Brief로 요약 전송됩니다."
 
                     bot.send_message(message)
-                    print(f"   📱 HOT LEAD {len(hot_leads)}건 Telegram 알림 발송 완료")
+                    print(f"   📱 Tier 1 {len(tier1)}건 Telegram 알림 발송 (상위 10건)")
                 except Exception as e:
                     logger.warning(f"Telegram 알림 실패: {e}")
+            else:
+                print(f"   ℹ️ Tier 1 HOT LEAD 없음 — 즉시 알림 스킵 (Daily Brief에서 요약)")
 
-        # DB 저장
-        print(f"\n💾 DB 저장 중...")
-        if progress_callback:
-            progress_callback("저장중", len(keywords), len(keywords), f"{len(filtered)}개 타겟 저장 중...")
-        saved = 0
-        for target in filtered:
-            if self.db.insert_viral_target(target.to_dict()):
-                saved += 1
+        # 체크포인트 삭제 (성공 완료)
+        self._clear_checkpoint()
 
         # CSV 자동 저장
         csv_path = None
@@ -2032,6 +2301,10 @@ def main():
     parser.add_argument('--test-search', action='store_true', help='검색 테스트')
     parser.add_argument('--test-comment', action='store_true', help='댓글 생성 테스트')
     parser.add_argument('--no-db', action='store_true', help='DB 저장 없이 결과만 출력 (WSL 호환)')
+    parser.add_argument('--fresh', action='store_true', help='체크포인트 무시하고 처음부터 스캔')
+    parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
+    parser.add_argument('--top-n-for-ai', type=int, default=10000, help='AI 분석 대상 상위 N개 (나머지는 raw 저장, 기본 10000)')
+    parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
 
     args = parser.parse_args()
 
@@ -2186,7 +2459,9 @@ def main():
     if args.scan:
         # 스캔 실행
         keywords = [args.keyword] if args.keyword else None
-        hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords)
+        hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords,
+                    fresh=args.fresh, checkpoint_every=args.checkpoint_every,
+                    top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel)
         return
 
     if args.generate:

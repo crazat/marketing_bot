@@ -3,8 +3,14 @@ import sqlite3
 import json
 import logging
 import random
+import os
+import sys
 from datetime import datetime
 from utils import ConfigManager
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate_json
 
 logger = logging.getLogger("Tactician")
 
@@ -63,20 +69,10 @@ class TargetedTactician:
     
     def _analyze_weakness_ai(self, reviews, competitor_name):
         """
-        [AI-POWERED] Use Gemini to analyze reviews for nuanced weakness detection.
+        [AI-POWERED] Use centralized AI client to analyze reviews for nuanced weakness detection.
         More accurate than simple keyword matching.
         """
-        from google import genai
-
         try:
-            api_key = self.config.get_api_key()
-            if not api_key:
-                logger.warning("No API key for AI analysis, using fallback")
-                return None
-
-            client = genai.Client(api_key=api_key)
-            model_name = 'gemini-3-flash-preview'
-
             # Build review text (limit to avoid token overflow)
             review_text = "\n".join([f"- {r['content'][:100]}" for r in reviews[:20]])
 
@@ -99,25 +95,16 @@ class TargetedTactician:
 JSON만 출력하세요.
 """
 
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            result_text = response.text.strip()
-            
-            # Parse JSON
-            import re
-            json_match = re.search(r'\{[^}]+\}', result_text, re.DOTALL)
-            if json_match:
-                analysis = json.loads(json_match.group())
-                
-                if analysis.get('weakness_type') == 'none' or analysis.get('confidence', 0) < 0.5:
-                    return None
-                
-                return self._generate_strategy_from_analysis(competitor_name, analysis)
-            
-            return None
-            
+            analysis = ai_generate_json(prompt, temperature=0.3)
+
+            if not analysis:
+                return None
+
+            if analysis.get('weakness_type') == 'none' or analysis.get('confidence', 0) < 0.5:
+                return None
+
+            return self._generate_strategy_from_analysis(competitor_name, analysis)
+
         except Exception as e:
             logger.warning(f"AI analysis failed: {e}, using fallback")
             return None

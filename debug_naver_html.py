@@ -61,7 +61,7 @@ def debug_selectors():
                 try:
                     driver.switch_to.frame("cafe_main")
                     print("  [Frame]: Switched to 'cafe_main'")
-                except:
+                except Exception:
                     print("  [Frame]: 'cafe_main' not found (might be full page)")
                 
                 # Inspect Body Selectors

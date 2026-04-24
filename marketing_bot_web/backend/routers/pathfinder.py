@@ -29,6 +29,7 @@ sys.path.insert(0, backend_dir)
 from db.database import DatabaseManager
 from core_services.sql_builder import validate_table_name, get_table_columns, select_column_safely
 from backend_utils.error_handlers import handle_exceptions
+from backend_utils.cache import cached, invalidate_cache
 from schemas.response import success_response, error_response
 
 router = APIRouter()
@@ -311,6 +312,7 @@ class PathfinderRequest(BaseModel):
     save_db: bool = True
 
 @router.get("/stats")
+@cached(ttl=300)
 @handle_exceptions
 async def get_pathfinder_stats(
     apply_filter: bool = True,
@@ -337,6 +339,7 @@ async def get_pathfinder_stats(
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -445,6 +448,12 @@ async def get_pathfinder_stats(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.get("/keywords")
 @handle_exceptions
@@ -461,6 +470,7 @@ async def get_keywords(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -552,6 +562,12 @@ async def get_keywords(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"키워드 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/keywords/export-all")
@@ -566,6 +582,7 @@ async def export_all_keywords(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -631,6 +648,12 @@ async def export_all_keywords(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"키워드 내보내기 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/run")
@@ -726,6 +749,7 @@ async def get_keyword_clusters(min_cluster_size: int = 3) -> List[Dict[str, Any]
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -802,6 +826,12 @@ async def get_keyword_clusters(min_cluster_size: int = 3) -> List[Dict[str, Any]
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"클러스터 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class KeywordUpdate(BaseModel):
@@ -818,6 +848,7 @@ async def update_keyword(keyword: str, update: KeywordUpdate) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -875,6 +906,12 @@ async def update_keyword(keyword: str, update: KeywordUpdate) -> Dict[str, str]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.delete("/keywords/{keyword}")
@@ -884,6 +921,7 @@ async def delete_keyword(keyword: str) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -906,6 +944,12 @@ async def delete_keyword(keyword: str) -> Dict[str, str]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/export")
@@ -918,6 +962,7 @@ async def export_keywords(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -967,6 +1012,12 @@ async def export_keywords(
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -989,6 +1040,7 @@ async def generate_content_calendar(weeks: int = 12) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1089,6 +1141,12 @@ async def generate_content_calendar(weeks: int = 12) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1124,21 +1182,11 @@ async def generate_keyword_outline(request: OutlineRequest) -> Dict[str, Any]:
         if not keywords:
             raise HTTPException(status_code=400, detail="키워드가 필요합니다")
 
-        # Gemini로 아웃라인 생성 시도
+        # AI로 아웃라인 생성 시도
         try:
-            from google import genai
-            from google.genai import types
+            from services.ai_client import ai_generate_json
 
-            # API 키 로드
-            config_path = os.path.join(parent_dir, 'config', 'config.json')
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            api_key = config.get('gemini_api_key', os.getenv('GEMINI_API_KEY'))
-
-            if api_key:
-                client = genai.Client(api_key=api_key)
-
-                prompt = f"""당신은 한의원 마케팅 전문가입니다.
+            prompt = f"""당신은 한의원 마케팅 전문가입니다.
 다음 키워드들을 모두 자연스럽게 포함하는 블로그 콘텐츠 아웃라인을 작성해주세요.
 
 타겟 키워드: {', '.join(keywords[:5])}
@@ -1160,31 +1208,17 @@ async def generate_keyword_outline(request: OutlineRequest) -> Dict[str, Any]:
 
 중요: JSON만 출력하세요. 다른 텍스트는 포함하지 마세요."""
 
-                response = client.models.generate_content(
-                    model="gemini-3-flash-preview",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=1000
-                    )
-                )
+            outline = ai_generate_json(prompt, temperature=0.7, max_tokens=1000)
 
-                result_text = response.text.strip()
-                # JSON 추출
-                if "```json" in result_text:
-                    result_text = result_text.split("```json")[1].split("```")[0]
-                elif "```" in result_text:
-                    result_text = result_text.split("```")[1].split("```")[0]
-
-                outline = json.loads(result_text)
+            if outline:
                 outline["keywords"] = keywords[:5]
                 outline["cluster_name"] = cluster_name
-                outline["source"] = "gemini"
+                outline["source"] = "ai"
 
                 return {"outline": outline, "success": True}
 
         except Exception as e:
-            logger.warning(f"[generate-outline] Gemini 실패, 템플릿 사용: {e}")
+            logger.warning(f"[generate-outline] AI 실패, 템플릿 사용: {e}")
 
         # Gemini 실패 시 기본 템플릿 사용
         main_keyword = keywords[0] if keywords else "한의원"
@@ -1246,6 +1280,7 @@ async def get_scan_history(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1321,6 +1356,12 @@ async def get_scan_history(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/scan-history/{run_id}")
@@ -1336,6 +1377,7 @@ async def get_scan_run_detail(run_id: int) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1399,6 +1441,12 @@ async def get_scan_run_detail(run_id: int) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/scan-history")
@@ -1422,6 +1470,7 @@ async def create_scan_run(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1439,6 +1488,12 @@ async def create_scan_run(
     except Exception as e:
         logger.error(f"[create-scan-run] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.put("/scan-history/{run_id}")
@@ -1463,6 +1518,7 @@ async def update_scan_run(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1525,6 +1581,12 @@ async def update_scan_run(
     except Exception as e:
         logger.error(f"[update-scan-run] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1559,6 +1621,7 @@ async def start_incremental_scan(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1644,6 +1707,12 @@ async def start_incremental_scan(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/scan-status")
@@ -1658,6 +1727,7 @@ async def get_scan_status() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1731,6 +1801,12 @@ async def get_scan_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[scan-status] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1762,6 +1838,7 @@ async def get_content_suggestions(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1894,6 +1971,12 @@ async def get_content_suggestions(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1919,6 +2002,7 @@ async def get_top_kei_keywords(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1969,6 +2053,12 @@ async def get_top_kei_keywords(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/keywords/recalculate-kei")
@@ -1984,6 +2074,7 @@ async def recalculate_kei_values() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2026,3 +2117,9 @@ async def recalculate_kei_values() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

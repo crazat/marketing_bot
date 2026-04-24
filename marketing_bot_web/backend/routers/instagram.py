@@ -381,19 +381,7 @@ async def analyze_competitor_content(request: AnalysisRequest = None) -> Dict[st
         AI 분석 결과
     """
     try:
-        from google import genai
-        from google.genai import types
-
-        from utils import ConfigManager
-
-        # Gemini API 설정
-        config = ConfigManager()
-        api_key = config.get_api_key('GEMINI_API_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="Gemini API 키가 설정되지 않았습니다")
-
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
+        from services.ai_client import ai_generate
 
         # DB에서 최근 데이터 가져오기
         db = DatabaseManager()
@@ -475,16 +463,7 @@ async def analyze_competitor_content(request: AnalysisRequest = None) -> Dict[st
 
 간결하고 실용적으로 작성해주세요."""
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=1500
-            )
-        )
-
-        analysis_result = response.text.strip()
+        analysis_result = ai_generate(prompt, temperature=0.7, max_tokens=1500)
 
         # 주요 추천 사항 추출 (간단한 파싱)
         recommendations = []

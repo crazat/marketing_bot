@@ -58,7 +58,7 @@ export default function CompetitorVitals({ vitals }: CompetitorVitalsProps) {
           <tbody>
             {competitors.map((comp: any, index: number) => (
               <tr
-                key={index}
+                key={comp.name ?? comp.id ?? `comp-${index}`}
                 className="border-b border-border hover:bg-accent/50 transition-colors"
               >
                 <td className="px-4 py-3 font-medium">{comp.name}</td>

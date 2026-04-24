@@ -1,12 +1,23 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { viralApi, hudApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import ErrorState from '@/components/ui/ErrorState'
 import type { FilterState, ScanBatch } from '@/components/viral/FilterBar'
 import { HomeView, WorkView, ListView, CompletionView } from '@/components/viral/views'
+import ShortcutsOverlay from '@/components/viral/ShortcutsOverlay'
+import SkipReasonModal from '@/components/viral/SkipReasonModal'
+import BulkConfirmModal, { type BulkAction } from '@/components/ui/BulkConfirmModal'
 import { ViralTargetData as ViralTarget } from '@/types/viral'
 import { useLoadingState } from '@/hooks/useLoadingState'
+import { getToastErrorMessage } from '@/utils/errorMessages'
+import { useRecentItems } from '@/hooks/useRecentItems'
+import { useResumeState } from '@/hooks/useResumeState'
+import { useOfflineQueue } from '@/hooks/useOfflineQueue'
+import { invalidateViralAll, invalidateViralAndLeads } from '@/lib/queryInvalidation'
+import { useActionJournal } from '@/hooks/useActionJournal'
+import { useFatigueDetector } from '@/hooks/useFatigueDetector'
 
 export default function ViralHunter() {
   const [view, setView] = useState<'home' | 'list' | 'work' | 'completion'>('home')
@@ -21,17 +32,54 @@ export default function ViralHunter() {
     deleted: 0,
   })
   const [scanningModule, setScanningModule] = useState<string | null>(null)
+  // [U3] 단축키 도움말 오버레이
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  // [F2] 스킵 사유 모달 (target_id 저장)
+  const [skipReasonFor, setSkipReasonFor] = useState<string | null>(null)
   const [showScanSettings, setShowScanSettings] = useState(false)
   const [scanSettings, setScanSettings] = useState({
     platforms: ['cafe', 'blog', 'kin', 'place', 'karrot', 'youtube', 'instagram', 'tiktok'] as string[],
     maxResults: 500,
   })
 
+  // [X2] URL 쿼리 → filters 초기값
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filtersFromUrl: FilterState = (() => {
+    const platforms = searchParams.get('platforms')
+    return {
+      status: searchParams.get('status') ?? 'pending',
+      sort: searchParams.get('sort') ?? 'priority',
+      category: searchParams.get('category') ?? undefined,
+      comment_status: searchParams.get('comment_status') ?? undefined,
+      date_filter: searchParams.get('date_filter') ?? undefined,
+      search: searchParams.get('search') ?? undefined,
+      scan_batch: searchParams.get('scan_batch') ?? undefined,
+      platforms: platforms ? platforms.split(',').filter(Boolean) : undefined,
+      min_scan_count: searchParams.get('min_scan_count')
+        ? Number(searchParams.get('min_scan_count'))
+        : undefined,
+    }
+  })()
+
   // 필터 상태
-  const [filters, setFilters] = useState<FilterState>({
-    status: 'pending',
-    sort: 'priority',
-  })
+  const [filters, setFilters] = useState<FilterState>(filtersFromUrl)
+
+  // [X2] filters 변경 시 URL 동기화 (view === 'list' 일 때만 의미 있음)
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (filters.status && filters.status !== 'pending') params.set('status', filters.status)
+    if (filters.sort && filters.sort !== 'priority') params.set('sort', filters.sort)
+    if (filters.category) params.set('category', filters.category)
+    if (filters.comment_status) params.set('comment_status', filters.comment_status)
+    if (filters.date_filter) params.set('date_filter', filters.date_filter)
+    if (filters.search) params.set('search', filters.search)
+    if (filters.scan_batch) params.set('scan_batch', filters.scan_batch)
+    if (filters.platforms && filters.platforms.length > 0) {
+      params.set('platforms', filters.platforms.join(','))
+    }
+    if (filters.min_scan_count) params.set('min_scan_count', String(filters.min_scan_count))
+    setSearchParams(params, { replace: true })
+  }, [filters, setSearchParams])
 
   // 홈 화면 스캔 배치 필터
   const [homeScanBatch, setHomeScanBatch] = useState<string>('')
@@ -48,9 +96,15 @@ export default function ViralHunter() {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
 
-  // [Phase 6.0] 일괄 검증 상태
+  // [Phase 6.0] 일괄 검증 상태 + [F5] 진행률
   const [isVerifying, setIsVerifying] = useState(false)
-  const [verifyLimit, setVerifyLimit] = useState(50)  // 기본 50개
+  const [verifyLimit, setVerifyLimit] = useState(50)
+  const [verifyProgress, setVerifyProgress] = useState<{
+    status: 'queued' | 'running' | 'done' | 'error'
+    total: number
+    commentable: number
+    not_commentable: number
+  } | null>(null)
   const [verifyResults, setVerifyResults] = useState<{
     total: number
     commentable: number
@@ -76,6 +130,61 @@ export default function ViralHunter() {
 
   const queryClient = useQueryClient()
   const toast = useToast()
+  const { record: recordRecent } = useRecentItems()
+  const { initial: resumeInitial, record: recordResume, clear: clearResume } = useResumeState('viral-hunter')
+  const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false)
+  const { log: logJournal } = useActionJournal()
+  const { markAction: markFatigueAction } = useFatigueDetector()
+
+  // [Y5] 오프라인 액션 큐 — mutation 실패 시 또는 오프라인 중 저장
+  const dedupeCountRef = useRef(0)
+  const { queue: offlineQueue, isOnline, enqueue: enqueueOffline, clearQueue: clearOfflineQueue } = useOfflineQueue(
+    async (action) => {
+      if (action.kind === 'viral_action') {
+        const resp = await viralApi.targetAction(
+          action.payload.target_id,
+          action.payload.action,
+          action.payload.comment,
+          action.payload.skip_reason,
+          action.payload.skip_note,
+          action.id, // [AA4] idempotency key — 큐 entry ID 재사용
+        )
+        // [DD3] 서버가 중복 감지하면 조용히 카운트만 집계
+        if (resp?.deduplicated) {
+          dedupeCountRef.current += 1
+        }
+      }
+    },
+    {
+      onFlushSuccess: (count) => {
+        const deduped = dedupeCountRef.current
+        dedupeCountRef.current = 0
+        if (deduped > 0) {
+          toast.success(
+            `📡 ${count}건 전송 완료 (이미 처리된 ${deduped}건은 제외)`,
+          )
+        } else {
+          toast.success(`📡 오프라인 중 쌓인 ${count}건을 전송했습니다`)
+        }
+        invalidateViralAndLeads(queryClient)
+      },
+      onActionFailed: (action) => {
+        toast.error(`❌ 재전송 실패: 타겟 #${action.payload.target_id} ${action.payload.action}`)
+      },
+    },
+  )
+
+  // [X7] view/category/expandedTargetId 변경 시 resume 상태 저장
+  useEffect(() => {
+    if (view === 'work' && selectedCategory) {
+      recordResume({
+        view,
+        category: selectedCategory,
+        expandedTargetId,
+        label: `${selectedCategory} 카테고리 작업`,
+      })
+    }
+  }, [view, selectedCategory, expandedTargetId, recordResume])
 
   // 전체 통계
   const { data: stats, isError: statsError } = useQuery({
@@ -93,12 +202,16 @@ export default function ViralHunter() {
     retry: 2,
   })
 
-  // 실행 중인 모듈 조회 (페이지 로드 시 상태 복원)
+  // 실행 중인 모듈 조회 - 적응형 폴링 (스캔 중 5초, 유휴 시 60초)
   const { data: runningModules, isError: runningModulesError } = useQuery({
     queryKey: ['running-modules'],
     queryFn: () => hudApi.getRunningModules().catch(() => ({ running: [] })),
-    refetchInterval: 30000, // 30초마다 확인 (서버 부하 감소)
-    staleTime: 5000, // 5초간 캐시
+    refetchInterval: (query) => {
+      const data = query.state.data as { running?: string[] } | undefined
+      const hasRunningScan = data?.running && data.running.length > 0
+      return hasRunningScan ? 5000 : 60000
+    },
+    staleTime: 3000,
     retry: 1,
   })
 
@@ -124,20 +237,20 @@ export default function ViralHunter() {
     retry: 2,
   })
 
-  // 필터링된 타겟 (list view용)
-  // comment_status가 선택되면 해당 값을 status로 사용, 아니면 기본 status 사용
+  // 필터링된 타겟 (list view용) - 서버 페이지네이션
   const effectiveStatus = filters.comment_status || filters.status || 'pending'
+  const offset = (currentPage - 1) * pageSize
   const {
     data: filteredTargets,
     isLoading: isLoadingFiltered,
     isFetching: isFetchingFiltered,
     isError: filteredTargetsError
   } = useQuery({
-    queryKey: ['viral-filtered-targets', filters],
+    queryKey: ['viral-filtered-targets', filters, currentPage, pageSize],
     queryFn: () => viralApi.getTargets(
       effectiveStatus,
       undefined,
-      1000,
+      pageSize,
       {
         date_filter: filters.date_filter,
         platforms: filters.platforms,
@@ -146,10 +259,32 @@ export default function ViralHunter() {
         search: filters.search,
         sort: filters.sort,
         scan_batch: filters.scan_batch,
+        offset,
       }
-    ).catch(() => ({ targets: [], total: 0 })),
+    ).catch(() => []),
     enabled: view === 'list',
-    staleTime: 60000, // [Phase 7] 30초 → 60초
+    staleTime: 60000,
+    retry: 1,
+    placeholderData: (prev: unknown) => prev,
+  })
+
+  // 총 개수 조회 (필터 조건만 변경 시 재조회, 페이지 변경 시 재사용)
+  const { data: totalCountData } = useQuery({
+    queryKey: ['viral-filtered-targets-count', filters],
+    queryFn: () => viralApi.getTargetsCount(
+      effectiveStatus,
+      undefined,
+      {
+        date_filter: filters.date_filter,
+        platforms: filters.platforms,
+        category: filters.category,
+        min_scan_count: filters.min_scan_count,
+        search: filters.search,
+        scan_batch: filters.scan_batch,
+      }
+    ).catch(() => ({ total: 0 })),
+    enabled: view === 'list',
+    staleTime: 60000,
     retry: 1,
   })
 
@@ -202,8 +337,8 @@ export default function ViralHunter() {
       toast.success(`바이럴 스캔 시작! (${data.platforms?.length || 0}개 플랫폼, 최대 ${data.max_results === 0 ? '무제한' : data.max_results + '개'})`)
       setScanningModule('viral_hunter')
     },
-    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(`스캔 실패: ${error.response?.data?.detail || error.message}`)
+    onError: (error: Error) => {
+      toast.error(getToastErrorMessage(error, '스캔 실패'))
       setScanningModule(null)
     },
   })
@@ -219,8 +354,8 @@ export default function ViralHunter() {
       }
       queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
     },
-    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(`검증 실패: ${error.response?.data?.detail || error.message}`)
+    onError: (error: Error) => {
+      toast.error(getToastErrorMessage(error, '검증 실패'))
     },
   })
 
@@ -228,25 +363,58 @@ export default function ViralHunter() {
     verifyTargetMutation.mutate(targetId)
   }
 
-  // [Phase 6.0] 일괄 검증 핸들러
+  // [F5] 일괄 검증 핸들러 — 백그라운드 job + 폴링
   const handleBatchVerify = useCallback(async (category?: string, limit = 20) => {
     setIsVerifying(true)
     setVerifyResults(null)
+    setVerifyProgress({ status: 'queued', total: 0, commentable: 0, not_commentable: 0 })
     try {
-      const result = await viralApi.verifyBatch(category, limit)
-      setVerifyResults({
-        total: result.total,
-        commentable: result.commentable,
-        not_commentable: result.not_commentable
-      })
-      toast.success(`검증 완료: ${result.commentable}/${result.total} 댓글 가능`)
-      queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
-      queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
+      const start = await viralApi.verifyBatchStart(category, limit)
+      const jobId = start.job_id
+
+      const POLL_INTERVAL = 2000  // 2초
+      const MAX_POLLS = 300       // 최대 10분
+      let polls = 0
+
+      while (polls < MAX_POLLS) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL))
+        polls += 1
+        try {
+          const status = await viralApi.verifyBatchStatus(jobId)
+          setVerifyProgress({
+            status: status.status,
+            total: status.total,
+            commentable: status.commentable,
+            not_commentable: status.not_commentable,
+          })
+          if (status.status === 'done') {
+            setVerifyResults({
+              total: status.total,
+              commentable: status.commentable,
+              not_commentable: status.not_commentable,
+            })
+            toast.success(`검증 완료: ${status.commentable}/${status.total} 댓글 가능`)
+            queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
+            queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
+            break
+          }
+          if (status.status === 'error') {
+            toast.error(`검증 실패: ${status.error ?? '알 수 없는 오류'}`)
+            break
+          }
+        } catch (pollErr) {
+          // 일시 네트워크 오류는 계속 폴링
+          console.warn('[verify] poll error', pollErr)
+        }
+      }
+      if (polls >= MAX_POLLS) {
+        toast.warning('검증이 오래 걸립니다. 완료 시 새로고침하세요.')
+      }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류'
-      toast.error(`일괄 검증 실패: ${errorMessage}`)
+      toast.error(getToastErrorMessage(error, '일괄 검증 시작 실패'))
     } finally {
       setIsVerifying(false)
+      setVerifyProgress(null)
     }
   }, [toast, queryClient])
 
@@ -282,6 +450,34 @@ export default function ViralHunter() {
     setSelectedTargets(new Set())
   }, [])
 
+  // [V2] KPI 카드 클릭 → 해당 필터 적용 후 ListView 진입
+  const handleKpiNavigate = useCallback(
+    (target: 'pending' | 'today_processed' | 'week_processed' | 'hot_pending') => {
+      let next: FilterState
+      switch (target) {
+        case 'pending':
+          next = { status: 'pending', sort: 'priority' }
+          break
+        case 'hot_pending':
+          next = { status: 'pending', sort: 'priority', min_scan_count: undefined }
+          // HOT LEAD는 priority_score 100+ — 현재 FilterState엔 점수 필터 없으므로 정렬만 priority로
+          break
+        case 'today_processed':
+          // 오늘 승인된 것 중심 (가장 많이 보고 싶은 상태)
+          next = { status: 'posted', sort: 'date', date_filter: '오늘' }
+          break
+        case 'week_processed':
+          next = { status: 'posted', sort: 'date', date_filter: '최근 7일' }
+          break
+      }
+      setFilters(next)
+      setCurrentPage(1)
+      setSelectedTargets(new Set())
+      setView('list')
+    },
+    []
+  )
+
   // 스캔 중지 핸들러
   const stopScan = useCallback(async () => {
     try {
@@ -289,8 +485,7 @@ export default function ViralHunter() {
       toast.info('스캔 중지 요청됨')
       setScanningModule(null)
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류'
-      toast.error(`스캔 중지 실패: ${errorMessage}`)
+      toast.error(getToastErrorMessage(error, '스캔 중지 실패'))
     }
   }, [toast])
 
@@ -345,8 +540,7 @@ export default function ViralHunter() {
         toast.warning(`⚠️ ${failCount}개 타겟 댓글 생성 실패`)
       }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류'
-      toast.error(`AI 댓글 생성 실패: ${errorMessage}`)
+      toast.error(getToastErrorMessage(error, 'AI 댓글 생성 실패'))
     } finally {
       setIsGeneratingComments(false)
       setGenerationProgress(null)
@@ -381,6 +575,16 @@ export default function ViralHunter() {
       setExpandedTargetId(null)
     } else {
       setExpandedTargetId(targetId)
+      // [U5] 최근 본 바이럴 타겟 기록
+      const target = categoryTargets.find((t) => t.id === targetId)
+      if (target) {
+        recordRecent({
+          id: String(target.id),
+          kind: 'viral_target',
+          label: target.title?.slice(0, 50) || '타겟',
+          path: `/viral?search=${encodeURIComponent(target.title || '')}`,
+        })
+      }
     }
   }
 
@@ -395,15 +599,25 @@ export default function ViralHunter() {
         toast.success(`AI 댓글이 생성되었습니다 (${styleName} 스타일)`)
       }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류'
-      toast.error(`댓글 생성 실패: ${errorMessage}`)
+      toast.error(getToastErrorMessage(error, '댓글 생성 실패'))
     } finally {
       setGeneratingTargetId(null)
     }
   }
 
   // 타겟 액션 처리 (승인/건너뛰기/삭제) - Optimistic Updates
-  const handleTargetAction = async (targetId: string, action: string) => {
+  const handleTargetAction = async (
+    targetId: string,
+    action: string,
+    skipReason?: string,
+    skipNote?: string,
+  ) => {
+    // [F2] skip 액션이면 사유 모달 먼저 띄움 (reason이 이미 전달되면 바로 진행)
+    if (action === 'skip' && !skipReason) {
+      setSkipReasonFor(targetId)
+      return
+    }
+
     const comment = expandedComments[targetId]
 
     // 낙관적 업데이트: 즉시 UI 반영
@@ -420,8 +634,19 @@ export default function ViralHunter() {
       setCompletionStats(prev => ({ ...prev, deleted: prev.deleted + 1 }))
     }
 
-    setCategoryTargets(prev => prev.filter(t => t.id !== targetId))
-    setExpandedTargetId(null)
+    // [U2] Inbox Zero 루프: 처리한 타겟 바로 다음 타겟으로 자동 이동
+    const remaining = categoryTargets.filter(t => t.id !== targetId)
+    setCategoryTargets(remaining)
+
+    // 자동 이동 대상 선정 (현재 위치 기준 다음, 없으면 이전)
+    const currentIndex = categoryTargets.findIndex(t => t.id === targetId)
+    let nextTargetId: string | null = null
+    if (currentIndex >= 0) {
+      const next = remaining[currentIndex] ?? remaining[currentIndex - 1] ?? remaining[0] ?? null
+      nextTargetId = next?.id ?? null
+    }
+    setExpandedTargetId(nextTargetId)
+
     setExpandedComments(prev => {
       const newComments = { ...prev }
       delete newComments[targetId]
@@ -434,8 +659,8 @@ export default function ViralHunter() {
     }
 
     try {
-      // 실제 API 호출
-      const result = await viralApi.targetAction(targetId, action, comment)
+      // 실제 API 호출 ([F2] skip 사유 학습 포함)
+      const result = await viralApi.targetAction(targetId, action, comment, skipReason, skipNote)
 
       // [Phase 8.0] 승인 시 리드 추적 모달 표시
       if (action === 'approve') {
@@ -449,46 +674,78 @@ export default function ViralHunter() {
       } else {
         const messages = {
           skip: '⏭️ 건너뜀',
-          delete: '🗑️ 삭제됨'
+          delete: '🗑️ 삭제됨',
+          reopen: '↩️ 복구됨'
         }
-        toast.success(messages[action as keyof typeof messages] || '완료')
+        // [U1] Undo 지원 — skip/delete는 6초 내 되돌리기 가능
+        if (action === 'skip' || action === 'delete') {
+          toast.action(
+            'success',
+            messages[action as keyof typeof messages] || '완료',
+            {
+              label: '되돌리기',
+              onClick: async () => {
+                try {
+                  await viralApi.targetAction(targetId, 'reopen')
+                  queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
+                  queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
+                  queryClient.invalidateQueries({ queryKey: ['viral-stats'] })
+                  toast.info('↩️ 복구했습니다')
+                } catch (err) {
+                  toast.error(getToastErrorMessage(err, '복구 실패'))
+                }
+              },
+            },
+          )
+        } else {
+          toast.success(messages[action as keyof typeof messages] || '완료')
+        }
       }
 
-      // 데이터 갱신
-      queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
-      queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
-      queryClient.invalidateQueries({ queryKey: ['viral-stats'] })
-      // 리드 데이터도 갱신 (승인 시)
+      // [BB1] 저널 기록
+      if (action === 'approve' || action === 'skip' || action === 'delete' || action === 'reopen') {
+        logJournal(action, selectedCategory ?? undefined)
+      }
+      // [BB5] 피로 감지
+      markFatigueAction()
+
+      // [AA2] 데이터 갱신 — 중앙 헬퍼 사용
       if (action === 'approve') {
-        queryClient.invalidateQueries({ queryKey: ['leads-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['leads-pending-alerts'] })
+        invalidateViralAndLeads(queryClient)
+      } else {
+        invalidateViralAll(queryClient)
       }
     } catch (error: unknown) {
-      // 에러 발생 시 롤백
-      setCategoryTargets(previousTargets)
-      setCompletionStats(previousStats)
-      setExpandedComments(previousComments)
-
-      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류'
-      toast.error(`❌ 에러: ${errorMessage}`)
+      // [Y5] 오프라인/네트워크 오류면 큐에 저장, 그 외는 롤백
+      const isNetworkError = !navigator.onLine || (error as { code?: string })?.code === 'ERR_NETWORK'
+      if (isNetworkError) {
+        enqueueOffline({
+          target_id: targetId,
+          action: action as 'approve' | 'skip' | 'delete',
+          comment,
+          skip_reason: skipReason,
+          skip_note: skipNote,
+        })
+        toast.warning(`📡 오프라인 감지 — 큐에 저장했습니다. 연결 복구 시 자동 전송`)
+        // UI는 낙관적 업데이트 유지 (롤백 X)
+      } else {
+        // 에러 발생 시 롤백
+        setCategoryTargets(previousTargets)
+        setCompletionStats(previousStats)
+        setExpandedComments(previousComments)
+        toast.error(getToastErrorMessage(error, '처리 실패'))
+      }
     }
   }
 
   const isScanning = scanningModule !== null || runScanMutation.isPending
 
-  // 필터링된 타겟 (list view용)
-  const allFilteredTargets = view === 'list' ? (filteredTargets || []) : []
-
-  // 페이지네이션 계산
-  const totalItems = allFilteredTargets.length
-  const totalPages = Math.ceil(totalItems / pageSize) || 1
+  // 필터링된 타겟 (list view용) - 서버 페이지네이션으로 이미 페이지 분량만 로드됨
+  const displayTargets: any[] = view === 'list' && Array.isArray(filteredTargets) ? filteredTargets : []
+  const totalItems = totalCountData?.total ?? displayTargets.length
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
   const safeCurrentPage = Math.min(currentPage, totalPages)
-
-  // 현재 페이지에 표시할 타겟
-  const displayTargets = allFilteredTargets.slice(
-    (safeCurrentPage - 1) * pageSize,
-    safeCurrentPage * pageSize
-  )
+  const allFilteredTargets: any[] = displayTargets
 
   // 페이지 변경 핸들러
   const handlePageChange = (page: number) => {
@@ -589,46 +846,131 @@ export default function ViralHunter() {
 
       setSelectedTargets(new Set())
     } catch (error) {
-      toast.error(`대량 액션 실패: ${error}`)
+      toast.error(getToastErrorMessage(error, '대량 액션 실패'))
     } finally {
       setIsProcessingBulk(false)
     }
   }
 
-  // 키보드 단축키 (work view)
+  // [X5] 대량 작업 확인 모달 상태
+  const [bulkAllConfirm, setBulkAllConfirm] = useState<BulkAction | null>(null)
+
+  // [F3] 필터 매칭 전체 대량 액션 — 모달 표시만
+  const handleBulkActionAll = useCallback((action: 'approve' | 'skip' | 'delete') => {
+    const total = totalCountData?.total ?? 0
+    if (total === 0) {
+      toast.warning('매칭되는 타겟이 없습니다')
+      return
+    }
+    setBulkAllConfirm(action)
+  }, [totalCountData, toast])
+
+  // [X5] 실제 실행 — 모달 확인 시
+  const executeBulkActionAll = useCallback(async () => {
+    if (!bulkAllConfirm) return
+    const action = bulkAllConfirm
+    const actionNames: Record<string, string> = {
+      approve: '승인', skip: '스킵', delete: '삭제',
+    }
+    setIsProcessingBulk(true)
+    try {
+      const result = await viralApi.bulkActionByFilter(action, {
+        status: filters.status,
+        comment_status: filters.comment_status,
+        category: filters.category,
+        date_filter: filters.date_filter,
+        platforms: filters.platforms,
+        min_scan_count: filters.min_scan_count,
+        search: filters.search,
+        scan_batch: filters.scan_batch,
+      })
+      toast.success(`✅ ${result.updated.toLocaleString()}건 ${actionNames[action]} 완료`)
+      queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
+      queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets-count'] })
+      queryClient.invalidateQueries({ queryKey: ['viral-kpi-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['viral-todays-queue'] })
+      setBulkAllConfirm(null)
+    } catch (err: unknown) {
+      toast.error(getToastErrorMessage(err, `일괄 ${actionNames[action]} 실패`))
+    } finally {
+      setIsProcessingBulk(false)
+    }
+  }, [bulkAllConfirm, filters, toast, queryClient])
+
+  // [U3] 전역 ? 단축키 (모든 view에서 도움말 토글)
+  useEffect(() => {
+    const handleGlobalHelp = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        e.preventDefault()
+        setShowShortcuts((prev) => !prev)
+      }
+    }
+    window.addEventListener('keydown', handleGlobalHelp)
+    return () => window.removeEventListener('keydown', handleGlobalHelp)
+  }, [])
+
+  // 키보드 단축키 (work view) — [U3] J/K/E/S/G + 액션
   useEffect(() => {
     if (view !== 'work') return
 
     const handleKeyPress = (e: KeyboardEvent) => {
-      // 입력 필드에서는 단축키 비활성화
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement
       ) {
         return
       }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
 
-      // 펼쳐진 타겟이 있을 때만
+      const key = e.key.toLowerCase()
+
+      // J / K : 다음/이전 타겟 이동 (expanded 유무 무관)
+      if (key === 'j' || key === 'k') {
+        e.preventDefault()
+        if (categoryTargets.length === 0) return
+        const currentIdx = expandedTargetId
+          ? categoryTargets.findIndex((t) => t.id === expandedTargetId)
+          : -1
+        const nextIdx =
+          key === 'j'
+            ? Math.min(categoryTargets.length - 1, currentIdx + 1)
+            : Math.max(0, currentIdx - 1)
+        setExpandedTargetId(categoryTargets[nextIdx]?.id ?? null)
+        return
+      }
+
       if (!expandedTargetId) return
 
-      switch (e.key.toLowerCase()) {
-        case 'a':
+      switch (key) {
+        case 'a': // Approve (기존 유지)
+        case 'e': // Approve (Gmail 관습)
           e.preventDefault()
           handleTargetAction(expandedTargetId, 'approve')
           break
-        case 's':
+        case 's': // Quick Skip (사유 없이)
           e.preventDefault()
-          handleTargetAction(expandedTargetId, 'skip')
+          if (e.shiftKey) {
+            // Shift+S → 사유 선택 모달
+            handleTargetAction(expandedTargetId, 'skip')
+          } else {
+            // S → 즉시 스킵
+            handleTargetAction(expandedTargetId, 'skip', 'unspecified')
+          }
           break
-        case 'd':
+        case 'd': // Delete
           e.preventDefault()
           handleTargetAction(expandedTargetId, 'delete')
           break
-        case ' ':
-        case 'space':
+        case 'g': // Generate comment
           e.preventDefault()
-          setExpandedTargetId(null)
+          handleGenerateComment(expandedTargetId, selectedCommentStyle)
           break
+        case ' ':
         case 'escape':
           e.preventDefault()
           setExpandedTargetId(null)
@@ -638,7 +980,7 @@ export default function ViralHunter() {
 
     window.addEventListener('keydown', handleKeyPress)
     return () => window.removeEventListener('keydown', handleKeyPress)
-  }, [view, expandedTargetId, expandedComments])
+  }, [view, expandedTargetId, categoryTargets, expandedComments, selectedCommentStyle])
 
   // 키보드 단축키 (list view)
   useEffect(() => {
@@ -719,60 +1061,173 @@ export default function ViralHunter() {
       )
     }
 
+    // [Y5] 오프라인 큐 배너 — 쌓인 액션이 있으면 표시
+    const showOfflineQueue = offlineQueue.length > 0
+
+    // [X7/DD5] Resume 배너 — 8시간 내 중단된 작업이 있으면 복귀 제안.
+    // 단, 최근 2분 이내 기록은 "현재 세션" 자기참조이므로 제외.
+    const MIN_AGE_FOR_RESUME_MS = 2 * 60_000
+    const showResumeBanner =
+      !resumeBannerDismissed &&
+      resumeInitial &&
+      resumeInitial.view === 'work' &&
+      resumeInitial.category &&
+      Date.now() - resumeInitial.timestamp > MIN_AGE_FOR_RESUME_MS
+
     return (
-      <HomeView
-        stats={stats || undefined}
-        homeStats={homeStats}
-        scanBatches={scanBatches}
-        platformStats={platformStats}
-        categoryStats={categoryStats}
-        scanningModule={scanningModule}
-        isScanning={isScanning}
-        showScanSettings={showScanSettings}
-        scanSettings={scanSettings}
-        homeScanBatch={homeScanBatch}
-        isVerifying={isVerifying}
-        verifyLimit={verifyLimit}
-        verifyResults={verifyResults}
-        onMissionComplete={handleMissionComplete}
-        onMissionStop={handleMissionStop}
-        onSelectCategory={handleSelectCategory}
-        onBatchVerify={handleBatchVerify}
-        onViewList={() => setView('list')}
-        onToggleScanSettings={() => setShowScanSettings(!showScanSettings)}
-        onScanSettingsChange={setScanSettings}
-        onVerifyLimitChange={setVerifyLimit}
-        onHomeScanBatchChange={setHomeScanBatch}
-        runScanMutation={runScanMutation}
-        stopScan={stopScan}
-      />
+      <>
+        {showOfflineQueue && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`mb-4 border p-3 flex items-center justify-between gap-2 text-sm flex-wrap ${
+              isOnline
+                ? 'border-blue-500/40 bg-blue-500/5 text-blue-700 dark:text-blue-300'
+                : 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="animate-pulse">●</span>
+              <span>
+                {isOnline
+                  ? `재전송 중 — 큐에 ${offlineQueue.length}건 대기`
+                  : `오프라인 — ${offlineQueue.length}건이 연결 복구 시 자동 전송됩니다`}
+              </span>
+            </div>
+            {/* [EE7] 영구 실패 정리용 수동 비우기 (2건 이상일 때만) */}
+            {offlineQueue.length >= 2 && (
+              <button
+                onClick={() => {
+                  if (window.confirm(`대기 중인 ${offlineQueue.length}건을 삭제할까요? 서버에 전송되지 않습니다.`)) {
+                    clearOfflineQueue()
+                    toast.info('오프라인 큐를 비웠습니다')
+                  }
+                }}
+                className="text-xs underline hover:opacity-70"
+              >
+                큐 비우기
+              </button>
+            )}
+          </div>
+        )}
+        {showResumeBanner && resumeInitial && (
+          <div className="mb-6 relative bg-card border border-primary/40 p-5 md:p-6 overflow-hidden">
+            <span
+              aria-hidden
+              className="absolute right-4 top-2 text-[6rem] leading-none font-display text-foreground/[0.04] select-none pointer-events-none"
+            >
+              續
+            </span>
+            <div className="relative flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="caps text-primary mb-2">이어서 작업하기</div>
+                <h3 className="font-display text-lg md:text-xl leading-tight mb-1">
+                  {resumeInitial.label ?? '지난번 작업'}에서 이어서 하시겠어요?
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  {Math.max(1, Math.round((Date.now() - resumeInitial.timestamp) / 60000))}분 전에 중단되었습니다.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (resumeInitial.category) handleSelectCategory(resumeInitial.category)
+                    setResumeBannerDismissed(true)
+                  }}
+                  className="px-4 py-2 text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  이어서 하기
+                </button>
+                <button
+                  onClick={() => {
+                    clearResume()
+                    setResumeBannerDismissed(true)
+                  }}
+                  className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  아니오
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        <HomeView
+          stats={stats || undefined}
+          homeStats={homeStats}
+          scanBatches={scanBatches}
+          platformStats={platformStats}
+          categoryStats={categoryStats}
+          scanningModule={scanningModule}
+          isScanning={isScanning}
+          showScanSettings={showScanSettings}
+          scanSettings={scanSettings}
+          homeScanBatch={homeScanBatch}
+          isVerifying={isVerifying}
+          verifyLimit={verifyLimit}
+          verifyResults={verifyResults}
+          onMissionComplete={handleMissionComplete}
+          onMissionStop={handleMissionStop}
+          onSelectCategory={handleSelectCategory}
+          onBatchVerify={handleBatchVerify}
+          onViewList={() => setView('list')}
+          onKpiNavigate={handleKpiNavigate}
+          onToggleScanSettings={() => setShowScanSettings(!showScanSettings)}
+          onScanSettingsChange={setScanSettings}
+          onVerifyLimitChange={setVerifyLimit}
+          onHomeScanBatchChange={setHomeScanBatch}
+          runScanMutation={runScanMutation}
+          stopScan={stopScan}
+        />
+        <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+        <SkipReasonModal
+          open={!!skipReasonFor}
+          onCancel={() => setSkipReasonFor(null)}
+          onConfirm={(reason, note) => {
+            const tid = skipReasonFor
+            setSkipReasonFor(null)
+            if (tid) handleTargetAction(tid, 'skip', reason, note)
+          }}
+        />
+      </>
     )
   }
 
   // 작업 화면 (아코디언 방식)
   if (view === 'work') {
     return (
-      <WorkView
-        selectedCategory={selectedCategory}
-        categoryTargets={categoryTargets}
-        templates={templates}
-        completionStats={completionStats}
-        expandedTargetId={expandedTargetId}
-        expandedComments={expandedComments}
-        generatingTargetId={generatingTargetId}
-        commentStyles={commentStyles}
-        selectedCommentStyle={selectedCommentStyle}
-        onGoHome={() => setView('home')}
-        onToggleExpand={toggleExpand}
-        onSetExpandedTargetId={setExpandedTargetId}
-        onSetExpandedComments={setExpandedComments}
-        onGenerateComment={handleGenerateComment}
-        onSetSelectedCommentStyle={setSelectedCommentStyle}
-        onTargetAction={handleTargetAction}
-        onVerifyTarget={handleVerifyTarget}
-        verifyTargetMutation={verifyTargetMutation}
-        toast={toast}
-      />
+      <>
+        <WorkView
+          selectedCategory={selectedCategory}
+          categoryTargets={categoryTargets}
+          templates={templates}
+          completionStats={completionStats}
+          expandedTargetId={expandedTargetId}
+          expandedComments={expandedComments}
+          generatingTargetId={generatingTargetId}
+          commentStyles={commentStyles}
+          selectedCommentStyle={selectedCommentStyle}
+          onGoHome={() => setView('home')}
+          onToggleExpand={toggleExpand}
+          onSetExpandedTargetId={setExpandedTargetId}
+          onSetExpandedComments={setExpandedComments}
+          onGenerateComment={handleGenerateComment}
+          onSetSelectedCommentStyle={setSelectedCommentStyle}
+          onTargetAction={handleTargetAction}
+          onVerifyTarget={handleVerifyTarget}
+          verifyTargetMutation={verifyTargetMutation}
+          toast={toast}
+        />
+        <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+        <SkipReasonModal
+          open={!!skipReasonFor}
+          onCancel={() => setSkipReasonFor(null)}
+          onConfirm={(reason, note) => {
+            const tid = skipReasonFor
+            setSkipReasonFor(null)
+            if (tid) handleTargetAction(tid, 'skip', reason, note)
+          }}
+        />
+      </>
     )
   }
 
@@ -804,63 +1259,111 @@ export default function ViralHunter() {
     }
 
     return (
-      <ListView
-        filters={filters}
-        scanBatches={scanBatches}
-        displayTargets={displayTargets}
-        allTargets={allFilteredTargets}
-        selectedTargets={selectedTargets}
-        isLoadingFiltered={isLoadingFiltered}
-        isRefreshing={filteredLoadingState.isRefreshing}
-        currentPage={safeCurrentPage}
-        totalPages={totalPages}
-        totalItems={totalItems}
-        pageSize={pageSize}
-        isVerifying={isVerifying}
-        verifyLimit={verifyLimit}
-        verifyResults={verifyResults}
-        isProcessingBulk={isProcessingBulk}
-        isGeneratingComments={isGeneratingComments}
-        generationProgress={generationProgress}
-        bulkActionConfirm={bulkActionConfirm}
-        leadTrackingModal={leadTrackingModal}
-        onGoHome={() => setView('home')}
-        onFilterChange={handleFilterChange}
-        onFilterReset={handleFilterReset}
-        onVerifyLimitChange={setVerifyLimit}
-        onBatchVerify={handleBatchVerify}
-        onToggleSelect={handleToggleSelect}
-        onToggleSelectAll={handleToggleSelectAll}
-        onBulkAction={handleBulkAction}
-        onBulkGenerateComments={handleBulkGenerateComments}
-        onClearSelection={() => setSelectedTargets(new Set())}
-        onSetExpandedTargetId={setExpandedTargetId}
-        onPageChange={handlePageChange}
-        onPageSizeChange={handlePageSizeChange}
-        onSetBulkActionConfirm={setBulkActionConfirm}
-        onExecuteBulkAction={executeBulkAction}
-        onSetLeadTrackingModal={setLeadTrackingModal}
-        toast={toast}
-      />
+      <>
+        <ListView
+          filters={filters}
+          scanBatches={scanBatches}
+          displayTargets={displayTargets}
+          allTargets={allFilteredTargets}
+          selectedTargets={selectedTargets}
+          isLoadingFiltered={isLoadingFiltered}
+          isRefreshing={filteredLoadingState.isRefreshing}
+          currentPage={safeCurrentPage}
+          totalPages={totalPages}
+          totalItems={totalItems}
+          pageSize={pageSize}
+          isVerifying={isVerifying}
+          verifyProgress={verifyProgress}
+          verifyLimit={verifyLimit}
+          verifyResults={verifyResults}
+          isProcessingBulk={isProcessingBulk}
+          isGeneratingComments={isGeneratingComments}
+          generationProgress={generationProgress}
+          bulkActionConfirm={bulkActionConfirm}
+          leadTrackingModal={leadTrackingModal}
+          onGoHome={() => setView('home')}
+          onFilterChange={handleFilterChange}
+          onFilterReset={handleFilterReset}
+          onVerifyLimitChange={setVerifyLimit}
+          onBatchVerify={handleBatchVerify}
+          onToggleSelect={handleToggleSelect}
+          onToggleSelectAll={handleToggleSelectAll}
+          onBulkAction={handleBulkAction}
+          onBulkActionAll={handleBulkActionAll}
+          onBulkGenerateComments={handleBulkGenerateComments}
+          onClearSelection={() => setSelectedTargets(new Set())}
+          onSetExpandedTargetId={setExpandedTargetId}
+          onPageChange={handlePageChange}
+          onPageSizeChange={handlePageSizeChange}
+          onSetBulkActionConfirm={setBulkActionConfirm}
+          onExecuteBulkAction={executeBulkAction}
+          onSetLeadTrackingModal={setLeadTrackingModal}
+          toast={toast}
+        />
+        <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+        <SkipReasonModal
+          open={!!skipReasonFor}
+          onCancel={() => setSkipReasonFor(null)}
+          onConfirm={(reason, note) => {
+            const tid = skipReasonFor
+            setSkipReasonFor(null)
+            if (tid) handleTargetAction(tid, 'skip', reason, note)
+          }}
+        />
+        {/* [X5] 대량 작업 미리보기 */}
+        <BulkConfirmModal
+          open={!!bulkAllConfirm}
+          action={bulkAllConfirm ?? 'approve'}
+          totalCount={totalCountData?.total ?? 0}
+          filterSummary={(() => {
+            const s: Array<{ label: string; value: string }> = []
+            if (filters.status) s.push({ label: '상태', value: filters.status })
+            if (filters.category) s.push({ label: '카테고리', value: filters.category })
+            if (filters.comment_status) s.push({ label: '댓글 상태', value: filters.comment_status })
+            if (filters.date_filter) s.push({ label: '기간', value: filters.date_filter })
+            if (filters.platforms?.length)
+              s.push({ label: '플랫폼', value: filters.platforms.join(', ') })
+            if (filters.search) s.push({ label: '검색어', value: filters.search })
+            if (filters.scan_batch) s.push({ label: '스캔 배치', value: filters.scan_batch })
+            if (s.length === 0) s.push({ label: '필터', value: '전체 (필터 없음)' })
+            return s
+          })()}
+          onConfirm={executeBulkActionAll}
+          onCancel={() => setBulkAllConfirm(null)}
+          isProcessing={isProcessingBulk}
+        />
+      </>
     )
   }
 
   // 완료 화면
   if (view === 'completion') {
     return (
-      <CompletionView
-        selectedCategory={selectedCategory}
-        completionStats={completionStats}
-        onGoHome={() => {
-          setView('home')
-          setSelectedCategory(null)
-          setExpandedTargetId(null)
-          setExpandedComments({})
-          setCategoryTargets([])
-          setCompletionStats({ approved: 0, skipped: 0, deleted: 0 })
-          queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
-        }}
-      />
+      <>
+        <CompletionView
+          selectedCategory={selectedCategory}
+          completionStats={completionStats}
+          onGoHome={() => {
+            setView('home')
+            setSelectedCategory(null)
+            setExpandedTargetId(null)
+            setExpandedComments({})
+            setCategoryTargets([])
+            setCompletionStats({ approved: 0, skipped: 0, deleted: 0 })
+            queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
+          }}
+        />
+        <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+        <SkipReasonModal
+          open={!!skipReasonFor}
+          onCancel={() => setSkipReasonFor(null)}
+          onConfirm={(reason, note) => {
+            const tid = skipReasonFor
+            setSkipReasonFor(null)
+            if (tid) handleTargetAction(tid, 'skip', reason, note)
+          }}
+        />
+      </>
     )
   }
 

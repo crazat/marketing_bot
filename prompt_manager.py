@@ -10,10 +10,15 @@ Features:
 """
 
 import os
+import sys
 import json
 import re
 import logging
 from typing import Dict, Any, List, Optional
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate
 
 logger = logging.getLogger("PromptManager")
 
@@ -151,27 +156,6 @@ class BatchProcessor:
     def __init__(self, batch_size: int = 10):
         self.batch_size = batch_size
         self.prompt_manager = PromptManager()
-        
-        # Lazy load AI client
-        self._client = None
-        self._model_name = None
-    
-    def _get_client(self):
-        """Initialize AI client lazily."""
-        if self._client is None:
-            from google import genai
-            from utils import ConfigManager
-            
-            config = ConfigManager()
-            api_key = config.get_api_key()
-            
-            if api_key:
-                self._client = genai.Client(api_key=api_key)
-                self._model_name = config.get_model_name("flash")
-            else:
-                logger.error("No API key available for BatchProcessor")
-        
-        return self._client, self._model_name
     
     def process_leads(self, leads: List[Dict]) -> List[Dict]:
         """
@@ -213,40 +197,34 @@ class BatchProcessor:
     
     def _process_batch(self, batch: List[Dict]) -> List[Dict]:
         """Process a single batch of leads."""
-        client, model_name = self._get_client()
-        
-        if not client:
-            return [{'id': l.get('id', 0), 'summary': 'No AI client', 'score': 'Cold', 'reply': ''} for l in batch]
-        
         # Format leads for batch prompt
         leads_formatted = self._format_leads(batch)
-        
+
         # Get batch prompt
         prompt_info = self.prompt_manager.get(
             'cafe_spy', 'batch_lead_analysis',
             count=len(batch),
             leads_formatted=leads_formatted
         )
-        
+
         # Make AI call
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt_info['prompt'],
-                config={'temperature': prompt_info['temperature']}
+            response_text = ai_generate(
+                prompt_info['prompt'],
+                temperature=prompt_info['temperature']
             )
-            
+
             # Track API usage
             try:
                 from api_tracker import get_tracker
-                tokens = len(prompt_info['prompt']) // 4 + len(response.text) // 4
-                get_tracker().log_call('gemini', 'batch_lead_analysis', tokens=tokens, success=True)
+                tokens = len(prompt_info['prompt']) // 4 + len(response_text) // 4
+                get_tracker().log_call('ai_client', 'batch_lead_analysis', tokens=tokens, success=True)
             except Exception:
                 pass
-            
+
             # Parse response
-            return self._parse_batch_response(response.text, batch)
-            
+            return self._parse_batch_response(response_text, batch)
+
         except Exception as e:
             logger.error(f"Batch AI call failed: {e}")
             raise

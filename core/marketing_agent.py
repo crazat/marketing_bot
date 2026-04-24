@@ -18,7 +18,11 @@ from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
+
+from services.ai_client import ai_generate, ai_generate_json
 
 logger = logging.getLogger(__name__)
 
@@ -119,39 +123,9 @@ class MarketingAgent:
         logger.info(f"MarketingAgent initialized (mode: {approval_mode.value}, daily_limit: {self.DAILY_AI_CALL_LIMIT})")
 
     def _init_ai(self):
-        """AI 클라이언트 초기화"""
-        try:
-            from google import genai
-            from google.genai import types
-
-            secrets_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                'config', 'secrets.json'
-            )
-
-            api_key = None
-            if os.path.exists(secrets_path):
-                with open(secrets_path, 'r') as f:
-                    secrets = json.load(f)
-                    api_key = secrets.get('GEMINI_API_KEY') or secrets.get('GOOGLE_API_KEY')
-
-            if not api_key:
-                api_key = os.environ.get('GOOGLE_API_KEY')
-
-            if api_key:
-                self.ai_client = genai.Client(api_key=api_key)
-                self.model_name = "gemini-3-flash-preview"  # CLAUDE.md 규칙
-                self.generation_config = types.GenerateContentConfig(
-                    temperature=0.3,
-                    top_p=0.85
-                )
-                logger.info("AI client initialized successfully")
-            else:
-                logger.warning("No API key found, AI features disabled")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize AI client: {e}")
-            self.ai_client = None
+        """AI 클라이언트 초기화 - ai_client 모듈 사용"""
+        self.ai_client = True  # ai_client module handles initialization
+        logger.info("AI client initialized via centralized ai_client module")
 
     def _init_knowledge_base(self):
         """지식 베이스 초기화"""
@@ -385,22 +359,11 @@ class MarketingAgent:
 """
 
         try:
-            response = self.ai_client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=self.generation_config
-            )
+            result = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
 
-            result_text = response.text.strip()
-
-            # JSON 추출
-            json_match = result_text
-            if "```json" in result_text:
-                json_match = result_text.split("```json")[1].split("```")[0]
-            elif "```" in result_text:
-                json_match = result_text.split("```")[1].split("```")[0]
-
-            result = json.loads(json_match)
+            if not result:
+                logger.warning("AI JSON generation returned None, falling back to rule-based")
+                return self._rule_based_analyze(event_type, event_data)
 
             analysis = result.get("analysis", "분석 결과 없음")
             actions = []

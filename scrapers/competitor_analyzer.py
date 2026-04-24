@@ -52,16 +52,16 @@ class GapKeyword:
     priority: float
 
 
-class CompetitorAnalyzer:
-    """경쟁사 블로그 분석기"""
+from scrapers.common import BaseScraperMixin, default_headers, rate_limited_session
+
+
+class CompetitorAnalyzer(BaseScraperMixin):
+    """경쟁사 블로그 분석기. [X2] scrapers.common 사용."""
 
     def __init__(self, delay: float = 1.0):
-        self.delay = delay
-        self._last_call = 0
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "ko-KR,ko;q=0.9",
-        }
+        super().__init__(delay=delay)
+        self.session = rate_limited_session()
+        self.headers = default_headers()
 
         # 청주 지역 키워드
         self.region_keywords = [
@@ -88,11 +88,7 @@ class CompetitorAnalyzer:
         # 의도 키워드
         self.intent_keywords = ["가격", "비용", "후기", "추천", "잘하는", "좋은", "유명한", "효과"]
 
-    def _rate_limit(self):
-        elapsed = time.time() - self._last_call
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self._last_call = time.time()
+    # [X2] _rate_limit은 BaseScraperMixin에서 상속 — 별도 정의 제거
 
     def _parse_date(self, date_str: str) -> Tuple[str, int]:
         """날짜 문자열 파싱 -> (날짜문자열, 경과일)"""

@@ -6,12 +6,17 @@ YouTube/커뮤니티 댓글에서 진짜 잠재 고객을 찾아냅니다.
 - 노이즈(홍보, 감상, 짧은 댓글) 적극 필터링
 """
 import os
+import sys
 import re
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
 
 from utils import ConfigManager, logger
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate_json
 
 
 class LeadIntent(Enum):
@@ -173,17 +178,6 @@ class LeadClassifier:
     def __init__(self, use_nlp: bool = True):
         self.use_nlp = use_nlp
         self.config = ConfigManager()
-        self.llm_client = None
-
-        if use_nlp:
-            try:
-                from google import genai
-                api_key = self.config.get_api_key()
-                if api_key:
-                    self.llm_client = genai.Client(api_key=api_key)
-                    self.model_name = self.config.get_model_name("flash")
-            except Exception as e:
-                logger.warning(f"NLP 분류기 초기화 실패: {e}")
 
     def _should_exclude(self, text: str) -> tuple[bool, str]:
         """제외 패턴 체크"""
@@ -327,7 +321,7 @@ class LeadClassifier:
 
         # HIGH만 NLP 사용
         nlp_used = False
-        if self.use_nlp and self.llm_client and priority == LeadPriority.HIGH:
+        if self.use_nlp and priority == LeadPriority.HIGH:
             nlp_result = self._classify_with_nlp(text)
             if nlp_result:
                 intent = nlp_result['intent']
@@ -344,9 +338,6 @@ class LeadClassifier:
 
     def _classify_with_nlp(self, text: str) -> Optional[dict]:
         """NLP 의도 분류"""
-        if not self.llm_client:
-            return None
-
         prompt = f"""청주 규림한의원의 잠재 고객 여부를 판단하세요.
 
 댓글: "{text}"
@@ -361,14 +352,10 @@ class LeadClassifier:
 JSON으로 응답: {{"intent": "purchase|inquiry|comparison|review|none", "confidence": 0.0-1.0, "reason": "판단 이유"}}
 """
         try:
-            response = self.llm_client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
+            result = ai_generate_json(prompt, temperature=0.3)
 
-            import json
-            text_response = response.text.replace("```json", "").replace("```", "").strip()
-            result = json.loads(text_response)
+            if not result:
+                return None
 
             intent_map = {
                 "purchase": LeadIntent.PURCHASE,

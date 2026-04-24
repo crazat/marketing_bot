@@ -20,12 +20,14 @@ project_root = os.path.dirname(current_dir)
 
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
 
 # Now standard imports should work if running from root or scrapers/
 try:
     from db.database import DatabaseManager
     from utils import logger, ConfigManager
     from alert_bot import TelegramBot
+    from services.ai_client import ai_generate
 except ImportError:
     # This might happen if project structure is totally different, but sys.path insert shields us
     print("⚠️ Import Error: Check directory structure.")
@@ -407,25 +409,7 @@ class CafeSpy:
     
     def _fallback_individual_analysis(self, leads: list) -> dict:
         """Fallback to individual AI calls if batch processing fails."""
-        from google import genai
-        from google.genai import types
-
         results = {}
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-        try:
-            config = ConfigManager(project_root)
-            api_key = config.get_api_key("GEMINI_API_KEY")
-        except Exception as e:
-            logger.warning(f"API 키 로드 실패: {e}")
-            return {i: {'summary': 'No API key', 'score': 'Unknown', 'reply': ''} for i in range(len(leads))}
-
-        if not api_key:
-            return {i: {'summary': 'No API key', 'score': 'Unknown', 'reply': ''} for i in range(len(leads))}
-
-        client = genai.Client(api_key=api_key)
-        model_name = "gemini-3-flash-preview"
-        generation_config = types.GenerateContentConfig(temperature=0.5)
 
         for i, lead in enumerate(leads):
             try:
@@ -436,27 +420,22 @@ class CafeSpy:
                                      author=lead.get('author', 'Unknown'),
                                      body=(lead.get('body', '') or '')[:1000])
 
-                res = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt_info['prompt'],
-                    config=generation_config
-                )
-                text = res.text.strip() if res.text else ""
-                
+                text = ai_generate(prompt_info['prompt'], temperature=0.5, max_tokens=4096)
+
                 # Parse response
                 summary_match = re.search(r'SUMMARY[:\s]*(.*?)(?=SCORE|$)', text, re.IGNORECASE | re.DOTALL)
                 score_match = re.search(r'SCORE[:\s]*(\w+)', text, re.IGNORECASE)
                 reply_match = re.search(r'REPLY[:\s]*(.*?)(?=---|\Z)', text, re.IGNORECASE | re.DOTALL)
-                
+
                 results[i] = {
                     'summary': summary_match.group(1).strip() if summary_match else '요약 없음',
                     'score': score_match.group(1).strip() if score_match else 'Unknown',
                     'reply': reply_match.group(1).strip() if reply_match else '분석 실패'
                 }
-                
+
             except Exception as e:
                 results[i] = {'summary': f'Error: {str(e)[:50]}', 'score': 'Unknown', 'reply': ''}
-        
+
         return results
 
     def _init_driver(self):

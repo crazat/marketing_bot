@@ -31,6 +31,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
 
 # Windows console encoding fix
 if sys.platform.startswith('win'):
@@ -38,42 +39,22 @@ if sys.platform.startswith('win'):
 
 from db.database import DatabaseManager
 from utils import ConfigManager
+from services.ai_client import ai_generate, ai_generate_json
 
 logger = logging.getLogger(__name__)
 
 
 class ReviewNLPAnalyzer:
-    """Gemini AI를 활용한 경쟁사 리뷰 심층 분석기"""
+    """AI를 활용한 경쟁사 리뷰 심층 분석기"""
 
-    BATCH_SIZE = 20  # Gemini 토큰 제한을 고려한 배치 크기
-    RATE_LIMIT_DELAY = 2.0  # Gemini API 호출 간격 (초)
+    BATCH_SIZE = 20  # 토큰 제한을 고려한 배치 크기
+    RATE_LIMIT_DELAY = 2.0  # API 호출 간격 (초)
 
     def __init__(self):
         self.db = DatabaseManager()
         self.config = ConfigManager()
-        self.client = None
-        self.generation_config = None
-        self._init_gemini()
+        self.ai_available = True
         self._ensure_table()
-
-    def _init_gemini(self):
-        """Gemini AI 클라이언트를 초기화합니다."""
-        try:
-            from google import genai
-            from google.genai import types
-
-            api_key = self.config.get_api_key("GEMINI_API_KEY")
-            if not api_key:
-                logger.error("GEMINI_API_KEY가 설정되지 않았습니다.")
-                return
-
-            self.client = genai.Client(api_key=api_key)
-            self.generation_config = types.GenerateContentConfig(temperature=0.3)
-            logger.info("Gemini AI 클라이언트 초기화 완료")
-        except ImportError:
-            logger.error("google-genai 패키지가 설치되어 있지 않습니다.")
-        except Exception as e:
-            logger.error(f"Gemini 초기화 실패: {e}")
 
     def _ensure_table(self):
         """review_nlp_analysis 테이블이 없으면 생성합니다."""
@@ -239,10 +220,6 @@ JSON 형식으로 응답:
 
     def analyze_competitor(self, competitor_name: str, reviews: List[Dict]) -> Optional[Dict]:
         """단일 경쟁사의 리뷰를 분석합니다."""
-        if not self.client:
-            logger.error("Gemini 클라이언트가 초기화되지 않았습니다.")
-            return None
-
         total_reviews = len(reviews)
         batches = [reviews[i:i + self.BATCH_SIZE] for i in range(0, total_reviews, self.BATCH_SIZE)]
         total_batches = len(batches)
@@ -256,22 +233,15 @@ JSON 형식으로 응답:
             prompt = self._build_prompt(competitor_name, batch, batch_num, total_batches)
 
             try:
-                response = self.client.models.generate_content(
-                    model='gemini-3-flash-preview',
-                    contents=prompt,
-                    config=self.generation_config
-                )
-                text = response.text
-                raw_responses.append(text)
-
-                parsed = self._parse_json_response(text)
+                parsed = ai_generate_json(prompt, temperature=0.3)
                 if parsed:
+                    raw_responses.append(json.dumps(parsed, ensure_ascii=False))
                     batch_results.append(parsed)
                 else:
                     logger.warning(f"  [{competitor_name}] 배치 {batch_num} JSON 파싱 실패")
 
             except Exception as e:
-                logger.error(f"  [{competitor_name}] 배치 {batch_num} Gemini 호출 실패: {e}")
+                logger.error(f"  [{competitor_name}] 배치 {batch_num} AI 호출 실패: {e}")
                 logger.debug(traceback.format_exc())
 
             # Rate limit
@@ -346,9 +316,6 @@ JSON 형식으로 응답:
 
     def run(self):
         """전체 경쟁사에 대해 리뷰 NLP 분석을 수행합니다."""
-        if not self.client:
-            print("Gemini AI 클라이언트를 초기화할 수 없습니다. GEMINI_API_KEY를 확인하세요.")
-            return
 
         # 리뷰 로드
         reviews_by_competitor = self._load_reviews()

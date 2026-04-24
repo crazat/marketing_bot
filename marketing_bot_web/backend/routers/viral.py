@@ -42,83 +42,24 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
-# [P2-3] 검증 결과 캐시 (1시간) - [안정성 개선] TTL 기반 자동 정리
-_verification_cache: Dict[str, Dict[str, Any]] = {}
-_verification_cache_lock = threading.Lock()  # 스레드 안전을 위한 lock
-_cache_ttl = 3600  # 1시간
-_cache_max_size = 1000  # 최대 캐시 항목 수
-_cache_cleanup_threshold = 800  # 이 수에 도달하면 정리 시작
-
-# [Phase 7] 템플릿 캐시 (5분 TTL) - DB 부하 감소
-_templates_cache: Dict[str, tuple[List[Dict], float]] = {}
-_templates_cache_lock = threading.Lock()
-_templates_cache_ttl = 300  # 5분
-_last_cleanup_time = 0.0
-
-
-def _cleanup_expired_cache():
-    """
-    [안정성 개선] 만료된 캐시 항목 정리
-    - TTL이 지난 항목 모두 제거
-    - 메모리 누수 방지
-    """
-    global _last_cleanup_time
-    current_time = time.time()
-
-    # 마지막 정리 후 5분 이내면 스킵 (과도한 정리 방지)
-    if current_time - _last_cleanup_time < 300:
-        return
-
-    expired_keys = [
-        key for key, value in _verification_cache.items()
-        if current_time - value.get('cached_at', 0) >= _cache_ttl
-    ]
-
-    for key in expired_keys:
-        del _verification_cache[key]
-
-    _last_cleanup_time = current_time
-
-    if expired_keys:
-        logger.debug(f"캐시 정리 완료: {len(expired_keys)}개 만료 항목 제거, 남은 항목: {len(_verification_cache)}")
+# [U3] 검증 결과 캐시는 services/viral_service.VerificationCache로 이관됨.
+# 기존 API 호환을 위해 thin wrapper 유지.
+from services.viral_service import _verification_cache as _svc_verification_cache
 
 
 def _get_cached_verification(url: str) -> Optional[Dict[str, Any]]:
-    """캐시된 검증 결과 반환 (없거나 만료되면 None)"""
-    if url in _verification_cache:
-        cached = _verification_cache[url]
-        if time.time() - cached.get('cached_at', 0) < _cache_ttl:
-            return cached['result']
-        else:
-            # 만료된 항목 즉시 제거
-            del _verification_cache[url]
-    return None
+    """캐시된 검증 결과 — services.viral_service.VerificationCache로 위임."""
+    return _svc_verification_cache.get(url)
 
 
 def _set_cache_verification(url: str, result: Dict[str, Any]):
-    """검증 결과를 캐시에 저장"""
-    current_time = time.time()
+    """검증 결과를 캐시에 저장 — services.viral_service.VerificationCache로 위임."""
+    _svc_verification_cache.set(url, result)
 
-    _verification_cache[url] = {
-        'result': result,
-        'cached_at': current_time
-    }
 
-    # [안정성 개선] 임계값 도달 시 만료 캐시 정리
-    if len(_verification_cache) >= _cache_cleanup_threshold:
-        _cleanup_expired_cache()
-
-    # 정리 후에도 최대 크기 초과 시 가장 오래된 20% 제거
-    if len(_verification_cache) > _cache_max_size:
-        # 시간순 정렬 후 오래된 20% 제거
-        sorted_items = sorted(
-            _verification_cache.items(),
-            key=lambda x: x[1].get('cached_at', 0)
-        )
-        items_to_remove = len(_verification_cache) - int(_cache_max_size * 0.8)
-        for key, _ in sorted_items[:items_to_remove]:
-            del _verification_cache[key]
-        logger.debug(f"캐시 크기 제한으로 {items_to_remove}개 항목 제거")
+# [AA4] Idempotency 캐시 — 프로세스 로컬. key → 처리 시점(epoch).
+# 10분 TTL로 오래된 항목은 /action 호출 시 청소.
+_idempotency_cache: Dict[str, float] = {}
 
 # [코드 품질 개선] 공통 경로 설정 사용
 backend_dir = str(Path(__file__).parent.parent)
@@ -156,75 +97,8 @@ def get_db_path():
 # UTM 매개변수는 자체 마케팅 활동의 효과를 측정하기 위해 사용됩니다.
 # 수집 정보: 유입 경로(source), 매체 유형(medium), 캠페인명(campaign)
 # 이 정보는 어떤 콘텐츠가 효과적인지 분석하는 데만 사용됩니다.
-# 개인정보는 수집하지 않습니다.
-#
-# UTM 추적을 비활성화하려면 아래 값을 False로 변경하세요.
-UTM_TRACKING_ENABLED = True
-# =======================================================================
-
-
-def _generate_utm_url(base_url: str, source: str = "viral_hunter",
-                       medium: str = "comment", campaign: str = "",
-                       content: str = "", term: str = "") -> str:
-    """
-    [Phase 4.0] UTM 매개변수가 포함된 URL 생성
-
-    [투명성 안내]
-    이 기능은 마케팅 활동의 효과 측정 목적으로 UTM 파라미터를 추가합니다.
-    - 개인정보 수집 없음
-    - 유입 경로 분석용
-    - UTM_TRACKING_ENABLED = False로 비활성화 가능
-
-    Args:
-        base_url: 원본 URL
-        source: 유입 소스 (예: viral_hunter)
-        medium: 매체 유형 (예: comment, reply)
-        campaign: 캠페인명 (예: 카테고리명)
-        content: 콘텐츠 구분 (예: template_id)
-        term: 검색어/키워드
-
-    Returns:
-        UTM 매개변수가 추가된 URL (비활성화 시 원본 URL 반환)
-    """
-    # UTM 추적이 비활성화되면 원본 URL 반환
-    if not UTM_TRACKING_ENABLED:
-        return base_url
-    if not base_url:
-        return ""
-
-    try:
-        parsed = urlparse(base_url)
-        existing_params = parse_qs(parsed.query)
-
-        utm_params = {
-            'utm_source': source,
-            'utm_medium': medium,
-        }
-
-        if campaign:
-            utm_params['utm_campaign'] = campaign
-        if content:
-            utm_params['utm_content'] = content
-        if term:
-            utm_params['utm_term'] = term
-
-        # 기존 파라미터와 병합
-        existing_params.update({k: [v] for k, v in utm_params.items()})
-
-        # 새 쿼리스트링 생성
-        new_query = urlencode({k: v[0] for k, v in existing_params.items()})
-
-        return urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            new_query,
-            parsed.fragment
-        ))
-    except Exception as e:
-        print(f"[UTM Error] {str(e)}")
-        return base_url
+# [T2] UTM 관련 로직(UTM_TRACKING_ENABLED 상수, _generate_utm_url, UTMRequest 등)은
+# routers/viral_utm.py로 이관됨. 필요 시 `from routers.viral_utm import ...`로 사용.
 
 
 def _create_lead_from_viral(db: DatabaseManager, target_id: str) -> bool:
@@ -328,6 +202,30 @@ class TargetActionRequest(BaseModel):
     target_id: str = Field(..., min_length=1, max_length=100)
     action: TargetAction
     comment: Optional[str] = Field(None, max_length=2000)
+    # [D2] skip 액션에 사유 태그 (도메인/작성자 감점 학습용)
+    skip_reason: Optional[str] = Field(None, max_length=50)
+    skip_note: Optional[str] = Field(None, max_length=500)
+    # [AA4] Idempotency 키 — 오프라인 큐 중복 방지
+    idempotency_key: Optional[str] = Field(None, max_length=64)
+
+
+class BulkActionByFilterRequest(BaseModel):
+    """[F3] 필터 조건으로 매칭되는 전체 타겟에 대한 대량 액션."""
+    action: TargetAction
+    # 필터 (GET /targets와 동일)
+    status: str = "pending"
+    category: Optional[str] = None
+    date_filter: Optional[str] = None
+    platforms: Optional[List[str]] = None
+    comment_status: Optional[str] = None
+    min_scan_count: Optional[int] = None
+    search: Optional[str] = None
+    scan_batch: Optional[str] = None
+    # 안전장치
+    max_affected: int = Field(default=10000, ge=1, le=100000)
+    dry_run: bool = False
+    # 선택: skip 사유 (모든 타겟에 공통 적용)
+    skip_reason: Optional[str] = Field(None, max_length=50)
 
 
 class VerifyTargetRequest(BaseModel):
@@ -956,7 +854,8 @@ async def get_viral_targets(
     search: Optional[str] = None,
     sort: Optional[str] = None,
     scan_batch: Optional[str] = None,  # 스캔 배치 필터 (YYYY-MM-DD HH 형식)
-    limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수")
+    limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
+    offset: int = Query(default=0, ge=0, description="페이지 오프셋")
 ) -> List[Dict[str, Any]]:
     """
     바이럴 타겟 목록 조회 (필터링 및 정렬 지원)
@@ -977,39 +876,368 @@ async def get_viral_targets(
         타겟 목록
     """
     try:
-        hunter = get_viral_hunter()
+        # [S1] ViralTargetRepository로 위임 — hunter.list_targets 경유 제거
+        from repositories import ViralTargetRepository
+        repo = ViralTargetRepository(get_db_path())
 
-        # platforms 파라미터를 리스트로 변환
         platforms_list = None
         if platforms:
             platforms_list = [p.strip() for p in platforms.split(',') if p.strip()]
 
-        targets = hunter.list_targets(
-            status=status,
-            category=category,
-            date_filter=date_filter,
-            platforms=platforms_list,
-            comment_status=comment_status,
-            min_scan_count=min_scan_count,
-            search=search,
-            sort=sort,
-            scan_batch=scan_batch,
-            limit=limit
-        )
+        filters = {k: v for k, v in {
+            "status": status,
+            "category": category,
+            "date_filter": date_filter,
+            "platforms": platforms_list,
+            "comment_status": comment_status,
+            "min_scan_count": min_scan_count,
+            "search": search,
+            "scan_batch": scan_batch,
+        }.items() if v is not None}
 
-        # matched_keywords를 JSON 문자열에서 배열로 변환
-        for target in targets:
-            if 'matched_keywords' in target and isinstance(target['matched_keywords'], str):
-                try:
-                    target['matched_keywords'] = json.loads(target['matched_keywords'])
-                except (json.JSONDecodeError, TypeError):
-                    target['matched_keywords'] = []
+        targets = repo.list(
+            filters=filters,
+            sort=sort or "priority",
+            limit=limit,
+            offset=offset,
+        )
+        # matched_keywords는 Repository에서 이미 list로 디코드됨 — 추가 변환 불필요
 
         return targets
 
     except Exception as e:
         print(f"[Viral Targets Error] {str(e)}")
         raise HTTPException(status_code=500, detail=f"바이럴 타겟 조회 실패: {str(e)}")
+
+
+def _record_skip_learning(db, target_id: str, reason_tag: str, note: Optional[str]) -> None:
+    """[R4] viral_service로 위임 — 하위 호환용 thin wrapper."""
+    from services.viral_service import record_skip_learning as _svc
+    _svc(db, target_id, reason_tag, note)
+
+
+@router.get("/adaptive-penalties")
+async def get_adaptive_penalties(min_skip: int = Query(default=3, ge=1)) -> Dict[str, Any]:
+    """[D2/R4] 반복 skip된 도메인·작성자 목록. viral_service로 위임."""
+    try:
+        from services.viral_service import fetch_adaptive_penalties
+        return {"items": fetch_adaptive_penalties(get_db_path(), min_skip=min_skip)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/kpi-stats")
+async def get_kpi_stats(days: int = Query(default=14, ge=1, le=90)) -> Dict[str, Any]:
+    """[U6] KPI 위젯용 통계 — 일/주 처리량, 적체, 적합률.
+
+    응답:
+    {
+      "daily": [{date, approved, posted, skipped, new_hot}, ...],
+      "summary": {
+        "backlog_pending": N,
+        "backlog_hot": N,
+        "today_processed": N,
+        "week_processed": N,
+        "ai_accept_rate": 0.52,
+      },
+      "range_days": 14
+    }
+    """
+    db_path = get_db_path()
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # 일별 시계열: last_scanned_at 또는 discovered_at 기준
+        cur.execute(
+            """
+            SELECT DATE(COALESCE(last_scanned_at, discovered_at)) as day,
+                   SUM(CASE WHEN comment_status = 'approved' THEN 1 ELSE 0 END) as approved,
+                   SUM(CASE WHEN comment_status = 'posted'   THEN 1 ELSE 0 END) as posted,
+                   SUM(CASE WHEN comment_status = 'skipped'  THEN 1 ELSE 0 END) as skipped,
+                   SUM(CASE WHEN priority_score >= 100 THEN 1 ELSE 0 END) as new_hot
+            FROM viral_targets
+            WHERE COALESCE(last_scanned_at, discovered_at) >= datetime('now', ?)
+            GROUP BY day
+            ORDER BY day
+            """,
+            (f"-{days} days",)
+        )
+        daily = [dict(r) for r in cur.fetchall()]
+
+        # 적체 (대기 중)
+        cur.execute("SELECT COUNT(*) FROM viral_targets WHERE comment_status = 'pending'")
+        backlog_pending = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*) FROM viral_targets "
+            "WHERE comment_status = 'pending' AND priority_score >= 100"
+        )
+        backlog_hot = cur.fetchone()[0]
+
+        # 오늘/1주 처리량 (승인+게시+스킵)
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM viral_targets
+            WHERE comment_status IN ('approved', 'posted', 'skipped')
+              AND DATE(last_scanned_at) = DATE('now', 'localtime')
+            """
+        )
+        today_processed = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM viral_targets
+            WHERE comment_status IN ('approved', 'posted', 'skipped')
+              AND last_scanned_at >= datetime('now', '-7 days')
+            """
+        )
+        week_processed = cur.fetchone()[0]
+
+        # AI 적합률 (최근 Ndays 내 등록된 것 중 approved 비율)
+        cur.execute(
+            """
+            SELECT
+              SUM(CASE WHEN comment_status IN ('approved','posted') THEN 1 ELSE 0 END) as accepted,
+              COUNT(*) as total
+            FROM viral_targets
+            WHERE discovered_at >= datetime('now', ?)
+            """,
+            (f"-{days} days",)
+        )
+        r = cur.fetchone()
+        accepted = r[0] or 0
+        total = r[1] or 0
+        ai_accept_rate = (accepted / total) if total else 0.0
+
+        return {
+            "range_days": days,
+            "daily": daily,
+            "summary": {
+                "backlog_pending": backlog_pending,
+                "backlog_hot": backlog_hot,
+                "today_processed": today_processed,
+                "week_processed": week_processed,
+                "ai_accept_rate": round(ai_accept_rate, 3),
+            },
+        }
+    except Exception as e:
+        logger.error(f"[kpi-stats] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/targets/{target_id}/context")
+async def get_target_context(target_id: str) -> Dict[str, Any]:
+    """단일 타겟에 대한 컨텍스트 카드 데이터 (과노출·경쟁사·이력).
+
+    - 동일 도메인 내 최근 7일 내 내가 댓글 단 건수
+    - 동일 작성자에 대한 최근 7일 댓글 건수
+    - 경쟁사 여부 (category == '경쟁사_역공략')
+    - 동일 URL 스캔 횟수 (scan_count)
+    """
+    db_path = get_db_path()
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT id, url, author, category, scan_count, priority_score "
+            "FROM viral_targets WHERE id = ?",
+            (target_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="타겟 없음")
+        target = dict(row)
+
+        # 도메인 추출
+        from urllib.parse import urlparse
+        domain = urlparse(target["url"] or "").netloc.replace("www.", "")
+
+        # 동일 도메인 내 7일간 내가 댓글 달았던(승인/posted) 건수
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM viral_targets
+            WHERE comment_status IN ('approved', 'posted')
+              AND discovered_at >= datetime('now', '-7 days')
+              AND url LIKE ?
+              AND id != ?
+            """,
+            (f"%{domain}%", target_id),
+        )
+        domain_recent_approved = cursor.fetchone()[0] if domain else 0
+
+        # 동일 작성자 최근 댓글 이력 (같은 author 또는 동일 카페명)
+        author_recent_approved = 0
+        if target.get("author"):
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM viral_targets
+                WHERE comment_status IN ('approved', 'posted')
+                  AND discovered_at >= datetime('now', '-7 days')
+                  AND author = ?
+                  AND id != ?
+                """,
+                (target["author"], target_id),
+            )
+            author_recent_approved = cursor.fetchone()[0]
+
+        warnings: List[str] = []
+        if domain_recent_approved >= 3:
+            warnings.append(
+                f"⚠️ 최근 7일간 동일 도메인({domain})에 댓글 {domain_recent_approved}건 작성 — 과노출 주의"
+            )
+        if author_recent_approved >= 2:
+            warnings.append(
+                f"⚠️ 동일 작성자/카페 댓글 최근 {author_recent_approved}건 — 반복 노출 주의"
+            )
+        if (target.get("scan_count") or 0) >= 3:
+            warnings.append(
+                f"🔁 이 게시글은 {target['scan_count']}회 스캔됨 — 재발견 HOT LEAD 가능성"
+            )
+
+        badges: List[Dict[str, str]] = []
+        if target.get("category") == "경쟁사_역공략":
+            badges.append({"type": "competitor", "label": "⚔️ 경쟁사 역공략", "color": "orange"})
+        if (target.get("priority_score") or 0) >= 120:
+            badges.append({"type": "tier1", "label": "🔥 Tier 1", "color": "red"})
+        elif (target.get("priority_score") or 0) >= 100:
+            badges.append({"type": "tier2", "label": "🟠 Tier 2", "color": "amber"})
+
+        return {
+            "target_id": target_id,
+            "domain": domain,
+            "domain_recent_approved_7d": domain_recent_approved,
+            "author_recent_approved_7d": author_recent_approved,
+            "scan_count": target.get("scan_count") or 0,
+            "badges": badges,
+            "warnings": warnings,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[target context] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/todays-queue")
+async def get_todays_queue(
+    total_limit: int = Query(default=30, ge=5, le=100),
+    per_category: int = Query(default=5, ge=1, le=20),
+    today_only: bool = Query(default=True, description="오늘 발견된 것만 (기본 True)"),
+) -> Dict[str, Any]:
+    """오늘 작업할 Top N 카테고리별 묶음 큐.
+
+    기본: comment_status='pending' + 우선순위 DESC 상위 30건을 카테고리별로 묶음.
+    [V1] today_only=True(기본)이면 오늘(로컬 시간) 발견된 것만.
+
+    응답:
+    {
+      "total": 30,
+      "today_only": true,
+      "generated_at": "...",
+      "groups": [...]
+    }
+    """
+    db_path = get_db_path()
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        query = """
+            SELECT id, platform, url, title, content_preview, matched_keywords,
+                   category, priority_score, discovered_at, author, matched_keyword
+            FROM viral_targets
+            WHERE comment_status = 'pending'
+              AND priority_score >= 80
+        """
+        params: List[Any] = []
+        if today_only:
+            query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+        query += " ORDER BY priority_score DESC, discovered_at DESC LIMIT ?"
+        params.append(total_limit)
+        cursor.execute(query, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        # matched_keywords JSON 파싱
+        for r in rows:
+            if isinstance(r.get("matched_keywords"), str):
+                try:
+                    r["matched_keywords"] = json.loads(r["matched_keywords"])
+                except Exception:
+                    r["matched_keywords"] = []
+
+        # 카테고리별 그룹핑 (per_category 상한 적용)
+        groups_map: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            cat = r.get("category") or "기타"
+            groups_map.setdefault(cat, []).append(r)
+
+        groups = []
+        for cat, items in sorted(groups_map.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            groups.append({
+                "category": cat,
+                "count": len(items),
+                "items": items[:per_category],
+            })
+
+        return {
+            "total": len(rows),
+            "today_only": today_only,
+            "generated_at": datetime.now().isoformat(),
+            "groups": groups,
+        }
+    except Exception as e:
+        logger.error(f"[todays-queue] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/targets/count")
+async def count_viral_targets(
+    status: str = "pending",
+    category: Optional[str] = None,
+    date_filter: Optional[str] = None,
+    platforms: Optional[str] = None,
+    comment_status: Optional[str] = None,
+    min_scan_count: Optional[int] = None,
+    search: Optional[str] = None,
+    scan_batch: Optional[str] = None,
+) -> Dict[str, int]:
+    """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
+
+    ViralTargetRepository로 위임 — 쿼리 빌더·연결 관리를 Repository가 담당.
+    """
+    try:
+        from repositories import ViralTargetRepository
+        repo = ViralTargetRepository(get_db_path())
+        filters = {
+            "status": status,
+            "category": category,
+            "date_filter": date_filter,
+            "platforms": platforms,
+            "comment_status": comment_status,
+            "min_scan_count": min_scan_count,
+            "search": search,
+            "scan_batch": scan_batch,
+        }
+        total = repo.count({k: v for k, v in filters.items() if v is not None})
+        return {"total": total}
+    except Exception as e:
+        logger.error(f"[Viral Targets Count Error] {e}")
+        raise HTTPException(status_code=500, detail=f"카운트 조회 실패: {e}")
+
 
 @router.get("/categories")
 async def get_viral_categories() -> List[Dict[str, Any]]:
@@ -1151,8 +1379,11 @@ async def generate_comment(request: CommentGenerateRequest) -> Dict[str, Any]:
             priority_score=target_data.get('priority_score', 0)
         )
 
-        # 댓글 생성 (스타일 적용)
-        comment = hunter.generator.generate(target, style=request.style)
+        # [D3] 댓글 생성을 threadpool로 offload하여 이벤트 루프 비블로킹
+        loop = asyncio.get_event_loop()
+        comment = await loop.run_in_executor(
+            None, lambda: hunter.generator.generate(target, style=request.style)
+        )
 
         if comment:
             return {
@@ -1591,8 +1822,203 @@ async def verify_batch_selenium(
             conn.close()
 
 
+_verify_jobs: Dict[str, Dict[str, Any]] = {}
+_verify_jobs_lock = threading.Lock()
+
+
+def _new_verify_job() -> str:
+    import uuid
+    job_id = uuid.uuid4().hex[:12]
+    with _verify_jobs_lock:
+        _verify_jobs[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "total": 0,
+            "commentable": 0,
+            "not_commentable": 0,
+            "failed": 0,
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "error": None,
+        }
+    return job_id
+
+
+async def _run_verify_job(job_id: str, category: Optional[str], limit: int) -> None:
+    """[D5] 백그라운드에서 verify-batch 실행 + 진행률 업데이트."""
+    try:
+        with _verify_jobs_lock:
+            _verify_jobs[job_id]["status"] = "running"
+        # 기존 동기 로직 재사용 (inline 호출)
+        result = await verify_batch(category=category, limit=limit, _internal=True)
+        with _verify_jobs_lock:
+            _verify_jobs[job_id].update({
+                "status": "done",
+                "total": result.get("total", 0),
+                "commentable": result.get("commentable", 0),
+                "not_commentable": result.get("not_commentable", 0),
+                "failed": result.get("failed", 0),
+                "progress": 100,
+                "finished_at": datetime.now().isoformat(),
+            })
+    except Exception as e:
+        with _verify_jobs_lock:
+            _verify_jobs[job_id].update({
+                "status": "error",
+                "error": str(e),
+                "finished_at": datetime.now().isoformat(),
+            })
+
+
+@router.post("/bulk-action-by-filter")
+async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any]:
+    """[F3] 필터 조건에 매칭되는 모든 타겟에 일괄 액션 (skip/approve/delete/posted).
+
+    WHERE 절을 재사용하여 단일 UPDATE로 처리. 안전을 위해 max_affected 상한 적용.
+    - dry_run=true: 매칭 개수만 반환, 변경 없음
+    """
+    db_path = get_db_path()
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # WHERE 절 구성 (GET /targets/count와 동일 로직)
+        where = "WHERE 1=1"
+        params: List[Any] = []
+        effective_status = req.comment_status if req.comment_status else req.status
+        if effective_status:
+            where += " AND comment_status = ?"
+            params.append(effective_status)
+        if req.platforms:
+            placeholders = ','.join(['?'] * len(req.platforms))
+            where += f" AND platform IN ({placeholders})"
+            params.extend(req.platforms)
+        if req.category:
+            where += " AND category = ?"
+            params.append(req.category)
+        if req.scan_batch:
+            where += " AND strftime('%Y-%m-%d %H', discovered_at) = ?"
+            params.append(req.scan_batch)
+        elif req.date_filter:
+            if req.date_filter == "오늘":
+                where += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+            elif req.date_filter == "최근 7일":
+                where += " AND discovered_at >= datetime('now', '-7 days')"
+            elif req.date_filter == "최근 30일":
+                where += " AND discovered_at >= datetime('now', '-30 days')"
+        if req.min_scan_count and req.min_scan_count > 0:
+            where += " AND scan_count >= ?"
+            params.append(req.min_scan_count)
+        if req.search:
+            where += " AND (title LIKE ? OR content_preview LIKE ?)"
+            pattern = f"%{req.search}%"
+            params.extend([pattern, pattern])
+
+        # 매칭 개수 확인
+        cursor.execute(f"SELECT COUNT(*) FROM viral_targets {where}", params)
+        matched = cursor.fetchone()[0]
+
+        if matched > req.max_affected:
+            raise HTTPException(
+                status_code=400,
+                detail=f"매칭 {matched}건이 max_affected({req.max_affected})를 초과합니다. 필터를 좁히거나 max_affected를 조정하세요."
+            )
+
+        if req.dry_run:
+            return {"matched": matched, "updated": 0, "dry_run": True}
+
+        # 액션에 따른 comment_status 매핑
+        action_map = {
+            'approve': 'posted',
+            'skip': 'skipped',
+            'delete': 'deleted',
+            'pending': 'pending',
+            'generated': 'generated',
+            'posted': 'posted',
+            'skipped': 'skipped',
+        }
+        new_status = action_map.get(req.action)
+        if not new_status:
+            raise HTTPException(status_code=400, detail=f"지원하지 않는 action: {req.action}")
+
+        # skip 학습: 사유 일괄 기록 (샘플 최대 100건, 너무 많으면 학습 품질 낮음)
+        if req.action == 'skip' and req.skip_reason:
+            cursor.execute(
+                f"SELECT id, url, author FROM viral_targets {where} LIMIT 100",
+                params,
+            )
+            sample_rows = cursor.fetchall()
+            from urllib.parse import urlparse
+            now = datetime.now().isoformat()
+            for (tid, url, author) in sample_rows:
+                cursor.execute(
+                    "INSERT INTO viral_skip_reasons(target_id, reason_tag, note) VALUES(?,?,?)",
+                    (tid, req.skip_reason, "(bulk)"),
+                )
+                domain = urlparse(url or '').netloc.replace('www.', '')
+                if domain:
+                    cursor.execute(
+                        """
+                        INSERT INTO viral_adaptive_penalties(key_type, key_value, skip_count, last_updated)
+                        VALUES('domain', ?, 1, ?)
+                        ON CONFLICT(key_type, key_value) DO UPDATE
+                        SET skip_count = skip_count + 1, last_updated = excluded.last_updated
+                        """,
+                        (domain, now),
+                    )
+                if author:
+                    cursor.execute(
+                        """
+                        INSERT INTO viral_adaptive_penalties(key_type, key_value, skip_count, last_updated)
+                        VALUES('author', ?, 1, ?)
+                        ON CONFLICT(key_type, key_value) DO UPDATE
+                        SET skip_count = skip_count + 1, last_updated = excluded.last_updated
+                        """,
+                        (author, now),
+                    )
+
+        # 단일 UPDATE로 일괄 처리
+        cursor.execute(
+            f"UPDATE viral_targets SET comment_status = ? {where}",
+            [new_status] + params,
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        return {"matched": matched, "updated": updated, "dry_run": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[bulk-action-by-filter] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/verify-batch/start")
+async def verify_batch_start(
+    background: BackgroundTasks,
+    category: Optional[str] = None,
+    limit: int = 20,
+) -> Dict[str, str]:
+    """[D5] verify-batch를 백그라운드로 실행하고 job_id 즉시 반환."""
+    job_id = _new_verify_job()
+    background.add_task(_run_verify_job, job_id, category, limit)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/verify-batch/status/{job_id}")
+async def verify_batch_status(job_id: str) -> Dict[str, Any]:
+    with _verify_jobs_lock:
+        job = _verify_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
 @router.post("/verify-batch")
-async def verify_batch(category: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+async def verify_batch(category: Optional[str] = None, limit: int = 20, _internal: bool = False) -> Dict[str, Any]:
     """
     [Phase 4.0 + P2-3] 여러 타겟의 댓글 가능 여부 비동기 일괄 확인
 
@@ -1760,7 +2186,10 @@ async def verify_batch(category: Optional[str] = None, limit: int = 20) -> Dict[
 @router.post("/action")
 async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
     """
-    타겟 액션 (승인/건너뛰기/삭제)
+    타겟 액션 (승인/건너뛰기/삭제/reopen)
+
+    [AA4] idempotency_key가 제공되고 최근 10분 내 처리된 키면 재적용 스킵.
+    오프라인 큐 재전송 시 중복 방지.
 
     Args:
         request: 타겟 ID 및 액션
@@ -1768,6 +2197,22 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
     Returns:
         상태 메시지
     """
+    # [AA4] Idempotency 체크 — 프로세스 로컬 TTL 캐시
+    if request.idempotency_key:
+        now = time.time()
+        # 오래된 항목 청소 (10분 TTL)
+        expired = [k for k, ts in _idempotency_cache.items() if now - ts > 600]
+        for k in expired:
+            _idempotency_cache.pop(k, None)
+        if request.idempotency_key in _idempotency_cache:
+            return {
+                'status': 'success',
+                'message': '중복 요청 무시됨 (idempotency)',
+                'lead_created': False,
+                'deduplicated': True,
+            }
+        _idempotency_cache[request.idempotency_key] = now
+
     try:
         hunter = get_viral_hunter()
 
@@ -1788,6 +2233,14 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
             hunter.db.update_viral_target(request.target_id, {
                 'comment_status': 'skipped'
             })
+            # [D2] skip 사유 학습 — 도메인/작성자 감점 누적
+            if request.skip_reason:
+                _record_skip_learning(
+                    hunter.db,
+                    request.target_id,
+                    request.skip_reason,
+                    request.skip_note,
+                )
             message = "타겟 건너뛰기 완료"
 
         elif request.action == "delete":
@@ -1795,6 +2248,17 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
                 'comment_status': 'deleted'
             })
             message = "타겟 삭제 완료"
+
+        elif request.action == "reopen":
+            # [U1] Undo — 처리된 타겟을 대기로 복구 (생성된 댓글은 보존)
+            # [EE1] Lead 정책: 이미 생성된 lead는 유지 (mentions.url unique 체크로 중복 방지).
+            #   - reopen → 재승인 시 lead 재생성되지 않음 (의도된 동작).
+            #   - 수정된 comment 내용은 viral_targets에만 보존되고 lead에는 반영되지 않음.
+            #   - 사용자에게는 "복구" 의미만 있으며 lead 파이프라인에는 영향 없음.
+            hunter.db.update_viral_target(request.target_id, {
+                'comment_status': 'pending'
+            })
+            message = "타겟 복구 완료"
 
         else:
             raise HTTPException(status_code=400, detail="잘못된 액션입니다")
@@ -1899,422 +2363,18 @@ EngagementSignal = Literal["any", "seeking_info", "ready_to_act", "passive"]
 PrioritySegment = Literal["vip", "high", "medium", "low", "all"]
 
 
-class TemplateCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    content: str = Field(..., min_length=1, max_length=5000)
-    category: str = Field("general", max_length=50)
-    situation_type: str = Field("general", max_length=50)  # [Phase 5.0]
-    engagement_signal: EngagementSignal = "any"   # [Phase 5.0]
-    priority_segment: PrioritySegment = "all"    # [Phase 5.1]
+# [U1] TemplateCreate, TemplateRecommendRequest 및 /templates/* 엔드포인트는
+# routers/viral_templates.py로 완전 분리됨.
 
 
-class TemplateRecommendRequest(BaseModel):
-    """[Phase 5.1] 템플릿 자동 추천 요청"""
-    priority_rank: int = Field(3, ge=1, le=5)  # 1-5
-    engagement_signal: EngagementSignal = "passive"
-    category: str = Field("general", max_length=50)
-    content_preview: str = Field("", max_length=1000)  # 원본 콘텐츠 미리보기
-
-
-@router.get("/templates")
-async def get_comment_templates(
-    situation_type: Optional[str] = None,
-    engagement_signal: Optional[str] = None
-) -> List[Dict[str, Any]]:
-    """
-    댓글 템플릿 목록 조회
-
-    [Phase 5.0] 필터링 지원:
-    - situation_type: 상황 유형 (general, question, review, recommendation 등)
-    - engagement_signal: 참여 신호 (any, seeking_info, ready_to_act, passive)
-
-    [Phase 7] TTLCache 적용 (5분) - DB 부하 감소
-
-    Args:
-        situation_type: 상황 유형 필터
-        engagement_signal: 참여 신호 필터
-
-    Returns:
-        필터링된 템플릿 목록
-    """
-    # [Phase 7] 캐시 키 생성
-    cache_key = f"templates:{situation_type or 'all'}:{engagement_signal or 'all'}"
-
-    # 캐시 확인
-    with _templates_cache_lock:
-        if cache_key in _templates_cache:
-            cached_data, cached_time = _templates_cache[cache_key]
-            if time.time() - cached_time < _templates_cache_ttl:
-                return cached_data
-
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # [Phase 6.1] 테이블 생성/마이그레이션은 services/db_init.py에서 앱 시작 시 처리
-        # [Phase 7] SELECT * 제거 - 필요한 컬럼만 명시
-        columns = "id, name, content, category, situation_type, engagement_signal, use_count, created_at"
-        query = f"SELECT {columns} FROM comment_templates WHERE 1=1"
-        params = []
-
-        # [Phase 5.0] 필터링 조건 추가
-        if situation_type:
-            query += " AND (situation_type = ? OR situation_type = 'general')"
-            params.append(situation_type)
-
-        if engagement_signal:
-            query += " AND (engagement_signal = ? OR engagement_signal = 'any')"
-            params.append(engagement_signal)
-
-        query += " ORDER BY use_count DESC, created_at DESC"
-
-        cursor.execute(query, params)
-        templates = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        # [Phase 7] 결과 캐싱
-        with _templates_cache_lock:
-            _templates_cache[cache_key] = (templates, time.time())
-            # 캐시 크기 제한 (최대 50개 키)
-            if len(_templates_cache) > 50:
-                oldest_key = min(_templates_cache, key=lambda k: _templates_cache[k][1])
-                del _templates_cache[oldest_key]
-
-        return templates
-
-    except Exception as e:
-        logger.error(f"[Templates Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"템플릿 조회 실패: {str(e)}")
-
-
-@router.post("/templates")
-async def create_template(template: TemplateCreate) -> Dict[str, Any]:
-    """
-    새 댓글 템플릿 생성
-
-    [Phase 5.0] situation_type, engagement_signal 필드 추가
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            INSERT INTO comment_templates (name, content, category, situation_type, engagement_signal)
-            VALUES (?, ?, ?, ?, ?)
-        """, (template.name, template.content, template.category,
-              template.situation_type, template.engagement_signal))
-
-        conn.commit()
-        template_id = cursor.lastrowid
-        conn.close()
-
-        # [Phase 7] 캐시 무효화 - 새 템플릿 추가 시 목록 캐시 클리어
-        with _templates_cache_lock:
-            _templates_cache.clear()
-
-        return {
-            'status': 'success',
-            'message': '템플릿이 저장되었습니다',
-            'template_id': template_id
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"템플릿 저장 실패: {str(e)}")
-
-
-@router.patch("/templates/{template_id}/use")
-async def increment_template_use(template_id: int) -> Dict[str, str]:
-    """
-    템플릿 사용 횟수 증가
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            UPDATE comment_templates
-            SET use_count = use_count + 1, updated_at = datetime('now')
-            WHERE id = ?
-        """, (template_id,))
-
-        conn.commit()
-        conn.close()
-
-        return {'status': 'success'}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/templates/{template_id}")
-async def delete_template(template_id: int) -> Dict[str, str]:
-    """
-    댓글 템플릿 삭제
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("DELETE FROM comment_templates WHERE id = ?", (template_id,))
-        conn.commit()
-        conn.close()
-
-        # [Phase 7] 캐시 무효화 - 템플릿 삭제 시 목록 캐시 클리어
-        with _templates_cache_lock:
-            _templates_cache.clear()
-
-        return {'status': 'success', 'message': '템플릿이 삭제되었습니다'}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/templates/recommend")
-async def recommend_template(request: TemplateRecommendRequest) -> Dict[str, Any]:
-    """
-    [Phase 5.1] 리드 정보 기반 템플릿 자동 추천
-
-    priority_rank와 engagement_signal을 기반으로 가장 적합한 템플릿을 추천합니다.
-
-    세그먼트 매핑:
-    - priority_rank 1 → VIP (최우선 고객)
-    - priority_rank 2 → High (높은 가치)
-    - priority_rank 3 → Medium (중간 가치)
-    - priority_rank 4-5 → Low (낮은/보류)
-
-    Args:
-        request: 리드의 priority_rank, engagement_signal, category, content_preview
-
-    Returns:
-        추천 템플릿 목록 (최대 3개)
-    """
-    import sqlite3
-
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # priority_segment 컬럼 확인 및 추가
-        cursor.execute("PRAGMA table_info(comment_templates)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if 'priority_segment' not in columns:
-            cursor.execute("""
-                ALTER TABLE comment_templates
-                ADD COLUMN priority_segment TEXT DEFAULT 'all'
-            """)
-            conn.commit()
-
-        # priority_rank → segment 매핑
-        segment_map = {1: 'vip', 2: 'high', 3: 'medium', 4: 'low', 5: 'low'}
-        target_segment = segment_map.get(request.priority_rank, 'medium')
-
-        # [Phase 7] SELECT * 제거 - 템플릿 검색 (우선순위 순)
-        columns = "id, name, content, category, situation_type, engagement_signal, use_count, created_at, priority_segment"
-        query = f"""
-            SELECT {columns},
-                   CASE
-                       WHEN priority_segment = ? THEN 100
-                       WHEN priority_segment = 'all' THEN 50
-                       ELSE 10
-                   END +
-                   CASE
-                       WHEN engagement_signal = ? THEN 30
-                       WHEN engagement_signal = 'any' THEN 15
-                       ELSE 0
-                   END +
-                   CASE
-                       WHEN category = ? THEN 20
-                       WHEN category = 'general' THEN 10
-                       ELSE 0
-                   END as match_score
-            FROM comment_templates
-            WHERE (priority_segment = ? OR priority_segment = 'all')
-              AND (engagement_signal = ? OR engagement_signal = 'any')
-            ORDER BY match_score DESC, use_count DESC
-            LIMIT 3
-        """
-
-        cursor.execute(query, (
-            target_segment, request.engagement_signal, request.category,
-            target_segment, request.engagement_signal
-        ))
-
-        templates = [dict(row) for row in cursor.fetchall()]
-
-        # 기본 템플릿이 없으면 일반 템플릿 반환
-        if not templates:
-            cursor.execute(f"""
-                SELECT {columns}
-                FROM comment_templates
-                WHERE priority_segment = 'all' OR priority_segment IS NULL
-                ORDER BY use_count DESC
-                LIMIT 3
-            """)
-            templates = [dict(row) for row in cursor.fetchall()]
-
-        conn.close()
-
-        # 세그먼트별 톤 가이드 추가
-        tone_guides = {
-            'vip': '🔥 VIP 세그먼트: 개인화된 프리미엄 응대, 빠른 반응 시간, 전문 상담 제안',
-            'high': '⚡ High 세그먼트: 적극적 관심 표현, 상세한 정보 제공, 방문 유도',
-            'medium': '📌 Medium 세그먼트: 친절한 안내, 관심사 파악, 후속 연락 제안',
-            'low': '📋 Low 세그먼트: 기본 정보 제공, 간결한 응대'
-        }
-
-        return {
-            'status': 'success',
-            'priority_rank': request.priority_rank,
-            'target_segment': target_segment,
-            'tone_guide': tone_guides.get(target_segment, ''),
-            'templates': templates,
-            'template_count': len(templates)
-        }
-
-    except Exception as e:
-        print(f"[Template Recommend Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"템플릿 추천 실패: {str(e)}")
+# [U1] /templates/* 5개 엔드포인트는 routers/viral_templates.py로 완전 분리됨.
 
 
 # =====================================
 # [Phase 4.0] UTM 매개변수 API
 # =====================================
 
-class UTMRequest(BaseModel):
-    """UTM 매개변수 생성 요청"""
-    url: str = Field(..., min_length=1, max_length=2000)
-    campaign: Optional[str] = Field(None, max_length=100)
-    content: Optional[str] = Field(None, max_length=200)
-    term: Optional[str] = Field(None, max_length=100)
-    source: str = Field("viral_hunter", max_length=100)
-    medium: str = Field("comment", max_length=100)
-
-
-@router.post("/generate-utm")
-async def generate_utm(request: UTMRequest) -> Dict[str, Any]:
-    """
-    [Phase 4.0] UTM 매개변수가 포함된 URL 생성
-
-    댓글에 포함할 링크에 UTM 추적 매개변수를 자동으로 추가합니다.
-    이를 통해 바이럴 마케팅의 클릭 및 전환을 추적할 수 있습니다.
-
-    Args:
-        request: URL 및 UTM 매개변수
-
-    Returns:
-        UTM이 추가된 URL
-    """
-    try:
-        utm_url = _generate_utm_url(
-            base_url=request.url,
-            source=request.source,
-            medium=request.medium,
-            campaign=request.campaign or "",
-            content=request.content or "",
-            term=request.term or ""
-        )
-
-        return {
-            "success": True,
-            "original_url": request.url,
-            "utm_url": utm_url,
-            "utm_params": {
-                "utm_source": request.source,
-                "utm_medium": request.medium,
-                "utm_campaign": request.campaign,
-                "utm_content": request.content,
-                "utm_term": request.term
-            }
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/utm-stats")
-async def get_utm_stats() -> Dict[str, Any]:
-    """
-    [Phase 4.0] UTM 추적 통계 조회
-
-    생성된 UTM 링크의 사용 현황을 조회합니다.
-
-    Returns:
-        - total_utm_links: 생성된 UTM 링크 수
-        - by_campaign: 캠페인별 통계
-        - recent_links: 최근 생성된 링크
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        # utm_links 테이블 생성 (없으면)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS utm_links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                original_url TEXT NOT NULL,
-                utm_url TEXT NOT NULL,
-                campaign TEXT,
-                content TEXT,
-                term TEXT,
-                click_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now', 'localtime'))
-            )
-        """)
-        conn.commit()
-
-        # 통계 조회
-        cursor.execute("SELECT COUNT(*) FROM utm_links")
-        total = cursor.fetchone()[0]
-
-        cursor.execute("""
-            SELECT campaign, COUNT(*) as count, SUM(click_count) as clicks
-            FROM utm_links
-            WHERE campaign IS NOT NULL AND campaign != ''
-            GROUP BY campaign
-            ORDER BY clicks DESC
-            LIMIT 10
-        """)
-        by_campaign = [
-            {"campaign": row[0], "links": row[1], "clicks": row[2] or 0}
-            for row in cursor.fetchall()
-        ]
-
-        cursor.execute("""
-            SELECT original_url, utm_url, campaign, click_count, created_at
-            FROM utm_links
-            ORDER BY created_at DESC
-            LIMIT 10
-        """)
-        recent = [
-            {
-                "original_url": row[0],
-                "utm_url": row[1],
-                "campaign": row[2],
-                "clicks": row[3],
-                "created_at": row[4]
-            }
-            for row in cursor.fetchall()
-        ]
-
-        conn.close()
-
-        return {
-            "total_utm_links": total,
-            "by_campaign": by_campaign,
-            "recent_links": recent
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# [T2] UTM 관련 엔드포인트는 routers/viral_utm.py로 완전 분리됨.
 
 
 # ============================================
@@ -2419,425 +2479,10 @@ async def deduplicate_targets(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================
-# [Phase 7.2] 댓글 성과 추적 API
-# ============================================
 
-class PostedComment(BaseModel):
-    """게시된 댓글 기록"""
-    target_id: int  # viral_targets.id
-    template_id: Optional[int] = None  # comment_templates.id
-    content: str
-    platform: str
-    url: str
-    posted_at: Optional[str] = None
+# [U2] /comments/* 4개 엔드포인트 + PostedComment·CommentEngagement 모델 +
+# _ensure_posted_comments_table 함수는 routers/viral_comments.py로 완전 분리됨.
 
-
-class CommentEngagement(BaseModel):
-    """댓글 참여 지표 업데이트"""
-    likes: Optional[int] = 0
-    replies: Optional[int] = 0
-    clicks: Optional[int] = 0
-    led_to_contact: Optional[bool] = False
-    led_to_conversion: Optional[bool] = False
-
-
-def _ensure_posted_comments_table(cursor):
-    """posted_comments 테이블 생성"""
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS posted_comments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target_id INTEGER,
-            template_id INTEGER,
-            content TEXT NOT NULL,
-            platform TEXT,
-            url TEXT,
-            posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            -- 참여 지표
-            likes INTEGER DEFAULT 0,
-            replies INTEGER DEFAULT 0,
-            clicks INTEGER DEFAULT 0,
-            -- 전환 추적
-            led_to_contact INTEGER DEFAULT 0,
-            led_to_conversion INTEGER DEFAULT 0,
-            -- 메타데이터
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (target_id) REFERENCES viral_targets(id),
-            FOREIGN KEY (template_id) REFERENCES comment_templates(id)
-        )
-    """)
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_posted_comments_platform
-        ON posted_comments(platform)
-    """)
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_posted_comments_posted_at
-        ON posted_comments(posted_at)
-    """)
-
-
-@router.post("/comments/post")
-async def record_posted_comment(comment: PostedComment) -> Dict[str, Any]:
-    """
-    [Phase 7.2] 게시된 댓글 기록
-
-    바이럴 타겟에 댓글을 게시한 후 기록합니다.
-
-    Args:
-        comment: 댓글 정보
-
-    Returns:
-        기록된 댓글 ID
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        _ensure_posted_comments_table(cursor)
-
-        cursor.execute("""
-            INSERT INTO posted_comments
-            (target_id, template_id, content, platform, url, posted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            comment.target_id,
-            comment.template_id,
-            comment.content,
-            comment.platform,
-            comment.url,
-            comment.posted_at or datetime.now().isoformat()
-        ))
-
-        comment_id = cursor.lastrowid
-
-        # 템플릿 사용 횟수 증가
-        if comment.template_id:
-            cursor.execute("""
-                UPDATE comment_templates
-                SET use_count = use_count + 1,
-                    updated_at = datetime('now')
-                WHERE id = ?
-            """, (comment.template_id,))
-
-        # 타겟 상태 업데이트
-        cursor.execute("""
-            UPDATE viral_targets
-            SET status = 'commented'
-            WHERE id = ?
-        """, (comment.target_id,))
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "status": "success",
-            "comment_id": comment_id,
-            "message": "댓글이 기록되었습니다"
-        }
-
-    except Exception as e:
-        print(f"[Post Comment Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/comments/{comment_id}/engagement")
-async def update_comment_engagement(
-    comment_id: int,
-    engagement: CommentEngagement
-) -> Dict[str, Any]:
-    """
-    [Phase 7.2] 댓글 참여 지표 업데이트
-
-    게시된 댓글의 참여 지표(좋아요, 답글, 클릭 등)를 업데이트합니다.
-
-    Args:
-        comment_id: 댓글 ID
-        engagement: 참여 지표
-
-    Returns:
-        업데이트 결과
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        _ensure_posted_comments_table(cursor)
-
-        # 기존 댓글 확인
-        cursor.execute("SELECT id FROM posted_comments WHERE id = ?", (comment_id,))
-        if not cursor.fetchone():
-            conn.close()
-            raise HTTPException(status_code=404, detail="댓글을 찾을 수 없습니다")
-
-        cursor.execute("""
-            UPDATE posted_comments
-            SET likes = ?,
-                replies = ?,
-                clicks = ?,
-                led_to_contact = ?,
-                led_to_conversion = ?,
-                updated_at = datetime('now')
-            WHERE id = ?
-        """, (
-            engagement.likes or 0,
-            engagement.replies or 0,
-            engagement.clicks or 0,
-            1 if engagement.led_to_contact else 0,
-            1 if engagement.led_to_conversion else 0,
-            comment_id
-        ))
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "status": "success",
-            "message": "참여 지표가 업데이트되었습니다"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Update Engagement Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/comments/performance")
-async def get_comment_performance(days: int = 30) -> Dict[str, Any]:
-    """
-    [Phase 7.2] 댓글 성과 통계
-
-    게시된 댓글의 전반적인 성과를 분석합니다.
-
-    Args:
-        days: 조회 기간 (일)
-
-    Returns:
-        - total_comments: 총 댓글 수
-        - by_platform: 플랫폼별 통계
-        - by_template: 템플릿별 성과
-        - engagement_summary: 참여 요약
-        - conversion_funnel: 전환 퍼널
-        - recent_comments: 최근 댓글
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        _ensure_posted_comments_table(cursor)
-
-        date_offset = f'-{min(days, 365)} days'
-
-        # 총 댓글 수
-        cursor.execute("""
-            SELECT COUNT(*) FROM posted_comments
-            WHERE posted_at >= datetime('now', ?)
-        """, (date_offset,))
-        total = cursor.fetchone()[0]
-
-        # 플랫폼별 통계
-        cursor.execute("""
-            SELECT
-                platform,
-                COUNT(*) as count,
-                SUM(likes) as total_likes,
-                SUM(replies) as total_replies,
-                SUM(clicks) as total_clicks,
-                SUM(led_to_contact) as contacts,
-                SUM(led_to_conversion) as conversions
-            FROM posted_comments
-            WHERE posted_at >= datetime('now', ?)
-            GROUP BY platform
-            ORDER BY count DESC
-        """, (date_offset,))
-        by_platform = [dict(row) for row in cursor.fetchall()]
-
-        # 템플릿별 성과
-        cursor.execute("""
-            SELECT
-                ct.name as template_name,
-                ct.category,
-                COUNT(pc.id) as use_count,
-                AVG(pc.likes) as avg_likes,
-                AVG(pc.replies) as avg_replies,
-                SUM(pc.led_to_conversion) as conversions
-            FROM posted_comments pc
-            LEFT JOIN comment_templates ct ON pc.template_id = ct.id
-            WHERE pc.posted_at >= datetime('now', ?)
-              AND pc.template_id IS NOT NULL
-            GROUP BY pc.template_id
-            ORDER BY use_count DESC
-            LIMIT 10
-        """, (date_offset,))
-        by_template = [
-            {
-                "template_name": row['template_name'] or '(삭제된 템플릿)',
-                "category": row['category'],
-                "use_count": row['use_count'],
-                "avg_likes": round(row['avg_likes'] or 0, 1),
-                "avg_replies": round(row['avg_replies'] or 0, 1),
-                "conversions": row['conversions'] or 0
-            }
-            for row in cursor.fetchall()
-        ]
-
-        # 참여 요약
-        cursor.execute("""
-            SELECT
-                SUM(likes) as total_likes,
-                SUM(replies) as total_replies,
-                SUM(clicks) as total_clicks,
-                AVG(likes) as avg_likes,
-                AVG(replies) as avg_replies
-            FROM posted_comments
-            WHERE posted_at >= datetime('now', ?)
-        """, (date_offset,))
-        eng_row = cursor.fetchone()
-        engagement_summary = {
-            "total_likes": eng_row['total_likes'] or 0,
-            "total_replies": eng_row['total_replies'] or 0,
-            "total_clicks": eng_row['total_clicks'] or 0,
-            "avg_likes_per_comment": round(eng_row['avg_likes'] or 0, 2),
-            "avg_replies_per_comment": round(eng_row['avg_replies'] or 0, 2)
-        }
-
-        # 전환 퍼널
-        cursor.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN likes > 0 OR replies > 0 THEN 1 ELSE 0 END) as engaged,
-                SUM(led_to_contact) as contacts,
-                SUM(led_to_conversion) as conversions
-            FROM posted_comments
-            WHERE posted_at >= datetime('now', ?)
-        """, (date_offset,))
-        funnel_row = cursor.fetchone()
-        conversion_funnel = {
-            "posted": funnel_row['total'] or 0,
-            "engaged": funnel_row['engaged'] or 0,
-            "contacted": funnel_row['contacts'] or 0,
-            "converted": funnel_row['conversions'] or 0,
-            "engagement_rate": round((funnel_row['engaged'] or 0) / (funnel_row['total'] or 1) * 100, 1),
-            "contact_rate": round((funnel_row['contacts'] or 0) / (funnel_row['total'] or 1) * 100, 1),
-            "conversion_rate": round((funnel_row['conversions'] or 0) / (funnel_row['total'] or 1) * 100, 1)
-        }
-
-        # 최근 댓글
-        cursor.execute("""
-            SELECT
-                pc.id, pc.content, pc.platform, pc.url,
-                pc.likes, pc.replies, pc.clicks,
-                pc.led_to_contact, pc.led_to_conversion,
-                pc.posted_at,
-                ct.name as template_name
-            FROM posted_comments pc
-            LEFT JOIN comment_templates ct ON pc.template_id = ct.id
-            WHERE pc.posted_at >= datetime('now', ?)
-            ORDER BY pc.posted_at DESC
-            LIMIT 20
-        """, (date_offset,))
-        recent = [dict(row) for row in cursor.fetchall()]
-
-        conn.close()
-
-        return {
-            "total_comments": total,
-            "period_days": days,
-            "by_platform": by_platform,
-            "by_template": by_template,
-            "engagement_summary": engagement_summary,
-            "conversion_funnel": conversion_funnel,
-            "recent_comments": recent
-        }
-
-    except Exception as e:
-        print(f"[Comment Performance Error] {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/comments/list")
-async def get_posted_comments(
-    platform: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0
-) -> Dict[str, Any]:
-    """
-    [Phase 7.2] 게시된 댓글 목록 조회
-
-    Args:
-        platform: 플랫폼 필터 (선택)
-        limit: 조회 수 (기본 50)
-        offset: 시작 위치
-
-    Returns:
-        댓글 목록
-    """
-    try:
-        db = DatabaseManager()
-        conn = sqlite3.connect(db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        _ensure_posted_comments_table(cursor)
-
-        query = """
-            SELECT
-                pc.id, pc.content, pc.platform, pc.url,
-                pc.likes, pc.replies, pc.clicks,
-                pc.led_to_contact, pc.led_to_conversion,
-                pc.posted_at, pc.status,
-                ct.name as template_name,
-                vt.title as target_title
-            FROM posted_comments pc
-            LEFT JOIN comment_templates ct ON pc.template_id = ct.id
-            LEFT JOIN viral_targets vt ON pc.target_id = vt.id
-            WHERE 1=1
-        """
-        params = []
-
-        if platform:
-            query += " AND pc.platform = ?"
-            params.append(platform)
-
-        query += " ORDER BY pc.posted_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        cursor.execute(query, params)
-        comments = [dict(row) for row in cursor.fetchall()]
-
-        # 총 개수
-        count_query = "SELECT COUNT(*) FROM posted_comments WHERE 1=1"
-        count_params = []
-        if platform:
-            count_query += " AND platform = ?"
-            count_params.append(platform)
-
-        cursor.execute(count_query, count_params)
-        total = cursor.fetchone()[0]
-
-        conn.close()
-
-        return {
-            "comments": comments,
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-
-    except Exception as e:
-        print(f"[List Comments Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===========================================================================
 # [Decision Intelligence] 컨텍스트 리치 뷰
 # ===========================================================================
 

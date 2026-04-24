@@ -40,7 +40,7 @@ export default function BackToTop({ threshold = 500, className = '' }: BackToTop
       onClick={scrollToTop}
       title="맨 위로"
       className={`
-        fixed bottom-6 right-6 z-40
+        fixed bottom-36 md:bottom-20 right-4 md:right-6 z-40
         p-3 rounded-full shadow-lg
         bg-primary text-primary-foreground
         hover:bg-primary/90 hover:scale-110

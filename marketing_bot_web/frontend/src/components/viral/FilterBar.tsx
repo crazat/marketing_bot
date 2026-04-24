@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from 'react';
-import { Search, Calendar, Filter, RotateCcw, Clock } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { Search, Calendar, Filter, RotateCcw, Clock, Bookmark, BookmarkPlus, X as XIcon } from 'lucide-react';
+import { useFilterPresets } from '@/hooks/useFilterPresets';
 
 export interface FilterState {
   date_filter?: string;
@@ -29,6 +30,18 @@ interface FilterBarProps {
 }
 
 export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }: FilterBarProps) {
+  // [X1] 필터 프리셋
+  const { presets, savePreset, removePreset } = useFilterPresets<FilterState>('viral')
+  const [showPresetList, setShowPresetList] = useState(false)
+  const [savingName, setSavingName] = useState<string | null>(null)
+
+  const handleSavePreset = useCallback(() => {
+    const name = savingName?.trim()
+    if (!name) return
+    savePreset(name, filters)
+    setSavingName(null)
+  }, [savingName, savePreset, filters])
+
   // [Phase 7] useCallback으로 메모이제이션 - 불필요한 리렌더링 방지
   const handlePlatformToggle = useCallback((platform: string) => {
     const current = filters.platforms || [];
@@ -84,8 +97,164 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
     { value: 'skipped', label: '건너뜀' }
   ];
 
+  // [V3] 빠른 프리셋 적용
+  const applyPreset = useCallback(
+    (preset: 'today_pending' | 'today_all' | 'week_posted' | 'hot_only' | 'reset') => {
+      switch (preset) {
+        case 'today_pending':
+          onFilterChange({ ...filters, status: 'pending', date_filter: '오늘', sort: 'priority' });
+          break;
+        case 'today_all':
+          onFilterChange({ ...filters, status: undefined, comment_status: undefined, date_filter: '오늘', sort: 'date' });
+          break;
+        case 'week_posted':
+          onFilterChange({ ...filters, status: 'posted', date_filter: '최근 7일', sort: 'date' });
+          break;
+        case 'hot_only':
+          onFilterChange({ ...filters, status: 'pending', sort: 'priority', date_filter: undefined });
+          break;
+        case 'reset':
+          onReset();
+          break;
+      }
+    },
+    [filters, onFilterChange, onReset]
+  );
+
   return (
     <div className="bg-card border-b border-border p-4 space-y-4">
+      {/* [V3] 빠른 프리셋 */}
+      <div className="flex flex-wrap gap-2">
+        <span className="text-xs text-muted-foreground self-center">⚡ 빠른 필터:</span>
+        <button
+          onClick={() => applyPreset('today_pending')}
+          className="text-xs px-3 py-1.5 rounded-full border border-primary bg-primary/10 text-primary hover:bg-primary/20 font-medium"
+          title="오늘 발견된 대기 중 타겟 (가장 일반적)"
+        >
+          📅 오늘 대기중
+        </button>
+        <button
+          onClick={() => applyPreset('today_all')}
+          className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-muted"
+          title="오늘 발견 또는 처리한 전체"
+        >
+          🗓️ 오늘 전체
+        </button>
+        <button
+          onClick={() => applyPreset('week_posted')}
+          className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-muted"
+          title="최근 7일 게시된 댓글"
+        >
+          📮 최근 7일 게시됨
+        </button>
+        <button
+          onClick={() => applyPreset('hot_only')}
+          className="text-xs px-3 py-1.5 rounded-full border border-red-400/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+          title="점수 순 대기 HOT LEAD"
+        >
+          🔥 HOT 대기
+        </button>
+        {hasActiveFilters && (
+          <button
+            onClick={() => applyPreset('reset')}
+            className="text-xs px-3 py-1.5 rounded-full border border-border text-muted-foreground hover:bg-muted"
+          >
+            필터 초기화
+          </button>
+        )}
+
+        {/* [X1] 사용자 프리셋 */}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => setShowPresetList((v) => !v)}
+            className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-muted flex items-center gap-1"
+            aria-expanded={showPresetList}
+          >
+            <Bookmark className="w-3 h-3" />
+            내 프리셋 {presets.length > 0 && <span className="text-muted-foreground">({presets.length})</span>}
+          </button>
+          {hasActiveFilters && (
+            <button
+              onClick={() => setSavingName('')}
+              className="text-xs px-2 py-1.5 rounded-full border border-border hover:bg-muted"
+              title="현재 필터 저장"
+            >
+              <BookmarkPlus className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* [X1] 프리셋 목록 패널 */}
+      {showPresetList && (
+        <div className="bg-muted/30 border border-border p-3 rounded-lg">
+          {presets.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              저장된 프리셋이 없습니다. 현재 필터를 저장해 언제든 복원하세요.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {presets.map((p) => (
+                <div
+                  key={p.id}
+                  className="group flex items-center gap-1 bg-card border border-border px-2.5 py-1 rounded-full text-xs hover:border-primary/50 transition-colors"
+                >
+                  <button
+                    onClick={() => {
+                      onFilterChange(p.filters)
+                      setShowPresetList(false)
+                    }}
+                    className="font-medium"
+                  >
+                    {p.name}
+                  </button>
+                  <button
+                    onClick={() => removePreset(p.id)}
+                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+                    aria-label={`${p.name} 삭제`}
+                  >
+                    <XIcon className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* [X1] 저장 이름 입력 */}
+      {savingName !== null && (
+        <div className="bg-primary/5 border border-primary/30 p-3 rounded-lg flex items-center gap-2">
+          <BookmarkPlus className="w-4 h-4 text-primary shrink-0" />
+          <input
+            autoFocus
+            type="text"
+            value={savingName}
+            onChange={(e) => setSavingName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSavePreset()
+              if (e.key === 'Escape') setSavingName(null)
+            }}
+            placeholder="프리셋 이름 (예: 청주 HOT 블로그)"
+            className="flex-1 bg-transparent border-b border-border focus:outline-none focus:border-primary text-sm px-1 py-1"
+            maxLength={30}
+          />
+          <button
+            onClick={handleSavePreset}
+            disabled={!savingName.trim()}
+            className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+          >
+            저장
+          </button>
+          <button
+            onClick={() => setSavingName(null)}
+            className="text-xs px-2 py-1 rounded hover:bg-muted"
+          >
+            취소
+          </button>
+        </div>
+      )}
+
       {/* 검색 */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />

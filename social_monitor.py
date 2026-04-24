@@ -2,10 +2,15 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import os
+import sys
 import time
 from datetime import datetime
 from utils import ConfigManager, logger
 from alert_bot import AlertSystem
+
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate
 
 # [OPTIMIZATION] Batch processing constants
 BATCH_SIZE = 10  # Number of posts to analyze per AI call
@@ -78,42 +83,25 @@ class SocialMonitor:
         return clean_results
 
     def analyze_sentiment(self, text):
-        """Uses Gemini to filter ads/spam and find real sentiment."""
-        from ai_orchestrator import AIOrchestrator # Lazy import to avoid circular dependency if any
-
-        # We can use the existing orchestration or utils config.
-        # For simplicity/robustness, let's use the raw model from utils config.
-        from google import genai
-
-        # Configure if not already
-        if not hasattr(self, 'client'):
-            api_key = self.config.get_api_key()
-            self.client = genai.Client(api_key=api_key)
-            # FORCE Gemini 3 Flash as requested
-            self.model_name = 'gemini-3-flash-preview'
-
+        """Uses AI to filter ads/spam and find real sentiment."""
         prompt = f"""
         Analyze this social media post snippet about a Clinic.
-        
+
         [Post]: "{text}"
-        
+
         Classify it into one of these categories:
         1. [AD] : Competitor advertisement or obvious promotion.
         2. [SPAM] : Irrelevant junk.
         3. [REVIEW_POS] : Real user review (Positive).
         4. [REVIEW_NEG] : Real user review (Negative/Complaint).
         5. [QUESTION] : User asking for info.
-        
+
         Output JUST the Category tag (e.g. [AD]).
         """
-        
+
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text.strip()
-        except:
+            return ai_generate(prompt, temperature=0.3)
+        except Exception:
             return "[UNKNOWN]"
 
     def analyze_sentiment_batch(self, posts_data):
@@ -130,19 +118,11 @@ class SocialMonitor:
         if not posts_data:
             return {}
 
-        from google import genai
-
-        # Configure if not already
-        if not hasattr(self, 'client'):
-            api_key = self.config.get_api_key()
-            self.client = genai.Client(api_key=api_key)
-            self.model_name = 'gemini-3-flash-preview'
-        
         # Build batch prompt
         posts_text = ""
         for i, p in enumerate(posts_data):
             posts_text += f"\n[Post {i+1}]: \"{p['text'][:200]}\"\n"
-        
+
         prompt = f"""
 Analyze these social media posts about clinics/hospitals.
 For EACH post, classify into ONE category:
@@ -163,12 +143,9 @@ Output ONLY the numbered list, nothing else.
 """
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            lines = response.text.strip().split('\n')
-            
+            response_text = ai_generate(prompt, temperature=0.3)
+            lines = response_text.strip().split('\n')
+
             results = {}
             for i, line in enumerate(lines):
                 if i < len(posts_data):
@@ -179,15 +156,15 @@ Output ONLY the numbered list, nothing else.
                             tag = possible_tag
                             break
                     results[posts_data[i]['id']] = tag
-            
+
             # Fill in any missing
             for p in posts_data:
                 if p['id'] not in results:
                     results[p['id']] = "[UNKNOWN]"
-            
+
             logger.info(f"   📊 Batch analyzed {len(posts_data)} posts in 1 API call")
             return results
-            
+
         except Exception as e:
             logger.error(f"Batch analysis failed: {e}")
             # Fallback: return unknown for all
@@ -294,4 +271,3 @@ Output ONLY the numbered list, nothing else.
 if __name__ == "__main__":
     monitor = SocialMonitor()
     print(monitor.run_cycle())
-```

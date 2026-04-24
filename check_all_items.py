@@ -35,7 +35,7 @@ try:
             driver.switch_to.frame(iframe)
             print("✅ iframe 전환\n")
             break
-        except:
+        except Exception:
             print(f"   iframe 찾기 시도 {attempt + 1}/5...")
             time.sleep(3)
 
@@ -76,7 +76,7 @@ try:
                     all_names.append(text)
                 elif text:
                     print(f"   {idx}. {text}")
-            except:
+            except Exception:
                 pass
         print()
 

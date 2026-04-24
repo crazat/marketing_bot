@@ -278,7 +278,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
 
             return (
               <tr
-                key={index}
+                key={kw.keyword ?? `row-${index}`}
                 className={`
                   border-b border-border
                   transition-all duration-200 ease-out

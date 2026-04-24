@@ -136,6 +136,182 @@ class MigrationManager:
             up_func=self._migrate_006_index_optimization
         ))
 
+        # 마이그레이션 버전 007: competitor_reviews 별점 컬럼 추가
+        self.migrations.append(Migration(
+            version="007",
+            description="[고도화 A-2] competitor_reviews: star_rating, reviewer_name 컬럼 추가",
+            up_func=self._migrate_007_star_rating
+        ))
+
+        # 마이그레이션 버전 013: 환자 전환 추적 테이블
+        self.migrations.append(Migration(
+            version="013",
+            description="[고도화 V3-3] patient_attribution 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS patient_attribution (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    source_channel TEXT NOT NULL,
+                    patient_type TEXT DEFAULT 'new',
+                    treatment_type TEXT,
+                    revenue INTEGER DEFAULT 0,
+                    coupon_code TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_attribution_channel ON patient_attribution(source_channel)",
+                "CREATE INDEX IF NOT EXISTS idx_attribution_date ON patient_attribution(date)",
+                """
+                CREATE TABLE IF NOT EXISTS marketing_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    month TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    spend INTEGER DEFAULT 0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(month, channel)
+                )
+                """,
+            ]
+        ))
+
+        # 마이그레이션 버전 011: 바이럴 속도 감지 테이블
+        self.migrations.append(Migration(
+            version="011",
+            description="[고도화 C-3] viral_velocity 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS viral_velocity (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    keyword TEXT NOT NULL,
+                    platform TEXT DEFAULT 'all',
+                    time_window TEXT NOT NULL,
+                    mention_count INTEGER DEFAULT 0,
+                    moving_average REAL DEFAULT 0,
+                    std_deviation REAL DEFAULT 0,
+                    z_score REAL DEFAULT 0,
+                    spike_detected BOOLEAN DEFAULT 0,
+                    spike_magnitude REAL DEFAULT 0,
+                    sample_urls TEXT DEFAULT '[]',
+                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_viral_velocity_keyword ON viral_velocity(keyword)",
+                "CREATE INDEX IF NOT EXISTS idx_viral_velocity_spike ON viral_velocity(spike_detected, detected_at)",
+            ]
+        ))
+
+        # 마이그레이션 버전 012: 의료광고 규정 체크 테이블
+        self.migrations.append(Migration(
+            version="012",
+            description="[고도화 C-5] content_compliance_checks 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS content_compliance_checks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_type TEXT NOT NULL,
+                    content_title TEXT,
+                    content_url TEXT,
+                    content_text TEXT,
+                    ai_check_result TEXT DEFAULT 'pending',
+                    compliance_issues TEXT DEFAULT '[]',
+                    severity TEXT DEFAULT 'info',
+                    recommendations TEXT,
+                    checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_compliance_result ON content_compliance_checks(ai_check_result)",
+                "CREATE INDEX IF NOT EXISTS idx_compliance_severity ON content_compliance_checks(severity)",
+            ]
+        ))
+
+        # 마이그레이션 버전 010: AI 검색 가시성 테이블
+        self.migrations.append(Migration(
+            version="010",
+            description="[고도화 B-2] ai_search_visibility 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS ai_search_visibility (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    keyword TEXT NOT NULL,
+                    search_engine TEXT DEFAULT 'naver',
+                    ai_briefing_detected BOOLEAN DEFAULT 0,
+                    ai_briefing_position TEXT,
+                    briefing_content_summary TEXT,
+                    source_urls TEXT DEFAULT '[]',
+                    competitor_mentioned TEXT DEFAULT '[]',
+                    our_mention BOOLEAN DEFAULT 0,
+                    our_mention_context TEXT,
+                    total_results_count INTEGER DEFAULT 0,
+                    smartblock_types TEXT DEFAULT '[]',
+                    scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_ai_search_keyword ON ai_search_visibility(keyword)",
+                "CREATE INDEX IF NOT EXISTS idx_ai_search_scanned ON ai_search_visibility(scanned_at)",
+                "CREATE INDEX IF NOT EXISTS idx_ai_search_our_mention ON ai_search_visibility(our_mention)",
+            ]
+        ))
+
+        # 마이그레이션 버전 009: 리뷰 자동 응답 테이블
+        self.migrations.append(Migration(
+            version="009",
+            description="[고도화 B-4] review_responses 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS review_responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    review_id INTEGER,
+                    competitor_name TEXT,
+                    review_content TEXT,
+                    star_rating REAL,
+                    sentiment TEXT DEFAULT 'neutral',
+                    topics TEXT DEFAULT '[]',
+                    draft_response TEXT,
+                    final_response TEXT,
+                    status TEXT DEFAULT 'draft',
+                    telegram_sent BOOLEAN DEFAULT 0,
+                    response_time_minutes INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    approved_at TIMESTAMP,
+                    posted_at TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_review_responses_status ON review_responses(status)",
+                "CREATE INDEX IF NOT EXISTS idx_review_responses_created ON review_responses(created_at)",
+            ]
+        ))
+
+        # 마이그레이션 버전 008: 행동 데이터 점수 테이블
+        self.migrations.append(Migration(
+            version="008",
+            description="[고도화 B-3] place_behavior_scores 테이블 생성",
+            up_sql=[
+                """
+                CREATE TABLE IF NOT EXISTS place_behavior_scores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL UNIQUE,
+                    phone_clicks INTEGER DEFAULT 0,
+                    direction_clicks INTEGER DEFAULT 0,
+                    booking_clicks INTEGER DEFAULT 0,
+                    save_clicks INTEGER DEFAULT 0,
+                    share_clicks INTEGER DEFAULT 0,
+                    review_clicks INTEGER DEFAULT 0,
+                    website_clicks INTEGER DEFAULT 0,
+                    total_views INTEGER DEFAULT 0,
+                    place_views INTEGER DEFAULT 0,
+                    search_views INTEGER DEFAULT 0,
+                    popularity_score REAL DEFAULT 0,
+                    freshness_score REAL DEFAULT 0,
+                    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_behavior_scores_date ON place_behavior_scores(date)",
+            ]
+        ))
+
     def _column_exists(self, cursor: sqlite3.Cursor, table: str, column: str) -> bool:
         """컬럼 존재 여부 확인"""
         cursor.execute(f"PRAGMA table_info({table})")
@@ -276,6 +452,32 @@ class MigrationManager:
                     logger.debug(f"  - 복합 인덱스 생성 스킵 ({idx_name}): {e}")
 
         logger.info(f"  총 {created_count}개 인덱스 생성됨")
+
+    def _migrate_007_star_rating(self, cursor: sqlite3.Cursor):
+        """[고도화 A-2] competitor_reviews에 별점 및 리뷰어명 컬럼 추가"""
+        if not self._table_exists(cursor, 'competitor_reviews'):
+            return
+
+        columns_to_add = [
+            ("star_rating", "REAL DEFAULT NULL"),
+            ("reviewer_name", "TEXT"),
+        ]
+
+        for col_name, col_type in columns_to_add:
+            if not self._column_exists(cursor, 'competitor_reviews', col_name):
+                cursor.execute(f"ALTER TABLE competitor_reviews ADD COLUMN {col_name} {col_type}")
+                logger.info(f"  - competitor_reviews: {col_name} 컬럼 추가됨")
+
+        # star_rating 인덱스 추가
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_competitor_reviews_star_rating'"
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_competitor_reviews_star_rating "
+                "ON competitor_reviews(star_rating)"
+            )
+            logger.info("  - 인덱스 생성: idx_competitor_reviews_star_rating")
 
     def get_applied_versions(self, cursor: sqlite3.Cursor) -> set:
         """적용된 마이그레이션 버전 목록 조회"""

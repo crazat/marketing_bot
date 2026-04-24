@@ -13,37 +13,18 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 
-class NaverAutocompleteScraper:
-    """
-    네이버 자동완성 API를 활용한 실제 검색 키워드 수집기
+from scrapers.common import BaseScraperMixin, default_headers
 
-    특징:
-    - 실제 사용자가 검색하는 키워드만 반환
-    - BFS 방식으로 깊이 있는 키워드 확장
-    - Rate limiting 내장 (0.3초 간격)
-    """
+
+class NaverAutocompleteScraper(BaseScraperMixin):
+    """네이버 자동완성 API 수집기. [Y3] BaseScraperMixin 적용."""
 
     def __init__(self, delay: float = 0.3):
-        """
-        Args:
-            delay: API 호출 간 대기 시간 (초)
-        """
-        self.delay = delay
+        super().__init__(delay=delay)
         self.base_url = "https://ac.search.naver.com/nx/ac"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.naver.com/"
-        }
-        self._last_call = 0
-
-    def _rate_limit(self):
-        """API 호출 간격 제어"""
-        elapsed = time.time() - self._last_call
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self._last_call = time.time()
+        # 자동완성은 JSON 응답이라 Accept 헤더만 override
+        self.headers = default_headers()
+        self.headers["Accept"] = "application/json, text/plain, */*"
 
     def get_suggestions(self, keyword: str) -> List[str]:
         """

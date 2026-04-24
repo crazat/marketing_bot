@@ -11,7 +11,6 @@ const Pathfinder = lazy(() => import('./pages/Pathfinder'))
 const BattleIntelligence = lazy(() => import('./pages/BattleIntelligence'))
 const LeadManager = lazy(() => import('./pages/LeadManager'))
 const ViralHunter = lazy(() => import('./pages/ViralHunter'))
-const ViralHunterDebug = lazy(() => import('./pages/ViralHunterDebug'))
 const CompetitorAnalysis = lazy(() => import('./pages/CompetitorAnalysis'))
 const AIAgent = lazy(() => import('./pages/AIAgent'))
 const QARepository = lazy(() => import('./pages/QARepository'))
@@ -19,6 +18,7 @@ const Analytics = lazy(() => import('./pages/Analytics'))
 const MarketingHub = lazy(() => import('./pages/MarketingHub'))
 const Settings = lazy(() => import('./pages/Settings'))
 const TikTok = lazy(() => import('./pages/TikTok'))
+const NotFound = lazy(() => import('./pages/NotFound'))
 
 // 페이지 로딩 중 표시할 Fallback 컴포넌트
 function PageLoadingFallback() {
@@ -117,14 +117,6 @@ function App() {
             }
           />
           <Route
-            path="viral-debug"
-            element={
-              <PageWrapper pageName="Viral Hunter Debug">
-                <ViralHunterDebug />
-              </PageWrapper>
-            }
-          />
-          <Route
             path="competitors"
             element={
               <PageWrapper pageName="Competitor Analysis">
@@ -177,6 +169,15 @@ function App() {
             element={
               <PageWrapper pageName="TikTok">
                 <TikTok />
+              </PageWrapper>
+            }
+          />
+          {/* [M6] 404 Not Found */}
+          <Route
+            path="*"
+            element={
+              <PageWrapper pageName="NotFound">
+                <NotFound />
               </PageWrapper>
             }
           />

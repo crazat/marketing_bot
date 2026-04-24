@@ -1,90 +1,169 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   [Z1] Pretendard + D2Coding + Paperlogy — 한글 타이포그래피 3단 구성
+   - Pretendard Variable: 본문 (B2B 표준, 7 weights variable)
+   - Paperlogy: 디스플레이·KPI 숫자 (editorial 감성)
+   - D2Coding: 모노스페이스 (터미널 감성)
+   ───────────────────────────────────────────────────────────────────────── */
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
+@import url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2410-2@1.0/Paperlogy-8ExtraBold.woff2');
+@import url('https://cdn.jsdelivr.net/gh/joungkyun/font-d2coding/d2coding.css');
+
+@font-face {
+  font-family: 'Paperlogy';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2410-2@1.0/Paperlogy-4Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Paperlogy';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2410-2@1.0/Paperlogy-6SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Paperlogy';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2410-2@1.0/Paperlogy-8ExtraBold.woff2') format('woff2');
+  font-weight: 800;
+  font-display: swap;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* === 다크 테마 (기본) === */
+/* ─────────────────────────────────────────────────────────────────────────
+   [Z2] Seoul Medical Editorial — 먹/한지/인삼 팔레트
+   한의원 마케팅 도구의 context를 UI에 각인
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* === Dark (기본) — 서울 진료실의 새벽 === */
 :root,
 [data-theme='dark'] {
-  --background: 224 71% 4%;
-  --foreground: 213 31% 91%;
+  /* 바탕: 먹(墨) + 아주 미세한 청록 undertone */
+  --background: 210 15% 8%;
+  --foreground: 36 20% 94%;
 
-  --muted: 223 47% 11%;
-  --muted-foreground: 215.4 16.3% 56.9%;
+  /* 카드/표면 */
+  --card: 210 12% 11%;
+  --card-foreground: 36 15% 92%;
+  --popover: 210 14% 10%;
+  --popover-foreground: 36 15% 92%;
 
-  --popover: 224 71% 4%;
-  --popover-foreground: 215 20.2% 65.1%;
+  /* muted — 한약 용기 어둠 */
+  --muted: 210 10% 15%;
+  --muted-foreground: 36 10% 60%;
 
-  --card: 224 71% 4%;
-  --card-foreground: 213 31% 91%;
+  /* 경계 — 한지 결 */
+  --border: 210 10% 20%;
+  --input: 210 12% 18%;
 
-  --border: 216 34% 17%;
-  --input: 216 34% 17%;
+  /* Primary — 인삼 옐로우 (한약 용기 황동) */
+  --primary: 36 85% 60%;
+  --primary-foreground: 210 20% 8%;
 
-  --primary: 210 40% 98%;
-  --primary-foreground: 222.2 47.4% 1.2%;
+  /* Secondary — 청자 블루그레이 */
+  --secondary: 210 12% 18%;
+  --secondary-foreground: 36 20% 92%;
 
-  --secondary: 222.2 47.4% 11.2%;
-  --secondary-foreground: 210 40% 98%;
+  /* Accent — 침(鍼) 포인트 레드 */
+  --accent: 355 75% 55%;
+  --accent-foreground: 36 20% 98%;
 
-  --accent: 216 34% 17%;
-  --accent-foreground: 210 40% 98%;
+  /* Destructive */
+  --destructive: 0 70% 48%;
+  --destructive-foreground: 36 20% 98%;
 
-  --destructive: 0 63% 31%;
-  --destructive-foreground: 210 40% 98%;
+  /* Focus ring */
+  --ring: 36 85% 55%;
 
-  --ring: 216 34% 17%;
-
-  --radius: 0.5rem;
+  --radius: 0.375rem; /* 더 정제된 편집 디자인 모서리 */
 }
 
-/* === 라이트 테마 === */
+/* === Light — 한지 위의 먹 === */
 [data-theme='light'] {
-  --background: 0 0% 100%;
-  --foreground: 222.2 47.4% 11.2%;
-
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-
-  --popover: 0 0% 100%;
-  --popover-foreground: 222.2 47.4% 11.2%;
+  /* 한지 오프화이트 */
+  --background: 36 25% 97%;
+  --foreground: 210 15% 12%;
 
   --card: 0 0% 100%;
-  --card-foreground: 222.2 47.4% 11.2%;
+  --card-foreground: 210 15% 12%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 210 15% 12%;
 
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
+  /* muted — 바랜 한지 */
+  --muted: 36 20% 93%;
+  --muted-foreground: 210 10% 42%;
 
-  --primary: 222.2 47.4% 11.2%;
-  --primary-foreground: 210 40% 98%;
+  /* 경계 — 먹 농담 */
+  --border: 36 15% 85%;
+  --input: 36 15% 88%;
 
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
+  /* Primary — 의료 네이비 딥 */
+  --primary: 215 65% 25%;
+  --primary-foreground: 36 25% 98%;
 
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
+  /* Secondary */
+  --secondary: 36 20% 93%;
+  --secondary-foreground: 210 15% 12%;
 
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
+  /* Accent — 침 포인트 */
+  --accent: 355 75% 48%;
+  --accent-foreground: 36 25% 98%;
 
-  --ring: 222.2 47.4% 11.2%;
+  --destructive: 0 75% 52%;
+  --destructive-foreground: 36 25% 98%;
+
+  --ring: 215 65% 30%;
 }
 
 * {
   @apply border-border;
 }
 
+html {
+  /* 숫자를 모노로 보이게 tabular-nums 기본 적용 */
+  font-feature-settings: 'cv11', 'ss01', 'ss03', 'tnum';
+}
+
 body {
   @apply bg-background text-foreground;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+    system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: 'tnum', 'ss03';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+/* [Z1] 디스플레이 클래스 — h1·KPI 숫자에 사용 */
+.font-display {
+  font-family: 'Paperlogy', 'Pretendard Variable', serif;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* [Z1] 모노 숫자 — KPI·테이블 숫자 */
+.font-mono,
+code,
+pre,
+.tabular {
+  font-family: 'D2Coding', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* [Z1] Caps — 라벨·카테고리 */
+.caps {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+/* [Z2] 한지 그레인 배경 효과 (선택적) */
+.hanji-grain {
+  background-image:
+    radial-gradient(circle at 20% 30%, hsl(36 20% 85% / 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 70% 80%, hsl(36 20% 85% / 0.06) 1px, transparent 1px);
+  background-size: 3px 3px, 5px 5px;
 }
 
 /* === 커스텀 스크롤바 === */
@@ -395,7 +474,7 @@ textarea:focus-visible {
   @apply border-primary/50 shadow-lg shadow-primary/5 -translate-y-1;
 }
 
-/* === 모션 감소 선호 시 애니메이션 비활성화 === */
+/* === [Y1] 모션 감소 선호 시 애니메이션 비활성화 === */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -403,7 +482,37 @@ textarea:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+/* === [Y1] 고대비 모드 대응 — 경계선과 포커스 강조 === */
+@media (prefers-contrast: more) {
+  :root {
+    --border: 0 0% 40%;
+    --ring: 210 100% 50%;
+  }
+  :root.dark {
+    --border: 36 20% 70%;
+    --ring: 36 100% 70%;
+  }
+  *:focus-visible {
+    outline: 2px solid hsl(var(--ring)) !important;
+    outline-offset: 2px !important;
+  }
+}
+
+/* === [Y1] 스크린리더 전용 텍스트 (기존 sr-only 보강) === */
+.sr-only-focusable:not(:focus):not(:focus-within) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* === 반응형 타이포그래피 === */

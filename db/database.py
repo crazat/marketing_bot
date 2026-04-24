@@ -48,7 +48,47 @@ class DatabaseManager:
         self._conn_lock = threading.Lock()
         self._init_db()
         self._initialized = True
+        # [S3] Repository 레이어 lazy 캐시 (신규 코드에서 사용 권장)
+        self._viral_target_repo = None
+        self._lead_repo = None
+        self._competitor_repo = None
+        self._keyword_repo = None
         logger.info(f"DatabaseManager 싱글톤 초기화 완료: {self.db_path}")
+
+    @property
+    def viral_targets(self):
+        """[S3] ViralTargetRepository 게터 (lazy).
+
+        새 코드에서 `db.viral_targets.list(...)` 형태로 사용 권장.
+        """
+        if self._viral_target_repo is None:
+            from repositories import ViralTargetRepository
+            self._viral_target_repo = ViralTargetRepository(self.db_path)
+        return self._viral_target_repo
+
+    @property
+    def leads(self):
+        """[S3] LeadRepository 게터 (lazy)."""
+        if self._lead_repo is None:
+            from repositories import LeadRepository
+            self._lead_repo = LeadRepository(self.db_path)
+        return self._lead_repo
+
+    @property
+    def competitors(self):
+        """[S3] CompetitorRepository 게터 (lazy)."""
+        if self._competitor_repo is None:
+            from repositories import CompetitorRepository
+            self._competitor_repo = CompetitorRepository(self.db_path)
+        return self._competitor_repo
+
+    @property
+    def keywords(self):
+        """[S3] KeywordRepository 게터 (lazy)."""
+        if self._keyword_repo is None:
+            from repositories import KeywordRepository
+            self._keyword_repo = KeywordRepository(self.db_path)
+        return self._keyword_repo
 
     @contextmanager
     def get_connection(self):
@@ -97,7 +137,78 @@ class DatabaseManager:
         self.cursor = self.conn.cursor()
 
         # [성능 최적화] WAL 모드 설정 - 동시 읽기/쓰기 성능 향상
+        # [W8] 마이그레이션 버전 추적 테이블 — _ensure_wal_mode보다 먼저 준비
+        self._ensure_schema_migrations_early()
         self._ensure_wal_mode()
+
+    def _ensure_schema_migrations_early(self):
+        """[W8/X3] schema_migrations 테이블 — _ensure_wal_mode 전에 먼저 준비.
+
+        이렇게 하면 _ensure_wal_mode 안에서 baseline 마이그레이션 체크 가능.
+        """
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        self._baseline_migration_applied = self.migration_applied("baseline_v2026_04")
+
+    # 하위 호환: 기존 호출자가 있을 수 있음
+    _ensure_schema_migrations = _ensure_schema_migrations_early
+
+    def migration_applied(self, version: str) -> bool:
+        """특정 마이그레이션이 이미 적용됐는지 확인."""
+        try:
+            self.cursor.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (version,),
+            )
+            return self.cursor.fetchone() is not None
+        except Exception:
+            return False
+
+    def mark_migration(self, version: str, notes: str = "") -> None:
+        """마이그레이션 버전 기록."""
+        try:
+            self.cursor.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, notes) VALUES(?, ?)",
+                (version, notes),
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.warning(f"mark_migration failed: {e}")
+
+    def run_guarded_alters(self, version: str, alters: list, notes: str = "") -> bool:
+        """[X3] 버전 체크된 ALTER 일괄 실행.
+
+        이미 적용된 version이면 즉시 반환. 그렇지 않으면 각 ALTER 시도하고
+        (컬럼 이미 존재 에러는 조용히 무시) 마이그레이션 완료 기록.
+
+        Args:
+            version: 마이그레이션 버전 ID (예: "2026.04_add_viral_metrics")
+            alters: SQL 문자열 리스트
+            notes: 기록용 메모
+
+        Returns:
+            새로 실행됐으면 True, 이미 적용됐으면 False
+        """
+        if self.migration_applied(version):
+            return False
+        for sql in alters:
+            try:
+                self.cursor.execute(sql)
+            except sqlite3.OperationalError as e:
+                # duplicate column 등 이미 있는 경우 무시
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"[migration {version}] {sql[:60]}... → {e}")
+        self.conn.commit()
+        self.mark_migration(version, notes or f"{len(alters)} ALTERs")
+        return True
 
     def _ensure_wal_mode(self):
         """
@@ -704,8 +815,13 @@ class DatabaseManager:
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_keyword ON mentions(keyword)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_scraped_at ON mentions(scraped_at DESC)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_rank_history_checked_at ON rank_history(checked_at DESC)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_targets_score ON viral_targets(priority_score DESC)")
+        # idx_viral_targets_score는 idx_viral_targets_priority와 중복이므로 신규 설치에서는 생성하지 않음
+        # (기존 DB의 중복 인덱스는 앱 시작 시 _cleanup_duplicate_indexes에서 제거)
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_targets_scraped_at ON viral_targets(discovered_at DESC)")
+        # [Phase 11] home-stats 및 카테고리 필터 가속용 복합 인덱스
+        # (idx_viral_targets_category 단독 인덱스는 기존 스키마에 존재)
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_status_category ON viral_targets(comment_status, category)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_discovered_status ON viral_targets(discovered_at DESC, comment_status)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword_insights_kei ON keyword_insights(kei DESC)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword_insights_priority ON keyword_insights(priority_v3 DESC)")
 
@@ -725,6 +841,20 @@ class DatabaseManager:
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_competitor_reviews_name_scraped ON competitor_reviews(competitor_name, scraped_at DESC)")
         # mentions 생성일 기준 정렬 최적화
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_date_posted ON mentions(date_posted DESC)")
+
+        # [M4] 전수 감사에서 지목된 누락 인덱스
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_created_at ON mentions(created_at DESC)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_keyword_created ON mentions(keyword, created_at DESC)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_comp_reviews_competitor ON competitor_reviews(competitor_name)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_comp_reviews_date ON competitor_reviews(scraped_at DESC)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword_insights_keyword ON keyword_insights(keyword)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_runs_status_started ON scan_runs(status, started_at DESC)")
+
+        # [Phase 11] 중복 인덱스 정리 (idx_viral_targets_score == idx_viral_targets_priority)
+        try:
+            self.cursor.execute("DROP INDEX IF EXISTS idx_viral_targets_score")
+        except sqlite3.OperationalError:
+            pass
 
         # [Phase 5.0] comment_templates 테이블 확장 - situation_type, engagement_signal 추가
         try:
@@ -775,6 +905,13 @@ class DatabaseManager:
 
         # 초기 템플릿 추가 (없으면 삽입)
         self._seed_comment_templates()
+
+        # [X3] baseline 마이그레이션 기록 (최초 init 시 1회)
+        if not self._baseline_migration_applied:
+            self.mark_migration(
+                "baseline_v2026_04",
+                "24개 ALTER TABLE 누적분 — viral_targets/mentions/rank_history/comment_templates 확장"
+            )
 
         self.conn.commit()
 
@@ -887,7 +1024,8 @@ class DatabaseManager:
 
     def insert_competitor_review(self, competitor_name: str, source: str, content: str,
                                   sentiment: str = 'neutral', keywords: str = '[]',
-                                  review_date: str = None, image_count: int = 0) -> bool:
+                                  review_date: str = None, image_count: int = 0,
+                                  star_rating: float = None, reviewer_name: str = None) -> bool:
         """
         경쟁사 리뷰를 중복 방지하여 저장합니다.
 
@@ -899,6 +1037,8 @@ class DatabaseManager:
             keywords: 키워드 JSON 문자열
             review_date: 리뷰 작성일
             image_count: 첨부 이미지 수
+            star_rating: 별점 (1.0~5.0, None이면 미수집)
+            reviewer_name: 리뷰어 이름
 
         Returns:
             True if inserted (new), False if duplicate or error
@@ -922,9 +1062,11 @@ class DatabaseManager:
 
             self.cursor.execute('''
                 INSERT INTO competitor_reviews
-                (competitor_name, source, content, sentiment, keywords, review_date, content_hash, image_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (competitor_name, source, content, sentiment, keywords, review_date, content_hash, image_count))
+                (competitor_name, source, content, sentiment, keywords, review_date,
+                 content_hash, image_count, star_rating, reviewer_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (competitor_name, source, content, sentiment, keywords, review_date,
+                  content_hash, image_count, star_rating, reviewer_name))
 
             self.conn.commit()
             return True
@@ -2987,6 +3129,18 @@ class DatabaseManager:
                 1,    # scan_count (신규는 1, 중복은 +1)
                 content_hash
             ))
+            # [Phase 11 D1] matched_keywords 정규화 저장 (viral_target_keywords)
+            try:
+                target_id = target_data.get('id')
+                kws = target_data.get('matched_keywords') or []
+                if target_id and isinstance(kws, list) and kws:
+                    self.cursor.executemany(
+                        'INSERT OR IGNORE INTO viral_target_keywords(viral_target_id, keyword) VALUES (?, ?)',
+                        [(target_id, str(k).strip()) for k in kws if k and str(k).strip()]
+                    )
+            except Exception as e:
+                logger.debug(f"viral_target_keywords sync skipped: {e}")
+
             self.conn.commit()
             return True
         except Exception as e:

@@ -7,53 +7,30 @@ AI 기반 키워드 확장 (Gemini)
 """
 
 import json
+import os
+import sys
 import re
 from typing import List, Dict, Optional
 from datetime import datetime
 
+# Path setup
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
+
+from services.ai_client import ai_generate, ai_generate_json
+
 
 class AIKeywordExpander:
-    """Gemini 기반 AI 키워드 확장"""
+    """AI 기반 키워드 확장"""
 
     def __init__(self):
-        self.model = None
-        self._init_gemini()
-
-    def _init_gemini(self):
-        """Gemini 모델 초기화"""
-        try:
-            from google import genai
-            import os
-
-            # config.json에서 API 키 로드
-            config_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                'config', 'config.json'
-            )
-
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    api_key = config.get('gemini_api_key', '')
-
-                    if api_key:
-                        self.client = genai.Client(api_key=api_key)
-                        self.model_name = 'gemini-3-flash-preview'
-                        print("✅ AI 키워드 확장기 초기화 완료 (Gemini)")
-                        return
-
-            print("⚠️ Gemini API 키 없음 - AI 확장 비활성화")
-            self.client = None
-            self.model_name = None
-
-        except Exception as e:
-            print(f"⚠️ Gemini 초기화 실패: {e}")
-            self.client = None
-            self.model_name = None
+        self.ai_available = True
+        print("AI 키워드 확장기 초기화 완료 (centralized ai_client)")
 
     def is_available(self) -> bool:
         """AI 확장 사용 가능 여부"""
-        return self.client is not None
+        return self.ai_available
 
     def expand_semantic(self, seed_keywords: List[str], category: str = "일반",
                         max_results: int = 20) -> List[str]:
@@ -68,9 +45,6 @@ class AIKeywordExpander:
         Returns:
             생성된 키워드 목록
         """
-        if not self.client:
-            return []
-
         # 시드 키워드 제한
         seeds = seed_keywords[:10]
 
@@ -92,11 +66,7 @@ class AIKeywordExpander:
 JSON 배열로만 응답: ["키워드1", "키워드2", ...]"""
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
+            text = ai_generate(prompt, temperature=0.7, max_tokens=4096)
 
             # JSON 추출
             match = re.search(r'\[.*?\]', text, re.DOTALL)
@@ -106,7 +76,7 @@ JSON 배열로만 응답: ["키워드1", "키워드2", ...]"""
             return []
 
         except Exception as e:
-            print(f"   ⚠️ AI 시맨틱 확장 실패: {e}")
+            print(f"   AI 시맨틱 확장 실패: {e}")
             return []
 
     def generate_questions(self, topic: str, region: str = "청주",
@@ -122,9 +92,6 @@ JSON 배열로만 응답: ["키워드1", "키워드2", ...]"""
         Returns:
             질문형 키워드 목록
         """
-        if not self.client:
-            return []
-
         prompt = f"""당신은 검색 키워드 전문가입니다.
 
 주제: {region} {topic}
@@ -145,11 +112,7 @@ JSON 배열로만 응답: ["키워드1", "키워드2", ...]"""
 JSON 배열로만 응답: ["질문1", "질문2", ...]"""
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
+            text = ai_generate(prompt, temperature=0.7, max_tokens=4096)
 
             match = re.search(r'\[.*?\]', text, re.DOTALL)
             if match:
@@ -158,7 +121,7 @@ JSON 배열로만 응답: ["질문1", "질문2", ...]"""
             return []
 
         except Exception as e:
-            print(f"   ⚠️ AI 질문 생성 실패: {e}")
+            print(f"   AI 질문 생성 실패: {e}")
             return []
 
     def generate_longtail(self, base_keyword: str, max_results: int = 10) -> List[str]:
@@ -172,9 +135,6 @@ JSON 배열로만 응답: ["질문1", "질문2", ...]"""
         Returns:
             롱테일 키워드 목록
         """
-        if not self.client:
-            return []
-
         prompt = f"""당신은 검색 키워드 전문가입니다.
 
 기본 키워드: {base_keyword}
@@ -193,11 +153,7 @@ JSON 배열로만 응답: ["질문1", "질문2", ...]"""
 JSON 배열로만 응답: ["롱테일1", "롱테일2", ...]"""
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
+            text = ai_generate(prompt, temperature=0.7, max_tokens=4096)
 
             match = re.search(r'\[.*?\]', text, re.DOTALL)
             if match:
@@ -206,7 +162,7 @@ JSON 배열로만 응답: ["롱테일1", "롱테일2", ...]"""
             return []
 
         except Exception as e:
-            print(f"   ⚠️ AI 롱테일 생성 실패: {e}")
+            print(f"   AI 롱테일 생성 실패: {e}")
             return []
 
     def batch_expand(self, categories: Dict[str, List[str]],
@@ -221,9 +177,6 @@ JSON 배열로만 응답: ["롱테일1", "롱테일2", ...]"""
         Returns:
             {카테고리: [확장된 키워드들]}
         """
-        if not self.client:
-            return {}
-
         results = {}
         for category, seeds in categories.items():
             expanded = self.expand_semantic(seeds, category, max_per_category)

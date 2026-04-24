@@ -267,18 +267,7 @@ async def generate_ai_response(request: GenerateResponseRequest) -> Dict[str, An
     리뷰 내용을 분석하여 적절한 응답 초안을 생성합니다.
     """
     try:
-        from google import genai
-        from google.genai import types
-        from utils import ConfigManager
-
-        # Gemini API 설정
-        config = ConfigManager()
-        api_key = config.get_api_key('GEMINI_API_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="Gemini API 키가 설정되지 않았습니다")
-
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
+        from services.ai_client import ai_generate
 
         # 감정 분석 (sentiment가 없으면 자동 분석)
         sentiment = request.sentiment
@@ -298,11 +287,8 @@ async def generate_ai_response(request: GenerateResponseRequest) -> Dict[str, An
 
 positive, negative, neutral 중 하나만 답변하세요. 다른 설명 없이 단어 하나만 출력하세요."""
 
-                sentiment_response = client.models.generate_content(
-                    model=model_name,
-                    contents=sentiment_prompt
-                )
-                sentiment = sentiment_response.text.strip().lower()
+                sentiment_result = ai_generate(sentiment_prompt, temperature=0.3)
+                sentiment = sentiment_result.strip().lower()
                 if sentiment not in ["positive", "negative", "neutral"]:
                     sentiment = "neutral"
 
@@ -335,16 +321,7 @@ positive, negative, neutral 중 하나만 답변하세요. 다른 설명 없이 
 
 응답만 작성하세요. 다른 설명은 불필요합니다."""
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=500
-            )
-        )
-
-        generated_response = response.text.strip()
+        generated_response = ai_generate(prompt, temperature=0.7, max_tokens=500)
 
         # 응답 로그 저장
         conn = None
@@ -464,18 +441,7 @@ async def classify_review(request: ClassifyRequest) -> Dict[str, Any]:
         분류 결과 (sentiment, topics, urgency, keywords)
     """
     try:
-        from google import genai
-        from google.genai import types
-        from utils import ConfigManager
-
-        # Gemini API 설정
-        config = ConfigManager()
-        api_key = config.get_api_key('GEMINI_API_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="Gemini API 키가 설정되지 않았습니다")
-
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
+        from services.ai_client import ai_generate_json
 
         # 분류 프롬프트
         prompt = f"""다음 한의원 리뷰를 분석해주세요.
@@ -493,26 +459,9 @@ async def classify_review(request: ClassifyRequest) -> Dict[str, Any]:
   "summary": "리뷰 내용 한줄 요약"
 }}"""
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                max_output_tokens=500
-            )
-        )
+        classification = ai_generate_json(prompt, temperature=0.3, max_tokens=500)
 
-        result_text = response.text.strip()
-
-        # JSON 추출 (마크다운 코드 블록 처리)
-        if result_text.startswith('```'):
-            lines = result_text.split('\n')
-            json_lines = [l for l in lines if not l.startswith('```')]
-            result_text = '\n'.join(json_lines)
-
-        try:
-            classification = json.loads(result_text)
-        except json.JSONDecodeError:
+        if not classification:
             # JSON 파싱 실패 시 기본값
             classification = {
                 "sentiment": "neutral",
@@ -655,6 +604,246 @@ async def get_response_stats() -> Dict[str, Any]:
             "by_tone": {},
             "today_count": 0
         }
+    finally:
+        if conn:
+            conn.close()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 B-4] 리뷰 자동 응답 시스템
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class AutoResponseRequest(BaseModel):
+    review_content: str
+    competitor_name: Optional[str] = None
+    star_rating: Optional[float] = None
+    review_id: Optional[int] = None
+
+
+class UpdateResponseStatusRequest(BaseModel):
+    status: str  # approved, posted, dismissed
+    final_response: Optional[str] = None
+
+
+@router.post("/auto-response/generate")
+@handle_exceptions
+async def generate_auto_response(request: AutoResponseRequest) -> Dict[str, Any]:
+    """
+    [고도화 B-4] 리뷰에 대한 자동 응답 초안 생성
+
+    1. 감성 분류 (positive/neutral/negative)
+    2. 주제 추출 (서비스, 효과, 가격, 대기 등)
+    3. Gemini AI로 응답 초안 생성
+    4. review_responses 테이블에 저장
+    """
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.review_response_service import (
+            classify_sentiment, extract_topics,
+            generate_response_draft, save_review_response
+        )
+
+        # 감성 분류 및 주제 추출
+        sentiment = classify_sentiment(request.review_content)
+        topics = extract_topics(request.review_content)
+
+        # AI 응답 초안 생성
+        draft = await generate_response_draft(
+            review_content=request.review_content,
+            sentiment=sentiment,
+            star_rating=request.star_rating,
+        )
+
+        # DB 저장
+        db = DatabaseManager()
+        response_id = save_review_response(
+            db_path=db.db_path,
+            review_id=request.review_id,
+            competitor_name=request.competitor_name or "자사",
+            review_content=request.review_content,
+            star_rating=request.star_rating,
+            sentiment=sentiment,
+            topics=topics,
+            draft_response=draft,
+        )
+
+        return {
+            "id": response_id,
+            "sentiment": sentiment,
+            "topics": topics,
+            "draft_response": draft,
+            "status": "draft",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"자동 응답 생성 실패: {str(e)}")
+
+
+@router.get("/auto-response/pending")
+@handle_exceptions
+async def get_pending_auto_responses(
+    limit: int = 20
+) -> Dict[str, Any]:
+    """[고도화 B-4] 대기 중인 응답 초안 목록"""
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.review_response_service import get_pending_responses
+
+        db = DatabaseManager()
+        responses = get_pending_responses(db.db_path, limit=limit)
+
+        # topics 필드 JSON 파싱
+        for r in responses:
+            if isinstance(r.get('topics'), str):
+                try:
+                    r['topics'] = json.loads(r['topics'])
+                except (json.JSONDecodeError, TypeError):
+                    r['topics'] = []
+
+        return {
+            "count": len(responses),
+            "responses": responses,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"대기 응답 조회 실패: {str(e)}")
+
+
+@router.put("/auto-response/{response_id}/status")
+@handle_exceptions
+async def update_auto_response_status(
+    response_id: int,
+    request: UpdateResponseStatusRequest
+) -> Dict[str, Any]:
+    """[고도화 B-4] 응답 상태 업데이트 (draft → approved → posted)"""
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.review_response_service import update_response_status
+
+        valid_statuses = {"approved", "posted", "dismissed"}
+        if request.status not in valid_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"유효하지 않은 상태: {request.status}. 허용: {valid_statuses}"
+            )
+
+        db = DatabaseManager()
+        success = update_response_status(
+            db_path=db.db_path,
+            response_id=response_id,
+            status=request.status,
+            final_response=request.final_response,
+        )
+
+        if not success:
+            raise HTTPException(status_code=404, detail=f"응답 ID {response_id}를 찾을 수 없습니다")
+
+        return {"id": response_id, "status": request.status, "updated": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"응답 상태 업데이트 실패: {str(e)}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 C-5] 의료광고 규정 체크
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class ComplianceCheckRequest(BaseModel):
+    content: str
+    content_type: str = "blog"  # blog, instagram, youtube, tiktok
+    title: Optional[str] = None
+    url: Optional[str] = None
+    use_ai: bool = False  # AI 정밀 분석 여부
+
+
+@router.post("/compliance/check")
+@handle_exceptions
+async def check_content_compliance_api(request: ComplianceCheckRequest) -> Dict[str, Any]:
+    """
+    [고도화 C-5] 콘텐츠 의료광고 규정 준수 체크
+
+    키워드 기반 사전 체크 + (선택) Gemini AI 정밀 분석
+    """
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.content_compliance import (
+            check_content_compliance, check_with_ai, save_compliance_check
+        )
+
+        if request.use_ai:
+            result = await check_with_ai(request.content, request.content_type)
+        else:
+            result = check_content_compliance(request.content, request.content_type)
+
+        # DB 저장
+        db = DatabaseManager()
+        check_id = save_compliance_check(
+            db_path=db.db_path,
+            content_type=request.content_type,
+            content_title=request.title or "",
+            content_url=request.url,
+            content_text=request.content,
+            result=result,
+        )
+
+        result["id"] = check_id
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"규정 체크 실패: {str(e)}")
+
+
+@router.get("/compliance/history")
+@handle_exceptions
+async def get_compliance_history(
+    limit: int = 20,
+    result_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """[고도화 C-5] 규정 체크 이력 조회"""
+    conn = None
+    try:
+        db = DatabaseManager()
+        conn = sqlite3.connect(db.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='content_compliance_checks'"
+        )
+        if not cursor.fetchone():
+            return {"checks": [], "total": 0}
+
+        query = "SELECT * FROM content_compliance_checks"
+        params = []
+
+        if result_filter:
+            query += " WHERE ai_check_result = ?"
+            params.append(result_filter)
+
+        query += " ORDER BY checked_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        checks = []
+        for row in cursor.fetchall():
+            check = dict(row)
+            if isinstance(check.get('compliance_issues'), str):
+                try:
+                    check['compliance_issues'] = json.loads(check['compliance_issues'])
+                except (json.JSONDecodeError, TypeError):
+                    check['compliance_issues'] = []
+            checks.append(check)
+
+        return {"checks": checks, "total": len(checks)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"이력 조회 실패: {str(e)}")
     finally:
         if conn:
             conn.close()

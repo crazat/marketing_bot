@@ -1,0 +1,40 @@
+{
+  "name": "Marketing Bot - 규림한의원 마케팅 OS",
+  "short_name": "Marketing Bot",
+  "description": "바이럴 헌터 · 키워드 발굴 · 경쟁사 분석 통합 마케팅 OS",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#ef4444",
+  "orientation": "portrait",
+  "categories": ["business", "productivity"],
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Viral Hunter",
+      "short_name": "Viral",
+      "description": "바이럴 타겟 작업",
+      "url": "/viral-hunter"
+    },
+    {
+      "name": "Dashboard",
+      "short_name": "Dash",
+      "description": "전체 대시보드",
+      "url": "/"
+    }
+  ]
+}

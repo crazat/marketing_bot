@@ -48,7 +48,7 @@ class TheAmbassador:
                         try:
                             snippet_el = g.find_element(By.CSS_SELECTOR, ".VwiC3b") # Snippet class
                             snippet = snippet_el.text
-                        except:
+                        except Exception:
                             snippet = "No snippet"
                             
                         title = title_el.text

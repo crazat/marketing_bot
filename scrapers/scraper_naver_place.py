@@ -6,6 +6,14 @@ import random
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# [고도화 A-1] Sentry 에러 모니터링
+try:
+    from scrapers.sentry_init import init_sentry
+    init_sentry("scraper_naver_place")
+except Exception:
+    pass
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service

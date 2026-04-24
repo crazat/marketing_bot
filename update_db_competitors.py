@@ -45,7 +45,7 @@ def migrate_competitors():
                             print(f"✅ Registered: {name_part}")
                         except sqlite3.IntegrityError:
                             pass
-            except:
+            except Exception:
                 continue
 
     conn.commit()

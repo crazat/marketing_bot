@@ -41,7 +41,7 @@ export default function InstagramAnalysis({ stats, hashtagAnalysis }: InstagramA
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {hashtagAnalysis.slice(0, 12).map((tag: any, index: number) => (
               <div
-                key={index}
+                key={tag.hashtag ?? tag.name ?? `tag-${index}`}
                 className="p-3 rounded-lg border border-border hover:border-primary/50 transition-colors"
               >
                 <div className="flex items-center justify-between mb-2">

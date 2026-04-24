@@ -41,7 +41,7 @@ class SentinelGuardian:
             from alert_bot import AlertSystem
             self.alert = AlertSystem()
             self.alerts_enabled = True
-        except:
+        except Exception:
             self.alert = None
             self.alerts_enabled = False
     
@@ -61,7 +61,7 @@ class SentinelGuardian:
             try:
                 with open(self.stats_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except Exception:
                 pass
         return default_stats
     
@@ -89,7 +89,7 @@ class SentinelGuardian:
             try:
                 prefix = "[CRITICAL]" if is_critical else "[Guardian]"
                 self.alert.bot.send_message(f"{prefix} {msg}")
-            except:
+            except Exception:
                 pass
     
     def get_system_resources(self):
@@ -105,7 +105,7 @@ class SentinelGuardian:
                 'memory_available_gb': round(memory.available / (1024**3), 2),
                 'disk_percent': disk.percent
             }
-        except:
+        except Exception:
             return None
     
     def analyze_crash(self, error_output):

@@ -139,6 +139,7 @@ export const viralApi = {
       search?: string
       sort?: string
       scan_batch?: string
+      offset?: number
     }
   ) => {
     const params: Record<string, any> = { status, limit }
@@ -154,14 +155,107 @@ export const viralApi = {
     if (filters?.search) params.search = filters.search
     if (filters?.sort) params.sort = filters.sort
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
+    if (filters?.offset && filters.offset > 0) params.offset = filters.offset
 
     const response = await api.get('/viral/targets', { params })
+    return response.data
+  },
+
+  getTargetsCount: async (
+    status = 'pending',
+    category?: string,
+    filters?: {
+      date_filter?: string
+      platforms?: string[]
+      category?: string
+      comment_status?: string
+      min_scan_count?: number
+      search?: string
+      scan_batch?: string
+    }
+  ): Promise<{ total: number }> => {
+    const params: Record<string, any> = { status }
+
+    if (category) params.category = category
+    if (filters?.category) params.category = filters.category
+    if (filters?.date_filter) params.date_filter = filters.date_filter
+    if (filters?.platforms && filters.platforms.length > 0) {
+      params.platforms = filters.platforms.join(',')
+    }
+    if (filters?.comment_status) params.comment_status = filters.comment_status
+    if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
+    if (filters?.search) params.search = filters.search
+    if (filters?.scan_batch) params.scan_batch = filters.scan_batch
+
+    const response = await api.get('/viral/targets/count', { params })
     return response.data
   },
 
   getCategories: async () => {
     const response = await api.get('/viral/categories')
     return response.data
+  },
+
+  getKpiStats: async (days = 14) => {
+    const response = await api.get('/viral/kpi-stats', { params: { days } })
+    return response.data as {
+      range_days: number
+      daily: Array<{
+        day: string
+        approved: number
+        posted: number
+        skipped: number
+        new_hot: number
+      }>
+      summary: {
+        backlog_pending: number
+        backlog_hot: number
+        today_processed: number
+        week_processed: number
+        ai_accept_rate: number
+      }
+    }
+  },
+
+  getTargetWarnings: async (targetId: string) => {
+    const response = await api.get(`/viral/targets/${encodeURIComponent(targetId)}/context`)
+    return response.data as {
+      target_id: string
+      domain: string
+      domain_recent_approved_7d: number
+      author_recent_approved_7d: number
+      scan_count: number
+      badges: Array<{ type: string; label: string; color: string }>
+      warnings: string[]
+    }
+  },
+
+  getTodaysQueue: async (totalLimit = 30, perCategory = 5, todayOnly = true) => {
+    const response = await api.get('/viral/todays-queue', {
+      params: { total_limit: totalLimit, per_category: perCategory, today_only: todayOnly }
+    })
+    return response.data as {
+      total: number
+      today_only?: boolean
+      generated_at: string
+      groups: Array<{
+        category: string
+        count: number
+        items: Array<{
+          id: string
+          platform: string
+          url: string
+          title: string
+          content_preview: string
+          matched_keywords: string[]
+          category: string
+          priority_score: number
+          discovered_at: string
+          author?: string
+          matched_keyword?: string
+        }>
+      }>
+    }
   },
 
   generateComment: async (target_id: string | number, style: string = 'default') => {
@@ -184,9 +278,23 @@ export const viralApi = {
     return response.data
   },
 
-  targetAction: async (target_id: string | number, action: string, comment?: string) => {
-    const response = await api.post('/viral/action', { target_id, action, comment })
+  targetAction: async (
+    target_id: string | number,
+    action: string,
+    comment?: string,
+    skip_reason?: string,
+    skip_note?: string,
+    idempotency_key?: string
+  ) => {
+    const response = await api.post('/viral/action', {
+      target_id, action, comment, skip_reason, skip_note, idempotency_key
+    })
     return response.data
+  },
+
+  getAdaptivePenalties: async (minSkip = 3) => {
+    const response = await api.get('/viral/adaptive-penalties', { params: { min_skip: minSkip } })
+    return response.data as { items: Array<{ key_type: string; key_value: string; skip_count: number; last_updated: string }> }
   },
 
   runScan: async (config?: { platforms?: string[]; max_results?: number }) => {
@@ -239,6 +347,56 @@ export const viralApi = {
   verifyTarget: async (target_id: string | number) => {
     const response = await api.post('/viral/verify-target', { target_id })
     return response.data
+  },
+
+  // [F3] 필터 조건 기반 대량 액션
+  bulkActionByFilter: async (
+    action: 'approve' | 'skip' | 'delete' | 'pending' | 'generated' | 'posted' | 'skipped',
+    filters: {
+      status?: string
+      category?: string
+      date_filter?: string
+      platforms?: string[]
+      comment_status?: string
+      min_scan_count?: number
+      search?: string
+      scan_batch?: string
+    },
+    options?: {
+      max_affected?: number
+      dry_run?: boolean
+      skip_reason?: string
+    }
+  ) => {
+    const response = await api.post('/viral/bulk-action-by-filter', {
+      action,
+      ...filters,
+      max_affected: options?.max_affected ?? 10000,
+      dry_run: options?.dry_run ?? false,
+      skip_reason: options?.skip_reason,
+    })
+    return response.data as { matched: number; updated: number; dry_run: boolean }
+  },
+
+  // [D5] 백그라운드 검증 (즉시 반환 + 폴링)
+  verifyBatchStart: async (category?: string, limit = 20) => {
+    const params: Record<string, any> = { limit }
+    if (category) params.category = category
+    const response = await api.post('/viral/verify-batch/start', null, { params })
+    return response.data as { job_id: string; status: string }
+  },
+
+  verifyBatchStatus: async (jobId: string) => {
+    const response = await api.get(`/viral/verify-batch/status/${jobId}`)
+    return response.data as {
+      status: 'queued' | 'running' | 'done' | 'error'
+      progress: number
+      total: number
+      commentable: number
+      not_commentable: number
+      failed: number
+      error: string | null
+    }
   },
 
   verifyBatch: async (category?: string, limit = 10) => {

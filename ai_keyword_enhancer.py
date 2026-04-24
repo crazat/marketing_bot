@@ -1,6 +1,6 @@
 """
 AI Keyword Enhancer - A3 검색 의도 분류 + A2 의미 클러스터링
-Gemini API 활용
+AI Client 활용
 """
 import os
 import sys
@@ -19,13 +19,9 @@ try:
 except Exception:
     pass
 
-# Gemini API (new google-genai SDK)
-try:
-    from google import genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-    print("⚠️ google-genai 미설치")
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate, ai_generate_json
 
 # 유사도 계산용
 try:
@@ -69,37 +65,8 @@ class SearchIntentClassifierAI:
     }
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
-        self.available = False
-
-        if not GEMINI_AVAILABLE:
-            print("⚠️ google-generativeai 패키지 미설치")
-            return
-
-        if not self.api_key:
-            # .env 파일에서 직접 로드 시도
-            env_path = os.path.join(os.path.dirname(__file__), '.env')
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    for line in f:
-                        if line.startswith('GEMINI_API_KEY='):
-                            self.api_key = line.split('=', 1)[1].strip()
-                            break
-
-        if self.api_key:
-            try:
-                self.client = genai.Client(api_key=self.api_key)
-                self.model_name = 'gemini-3-flash-preview'
-                self.available = True
-                print("✅ Gemini API 연결됨 (gemini-3-flash-preview)")
-            except Exception as e:
-                print(f"⚠️ Gemini API 초기화 실패: {e}")
-                self.client = None
-                self.model_name = None
-        else:
-            print("⚠️ GEMINI_API_KEY 없음")
-            self.client = None
-            self.model_name = None
+        self.available = True
+        print("✅ AI Client 연결됨 (centralized ai_client)")
 
     def classify_batch(self, keywords: List[str], batch_size: int = 50) -> Dict[str, str]:
         """
@@ -123,7 +90,7 @@ class SearchIntentClassifierAI:
         return results
 
     def _classify_batch_api(self, keywords: List[str]) -> Dict[str, str]:
-        """Gemini API로 배치 분류"""
+        """AI Client로 배치 분류"""
         prompt = f"""다음 한국어 키워드들의 검색 의도를 분류해주세요.
 
 검색 의도 유형:
@@ -140,16 +107,9 @@ JSON 형식으로만 응답해주세요:
 """
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            text = response.text.strip()
-
-            # JSON 추출
-            json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
+            result = ai_generate_json(prompt, temperature=0.3)
+            if result:
+                return result
 
             # 실패 시 패턴 기반 fallback
             return self._fallback_classify(keywords)

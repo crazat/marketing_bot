@@ -3,6 +3,7 @@ import { pathfinderApi } from '@/services/api'
 import { RefreshCw, TrendingUp, Zap, Target, AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 import Button, { IconButton } from '@/components/ui/Button'
+import GlossaryTerm from '@/components/ui/GlossaryTerm'
 
 interface KeiKeyword {
   keyword: string
@@ -94,7 +95,7 @@ export default function TopKeiKeywords({ limit = 10, minVolume = 10, compact = f
         <div className="px-4 py-3 border-b border-border bg-gradient-to-r from-primary/5 to-transparent flex items-center justify-between">
           <div className="flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-primary" />
-            <h3 className="font-semibold text-sm">KEI 상위 키워드</h3>
+            <h3 className="font-semibold text-sm"><GlossaryTerm termKey="kei">KEI</GlossaryTerm> 상위 키워드</h3>
             <span className="px-1.5 py-0.5 bg-primary/10 text-primary text-[10px] font-medium rounded">
               TOP {displayLimit}
             </span>
@@ -172,7 +173,7 @@ export default function TopKeiKeywords({ limit = 10, minVolume = 10, compact = f
             <TrendingUp className="w-4 h-4 text-primary" />
           </div>
           <div>
-            <h3 className="font-semibold text-sm">KEI 상위 키워드</h3>
+            <h3 className="font-semibold text-sm"><GlossaryTerm termKey="kei">KEI</GlossaryTerm> 상위 키워드</h3>
             <p className="text-xs text-muted-foreground">
               검색량 대비 경쟁이 낮은 효율적인 키워드
             </p>

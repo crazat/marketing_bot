@@ -20,10 +20,10 @@ Example:
     >>> print(result['content'])
 """
 import os
+import sys
 import json
 import pandas as pd
 import subprocess
-from google import genai
 from datetime import datetime
 import glob
 import requests
@@ -33,26 +33,19 @@ from utils import ConfigManager, logger
 from retry_helper import retry_with_backoff, with_fallback
 from task_manager import TaskManager
 
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate, ai_generate_json
+
 class AIOrchestrator:
     def __init__(self):
         self.config = ConfigManager()
         self.root_dir = self.config.root_dir
         self.db_path = self.config.db_path
         self.task_manager = TaskManager()
-        
-        # Load API Key from Utils
-        self.api_key = self.config.get_api_key()
-        
-        if self.api_key:
-            # New SDK Initialization
-            self.client = genai.Client(api_key=self.api_key)
-            self.model_name = self.config.get_model_name("flash")
-            self.has_llm = True
-        else:
-            self.client = None
-            self.has_llm = False
+        self.has_llm = True
 
-    # _load_api_key removed (using utils)
+    # _load_api_key removed (using centralized ai_client)
         
     def _get_status_context(self):
         """Fetches real-time status from DB and filesystem."""
@@ -462,43 +455,15 @@ class AIOrchestrator:
             "reason": "Short polite confirmation in Korean."
         }}
         """
-        # [Robustness] Retry with exponential backoff for transient API errors
-        max_retries = 3
-        delay = 1.0
-        
-        for attempt in range(max_retries):
-            try:
-                res = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt
-                )
-                # clean json
-                txt = res.text.replace("```json", "").replace("```", "").strip()
-                return json.loads(txt)
-            except json.JSONDecodeError as e:
-                # JSON parsing error - likely malformed response, retry
-                logger.warning(f"JSON Parse Error (attempt {attempt+1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    logger.error(f"Failed to parse intent after {max_retries} attempts")
-                    return None
-            except Exception as e:
-                error_str = str(e).lower()
-                # Check for rate limit / quota errors
-                if 'quota' in error_str or 'rate' in error_str or '429' in error_str:
-                    logger.warning(f"API Rate Limit (attempt {attempt+1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        import time
-                        time.sleep(delay * 2)  # Longer wait for rate limits
-                        delay *= 2
-                        continue
-                # Other errors - log and return None
-                logger.error(f"Router Error: {e}")
-                return None
-        return None
+        try:
+            result = ai_generate_json(prompt, temperature=0.3)
+            if result:
+                return result
+            logger.error("Failed to parse intent from AI response")
+            return None
+        except Exception as e:
+            logger.error(f"Router Error: {e}")
+            return None
 
     def _run_script(self, script_name, args=None):
         script_path = os.path.join(self.root_dir, "scrapers", script_name)

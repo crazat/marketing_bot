@@ -1,36 +1,44 @@
-from google import genai
 import os
+import sys
 import glob
 import logging
 from PIL import Image
 from utils import ConfigManager
 
-import logging
+# Add backend to path for ai_client import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
+from services.ai_client import ai_generate
 
 # Configure logging
 logger = logging.getLogger("VisionAnalyst")
 
 class VisionAnalyst:
     """
-    👁️ The 'Eyes' of the Marketing OS.
-    Uses Gemini 3 Flash (Multimodal) to analyze images.
+    The 'Eyes' of the Marketing OS.
+    Uses centralized AI client for text analysis.
+    Note: Multimodal image analysis requires direct API access;
+    text-based prompts are routed through ai_client.
     """
     def __init__(self):
         self.config = ConfigManager()
         self.api_key = self.config.get_api_key()
 
+        # Keep direct genai client for multimodal (image) requests only
+        self.client = None
+        self.model_name = None
         if self.api_key:
-            self.client = genai.Client(api_key=self.api_key)
-            # Try requested model, fallback to gemini-3-flash-preview if fails
             try:
-                self.model_name = self.config.get_model_name("flash")
-            except Exception:
-                logger.warning(f"Model config failed, falling back to gemini-3-flash-preview")
-                self.model_name = 'gemini-3-flash-preview'
+                from google import genai
+                self.client = genai.Client(api_key=self.api_key)
+                try:
+                    self.model_name = self.config.get_model_name("flash")
+                except Exception:
+                    logger.warning("Model config failed, falling back to gemini-3-flash-preview")
+                    self.model_name = 'gemini-3-flash-preview'
+            except ImportError:
+                logger.warning("google-genai not available for multimodal; image analysis disabled")
         else:
             logger.error("VisionAnalyst: No API Key found.")
-            self.client = None
-            self.model_name = None
 
     def analyze_visual_trend(self, image_paths):
         """

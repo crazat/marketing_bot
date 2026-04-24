@@ -527,11 +527,33 @@ export function extractResponseData<T>(responseData: unknown, fallback?: T): T {
   return responseData as T
 }
 
+// [EE3] 401/403 전역 핸들러 — 중복 토스트 방지용 쓰로틀
+let lastAuthToastAt = 0
+const AUTH_TOAST_THROTTLE_MS = 30_000
+function notifyAuthFailure(status: number) {
+  const now = Date.now()
+  if (now - lastAuthToastAt < AUTH_TOAST_THROTTLE_MS) return
+  lastAuthToastAt = now
+  // 브라우저 환경에서만 실행
+  if (typeof window === 'undefined') return
+  // Toast Provider 주입 없이 window.dispatchEvent로 느슨 결합
+  // Layout 등에서 'api:auth-failure' 이벤트 수신해 Toast 띄움
+  window.dispatchEvent(
+    new CustomEvent('api:auth-failure', { detail: { status } }),
+  )
+}
+
 // 응답 인터셉터 - 에러 처리
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ detail?: string; message?: string }>) => {
     const parsedError = parseApiError(error)
+    const status = parsedError.statusCode ?? error.response?.status
+
+    // [EE3] 인증 실패 감지 — 전역 이벤트 발행
+    if (status === 401 || status === 403) {
+      notifyAuthFailure(status)
+    }
 
     const apiError: ApiError = {
       message: parsedError.userMessage,

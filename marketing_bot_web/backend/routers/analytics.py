@@ -34,11 +34,12 @@ logger = logging.getLogger(__name__)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/attribution-chain")
-async def get_attribution_chain(days: int = 30) -> Dict[str, Any]:
+def get_attribution_chain(days: int = 30) -> Dict[str, Any]:
     """
     전환 어트리뷰션 체인 분석
     키워드 → 바이럴 → 리드 → 전환의 전체 경로 추적
     """
+    conn = None
     conn = sqlite3.connect(get_db_path())
     try:
         cursor = conn.cursor()
@@ -130,10 +131,11 @@ async def get_attribution_chain(days: int = 30) -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/response-golden-time")
-async def get_response_golden_time(days: int = 90) -> Dict[str, Any]:
+def get_response_golden_time(days: int = 90) -> Dict[str, Any]:
     """
     응답 시간별 전환율 분석 (골든타임 도출)
     """
+    conn = None
     conn = sqlite3.connect(get_db_path())
     try:
         cursor = conn.cursor()
@@ -265,12 +267,13 @@ class RecordResponseRequest(BaseModel):
 
 
 @router.post("/record-response")
-async def record_lead_response(data: RecordResponseRequest) -> Dict[str, Any]:
+def record_lead_response(data: RecordResponseRequest) -> Dict[str, Any]:
     """
     리드 첫 응답 시간 기록 (골든타임 분석용)
     """
     conn = None
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -339,12 +342,13 @@ async def record_lead_response(data: RecordResponseRequest) -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/competitor-movements")
-async def get_competitor_movements(days: int = 7) -> Dict[str, Any]:
+def get_competitor_movements(days: int = 7) -> Dict[str, Any]:
     """
     경쟁사 순위 변동, 활동량 변화, 신규 키워드 진입 감지
     """
     conn = None
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -499,12 +503,13 @@ async def get_competitor_movements(days: int = 7) -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/weekly-briefing")
-async def get_weekly_briefing() -> Dict[str, Any]:
+def get_weekly_briefing() -> Dict[str, Any]:
     """
     크로스 모듈 데이터 기반 AI 주간 브리핑
     """
     conn = None
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -700,7 +705,7 @@ async def get_weekly_briefing() -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/keyword-lifecycle")
-async def get_keyword_lifecycle(
+def get_keyword_lifecycle(
     status: Optional[str] = None,
     # [UX 개선] offset/limit 방식으로 통일 (page/page_size도 하위 호환성 유지)
     limit: int = Query(default=50, ge=1, le=200, description="조회할 항목 수"),
@@ -726,6 +731,7 @@ async def get_keyword_lifecycle(
         limit = page_size
 
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -868,6 +874,12 @@ async def get_keyword_lifecycle(
     except Exception as e:
         logger.error(f"keyword-lifecycle 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class KeywordStatusUpdate(BaseModel):
@@ -877,7 +889,7 @@ class KeywordStatusUpdate(BaseModel):
 
 
 @router.post("/keyword-lifecycle/update-status")
-async def update_keyword_lifecycle_status(data: KeywordStatusUpdate) -> Dict[str, Any]:
+def update_keyword_lifecycle_status(data: KeywordStatusUpdate) -> Dict[str, Any]:
     """
     키워드 라이프사이클 상태 수동 변경
     """
@@ -886,6 +898,7 @@ async def update_keyword_lifecycle_status(data: KeywordStatusUpdate) -> Dict[str
         raise HTTPException(status_code=400, detail=f"유효하지 않은 상태: {data.new_status}")
 
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -940,15 +953,22 @@ async def update_keyword_lifecycle_status(data: KeywordStatusUpdate) -> Dict[str
     except Exception as e:
         logger.error(f"update-keyword-status 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/keyword-lifecycle/auto-transition")
-async def run_keyword_auto_transition() -> Dict[str, Any]:
+def run_keyword_auto_transition() -> Dict[str, Any]:
     """
     키워드 상태 자동 전환 실행
     규칙 기반으로 상태를 자동으로 업데이트
     """
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1052,6 +1072,12 @@ async def run_keyword_auto_transition() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"auto-transition 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1059,12 +1085,13 @@ async def run_keyword_auto_transition() -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/channel-roi")
-async def get_channel_roi(days: int = 30) -> Dict[str, Any]:
+def get_channel_roi(days: int = 30) -> Dict[str, Any]:
     """
     채널별 ROI 분석
     플랫폼별/키워드별 투입 대비 수익 분석
     """
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1199,6 +1226,12 @@ async def get_channel_roi(days: int = 30) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"channel-roi 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1206,7 +1239,7 @@ async def get_channel_roi(days: int = 30) -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/marketing-health-score")
-async def get_marketing_health_score(days: int = 30) -> Dict[str, Any]:
+def get_marketing_health_score(days: int = 30) -> Dict[str, Any]:
     """
     마케팅 건강 점수 - 활동 기반 종합 점수
 
@@ -1217,6 +1250,7 @@ async def get_marketing_health_score(days: int = 30) -> Dict[str, Any]:
     - 경쟁 우위 점수 (20%): 경쟁사 대비 위치
     """
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1499,6 +1533,12 @@ async def get_marketing_health_score(days: int = 30) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"marketing-health-score 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1506,7 +1546,7 @@ async def get_marketing_health_score(days: int = 30) -> Dict[str, Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/before-after-comparison")
-async def get_before_after_comparison(
+def get_before_after_comparison(
     before_start: Optional[str] = None,
     before_end: Optional[str] = None,
     after_start: Optional[str] = None,
@@ -1530,6 +1570,7 @@ async def get_before_after_comparison(
         if not before_start:
             before_start = (today.replace(day=1) - timedelta(days=30)).strftime('%Y-%m-%d')
 
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1691,6 +1732,12 @@ async def get_before_after_comparison(
     except Exception as e:
         logger.error(f"before-after-comparison 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1705,13 +1752,14 @@ class ReferralSourceRequest(BaseModel):
 
 
 @router.post("/record-referral-source")
-async def record_referral_source(data: ReferralSourceRequest) -> Dict[str, Any]:
+def record_referral_source(data: ReferralSourceRequest) -> Dict[str, Any]:
     """
     유입 경로 기록
 
     "어떻게 오셨어요?" 질문 응답을 기록
     """
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1748,14 +1796,21 @@ async def record_referral_source(data: ReferralSourceRequest) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"record-referral-source 오류: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/referral-sources")
-async def get_referral_sources(days: int = 90) -> Dict[str, Any]:
+def get_referral_sources(days: int = 90) -> Dict[str, Any]:
     """
     유입 경로 통계
     """
     try:
+        conn = None
         conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
 
@@ -1836,4 +1891,76 @@ async def get_referral_sources(days: int = 90) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"referral-sources 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 V3-3] 채널별 전환 추적 (CPA/ROI)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/conversion/roi")
+def get_channel_roi(
+    month: str = None,
+) -> Dict[str, Any]:
+    """
+    [고도화 V3-3] 채널별 ROI (CPA, ROAS)
+
+    patient_attribution + marketing_spend 데이터 기반 자동 계산.
+    month 미지정 시 현재 월 기준.
+    """
+    try:
+        from services.conversion_tracker import get_channel_roi as calc_roi
+        db = DatabaseManager()
+        return calc_roi(db.db_path, month=month)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/conversion/visit")
+def record_patient_visit(
+    source_channel: str,
+    patient_type: str = "new",
+    treatment_type: str = None,
+    revenue: int = 0,
+    coupon_code: str = None,
+) -> Dict[str, Any]:
+    """
+    [고도화 V3-3] 환자 방문 기록 (접수 시 유입경로 기록)
+
+    source_channel: naver_place, naver_blog, instagram, kakao, referral, flyer, signage, naver_ad, other
+    """
+    try:
+        from services.conversion_tracker import add_patient_visit
+        db = DatabaseManager()
+        visit_id = add_patient_visit(
+            db.db_path, source_channel, patient_type, treatment_type, revenue, coupon_code,
+        )
+        if visit_id:
+            return {"id": visit_id, "recorded": True}
+        raise HTTPException(status_code=500, detail="기록 실패")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/conversion/spend")
+def set_marketing_spend(
+    month: str,
+    channel: str,
+    spend: int,
+) -> Dict[str, Any]:
+    """[고도화 V3-3] 월별 채널 마케팅 비용 입력"""
+    try:
+        from services.conversion_tracker import set_monthly_spend
+        db = DatabaseManager()
+        success = set_monthly_spend(db.db_path, month, channel, spend)
+        return {"updated": success, "month": month, "channel": channel, "spend": spend}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

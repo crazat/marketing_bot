@@ -17,9 +17,9 @@ import subprocess
 import json
 import time
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from google import genai
-from google.genai import types
+from services.ai_client import ai_generate_json
 
 # 상위 디렉토리를 path에 추가
 parent_dir = str(Path(__file__).parent.parent.parent.parent)  # 프로젝트 루트
@@ -37,6 +37,10 @@ from schemas.response import success_response, error_response
 
 logger = get_router_logger('hud')
 
+
+# [R1] DB 연결 누수 방지 공용 헬퍼는 backend_utils.database로 승격
+from backend_utils.database import db_conn
+
 # 스케줄러 상태 파일 경로
 SCHEDULER_STATE_FILE = os.path.join(parent_dir, 'db', 'scheduler_state.json')
 SCHEDULE_CONFIG_FILE = os.path.join(parent_dir, 'config', 'schedule.json')
@@ -53,9 +57,18 @@ def load_schedule_config():
         {"time": "09:00", "name": "Place Sniper", "icon": "📍", "cmd": "place_sniper"},
         {"time": "03:00", "name": "Pathfinder", "icon": "🌌", "cmd": "pathfinder"},
     ]
+    # [고도화 B-1b] 스크래퍼 엔진 설정에 따라 Place Sniper 명령어 선택
+    from config.app_settings import get_settings
+    _engine = get_settings().scraper_engine
+    _place_sniper_cmd = (
+        [PYTHON_CMD, "scrapers/scraper_naver_place_pw.py"]
+        if _engine == "playwright"
+        else [PYTHON_CMD, "scrapers/scraper_naver_place.py"]
+    )
+
     default_commands = {
         "sentinel": [PYTHON_CMD, "sentinel_agent.py"],
-        "place_sniper": [PYTHON_CMD, "scrapers/scraper_naver_place.py"],
+        "place_sniper": _place_sniper_cmd,
         "pathfinder": [PYTHON_CMD, "pathfinder_v3_complete.py", "--save-db"],
     }
 
@@ -107,82 +120,9 @@ def update_scan_progress(module_name: str, status: str, progress: int = 0, messa
 
 
 def get_scan_progress_from_log(module_name: str) -> Dict[str, Any]:
-    """로그 파일에서 진행률 파싱 (pathfinder, place_sniper 등)"""
-    log_dir = os.path.join(parent_dir, 'logs')
-
-    # 모듈별 로그 파일
-    if module_name == 'pathfinder':
-        log_file = os.path.join(log_dir, 'pathfinder_live.log')
-    elif module_name == 'pathfinder_legion':
-        log_file = os.path.join(log_dir, 'pathfinder_live.log')
-    else:
-        # 가장 최근 로그 파일 찾기
-        pattern = f'{module_name}_*.log'
-        import glob
-        files = glob.glob(os.path.join(log_dir, pattern))
-        log_file = max(files, key=os.path.getmtime) if files else None
-
-    if not log_file or not os.path.exists(log_file):
-        return {"status": "idle", "progress": 0, "message": "대기 중"}
-
-    try:
-        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-
-        if not lines:
-            return {"status": "running", "progress": 0, "message": "시작 중..."}
-
-        # 마지막 몇 줄에서 진행률 파싱
-        last_lines = lines[-20:]
-        progress = 0
-        message = ""
-
-        for line in reversed(last_lines):
-            line = line.strip()
-            if not line:
-                continue
-
-            # Pathfinder 진행률 패턴
-            if '키워드 수집 완료' in line or 'PHASE 5' in line:
-                progress = 100
-                message = "완료"
-                return {"status": "completed", "progress": 100, "message": message}
-
-            if 'PHASE' in line:
-                # PHASE 1, 2, 3, 4, 5
-                import re
-                phase_match = re.search(r'PHASE (\d)', line)
-                if phase_match:
-                    phase = int(phase_match.group(1))
-                    progress = min(phase * 20, 95)
-                    message = line[:100]
-                    break
-
-            # Place Sniper 진행률 패턴
-            if '키워드 스캔' in line or '스캔 중' in line:
-                match = re.search(r'(\d+)/(\d+)', line)
-                if match:
-                    current, total = int(match.group(1)), int(match.group(2))
-                    progress = int((current / total) * 100) if total > 0 else 0
-                    message = line[:100]
-                    break
-
-            # 일반 진행률 패턴
-            if '%' in line:
-                match = re.search(r'(\d+)%', line)
-                if match:
-                    progress = int(match.group(1))
-                    message = line[:100]
-                    break
-
-            # 기본 메시지
-            if not message and line:
-                message = line[:100]
-
-        return {"status": "running", "progress": progress, "message": message}
-
-    except Exception as e:
-        return {"status": "error", "progress": 0, "message": str(e)}
+    """[T3] 로그 파일에서 진행률 파싱 — services.hud_service로 위임."""
+    from services.hud_service import parse_scan_progress_from_log
+    return parse_scan_progress_from_log(module_name, parent_dir)
 
 
 # [성능 최적화] TTL 캐시 클래스
@@ -356,6 +296,12 @@ async def get_hud_metrics() -> Dict[str, Any]:
             detail=f"메트릭 조회 실패: {str(e)}"
         )
 
+def convert_to_kst_legacy(utc_timestamp: str) -> str:  # noqa: F811
+    """(보관용) — services.hud_service.convert_to_kst 사용 권장."""
+    from services.hud_service import convert_to_kst as _svc
+    return _svc(utc_timestamp)
+
+
 def convert_to_kst(utc_timestamp: str) -> str:
     """UTC 타임스탬프를 한국 시간(KST, UTC+9)으로 변환"""
     if not utc_timestamp:
@@ -386,8 +332,10 @@ async def get_system_status() -> Dict[str, Any]:
     if cached is not None:
         return cached
 
+    conn = None
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -424,6 +372,12 @@ async def get_system_status() -> Dict[str, Any]:
             detail=f"시스템 상태 조회 실패: {str(e)}"
         )
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/briefing")
 @handle_exceptions
 async def get_daily_briefing() -> Dict[str, Any]:
@@ -446,10 +400,12 @@ async def get_daily_briefing() -> Dict[str, Any]:
         "recent_insights": []
     }
 
+    conn = None
     try:
         logger.info("Briefing 시작...")
         db = DatabaseManager()
         logger.debug(f"Briefing DB path: {db.db_path}")
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -667,6 +623,12 @@ async def get_daily_briefing() -> Dict[str, Any]:
             detail=f"브리핑 조회 실패: {str(e)}"
         )
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/sentinel-alerts")
 @handle_exceptions
 async def get_sentinel_alerts() -> Dict[str, Any]:
@@ -686,6 +648,7 @@ async def get_sentinel_alerts() -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -765,6 +728,12 @@ async def get_sentinel_alerts() -> Dict[str, Any]:
             detail=f"Sentinel 알림 조회 실패: {str(e)}"
         )
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/scheduler-state")
 async def get_scheduler_state() -> Dict[str, Any]:
     """
@@ -891,14 +860,25 @@ def run_module_in_background(module_name: str):
         else:
             # 다른 모듈은 기존 방식 유지 (stdout을 로그 파일로 리다이렉트)
             log_file = os.path.join(log_dir, f'{module_name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-            log_handle = open(log_file, 'w', encoding='utf-8')
-            process = subprocess.Popen(
-                cmd,
-                cwd=parent_dir,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                shell=False
-            )
+            # [M2] Popen 실패 시 파일 핸들 누수 방지
+            log_handle = None
+            try:
+                log_handle = open(log_file, 'w', encoding='utf-8')
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=parent_dir,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    shell=False
+                )
+            except Exception as e:
+                if log_handle is not None:
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
+                raise HTTPException(status_code=500, detail=f"프로세스 실행 실패: {e}")
+
             with running_processes_lock:
                 running_processes[module_name] = process
 
@@ -1145,6 +1125,7 @@ async def get_recent_activities() -> List[Dict[str, Any]]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1268,6 +1249,12 @@ async def get_recent_activities() -> List[Dict[str, Any]]:
         raise HTTPException(status_code=500, detail=f"최근 활동 조회 실패: {str(e)}")
 
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/metrics-trend")
 async def get_metrics_trend(days: int = 7) -> Dict[str, Any]:
     """
@@ -1297,6 +1284,7 @@ async def get_metrics_trend(days: int = 7) -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1414,6 +1402,12 @@ async def get_metrics_trend(days: int = 7) -> Dict[str, Any]:
 # 목표 관리 API
 # =====================================
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 from pydantic import BaseModel
 
 class GoalCreate(BaseModel):
@@ -1434,6 +1428,7 @@ async def get_goals() -> List[Dict[str, Any]]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1515,6 +1510,12 @@ async def get_goals() -> List[Dict[str, Any]]:
         raise HTTPException(status_code=500, detail=f"목표 조회 실패: {str(e)}")
 
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.post("/goals")
 async def create_goal(goal: GoalCreate) -> Dict[str, Any]:
     """
@@ -1522,6 +1523,7 @@ async def create_goal(goal: GoalCreate) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1566,6 +1568,12 @@ async def create_goal(goal: GoalCreate) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"목표 생성 실패: {str(e)}")
 
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.delete("/goals/{goal_id}")
 async def delete_goal(goal_id: int) -> Dict[str, str]:
     """
@@ -1573,6 +1581,7 @@ async def delete_goal(goal_id: int) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1590,6 +1599,12 @@ async def delete_goal(goal_id: int) -> Dict[str, str]:
 # [Phase 4.0] 주간 리포트 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/weekly-report")
 async def get_weekly_report() -> Dict[str, Any]:
     """
@@ -1609,6 +1624,7 @@ async def get_weekly_report() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1851,6 +1867,12 @@ async def get_weekly_report() -> Dict[str, Any]:
 # [Phase 4.0] 미응답 리드 리마인더 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/overdue-leads")
 async def get_overdue_leads() -> Dict[str, Any]:
     """
@@ -1865,6 +1887,7 @@ async def get_overdue_leads() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1982,6 +2005,12 @@ async def get_overdue_leads() -> Dict[str, Any]:
 # [Phase 4.0] 순위 급락 알림 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/rank-alerts")
 async def get_rank_alerts() -> Dict[str, Any]:
     """
@@ -1996,6 +2025,7 @@ async def get_rank_alerts() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2109,6 +2139,12 @@ async def get_rank_alerts() -> Dict[str, Any]:
 # [Phase 4.0] AI 다음 액션 제안 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/suggested-actions")
 async def get_suggested_actions() -> Dict[str, Any]:
     """
@@ -2123,6 +2159,7 @@ async def get_suggested_actions() -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -2273,6 +2310,12 @@ async def get_suggested_actions() -> Dict[str, Any]:
 # [Phase 3.2] 트렌드 감지 API
 # ============================================
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/trending-keywords")
 async def get_trending_keywords(
     hours: int = Query(default=24, ge=1, le=168, description="분석 기간 (시간, 최대 7일)"),
@@ -2395,6 +2438,7 @@ async def get_recommended_keywords(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -2509,6 +2553,12 @@ async def get_recommended_keywords(
 # [Phase 5.1] 월간 ROI 리포트
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/monthly-roi-report")
 async def get_monthly_roi_report(
     year: int = None,
@@ -2535,6 +2585,7 @@ async def get_monthly_roi_report(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -2751,6 +2802,12 @@ async def get_monthly_roi_report(
 # [Phase 6.2] KEI 알림 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/kei-alerts")
 async def get_kei_alerts(days: int = 7) -> Dict[str, Any]:
     """
@@ -2769,6 +2826,7 @@ async def get_kei_alerts(days: int = 7) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -2872,6 +2930,12 @@ async def get_kei_alerts(days: int = 7) -> Dict[str, Any]:
 # [Phase 6.2] 자동 승인 알림 API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 @router.get("/auto-approval-alerts")
 async def get_auto_approval_alerts(days: int = 7) -> Dict[str, Any]:
     """
@@ -2889,6 +2953,7 @@ async def get_auto_approval_alerts(days: int = 7) -> Dict[str, Any]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -2988,6 +3053,12 @@ async def get_auto_approval_alerts(days: int = 7) -> Dict[str, Any]:
 # ===========================================================================
 
 # AI 브리핑 캐시 (5분)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 _ai_briefing_cache: Dict[str, Any] = {}
 _ai_briefing_cache_time: float = 0
 AI_BRIEFING_CACHE_TTL = 300  # 5분
@@ -3021,22 +3092,10 @@ async def get_ai_briefing() -> Dict[str, Any]:
     try:
         logger.info("AI 브리핑 생성 시작...")
 
-        # ConfigManager로 API 키 로드
-        from utils import ConfigManager
-        config = ConfigManager()
-        api_key = config.get_api_key('GEMINI_API_KEY')
-
-        if not api_key:
-            logger.warning("Gemini API 키가 설정되지 않았습니다. 기본 브리핑 반환")
-            return _generate_default_ai_briefing()
-
         # 데이터 수집
         data_context = await _collect_briefing_data()
 
         # AI로 인사이트 생성
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-3-flash-preview'
-
         prompt = f"""당신은 한의원 마케팅 전문 분석가입니다.
 다음 데이터를 분석하여 경영자가 빠르게 의사결정을 내릴 수 있도록
 핵심 인사이트를 제공해주세요.
@@ -3085,27 +3144,11 @@ async def get_ai_briefing() -> Dict[str, Any]:
 - 한국어로 응답
 - 반드시 유효한 JSON 형식으로 응답"""
 
-        generation_config = types.GenerateContentConfig(
-            temperature=0.3,
-            max_output_tokens=2048
-        )
+        ai_insights = ai_generate_json(prompt, temperature=0.3, max_tokens=2048)
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=generation_config
-        )
-
-        # 응답 파싱
-        response_text = response.text.strip()
-
-        # JSON 블록 추출
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-
-        ai_insights = json.loads(response_text)
+        if not ai_insights:
+            logger.warning("AI 브리핑 JSON 파싱 실패. 기본 브리핑 반환")
+            return _generate_default_ai_briefing()
 
         # 결과 구성
         result = {
@@ -3142,6 +3185,7 @@ async def _collect_briefing_data() -> Dict[str, Any]:
     """브리핑에 필요한 데이터 수집"""
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -3266,6 +3310,12 @@ async def _collect_briefing_data() -> Dict[str, Any]:
         return {}
 
 
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 def _generate_default_ai_briefing() -> Dict[str, Any]:
     """API 키 없거나 오류 시 기본 브리핑 반환"""
     return {

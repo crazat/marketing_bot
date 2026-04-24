@@ -48,6 +48,11 @@ ENV/
 # Logs
 logs/
 *.log
+*.log.*
+
+# Claude local session / lock files (모든 경로의 .claude 디렉토리)
+**/.claude/scheduled_tasks.lock
+**/.claude/settings.local.json
 
 # Scraped Data (can be regenerated)
 scraped_data/

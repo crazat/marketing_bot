@@ -42,11 +42,24 @@ class TelegramBot:
     """
     Handles sending alerts via Telegram.
     Supports 'Mock Mode' if no token is provided.
+
+    [W4] 최초 호출 시 토큰·챗ID 미설정 상태를 logger.warning으로 한 번 출력.
+    조용히 mock으로 빠지는 침묵 실패를 방지한다.
     """
+
+    _warned_about_missing_creds = False  # 클래스 레벨: 경고는 1회만
+
     def __init__(self, token=None, chat_id=None):
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{self.token}/sendMessage" if self.token else None
+        self.is_mock = not (self.token and self.chat_id)
+        if self.is_mock and not TelegramBot._warned_about_missing_creds:
+            logger.warning(
+                "[Telegram MOCK] TELEGRAM_BOT_TOKEN 또는 CHAT_ID 미설정 — "
+                "알림은 콘솔에만 출력됩니다. 프로덕션에서는 반드시 설정하세요."
+            )
+            TelegramBot._warned_about_missing_creds = True
 
     def send_message(self, message: str, priority: AlertPriority = AlertPriority.INFO):
         """
@@ -92,6 +105,102 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Connection Error sending alert: {e}")
             return False
+
+
+    def send_with_approval_buttons(
+        self,
+        message: str,
+        callback_data_prefix: str,
+        item_id: int,
+        priority: AlertPriority = AlertPriority.INFO,
+    ) -> bool:
+        """
+        [고도화 V2-2] 인라인 키보드 버튼이 포함된 승인 메시지 전송
+
+        Args:
+            message: 메시지 내용
+            callback_data_prefix: 콜백 데이터 접두사 (예: "review_response", "content_publish")
+            item_id: 승인 대상 항목 ID
+            priority: 알림 우선순위
+
+        인라인 버튼: [승인 ✅] [수정 ✏️] [거부 ❌]
+        """
+        if not self.token or not self.chat_id:
+            print(f"\n[MOCK APPROVAL]\n{message}\n[승인] [수정] [거부]\n" + "-"*30)
+            return True
+
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+
+        inline_keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "승인 ✅", "callback_data": f"{callback_data_prefix}:approve:{item_id}"},
+                    {"text": "수정 ✏️", "callback_data": f"{callback_data_prefix}:revise:{item_id}"},
+                    {"text": "거부 ❌", "callback_data": f"{callback_data_prefix}:reject:{item_id}"},
+                ]
+            ]
+        }
+
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "reply_markup": json.dumps(inline_keyboard),
+        }
+
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ 승인 요청 전송: {callback_data_prefix}:{item_id}")
+                return True
+            else:
+                # Markdown 파싱 실패 시 plain text 재시도
+                payload.pop("parse_mode", None)
+                retry = requests.post(url, json=payload, timeout=10)
+                return retry.status_code == 200
+        except Exception as e:
+            logger.error(f"승인 메시지 전송 실패: {e}")
+            return False
+
+    def send_review_approval(self, review_id: int, review_content: str,
+                              draft_response: str, sentiment: str):
+        """
+        [고도화 V2-2] 리뷰 응답 승인 요청 (B-4 리뷰 자동응답 연동)
+        """
+        sentiment_emoji = {"positive": "😊", "neutral": "😐", "negative": "😟"}.get(sentiment, "📝")
+
+        message = (
+            f"{sentiment_emoji} 새 리뷰 응답 초안\n\n"
+            f"━━ 원본 리뷰 ━━\n"
+            f"{review_content[:200]}\n\n"
+            f"━━ 응답 초안 ━━\n"
+            f"{draft_response[:300]}\n\n"
+            f"아래 버튼으로 처리해주세요."
+        )
+
+        return self.send_with_approval_buttons(
+            message=message,
+            callback_data_prefix="review_response",
+            item_id=review_id,
+            priority=AlertPriority.WARNING,
+        )
+
+    def send_content_approval(self, content_id: int, title: str, preview: str):
+        """
+        [고도화 V2-2] 콘텐츠 게시 승인 요청
+        """
+        message = (
+            f"📝 콘텐츠 게시 승인 요청\n\n"
+            f"제목: {title}\n\n"
+            f"미리보기:\n{preview[:300]}...\n\n"
+            f"아래 버튼으로 처리해주세요."
+        )
+
+        return self.send_with_approval_buttons(
+            message=message,
+            callback_data_prefix="content_publish",
+            item_id=content_id,
+            priority=AlertPriority.INFO,
+        )
 
 
 class ActionableAlert:

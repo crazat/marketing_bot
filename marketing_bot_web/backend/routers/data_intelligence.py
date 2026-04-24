@@ -26,6 +26,7 @@ sys.path.insert(0, backend_dir)
 
 from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
+from backend_utils.cache import cached, invalidate_cache
 from schemas.response import success_response, error_response
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ VALID_SEVERITY_LEVELS = {"high", "medium", "low"}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/smartplace/stats")
+@cached(ttl=120)
 @handle_exceptions
 async def get_smartplace_stats(
     days: int = Query(default=30, ge=1, le=365, description="조회 기간 (일)")
@@ -195,6 +197,7 @@ async def get_review_intelligence(
 
 
 @router.get("/reviews/intelligence/summary")
+@cached(ttl=300)
 @handle_exceptions
 async def get_review_intelligence_summary():
     """
@@ -785,6 +788,144 @@ async def get_community_mentions(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Dashboard Summary (combined intelligence)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/behavior/trend")
+@cached(ttl=300)
+@handle_exceptions
+async def get_behavior_trend(
+    days: int = Query(default=30, ge=7, le=365, description="조회 기간 (일)")
+):
+    """
+    [고도화 B-3] 네이버 플레이스 행동 데이터 트렌드
+
+    smartplace_stats 테이블에서 전화/길찾기/예약/저장 클릭 트렌드 조회.
+    네이버 플레이스 4대 지표(적합도/인기도/최신성/신뢰성)의 '인기도' 산출 근거.
+
+    Returns:
+        - daily: 일별 행동 데이터
+        - summary: 기간 합계 및 증감률
+        - scores: 인기도/최신성 점수
+    """
+    try:
+        db = DatabaseManager()
+        conn = sqlite3.connect(db.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # smartplace_stats에서 행동 데이터 조회
+        cursor.execute("""
+            SELECT
+                date,
+                COALESCE(total_views, 0) as total_views,
+                COALESCE(place_views, 0) as place_views,
+                COALESCE(search_views, 0) as search_views,
+                COALESCE(phone_clicks, 0) as phone_clicks,
+                COALESCE(direction_clicks, 0) as direction_clicks,
+                COALESCE(save_clicks, 0) as save_clicks,
+                COALESCE(share_clicks, 0) as share_clicks,
+                COALESCE(review_clicks, 0) as review_clicks,
+                COALESCE(website_clicks, 0) as website_clicks,
+                COALESCE(booking_clicks, 0) as booking_clicks
+            FROM smartplace_stats
+            WHERE date >= date('now', ? || ' days')
+            ORDER BY date ASC
+        """, (f"-{days}",))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return success_response({
+                "daily": [],
+                "summary": {},
+                "scores": {"popularity": 0, "freshness": 0},
+                "message": "SmartPlace 통계 데이터가 없습니다. CSV 임포트가 필요합니다."
+            })
+
+        daily = [dict(row) for row in rows]
+
+        # 기간 합계
+        total_phone = sum(r['phone_clicks'] for r in daily)
+        total_direction = sum(r['direction_clicks'] for r in daily)
+        total_booking = sum(r['booking_clicks'] for r in daily)
+        total_save = sum(r['save_clicks'] for r in daily)
+        total_views = sum(r['total_views'] for r in daily)
+
+        # 전반기/후반기 비교 (증감률)
+        mid = len(daily) // 2
+        if mid > 0:
+            first_half_actions = sum(
+                r['phone_clicks'] + r['direction_clicks'] + r['booking_clicks'] + r['save_clicks']
+                for r in daily[:mid]
+            )
+            second_half_actions = sum(
+                r['phone_clicks'] + r['direction_clicks'] + r['booking_clicks'] + r['save_clicks']
+                for r in daily[mid:]
+            )
+            growth_rate = round(
+                ((second_half_actions - first_half_actions) / max(first_half_actions, 1)) * 100, 1
+            )
+        else:
+            growth_rate = 0
+
+        # 인기도 점수 (행동 클릭의 총 조회 대비 비율 × 100)
+        total_actions = total_phone + total_direction + total_booking + total_save
+        popularity_score = round(
+            (total_actions / max(total_views, 1)) * 100, 1
+        )
+
+        # 최신성 점수 (최근 7일 업데이트 빈도)
+        recent_7d = [r for r in daily if r['date'] >= daily[-1]['date'][:8] + '01'][-7:] if daily else []
+        freshness_score = min(round(len(recent_7d) / 7 * 100, 1), 100)
+
+        return success_response({
+            "daily": daily,
+            "summary": {
+                "total_views": total_views,
+                "total_phone": total_phone,
+                "total_direction": total_direction,
+                "total_booking": total_booking,
+                "total_save": total_save,
+                "total_actions": total_actions,
+                "growth_rate": growth_rate,
+                "days": len(daily),
+            },
+            "scores": {
+                "popularity": min(popularity_score, 100),
+                "freshness": freshness_score,
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"behavior-trend 오류: {str(e)}", exc_info=True)
+        return error_response(f"행동 데이터 조회 실패: {str(e)}", status_code=500)
+
+
+@router.get("/weather/triggers")
+@cached(ttl=1800)
+@handle_exceptions
+async def get_weather_triggers():
+    """
+    [고도화 V2-1] 현재 날씨 기반 마케팅 트리거
+
+    기온/미세먼지/습도 등을 분석하여 자동 발동되는 마케팅 트리거 반환.
+    각 트리거에 추천 키워드, 콘텐츠 주제, 타겟 고객층 포함.
+    """
+    try:
+        from services.weather_trigger import check_weather_triggers
+
+        db = DatabaseManager()
+        result = await check_weather_triggers(db.db_path)
+
+        if "error" in result:
+            return success_response(result)
+
+        return success_response(result)
+
+    except Exception as e:
+        logger.error(f"weather-triggers 오류: {e}", exc_info=True)
+        return error_response(f"날씨 트리거 조회 실패: {str(e)}", status_code=500)
+
 
 @router.get("/dashboard")
 @handle_exceptions

@@ -17,6 +17,14 @@
       "note": "주 1회 실행 권장 (DataLab 할당량 절약)"
     },
     {
+      "time": "05:30",
+      "name": "AEO/GEO Tracker",
+      "icon": "🤖",
+      "cmd": "aeo_tracker",
+      "enabled": false,
+      "note": "[고도화 B-2] AI 검색 가시성 추적. scrapers/ai_search_tracker.py 구현 후 활성화"
+    },
+    {
       "time": "06:00",
       "name": "Keyword Trends",
       "icon": "📈",
@@ -194,6 +202,14 @@
       "icon": "💊",
       "cmd": "health_check",
       "enabled": true
+    },
+    {
+      "time": "13:00",
+      "name": "Viral Velocity",
+      "icon": "🔥",
+      "cmd": "viral_velocity",
+      "enabled": true,
+      "note": "[고도화 C-3] 바이럴 스파이크 감지 (하루 2회: 13:00, 20:00 권장)"
     }
   ],
   "disabled_reason": {

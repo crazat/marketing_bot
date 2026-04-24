@@ -15,15 +15,17 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import warnings
 warnings.filterwarnings("ignore")
-from google import genai
-from google.genai import types
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Path setup
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
+
 # [Phase 2.1] Event Bus Integration
 try:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from core.event_bus import publish_event, EventType
     HAS_EVENT_BUS = True
 except ImportError:
@@ -34,8 +36,8 @@ except ImportError:
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.database import DatabaseManager
+from services.ai_client import ai_generate, ai_generate_json
 
 class CompetitorScout:
     def __init__(self, target_name, headless=True, search_suffix="후기"):
@@ -46,45 +48,7 @@ class CompetitorScout:
         if not os.path.exists(self.report_dir):
             os.makedirs(self.report_dir)
             
-        # Load API Key
-        self.model = None
-        self._setup_llm()
-
-    # ... (init logic confirmed above)
-
-    def _setup_llm(self):
-        try:
-            # Try loading from secrets.json
-            secret_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'secrets.json')
-            api_key = None
-            if os.path.exists(secret_path):
-                with open(secret_path, 'r') as f:
-                    data = json.load(f)
-                    api_key = data.get('GEMINI_API_KEY') or data.get('GOOGLE_API_KEY')
-
-            if not api_key: api_key = os.environ.get("GOOGLE_API_KEY")
-
-            if api_key:
-                try:
-                    # [MODIFIED] Using new google-genai SDK
-                    self.client = genai.Client(api_key=api_key)
-                    self.model_name = "gemini-3-flash-preview"
-                    self.generation_config = types.GenerateContentConfig(
-                        temperature=0.3,
-                        top_p=0.85
-                    )
-                    self.has_llm = True
-                except Exception as model_err:
-                    print(f"⚠️ AI Model Init Failed: {model_err}. Analysis will be skipped.")
-                    self.client = None
-                    self.has_llm = False
-            else:
-                print("⚠️ Warning: No Google API Key found. AI Analysis will be skipped.")
-                self.has_llm = False
-        except Exception as e:
-            print(f"⚠️ LLM Setup Error: {e}")
-            self.has_llm = False
-            self.client = None
+        self.has_llm = True  # ai_client handles initialization
 
     def scrape_naver_view(self, extra_keyword=""):
         """Uses Naver API to fetch Blog/Cafe posts securely."""
@@ -276,12 +240,7 @@ JSON 형식으로 요약하세요:
 """
 
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=self.generation_config
-                )
-                result_text = response.text.strip()
+                result_text = ai_generate(prompt, temperature=0.3, max_tokens=4096)
                 all_insights.append({
                     'batch': batch_num,
                     'analysis': result_text
@@ -329,12 +288,7 @@ JSON 형식으로 요약하세요:
 """
 
         try:
-            final_response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=final_prompt,
-                config=self.generation_config
-            )
-            report_text = final_response.text.strip()
+            report_text = ai_generate(final_prompt, temperature=0.3, max_tokens=4096)
 
             # [Phase 2.1] 약점 발견 이벤트 발행
             self._publish_weakness_events(report_text, all_insights, len(all_data))

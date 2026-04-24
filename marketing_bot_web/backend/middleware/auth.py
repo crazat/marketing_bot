@@ -41,22 +41,25 @@ PUBLIC_PATHS = [
 ]
 
 
-def get_api_key() -> str:
+def get_api_key() -> Optional[str]:
     """
-    환경변수에서 API 키 로드
-    없으면 기본 개발용 키 사용 (프로덕션에서는 반드시 설정 필요)
+    환경변수에서 API 키 로드.
+
+    [C1] Fail-closed: 환경변수 미설정 시 None 반환 → 인증 거부.
+    개발 시에는 .env 또는 환경변수에 MARKETING_BOT_API_KEY를 반드시 설정.
     """
-    api_key = os.getenv("MARKETING_BOT_API_KEY")
-    if not api_key:
-        # 개발 환경용 기본 키 (프로덕션에서는 경고)
-        api_key = "dev-api-key-change-in-production"
-    return api_key
+    return os.getenv("MARKETING_BOT_API_KEY")
 
 
 def verify_api_key(api_key: str) -> bool:
-    """API 키 검증"""
+    """API 키 검증.
+
+    [C1] expected_key가 설정돼 있지 않으면 항상 False (fail-closed).
+    """
     expected_key = get_api_key()
-    # 타이밍 공격 방지를 위한 상수 시간 비교
+    if not expected_key:
+        return False
+    # 타이밍 공격 방지 상수 시간 비교
     return secrets.compare_digest(api_key, expected_key)
 
 
@@ -82,6 +85,13 @@ def require_api_key(api_key: Optional[str] = Depends(get_api_key_header)) -> str
             status_code=401,
             detail="API 키가 필요합니다. X-API-Key 헤더를 설정하세요.",
             headers={"WWW-Authenticate": "ApiKey"}
+        )
+
+    # [C1] 서버 측 기대 키 미설정은 구성 오류 — 500 반환
+    if not get_api_key():
+        raise HTTPException(
+            status_code=500,
+            detail="서버가 MARKETING_BOT_API_KEY로 구성되지 않았습니다.",
         )
 
     if not verify_api_key(api_key):
@@ -150,6 +160,17 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                         "error": "API 키가 필요합니다",
                         "detail": "X-API-Key 헤더를 설정하세요",
                         "path": path
+                    }
+                )
+
+            # [C1] 서버 측 기대 키 미설정은 구성 오류
+            if not get_api_key():
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "error": "서버 구성 오류",
+                        "detail": "MARKETING_BOT_API_KEY 환경변수를 설정하세요",
                     }
                 )
 

@@ -266,6 +266,7 @@ async def get_ranking_keywords() -> List[Dict[str, Any]]:
     conn = None  # [안정성 개선] try/finally 패턴으로 연결 누수 방지
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -435,6 +436,7 @@ async def refresh_keyword_volumes() -> Dict[str, Any]:
     conn = None  # [안정성 개선] try/finally 패턴
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -565,6 +567,7 @@ async def get_ranking_trends(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -663,6 +666,12 @@ async def get_ranking_trends(
                 "total": 0
             }
         }
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.post("/ranking-keywords")
 async def add_ranking_keyword(keyword: RankingKeyword) -> Dict[str, str]:
@@ -672,6 +681,7 @@ async def add_ranking_keyword(keyword: RankingKeyword) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -719,6 +729,12 @@ async def add_ranking_keyword(keyword: RankingKeyword) -> Dict[str, str]:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @router.delete("/ranking-keywords/{keyword}")
 async def remove_ranking_keyword(keyword: str) -> Dict[str, str]:
@@ -727,6 +743,7 @@ async def remove_ranking_keyword(keyword: str) -> Dict[str, str]:
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -754,6 +771,12 @@ async def remove_ranking_keyword(keyword: str) -> Dict[str, str]:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class UpdateKeywordRequest(BaseModel):
@@ -784,6 +807,7 @@ async def update_ranking_keyword(old_keyword: str, request: UpdateKeywordRequest
             }
 
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -872,6 +896,12 @@ async def update_ranking_keyword(old_keyword: str, request: UpdateKeywordRequest
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/competitor-vitals")
@@ -896,6 +926,7 @@ async def get_competitor_vitals() -> Dict[str, Any]:
 
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -910,6 +941,8 @@ async def get_competitor_vitals() -> Dict[str, Any]:
                 COUNT(CASE WHEN review_date >= date('now', '-7 days') THEN 1 END) as reviews_7d,
                 COUNT(CASE WHEN sentiment = 'positive' THEN 1 END) as positive_count,
                 COUNT(CASE WHEN sentiment = 'negative' THEN 1 END) as negative_count,
+                ROUND(AVG(CASE WHEN star_rating IS NOT NULL THEN star_rating END), 1) as avg_star_rating,
+                COUNT(CASE WHEN star_rating IS NOT NULL THEN 1 END) as rated_count,
                 MAX(scraped_at) as last_scraped
             FROM competitor_reviews
             GROUP BY competitor_name
@@ -948,6 +981,8 @@ async def get_competitor_vitals() -> Dict[str, Any]:
                 'reviews_30d': reviews_30d,
                 'reviews_7d': row['reviews_7d'] or 0,
                 'positive_ratio': sentiment_ratio,
+                'avg_star_rating': row['avg_star_rating'],
+                'rated_count': row['rated_count'] or 0,
                 'last_scraped': row['last_scraped'],
                 'trend': 'active' if reviews_30d >= 10 else 'moderate' if reviews_30d >= 5 else 'low'
             })
@@ -965,6 +1000,39 @@ async def get_competitor_vitals() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"competitor-vitals 오류: {str(e)}", exc_info=True)
         return default_response
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@router.get("/reputation-score")
+async def get_reputation_score(
+    target: Optional[str] = None,
+    days: int = 30,
+) -> Dict[str, Any]:
+    """
+    [고도화 V2-3] 통합 평판 점수
+
+    네이버(40%) + 커뮤니티(25%) 가중 합산.
+    경쟁사 대비 상대 지수 포함.
+    """
+    try:
+        from services.reputation_engine import calculate_reputation_score
+
+        db = DatabaseManager()
+        result = calculate_reputation_score(
+            db_path=db.db_path,
+            target_name=target,
+            days=days,
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"reputation-score 오류: {e}", exc_info=True)
+        return {"error": str(e), "overall_score": 0}
 
 
 class TargetRankUpdate(BaseModel):
@@ -1075,6 +1143,7 @@ async def get_ranking_forecast(days: int = 14, forecast_days: int = 7) -> Dict[s
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1230,6 +1299,12 @@ async def get_ranking_forecast(days: int = 14, forecast_days: int = 7) -> Dict[s
     except Exception as e:
         logger.error(f"순위 예측 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"순위 예측 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/forecast-accuracy")
@@ -1255,6 +1330,7 @@ async def get_forecast_accuracy(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1398,6 +1474,12 @@ async def get_forecast_accuracy(
     except Exception as e:
         logger.error(f"예측 정확도 검증 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"예측 정확도 검증 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/rank-drop-alerts")
@@ -1420,6 +1502,7 @@ async def get_rank_drop_alerts(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1510,6 +1593,12 @@ async def get_rank_drop_alerts(
     except Exception as e:
         logger.error(f"순위 하락 알림 조회 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"순위 하락 알림 조회 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.post("/generate-rank-alerts")
@@ -1532,6 +1621,7 @@ async def generate_rank_drop_notifications(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1652,6 +1742,12 @@ async def generate_rank_drop_notifications(
     except Exception as e:
         logger.error(f"순위 하락 알림 생성 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"순위 하락 알림 생성 실패: {str(e)}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1688,6 +1784,7 @@ async def add_competitor_ranking(data: CompetitorRankingCreate) -> Dict[str, Any
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
@@ -1708,6 +1805,12 @@ async def add_competitor_ranking(data: CompetitorRankingCreate) -> Dict[str, Any
     except Exception as e:
         logger.error(f"경쟁사 순위 기록 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/competitor-rankings")
@@ -1729,6 +1832,7 @@ async def get_competitor_rankings(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -1779,6 +1883,12 @@ async def get_competitor_rankings(
     except Exception as e:
         logger.error(f"경쟁사 순위 조회 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @router.get("/competitor-rankings/compare")
@@ -1799,6 +1909,7 @@ async def compare_rankings_with_competitors(
     """
     try:
         db = DatabaseManager()
+        conn = None
         conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -2009,3 +2120,9 @@ async def compare_rankings_with_competitors(
     except Exception as e:
         logger.error(f"순위 비교 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

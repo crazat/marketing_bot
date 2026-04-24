@@ -1202,3 +1202,156 @@ async def apply_auto_approval_rules() -> Dict[str, Any]:
     finally:
         if conn:
             conn.close()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 C-1] AI 에이전트 오케스트레이션
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class AgentTaskRequest(BaseModel):
+    agent: str  # seo, competitor, content
+    action: str  # analyze_rankings, suggest_keywords, etc.
+    params: Optional[Dict[str, Any]] = None
+
+
+class AgentAskRequest(BaseModel):
+    question: str
+
+
+@router.get("/orchestra/agents")
+@handle_exceptions
+async def get_available_agents() -> Dict[str, Any]:
+    """[고도화 C-1] 사용 가능한 AI 에이전트 목록"""
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+        return {
+            "agents": orchestrator.get_available_agents(),
+            "total": len(orchestrator.get_available_agents()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/orchestra/run")
+@handle_exceptions
+async def run_agent_task(request: AgentTaskRequest) -> Dict[str, Any]:
+    """
+    [고도화 C-1] 에이전트 태스크 실행
+
+    Body:
+        agent: "seo" | "competitor" | "content"
+        action: 에이전트별 액션 (예: "analyze_rankings", "find_opportunities")
+        params: 추가 파라미터 (선택)
+    """
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+
+        task = {"action": request.action}
+        if request.params:
+            task.update(request.params)
+
+        result = await orchestrator.run(request.agent, task)
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/orchestra/ask")
+@handle_exceptions
+async def ask_agent(request: AgentAskRequest) -> Dict[str, Any]:
+    """
+    [고도화 C-1] 자연어 질문 → 에이전트 자동 라우팅
+
+    Body:
+        question: "이번 주 순위가 떨어진 키워드는?" 등
+    """
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+
+        result = await orchestrator.ask(request.question)
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/orchestra/briefing")
+@handle_exceptions
+async def get_daily_briefing() -> Dict[str, Any]:
+    """[고도화 C-1] 일일 종합 브리핑 (SEO + 경쟁사 + 콘텐츠)"""
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+
+        result = await orchestrator.daily_briefing()
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [고도화 D-1] Naver API 도구 (MCP 패턴)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class ToolExecuteRequest(BaseModel):
+    tool: str  # search_blog, search_news, get_datalab_trend, etc.
+    params: Dict[str, Any]
+
+
+@router.get("/orchestra/tools")
+@handle_exceptions
+async def get_available_tools() -> Dict[str, Any]:
+    """[고도화 D-1] 사용 가능한 Naver API 도구 목록"""
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+        return {"tools": orchestrator.get_available_tools()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/orchestra/tool")
+@handle_exceptions
+async def execute_tool(request: ToolExecuteRequest) -> Dict[str, Any]:
+    """
+    [고도화 D-1] Naver API 도구 직접 실행
+
+    Body:
+        tool: "search_blog"
+        params: {"query": "청주 한의원", "display": 10}
+    """
+    try:
+        backend_dir = str(Path(__file__).parent.parent)
+        sys.path.insert(0, backend_dir)
+        from services.ai_agents.orchestrator import AgentOrchestrator
+
+        db = DatabaseManager()
+        orchestrator = AgentOrchestrator(db_path=db.db_path)
+        return await orchestrator.use_tool(request.tool, request.params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

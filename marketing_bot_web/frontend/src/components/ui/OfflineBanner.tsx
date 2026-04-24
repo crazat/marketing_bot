@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
-import { WifiOff, Wifi, RefreshCw } from 'lucide-react'
+import { useNetworkStatus } from '@/hooks/useNetworkStatus'
+import { WifiOff, Wifi, RefreshCw, SignalLow } from 'lucide-react'
 
 /**
  * 오프라인 상태 배너
@@ -11,6 +12,7 @@ import { WifiOff, Wifi, RefreshCw } from 'lucide-react'
  */
 export function OfflineBanner() {
   const { isOnline, wasOffline } = useOnlineStatus()
+  const { isSlowConnection, effectiveType } = useNetworkStatus()
   const queryClient = useQueryClient()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const hasRefreshedRef = useRef(false)
@@ -45,6 +47,20 @@ export function OfflineBanner() {
       }
     }
   }, [isOnline, wasOffline, queryClient])
+
+  // [CC4] 저속 연결 경고 — 오프라인은 아니지만 2g/slow-2g
+  if (isOnline && !wasOffline && !isRefreshing && isSlowConnection) {
+    return (
+      <div
+        className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-white py-2 px-4 text-center text-sm font-medium flex items-center justify-center gap-2"
+        role="status"
+        aria-live="polite"
+      >
+        <SignalLow className="w-4 h-4" />
+        <span>저속 연결 감지 ({effectiveType ?? '느린 네트워크'}) — 일부 기능이 느릴 수 있습니다</span>
+      </div>
+    )
+  }
 
   // 온라인이고 최근 오프라인이 아니었으면 아무것도 표시 안 함
   if (isOnline && !wasOffline && !isRefreshing) {

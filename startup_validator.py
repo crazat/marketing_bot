@@ -224,7 +224,7 @@ class StartupValidator:
                 level="INFO" if self.results['overall_status'] == 'HEALTHY' else "WARNING",
                 message=f"System validation: {self.results['overall_status']}"
             )
-        except:
+        except Exception:
             pass
     
     def get_summary_text(self):
