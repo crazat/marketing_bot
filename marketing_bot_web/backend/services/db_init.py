@@ -198,7 +198,171 @@ def ensure_all_tables():
         # 44. [Phase 9] 인텔리전스 인덱스
         _ensure_intelligence_indexes(cursor)
 
+        # 45. [의료광고법] AI 한국어 생성 스크린 로그
+        _ensure_ai_korean_screen_log_table(cursor)
+
+        # 45b. [Job Runs] 신뢰성 추적
+        try:
+            from services.job_runs import ensure_table as _ensure_job_runs
+            _ensure_job_runs()
+        except Exception as e:
+            logger.warning(f"job_runs 테이블 생성 실패 (계속): {e}")
+
+        # 45c. [Agent Loop] HITL approval 큐
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                lead_id TEXT NOT NULL,
+                draft TEXT NOT NULL,
+                qa_match_ids TEXT,
+                critique_json TEXT,
+                url_check_json TEXT,
+                status TEXT DEFAULT 'pending',
+                telegram_message_id INTEGER,
+                approved_at TIMESTAMP,
+                rejected_at TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+            ON pending_approvals(status, expires_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_lead
+            ON pending_approvals(lead_id)
+        """)
+
+        # 45d. [Vision Gate] 이미지 컴플라이언스 로그
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_image_screen_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                call_site TEXT,
+                image_ref TEXT,
+                passed INTEGER,
+                max_confidence REAL,
+                violations_json TEXT,
+                near_violations_json TEXT,
+                needs_human_review INTEGER
+            )
+        """)
+
+        # 45e. [Vision] 경쟁사 시각 점수
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS competitor_visual_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                competitor_name TEXT NOT NULL,
+                place_id TEXT,
+                scanned_date TEXT NOT NULL,
+                interior_cleanliness REAL,
+                staff_visible INTEGER,
+                facility_modernity REAL,
+                patient_review_photos INTEGER,
+                weakness_summary TEXT,
+                photo_count_analyzed INTEGER,
+                raw_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_visual_scores_competitor_date
+            ON competitor_visual_scores(competitor_name, scanned_date DESC)
+        """)
+
+        # 45f. [Cost Tracking] AI 호출 단위 비용 로그
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_call_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                caller_module TEXT,
+                model TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cached_tokens INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                latency_ms INTEGER,
+                cache_hit INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_call_log_module_created
+            ON ai_call_log(caller_module, created_at DESC)
+        """)
+
+        # 45g. [Vision Trends] 인스타 visual hook 신호
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS visual_trend_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scanned_date TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                category TEXT,
+                visual_pattern TEXT,
+                trend_strength REAL,
+                sample_count INTEGER,
+                summary TEXT,
+                raw_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 45h. [Eval] Q&A RAG 평가 실행 결과
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS qa_eval_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                eval_set_name TEXT,
+                model_id TEXT,
+                recall_at_5 REAL,
+                mrr REAL,
+                n_queries INTEGER,
+                duration_seconds REAL,
+                metadata_json TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS qa_eval_dataset (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_set_name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                expected_qa_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 45i. [Compliance Review] 사람 라벨 기반 게이트 평가
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS screen_review (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                screen_log_id INTEGER NOT NULL,
+                label TEXT NOT NULL,  -- correct | false_positive | false_negative
+                reasoning TEXT,
+                reviewer TEXT DEFAULT 'owner'
+            )
+        """)
+
         conn.commit()
+
+        # 46. [Phase Z] Q&A RAG 인덱스 자동 보강 (sqlite-vec)
+        # qa_repository row 수와 qa_embeddings row 수가 다르면 재인덱싱
+        try:
+            cur2 = conn.cursor()
+            cur2.execute("SELECT COUNT(*) FROM qa_repository")
+            n_qa = cur2.fetchone()[0]
+            try:
+                cur2.execute("SELECT COUNT(*) FROM qa_embeddings")
+                n_emb = cur2.fetchone()[0]
+            except Exception:
+                n_emb = -1  # 테이블 없음 → engine init 시 생성됨
+            if n_qa > 0 and n_emb != n_qa:
+                logger.info(f"📚 Q&A RAG 인덱싱 필요 (qa={n_qa}, emb={n_emb})")
+                from services.rag.qa_search import get_qa_engine
+                indexed = get_qa_engine().index_all()
+                logger.info(f"📚 Q&A RAG 인덱스 {indexed}건 갱신 완료")
+        except Exception as e:
+            logger.warning(f"Q&A RAG 인덱싱 스킵 (계속): {e}")
         logger.info("✅ DB 스키마 초기화 완료")
 
     except Exception as e:
@@ -2240,6 +2404,38 @@ def _ensure_intelligence_indexes(cursor):
         ON community_mentions(url_hash)
     """)
     logger.debug("  - Phase 9 인텔리전스 인덱스 확인됨")
+
+
+def _ensure_ai_korean_screen_log_table(cursor):
+    """[의료광고법] ai_generate_korean 호출 자동 스크린 감사 로그.
+
+    services/content_compliance.py::log_korean_screen이 자동으로 INSERT 한다.
+    이 테이블이 없으면 함수가 자체 생성하지만, 앱 시작 시 미리 만들어둔다.
+    """
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_korean_screen_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            call_site TEXT,
+            prompt_sample TEXT,
+            generated_text TEXT,
+            final_text TEXT,
+            passed INTEGER,
+            max_severity TEXT,
+            violations_json TEXT,
+            auto_modified INTEGER,
+            retry_count INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ai_korean_screen_log_created
+        ON ai_korean_screen_log(created_at DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ai_korean_screen_log_severity
+        ON ai_korean_screen_log(max_severity, passed)
+    """)
+    logger.debug("  - ai_korean_screen_log 테이블 확인됨")
 
 
 # 직접 실행 시 테스트

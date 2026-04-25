@@ -86,5 +86,12 @@
 
   "competitors": {
     "exclude_names": ["규림한의원", "규림", "kyurim"]
+  },
+
+  "self_exclusion": {
+    "_comment": "Viral Hunter 발견·댓글 생성 단계에서 자동 제외. 자체 블로그/작성자에 대한 댓글 자동화 = 어뷰징 + 의료광고법 위반 위험.",
+    "blog_authors": ["sangshan1", "cozypark5959", "eliteacu", "crazat7"],
+    "url_patterns": ["blog.naver.com/sangshan1", "blog.naver.com/cozypark5959", "blog.naver.com/eliteacu", "blog.naver.com/crazat7"],
+    "title_keywords": ["규림", "kyurim"]
   }
 }

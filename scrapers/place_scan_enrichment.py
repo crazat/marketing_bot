@@ -489,12 +489,49 @@ class SerpFeatureDetector:
         },
     }
 
-    def __init__(self, driver: webdriver.Chrome):
+    def __init__(self, driver: webdriver.Chrome = None, *, use_camoufox: bool = True):
+        """
+        SerpFeatureDetector.
+
+        Args:
+            driver: Selenium driver (use_camoufox=False일 때 필수)
+            use_camoufox: True면 Camoufox sync engine 사용 (캡차 우회).
+                          기본값 True. False로 두면 기존 Selenium 사용.
+        """
         self.driver = driver
+        self.use_camoufox = use_camoufox
+        self._camoufox_fetcher = None  # lazy
         self.db = DatabaseManager()
         self._ensure_table()
         self._load_keywords()
         self._load_business_identifiers()
+
+    def _get_page_html(self, url: str) -> Optional[str]:
+        """엔진별 페이지 fetch — Camoufox 우선."""
+        if self.use_camoufox:
+            if self._camoufox_fetcher is None:
+                from scrapers.camoufox_engine import CamoufoxFetcher
+                self._camoufox_fetcher = CamoufoxFetcher(headless=True).__enter__()
+            html, blocked = self._camoufox_fetcher.fetch_with_retry(url, max_attempts=2)
+            if blocked:
+                return None
+            return html
+        # Fallback: Selenium driver
+        if not self.driver:
+            log.error("Neither camoufox nor selenium driver available")
+            return None
+        self.driver.get(url)
+        time.sleep(random.uniform(2.0, 3.0))
+        return self.driver.page_source
+
+    def close_camoufox(self):
+        """Camoufox 정리."""
+        if self._camoufox_fetcher is not None:
+            try:
+                self._camoufox_fetcher.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._camoufox_fetcher = None
 
     def _ensure_table(self):
         """serp_features 테이블이 없으면 생성."""
@@ -635,7 +672,11 @@ class SerpFeatureDetector:
         return count
 
     def _check_our_visibility(self, page_source: str) -> Dict[str, bool]:
-        """각 SERP 섹션에서 우리 업체 노출 여부 확인."""
+        """각 SERP 섹션에서 우리 업체 노출 여부 확인.
+
+        Camoufox 모드에선 driver가 없으므로 page_source의 data-cr-area 블록을
+        정규식으로 추출. Selenium 모드에선 기존 방식 유지.
+        """
         visibility = {
             'place': False,
             'blog': False,
@@ -656,6 +697,31 @@ class SerpFeatureDetector:
             'ai_briefing': ['aib'],
         }
 
+        # Camoufox 모드: page_source에서 정규식 추출
+        if self.use_camoufox or self.driver is None:
+            import re as _re
+            html_low = page_source.lower()
+            ids_low = [i.lower() for i in self.our_identifiers]
+            for section_name, area_codes in section_area_map.items():
+                for area_code in area_codes:
+                    # data-cr-area="<code>" ... </*> 블록 단순 캡처 (greedy 회피)
+                    pattern = _re.compile(
+                        rf'data-cr-area=["\']{area_code}["\']([^>]*>)(.*?)(?=data-cr-area=|</body>)',
+                        _re.IGNORECASE | _re.DOTALL,
+                    )
+                    m = pattern.search(html_low)
+                    if not m:
+                        continue
+                    block_text = m.group(2)
+                    for identifier in ids_low:
+                        if identifier and identifier in block_text:
+                            visibility[section_name] = True
+                            break
+                    if visibility[section_name]:
+                        break
+            return visibility
+
+        # Selenium 모드 (기존)
         for section_name, area_codes in section_area_map.items():
             for area_code in area_codes:
                 try:
@@ -675,23 +741,88 @@ class SerpFeatureDetector:
 
         return visibility
 
+    def _extract_ai_briefing(self, page_source: str) -> Dict[str, Any]:
+        """AI 브리핑 박스 텍스트 + 인용 출처 추출 (2026 신규).
+
+        네이버 Cue: 종료 후 AI 브리핑이 통합검색 상단 점유. 우리 업체가
+        인용되는지 여부가 가장 강한 노출 신호.
+        """
+        import re as _re
+        info = {"text": "", "sources": [], "includes_us": False}
+        # data-cr-area="aib" 블록 또는 'AI 브리핑' 마커 인근
+        # 1) data-cr-area 블록
+        m = _re.search(
+            r'data-cr-area=["\']aib["\'][^>]*>(.*?)(?=data-cr-area=|</body>)',
+            page_source, _re.IGNORECASE | _re.DOTALL,
+        )
+        block = m.group(1) if m else ""
+        # 2) 폴백: 'AI 브리핑' 또는 'AI 추천' 인근 1500자
+        if not block:
+            m2 = _re.search(r'(AI\s*브리핑|AI\s*추천)(.{0,1500})', page_source, _re.DOTALL)
+            block = m2.group(2) if m2 else ""
+        if not block:
+            return info
+        # 텍스트만 추출 (HTML 태그 제거)
+        text = _re.sub(r'<[^>]+>', ' ', block)
+        text = _re.sub(r'\s+', ' ', text).strip()[:1500]
+        info["text"] = text
+        # 출처 URL 추출 (인용 링크 → naver redirect or direct)
+        urls = _re.findall(r'href=["\'](https?://[^"\']+)["\']', block)
+        info["sources"] = list(dict.fromkeys(urls))[:10]
+        # 우리 업체 인용 여부
+        text_low = text.lower()
+        for ident in self.our_identifiers:
+            if ident and ident.lower() in text_low:
+                info["includes_us"] = True
+                break
+        return info
+
+    def _extract_place_clips(self, page_source: str) -> Dict[str, Any]:
+        """MY플레이스 클립 (2026.4 출시) 카운트 + URL + source_type 추출.
+
+        2026-04-14 네이버 클립 × MY플레이스 통합으로 탭 4→3.
+        클립이 (a) 자동 리뷰 변환 (auto_from_review) 또는 (b) 직접 업로드 (manual_upload)
+        인지 구분 — 가중치 다를 가능성.
+        """
+        import re as _re
+        info = {"count": 0, "urls": [], "source_type": "unknown"}
+        clip_urls = _re.findall(
+            r'(https?://[^"\'\s]*(?:place\.naver\.com|m\.place\.naver\.com)[^"\'\s]*?(?:clips?|video)[^"\'\s]*)',
+            page_source, _re.IGNORECASE,
+        )
+        clip_blocks = _re.findall(r'data-cr-area=["\'](?:clip|cliP|clp)', page_source)
+        info["count"] = max(len(set(clip_urls)), len(clip_blocks))
+        info["urls"] = list(dict.fromkeys(clip_urls))[:20]
+
+        # source_type 휴리스틱
+        # auto_from_review: 'review_clip', 'auto_clip', '리뷰 클립', 'autoplay_review'
+        # manual_upload: 'upload_clip', 'creator_clip', '직접 업로드'
+        page_low = page_source.lower()
+        auto_markers = ('review_clip', 'auto_clip', '리뷰 클립', 'autoplay_review',
+                        'reviewtoclip', 'auto-from-review')
+        manual_markers = ('upload_clip', 'creator_clip', '직접 업로드',
+                          'user_uploaded', 'manual_clip')
+        auto_hits = sum(1 for m in auto_markers if m.lower() in page_low)
+        manual_hits = sum(1 for m in manual_markers if m.lower() in page_low)
+        if auto_hits > manual_hits and auto_hits > 0:
+            info["source_type"] = "auto_from_review"
+        elif manual_hits > 0:
+            info["source_type"] = "manual_upload"
+        elif info["count"] > 0:
+            info["source_type"] = "mixed"
+        return info
+
     def analyze_keyword(self, keyword: str) -> Optional[Dict[str, Any]]:
         """단일 키워드의 SERP 기능 분석."""
         encoded_kw = quote(keyword)
         url = f"https://search.naver.com/search.naver?query={encoded_kw}"
 
-        log.info(f"  Analyzing SERP: {keyword}")
+        log.info(f"  Analyzing SERP: {keyword} (engine={'camoufox' if self.use_camoufox else 'selenium'})")
 
         try:
-            self.driver.get(url)
-            time.sleep(random.uniform(2.0, 3.0))
-
-            page_source = self.driver.page_source
-
-            # Check for captcha/block
-            page_lower = page_source.lower()
-            if 'captcha' in page_lower or 'unusual traffic' in page_lower:
-                log.warning(f"  [{keyword}] Captcha/block detected, skipping")
+            page_source = self._get_page_html(url)
+            if not page_source:
+                log.warning(f"  [{keyword}] Captcha/block detected or fetch failed, skipping")
                 return None
 
             # Detect features
@@ -705,6 +836,10 @@ class SerpFeatureDetector:
 
             place_count = self._count_place_items(page_source) if has_place else 0
             ad_count = self._count_ads(page_source) if has_ad else 0
+
+            # [2026 신규] AI 브리핑 + MY플레이스 클립
+            ai_brief = self._extract_ai_briefing(page_source) if has_ai else {"text": "", "sources": [], "includes_us": False}
+            clips = self._extract_place_clips(page_source)
 
             # Check our visibility in each section
             visibility = self._check_our_visibility(page_source)
@@ -746,7 +881,19 @@ class SerpFeatureDetector:
                 'has_ai_briefing': 1 if has_ai else 0,
                 'our_visibility': json.dumps(visibility, ensure_ascii=False),
                 'scanned_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                # [2026 신규]
+                'ai_briefing_text': ai_brief["text"],
+                'ai_briefing_sources': json.dumps(ai_brief["sources"], ensure_ascii=False),
+                'ai_briefing_includes_us': 1 if ai_brief["includes_us"] else 0,
+                'place_clip_count': clips["count"],
+                'place_clip_urls': json.dumps(clips["urls"], ensure_ascii=False),
+                'place_clip_source_type': clips.get("source_type", "unknown"),
             }
+            log.info(
+                f"    AI Briefing: {'있음' if has_ai else '없음'}"
+                f"{' (우리 인용!)' if ai_brief['includes_us'] else ''}"
+                f" | 클립: {clips['count']}개"
+            )
 
             return result
 
@@ -761,7 +908,7 @@ class SerpFeatureDetector:
         return None
 
     def _save_result(self, result: Dict[str, Any]):
-        """SERP 분석 결과를 serp_features 테이블에 저장."""
+        """SERP 분석 결과를 serp_features 테이블에 저장 (2026 신규 컬럼 포함)."""
         conn = None
         try:
             conn = sqlite3.connect(self.db.db_path)
@@ -771,8 +918,10 @@ class SerpFeatureDetector:
                 (keyword, has_place_pack, place_pack_count, has_view_tab,
                  has_blog_section, has_news_section, has_kin_section,
                  has_shopping_section, has_ad_top, ad_count,
-                 has_ai_briefing, our_visibility, scanned_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 has_ai_briefing, our_visibility, scanned_at,
+                 ai_briefing_text, ai_briefing_sources, ai_briefing_includes_us,
+                 place_clip_count, place_clip_urls, place_clip_source_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 result['keyword'],
                 result['has_place_pack'],
@@ -787,6 +936,12 @@ class SerpFeatureDetector:
                 result['has_ai_briefing'],
                 result['our_visibility'],
                 result['scanned_at'],
+                result.get('ai_briefing_text', ''),
+                result.get('ai_briefing_sources', '[]'),
+                result.get('ai_briefing_includes_us', 0),
+                result.get('place_clip_count', 0),
+                result.get('place_clip_urls', '[]'),
+                result.get('place_clip_source_type', 'unknown'),
             ))
             conn.commit()
             log.debug(f"    Saved SERP features for '{result['keyword']}'")
@@ -884,19 +1039,27 @@ def run_enrichment(skip_reviews: bool = False, skip_serp: bool = False) -> Dict[
         else:
             log.info("[Part 1/2] Review metadata collection SKIPPED")
 
-        # Part 2: SERP Feature Detection
+        # Part 2: SERP Feature Detection (Camoufox 우선, Selenium 폴백)
         if not skip_serp:
             log.info("")
             log.info("-" * 50)
-            log.info("[Part 2/2] SERP Feature Detection")
+            log.info("[Part 2/2] SERP Feature Detection (Camoufox)")
             log.info("-" * 50)
+            detector = None
             try:
-                detector = SerpFeatureDetector(driver)
+                # Camoufox 모드: driver 불필요, 자체 Firefox launch
+                detector = SerpFeatureDetector(driver=driver, use_camoufox=True)
                 serp_summary = detector.analyze_all()
             except Exception as e:
                 log.error(f"[Part 2] SERP feature detection failed: {e}")
                 log.debug(traceback.format_exc())
                 serp_summary = {'analyzed': 0, 'failed': 0, 'error': str(e)}
+            finally:
+                if detector is not None:
+                    try:
+                        detector.close_camoufox()
+                    except Exception:
+                        pass
         else:
             log.info("[Part 2/2] SERP feature detection SKIPPED")
 

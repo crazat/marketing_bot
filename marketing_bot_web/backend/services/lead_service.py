@@ -36,15 +36,31 @@ def find_qa_matches(
     max_matches: int = 3,
     min_score: int = 20,
 ) -> List[Dict[str, Any]]:
-    """Q&A 매칭 (C5에서 분리).
+    """Q&A 매칭.
 
-    1) 토큰 추출 → LIKE OR 조합으로 후보 축소 (DB 레벨 200건)
-    2) 후보에 대해 정규식 + 키워드 매칭으로 점수 계산
-    3) min_score 이상만 반환, 상위 max_matches
+    [Phase Z] sqlite-vec + KURE/BGE-M3 + bge-reranker 의미 검색 우선.
+    실패 또는 결과 없을 때만 기존 LIKE+regex 폴백.
+
+    1) RAG (의미 검색): KURE-v1/BGE-M3 임베딩 + RRF + 리랭커
+    2) 폴백 LIKE+regex (기존 로직)
     """
     if not lead_text.strip():
         return []
 
+    # 1차: RAG semantic search
+    try:
+        from services.rag.qa_search import get_qa_engine
+        engine = get_qa_engine()
+        rag_hits = engine.search(lead_text, top_k=max_matches, candidates=10, rerank=True)
+        if rag_hits:
+            # 형식 표준화 (match_score 별칭 추가)
+            for h in rag_hits:
+                h["match_score"] = round(float(h.get("score", 0.0)) * 100, 1)
+            return rag_hits[:max_matches]
+    except Exception as e:
+        logger.warning(f"[QA] RAG 검색 실패, LIKE 폴백: {e}")
+
+    # 2차: 기존 LIKE + regex 폴백
     lead_lower = lead_text.lower()
     tokens = extract_tokens(lead_text)
 

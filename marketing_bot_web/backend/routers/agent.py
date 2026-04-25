@@ -5,7 +5,8 @@ AI Agent API
 AI 에이전트 사용량 모니터링 및 액션 로그 관리
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import sys
@@ -1333,6 +1334,48 @@ async def get_available_tools() -> Dict[str, Any]:
         return {"tools": orchestrator.get_available_tools()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stream")
+async def stream_korean(
+    prompt: str = Query(..., min_length=1, max_length=4000),
+    system_prompt: Optional[str] = Query(default=None, max_length=4000),
+    temperature: float = Query(default=0.7, ge=0.0, le=2.0),
+    max_tokens: int = Query(default=1024, ge=16, le=4096),
+):
+    """[Phase Z] Server-Sent Events stream of Gemini Korean output.
+
+    Frontend usage:
+        const es = new EventSource(`/api/agent/stream?prompt=${encodeURIComponent(q)}`);
+        es.onmessage = (e) => append(e.data);
+        es.addEventListener('done', () => es.close());
+    """
+    backend_dir = str(Path(__file__).parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from services.ai_client import ai_generate_stream
+
+    def event_stream():
+        try:
+            for chunk in ai_generate_stream(
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+            ):
+                # SSE 포맷: data: <text>\n\n  (개행은 \\n으로 escape)
+                safe = chunk.replace("\r", "").replace("\n", "\\n")
+                yield f"data: {safe}\n\n"
+            yield "event: done\ndata: \n\n"
+        except Exception as e:
+            err = str(e).replace("\n", " ")[:200]
+            yield f"event: error\ndata: {err}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/orchestra/tool")

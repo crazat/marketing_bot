@@ -95,6 +95,23 @@ async def lifespan(app: FastAPI):
     app_state.insight_mgr = InsightManager()
     app_state.websocket_clients = []
 
+    # [Phase Z] Logfire 관측성 — LOGFIRE_TOKEN 있으면 cloud, 없으면 local-only
+    try:
+        import logfire
+        # console 인자는 4.x에서 ConsoleOptions 객체 — 기본값(자동) 사용
+        logfire.configure(
+            send_to_logfire="if-token-present",
+            service_name="marketing_bot",
+        )
+        logfire.instrument_fastapi(app, capture_headers=False)
+        try:
+            logfire.instrument_sqlite3()
+        except Exception as _e:
+            logger.debug(f"logfire sqlite3 instrument 스킵: {_e}")
+        logger.info("🔭 Logfire 관측성 초기화됨 (token 있을 때만 cloud 전송)")
+    except Exception as e:
+        logger.warning(f"Logfire 초기화 실패 (계속): {e}")
+
     # [Phase 6.1] DB 스키마 초기화 (앱 시작 시 한 번만)
     from services.db_init import ensure_all_tables
     ensure_all_tables()
@@ -569,7 +586,13 @@ from routers import hud, pathfinder, battle, leads, viral, competitors, instagra
 from routers import viral_utm  # [T2] UTM 하위 라우터
 from routers import viral_templates  # [U1] 템플릿 하위 라우터
 from routers import viral_comments  # [U2] 댓글 성과 하위 라우터
+from routers import jobs as jobs_router  # [Phase Z] 잡 실행 이력 + 헬스
+from routers import telegram_callback as telegram_callback_router  # [Agent] HITL webhook
+from routers import compliance_review as compliance_review_router  # [Eval] 사람 라벨 게이트
 
+app.include_router(jobs_router.router)  # /api/jobs/runs, /api/jobs/summary, /api/jobs/health
+app.include_router(telegram_callback_router.router)  # /api/telegram/webhook, /health
+app.include_router(compliance_review_router.router)  # /api/compliance-review/queue, /label, /metrics
 app.include_router(hud.router, prefix="/api/hud", tags=["HUD"])
 app.include_router(pathfinder.router, prefix="/api/pathfinder", tags=["Pathfinder"])
 app.include_router(battle.router, prefix="/api/battle", tags=["Battle Intelligence"])

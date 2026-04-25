@@ -7,6 +7,19 @@ from datetime import datetime
 from utils import ConfigManager, logger
 from alert_bot import AlertSystem
 
+# [Phase Z] 잡 실행 추적 + 의존성 게이트
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'marketing_bot_web', 'backend'))
+    from services.job_runs import track_run, requires_recent  # noqa: E402
+    HAS_JOB_RUNS = True
+except Exception as _e:
+    logger.warning(f"job_runs 추적 비활성 (계속): {_e}")
+    HAS_JOB_RUNS = False
+    def track_run(name, **kw):  # no-op decorator
+        def deco(fn): return fn
+        return deco
+    def requires_recent(*a, **k): return True
+
 # [Phase 5-1] 설정값 외부화
 try:
     from config.app_settings import get_settings
@@ -136,6 +149,7 @@ class SchedulerService:
 
     # --- JOB DEFINITIONS ---
 
+    @track_run("db_backup", retries=1, retry_backoff=60)
     def job_db_backup(self):
         """Database Maintenance: Backup, Integrity Check, WAL (02:00)"""
         logger.info("💾 [DB Backup] Starting daily maintenance...")
@@ -148,7 +162,9 @@ class SchedulerService:
             self._update_state("db_backup", "02:00")
         except Exception as e:
             logger.error(f"DB Backup Failed: {e}")
+            raise
 
+    @track_run("sentinel")
     def job_sentinel(self):
         """🛡️ Agent Sentinel: Real-time Brand & Social Watch (1h)"""
         logger.info("🛡️ [Sentinel] Starting 24h Brand Watch...")
@@ -160,7 +176,9 @@ class SchedulerService:
             self._run_script("scraper_news.py", "규림한의원")
         except Exception as e:
             logger.error(f"Sentinel Failed: {e}")
+            raise
 
+    @track_run("place_sniper", retries=1, retry_backoff=120)
     def job_sniper(self):
         """🔫 Agent Sniper: View & Place Rank (09:00 / 21:00)"""
         logger.info("🔫 [Sniper] Starting Rank Patrol...")
@@ -173,15 +191,22 @@ class SchedulerService:
             self._update_state("sniper", slot)
         except Exception as e:
             logger.error(f"Sniper Failed: {e}")
+            raise
 
+    @track_run("competitor_scan")
     def job_competitor(self):
         """⚔️ Agent Tactician Part 1: Competitor Analysis (10:00)"""
         logger.info("⚔️ [Competitor] Starting Deep Scan...")
+        # [의존성 게이트] place_sniper가 24h 내 성공해야 의미 있음
+        if not requires_recent("place_sniper", hours=24):
+            logger.warning("⚠️ place_sniper 24h 내 미실행, competitor 분석 건너뜀")
+            return {"skipped": "no recent place_sniper"}
         try:
             self._run_script("scraper_competitor.py", "")
             self._update_state("competitor", "10:00")
         except Exception as e:
             logger.error(f"Competitor Job Failed: {e}")
+            raise
 
     def job_cafe_swarm(self):
         """🐝 Agent Tactician Part 2: Cafe Swarm (14:00)"""

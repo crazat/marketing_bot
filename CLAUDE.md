@@ -19,10 +19,24 @@
 - **Gemini 2.5 Flash Lite + 3.1 Flash Lite Preview** (google-genai SDK, 중앙 클라이언트: `services/ai_client.py`)
 
 ### 프론트엔드
-- **React 18** + TypeScript
-- **TanStack Query** (데이터 페칭)
+- **React 19** + TypeScript 5.6
+- **TanStack Query v5** (데이터 페칭)
 - **Tailwind CSS** (스타일링)
-- **Vite** (빌드)
+- **Vite 5** (빌드)
+- **PWA** (manifest + service worker, production 빌드 시 자동 활성화)
+- SSE 스트리밍 (useAIStream 훅)
+
+### 관측성 / 평가 (2026-04-26 추가)
+- **Logfire** (Pydantic, FastAPI/SQLite/AI 자동 instrument, LOGFIRE_TOKEN 있을 때만 cloud)
+- **Langfuse** (`@observe` 데코레이터, LANGFUSE_*_KEY 있을 때만 활성)
+- **ai_call_log** 테이블 + `/api/jobs/ai-cost` (모델별·모듈별 비용 추적)
+- **job_runs** 테이블 + `/api/jobs/runs|summary|health` (cron 신뢰성)
+
+### Agent / RAG (2026-04-26 추가)
+- **sqlite-vec + BGE-M3 + bge-reranker-v2-m3** (Q&A RAG, recall@5=1.0/MRR=0.97 검증)
+- **Pydantic AI** (services/agent_runtime.py, lead→comment 5-tool 루프)
+- **Camoufox** (SERP 캡차 우회 — Firefox C++ fingerprint spoofing)
+- **Playwright 1.58** (모바일 26초 vs Selenium 911초, DOM 셀렉터 정밀화 미완)
 
 ---
 
@@ -214,6 +228,134 @@ client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
 **예외**: `vision_analyst.py`만 Gemini Vision (이미지 분석)을 직접 사용
 
 **폴백 동작**: `ai_generate_korean()` 호출 실패 시 자동으로 `ai_generate()`(기본 모델)로 재시도
+
+---
+
+## 최근 개선 사항 (2026-04-25 ~ 04-26) — 시스템 고도화 2 ultrathink 라운드 (28건)
+
+### 라운드 1: 인프라 현대화 (10건, 2026-04-25)
+
+이전 audit 결과를 받아 시스템 인프라를 현대화. 5개 도메인 병렬 조사 후 구현.
+
+| # | 변경 | 결과 |
+|---|---|---|
+| 1 | 의료광고법 컴플라이언스 게이트 (services/content_compliance.py + ai_client.py 자동 통합) | `ai_generate_korean()` 모든 호출 자동 스크린, ai_korean_screen_log 감사 |
+| 2 | 자체 리뷰/허위 예약 자동화 코드 감사 | viral_targets 자기 한의원 15건 영구 차단, business_profile.json self_exclusion 추가, viral_hunter `_is_self_target()` 게이트 |
+| 3 | Camoufox 도입 (place_scan_enrichment SERP 포팅) | 19/19 캡차 차단 → 정상 200KB+ HTML 수신 |
+| 4 | Gemini 컨텍스트 캐싱 + 배치 + Pydantic structured | system_prompt ≥1500자 자동 캐싱(75-90% 절감), `ai_generate_structured`/`ai_generate_batch` 신규 |
+| 5 | Q&A RAG (sqlite-vec + BGE-M3 + bge-reranker-v2-m3) | services/rag/qa_search.py, lead_service에 통합, recall 40% → 자연어 변형 5건 100% 매칭 |
+| 6 | job_runs 추적 + 의존성 게이트 (APScheduler 대신 schedule lib에 wrapper) | `@track_run` 데코레이터 + `requires_recent` 게이트, /api/jobs/runs API |
+| 7 | AI 브리핑 + MY플레이스 클립 모니터 | serp_features 5컬럼 추가 (ai_briefing_text/sources/includes_us/clip_count/clip_urls) |
+| 8 | Playwright 마이그레이션 인프라 (셀렉터 정밀화 별도) | scraper_naver_place_pw 26초 (Selenium 911초 대비 35배), 단 DOM 셀렉터 추가 작업 필요 |
+| 9 | Logfire 자동 instrument | FastAPI + sqlite3 + ai_client trace, console + cloud(token시) |
+| 10 | SSE 스트리밍 인프라 | `ai_generate_stream` + GET /api/agent/stream + frontend `useAIStream` 훅 |
+
+### 라운드 2: 신규 규제 대응 + Agent Loop (18건, 2026-04-26)
+
+**🚨 트리거**: 6개 도메인 ultrathink 조사 중 **2026-04-08 ~ 04-24 사이 한국에서 의료/AI 광고 규제 4건 통과/예고** 발견. 즉시 대응 필요.
+
+#### CRITICAL — 법적 리스크 차단 (4건)
+| # | 변경 | 결과 |
+|---|---|---|
+| C1 | 의료광고법 신규 패턴 4종 (content_compliance.py) | 비급여 할인·이벤트 / AI 가상인물 표시 누락 / AI 의료진 추천 영상 / 협찬 미표기 후기 강화 |
+| C2 | AI 생성 사용 고지 자동 푸터 (`append_ai_disclosure`) | AI 기본법 2026/1 시행 — 모든 한국어 AI 출력에 자동 첨부 |
+| C3 | Vision 의료광고법 이미지 게이트 (vision_analyst.py + ai_client.ai_analyze_image) | 전후사진 / 가짜의사 / 금지어 OCR 5축 검출, ai_image_screen_log 적재 |
+| C4 | 별점 부활 + 클립 source_type 컬럼 | competitor_reviews/rank_history.star_rating + serp_features.place_clip_source_type |
+
+#### HIGH — Agent Loop + 관측성 (7건)
+| # | 변경 | 결과 |
+|---|---|---|
+| H1 | services/agent_runtime.py 5-tool 루프 (Pydantic AI) | search_qa / draft / critique / verify_url / check_dup_history |
+| H2 | Multi-criteria critique + revise loop | compliance(regex) + naturalness(LLM) + tone(LLM) 3축, max 2회 revise |
+| H3 | pending_approvals 테이블 + 30분 만료 | `_enqueue_approval` + `expire_overdue` |
+| H4 | Telegram inline keyboard HITL 4-button | services/telegram_approval.py outbound + routers/telegram_callback.py inbound webhook + answerCallbackQuery |
+| H5 | Langfuse `@observe` 통합 | LANGFUSE_*_KEY 있을 때만 활성, no-op 폴백 |
+| H6 | ai_call_log + 비용 추적 | services/ai_cost.py + `record_call`, GET /api/jobs/ai-cost (모델별·모듈별·일별) |
+| H7 | scrapers/competitor_visual_analyzer.py | 9곳 × 사진 20장 → 5축 점수 + competitor_visual_scores 테이블, 월 $0.90 |
+
+#### MEDIUM — 평가·확장 (5건)
+| # | 변경 | 결과 |
+|---|---|---|
+| M1 | scripts/build_qa_goldset.py + recall@5 baseline | Gemini Pro 합성 30 query → **Recall@5=1.0, MRR=0.97** 검증 |
+| M2 | routers/compliance_review.py | /queue (차단/통과 균형 샘플) + /label (correct/FP/FN) + /metrics (precision/recall) |
+| M3 | PWA (이미 완성됨 확인) | manifest.webmanifest + sw.js + main.tsx 등록 모두 존재, production 빌드만 필요 |
+| M4 | skills/viral-comment-drafter/SKILL.md | Anthropic Agent Skills 패턴 문서화 (lead→comment 워크플로우) |
+| M5 | scrapers/reels_visual_trend.py | 인스타 reels hook 패턴 클러스터링 (color/composition/tone/objects), visual_trend_signals 테이블 |
+
+### 신규 파일 (총 11개)
+
+**Backend services**: `agent_runtime.py`, `telegram_approval.py`, `ai_cost.py`, `job_runs.py`, `rag/qa_search.py`
+**Backend routers**: `jobs.py`, `telegram_callback.py`, `compliance_review.py`
+**Scrapers**: `camoufox_engine.py`, `competitor_visual_analyzer.py`, `reels_visual_trend.py`
+**Scripts**: `build_qa_goldset.py`
+**Skills**: `skills/viral-comment-drafter/SKILL.md`
+**Frontend**: `hooks/useAIStream.ts`
+
+### 신규 DB 테이블 (db_init 자동 생성)
+
+`pending_approvals`, `ai_image_screen_log`, `competitor_visual_scores`, `ai_call_log`, `visual_trend_signals`, `qa_eval_runs`, `qa_eval_dataset`, `screen_review`, `ai_korean_screen_log`, `job_runs` (총 10개) + 기존 `serp_features`/`competitor_reviews`/`rank_history` 컬럼 확장
+
+### 신규 API 엔드포인트
+
+```
+GET  /api/jobs/runs?job_name=&limit=         # 잡 실행 이력
+GET  /api/jobs/summary                       # 7일 잡별 요약
+GET  /api/jobs/health                        # 헬스 (severity)
+GET  /api/jobs/ai-cost?days=7                # 일별/모델별/모듈별 AI 비용
+POST /api/telegram/webhook                   # 텔레그램 inbound (callback_query)
+GET  /api/telegram/health                    # 텔레그램 봇 헬스
+GET  /api/compliance-review/queue            # 검수 샘플 (차단/통과 균형)
+POST /api/compliance-review/label            # 1-click correct/FP/FN
+GET  /api/compliance-review/metrics          # precision/recall (사람 라벨 기반)
+GET  /api/agent/stream                       # SSE 한국어 AI 스트리밍
+```
+
+### 신규 의존성
+
+```
+camoufox==0.4.11 (+ 530MB Firefox)
+sqlite-vec==0.1.9
+sentence-transformers==5.4.1 (BGE-M3 568MB + bge-reranker-v2-m3 568MB)
+APScheduler==3.11.2 (참고용 설치, schedule lib 유지)
+logfire==4.32.1 + [fastapi,sqlite3]
+langfuse==4.5.1
+pydantic-ai==1.87.0
+babel-plugin-react-compiler@beta (frontend, 미적용)
+```
+
+### 신규 환경변수 (모두 선택)
+
+```bash
+LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY    # Cloud free tier 활성화
+LOGFIRE_TOKEN                                 # Cloud 활성화 (없으면 local span only)
+TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID         # 이미 있다면 HITL 자동 작동
+GEMINI_VISION_MODEL                           # 기본 gemini-2.5-flash-lite
+MARKETING_BOT_EMBED_MODEL                     # 기본 BAAI/bge-m3
+MARKETING_BOT_RERANKER_MODEL                  # 기본 BAAI/bge-reranker-v2-m3
+```
+
+### 핵심 발견 — 2026 4월 한국 신규 규제
+
+| 규제 | 시행 | 처벌 | 시스템 대응 |
+|---|---|---|---|
+| 공정위 AI 가상인물 표시 의무 (4/8 행정예고 ~4/28) | 즉시 | **매출 2% 과징금, 형사 2년/1.5억** | 컴플라이언스 패턴 + AI 고지 푸터 |
+| AI 의사·한의사 추천 영상광고 금지 (4/23 통과) | 6개월 후 | 형사 처벌 | AI 의료진 추천 패턴 + Vision 가짜의사 게이트 |
+| AI 기본법 (2026/1 시행) — 생성형 AI 사용 고지 의무 | 진행 중 | 행정처분 | `append_ai_disclosure` 자동 첨부 |
+| 식약처 AI 가짜의사 단속 본격화 | 진행 중 | 사이트 차단 + 현장조사 | Vision `screen_medical_image()` 5카테고리 |
+
+### 비용 영향 (월)
+
+| 항목 | 월 |
+|---|---:|
+| Vision 경쟁사 사진 (180장/일) | $0.90 |
+| Vision 의료광고법 게이트 (10장/일) | $0.15 |
+| Reels visual hook (30/주) | $0.02 |
+| Pydantic AI agent loop (~30 lead/일) | <$5 |
+| Q&A gold set | $0.6 (1회) |
+| Langfuse / Logfire / Telegram | $0 |
+| **합계 신규** | **<$7/월** |
+
+Gemini 컨텍스트 캐싱(75-90% 절감) + 배치 API(50% 할인)로 기존 비용은 절반 이하로.
 
 ---
 

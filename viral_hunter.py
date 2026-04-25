@@ -832,6 +832,44 @@ class CommentableFilter:
                 score += 5
         return min(score, 40)  # 최대 40점
 
+    @staticmethod
+    def _load_self_exclusion() -> Dict[str, List[str]]:
+        """business_profile.json에서 자기 업체 제외 규칙 로드 (모듈 시작 시 1회)."""
+        import json as _json
+        import os as _os
+        try:
+            here = _os.path.dirname(_os.path.abspath(__file__))
+            cfg_path = _os.path.join(here, "config", "business_profile.json")
+            if not _os.path.exists(cfg_path):
+                return {"blog_authors": [], "url_patterns": [], "title_keywords": []}
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            se = data.get("self_exclusion", {}) or {}
+            return {
+                "blog_authors": [a.lower() for a in se.get("blog_authors", [])],
+                "url_patterns": [u.lower() for u in se.get("url_patterns", [])],
+                "title_keywords": [k.lower() for k in se.get("title_keywords", [])],
+            }
+        except Exception as e:
+            logger.warning(f"[CommentableFilter] self_exclusion 로드 실패: {e}")
+            return {"blog_authors": [], "url_patterns": [], "title_keywords": []}
+
+    def _is_self_target(self, target: 'ViralTarget') -> bool:
+        """자기 한의원 블로그/콘텐츠인지 검사 (어뷰징 방지)."""
+        if not hasattr(self, "_self_exclusion"):
+            self._self_exclusion = CommentableFilter._load_self_exclusion()
+        se = self._self_exclusion
+        url = (target.url or "").lower()
+        title = (target.title or "").lower()
+        author = (target.author or "").lower() if hasattr(target, "author") else ""
+        if any(p in url for p in se["url_patterns"]):
+            return True
+        if any(a in author for a in se["blog_authors"]):
+            return True
+        if any(k in title for k in se["title_keywords"]):
+            return True
+        return False
+
     def filter(self, targets: List[ViralTarget]) -> List[ViralTarget]:
         """
         타겟 필터링 및 우선순위 점수 계산
@@ -840,10 +878,16 @@ class CommentableFilter:
             댓글 가능한 타겟만 (priority_score 계산됨)
         """
         filtered = []
-        stats = {'ad': 0, 'non_relevant': 0, 'too_short': 0, 'no_region': 0,
-                 'title_only': 0, 'not_inquiry_health': 0}
+        stats = {'self_excluded': 0, 'ad': 0, 'non_relevant': 0, 'too_short': 0,
+                 'no_region': 0, 'title_only': 0, 'not_inquiry_health': 0}
 
         for target in targets:
+            # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
+            if self._is_self_target(target):
+                stats['self_excluded'] += 1
+                target.is_commentable = False
+                continue
+
             title_lower = (target.title or '').lower()
             body_lower = (target.content_preview or '').lower()
             text = f"{title_lower} {body_lower}"
