@@ -22,6 +22,11 @@ export interface ViralTargetData {
   is_commentable?: boolean
   generated_comment?: string
   author?: string
+  // [2026-04-27] AI 분류 결과
+  ai_ad_label?: string | null  // '자연_질문' | '광고' | '광고성_후기톤' | '기타_노이즈'
+  ai_ad_confidence?: number | null  // 0.0 ~ 1.0
+  ai_ad_reason?: string | null  // 짧은 사유
+  specialty_match?: string | null  // 'high' | 'medium' | 'low' — 미용 특화 매칭
 }
 
 // 카테고리 통계
@@ -66,6 +71,10 @@ export interface ViralFilterState {
   search?: string
   sort?: string
   scan_batch?: string
+  // [2026-04-27] AI 분류 필터
+  ai_ad_label?: string  // 단일 또는 콤마 구분
+  min_confidence?: number
+  specialty_match?: string  // 'high' | 'medium' | 'low' (단일 또는 콤마)
 }
 
 // 대량 액션 확인

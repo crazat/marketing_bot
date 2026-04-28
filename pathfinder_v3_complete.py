@@ -154,9 +154,32 @@ class KeywordResult:
     category: str
     priority_score: float
     is_gap_keyword: bool = False
-    source: str = ""  # "autocomplete", "related", "competitor"
-    trend_slope: float = 0.0  # 트렌드 기울기 (양수=상승, 음수=하락)
-    trend_status: str = "unknown"  # rising, falling, stable, unknown
+    source: str = ""  # "autocomplete", "related", "competitor", "paa"
+    trend_slope: float = 0.0
+    trend_status: str = "unknown"
+    # [R7] 검색 의도 분류 (Cross-User 행동 모델 대응)
+    search_intent: str = "commercial"  # red_flag, validation, comparison, transactional, commercial, informational, navigational
+
+
+def _classify_intent(keyword: str) -> str:
+    """[R7] 검증/비교/부정 의도 키워드 분류. Cross-User 행동 대응.
+
+    legion 파일의 SearchIntentClassifier와 동일 로직 (의존성 회피 위해 인라인).
+    """
+    kw = (keyword or '').lower()
+    patterns = [
+        ('red_flag',     ['부작용', '위험', '단점', '안좋', '문제', '실패', '후회', '사기', '환불', '논란', '의심']),
+        ('validation',   ['진짜', '솔직', '찐', '정말', '실제로', '리얼', '진정']),
+        ('comparison',   ['vs', '보다', '차이', '비교', '뭐가나', '어디가더', '뭐가더']),
+        ('transactional',['가격', '비용', '할인', '이벤트', '예약', '상담', '무료', '체험', '프로모션', '쿠폰']),
+        ('commercial',   ['추천', '순위', '랭킹', '베스트', '인기', '후기', '리뷰', '평가', '잘하는', '유명한', '좋은', '전문', '1위']),
+        ('informational',['방법', '효과', '원인', '증상', '치료', '기간', '주의', '종류', '장단점', '뜻', '의미']),
+        ('navigational', ['위치', '주소', '전화', '오시는길', '영업시간', '근처', '가까운']),
+    ]
+    for intent, words in patterns:  # dict 순서 = 우선순위
+        if any(w in kw for w in words):
+            return intent
+    return 'commercial'
 
 
 # ============================================================
@@ -811,6 +834,8 @@ class PathfinderV3:
         for cat, patterns in self.category_patterns.items():
             if any(p in kw for p in patterns):
                 return cat
+        if any(h in kw for h in ('한의원', '한약', '한방', '한방병원')):
+            return '한의원일반'
         return "기타"
 
     def _calculate_seasonality_score(self, keyword: str) -> float:
@@ -1201,29 +1226,31 @@ class PathfinderV3:
                 volume = volume_map.get(kw.replace(" ", ""), 0)
                 has_real_volume = volume > 0
 
-            # 등급 재평가 (검색량 기준 추가)
-            # ⚠️ 실제 검색량이 있는 경우만 S/A급 가능
+            # 등급 재평가 — [Q7] 강화된 게이트
+            # 이전 버그: SERP 분석에서 받은 grade='S'가 has_real_volume=True + volume 50-99 구간에서
+            # 그대로 통과했음 (volume<50 분기에만 'B' 강등). 검색량 신뢰도 없는 S 989건의 원인.
             if has_real_volume:
-                # S급: 검색량 100+ AND (opportunity 90+ OR difficulty < 15)
-                # A급: 검색량 50+ AND (opportunity 80+ OR difficulty < 20)
                 if volume >= 100 and (opportunity >= 90 or difficulty < 15):
                     grade = 'S'
                 elif volume >= 50 and (opportunity >= 80 or difficulty < 20):
                     grade = 'A'
-                elif volume < 50:
-                    # 검색량이 50 미만이면 B급
-                    grade = 'B'
+                elif volume >= 50:
+                    grade = 'B'   # 50+ 검색량이지만 SERP 조건 미달
+                else:
+                    grade = 'C'   # 50 미만 검색량 → 신뢰도 부족, C급 강제
             else:
-                # 검색량 데이터 없음 → 무조건 B급 이하
-                if grade in ['S', 'A']:
-                    grade = 'B'
-                # 추정치 설정 (점수 계산용, 등급에는 영향 없음)
-                volume = 30
+                # 검색량 데이터 자체 없음 → SERP grade 무시하고 C급 강제
+                grade = 'C'
+                volume = 30  # 점수 계산용 추정치 (등급은 이미 C 확정)
 
             # KEI 계산 (검색량 / 경쟁도)
             kei = 0.0
             if volume > 0 and difficulty > 0:
-                kei = (volume / max(1, difficulty)) * 10  # 스케일 조정
+                kei = (volume / max(1, difficulty)) * 10
+
+            # [Q7] 안전장치: KEI=0 (SERP 분석 실패 등) → C급 강제
+            if kei == 0 and grade in ('S', 'A', 'B'):
+                grade = 'C'
 
             priority = self._calculate_priority(
                 volume, difficulty, opportunity, kw,
@@ -1240,7 +1267,8 @@ class PathfinderV3:
                 category=category,
                 priority_score=priority,
                 is_gap_keyword=is_gap,
-                source="gap" if is_gap else "autocomplete"
+                source="gap" if is_gap else "autocomplete",
+                search_intent=_classify_intent(kw),  # [R7]
             ))
 
         # =====================================
@@ -1496,9 +1524,9 @@ class PathfinderV3:
                         search_volume, region, category,
                         difficulty, opportunity, priority_v3, grade,
                         is_gap_keyword, serp_analyzed_at, source,
-                        trend_slope, trend_status
+                        trend_slope, trend_status, search_intent
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(keyword) DO UPDATE SET
                         document_count=excluded.document_count,
                         opp_score=excluded.opp_score,
@@ -1515,12 +1543,13 @@ class PathfinderV3:
                         serp_analyzed_at=excluded.serp_analyzed_at,
                         source=excluded.source,
                         trend_slope=excluded.trend_slope,
-                        trend_status=excluded.trend_status
+                        trend_status=excluded.trend_status,
+                        search_intent=excluded.search_intent
                 ''', (
                     r.keyword,
-                    r.blog_count,  # document_count = blog_count (블로그 문서 수)
+                    r.blog_count,
                     "Low" if r.difficulty < 50 else "High",
-                    r.priority_score,  # opp_score = priority_score (기존 호환)
+                    r.priority_score,
                     tag,
                     now,
                     r.search_volume,
@@ -1534,7 +1563,8 @@ class PathfinderV3:
                     now,
                     r.source,
                     r.trend_slope,
-                    r.trend_status
+                    r.trend_status,
+                    r.search_intent,  # [R7]
                 ))
                 saved += 1
             except Exception as e:

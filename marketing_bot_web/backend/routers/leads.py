@@ -642,7 +642,7 @@ async def get_leads(
     offset: int = Query(default=0, ge=0, description="건너뛸 항목 수"),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, score, title, author, platform)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> Dict[str, Any]:
     """
     리드 목록 조회 (정렬 지원)
@@ -792,7 +792,7 @@ async def get_youtube_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, score, title, author)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """YouTube 리드 조회 (정렬 지원)"""
     try:
@@ -909,7 +909,7 @@ async def get_tiktok_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, score, title, author)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """TikTok 리드 조회 (정렬 지원)"""
     try:
@@ -1026,7 +1026,7 @@ async def get_naver_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, score, title, author)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """Naver 리드 조회 (블로그/카페) (정렬 지원)"""
     try:
@@ -1338,7 +1338,7 @@ async def get_carrot_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, title, author)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """당근마켓 리드 조회 (정렬 지원)"""
     try:
@@ -1439,7 +1439,7 @@ async def get_influencer_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="relevance_score", description="정렬 기준 (relevance_score, followers, avg_engagement, created_at, name)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """
     인플루언서 리드 조회 (정렬 지원)
@@ -1536,7 +1536,7 @@ async def get_instagram_leads(
     limit: int = Query(default=100, ge=1, le=500),
     # [UX 개선] 정렬 파라미터 추가
     sort_by: str = Query(default="created_at", description="정렬 기준 (created_at, status, score, title, author)"),
-    order: str = Query(default="desc", regex="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="정렬 방향 (asc, desc)"),
 ) -> List[Dict[str, Any]]:
     """Instagram 리드 조회 (정렬 지원)"""
     try:
@@ -2085,7 +2085,7 @@ async def get_pending_alerts() -> Dict[str, Any]:
             }
 
             # 점수 계산
-            scored = scorer.score(lead)
+            scored = scorer.calculate_score(lead)
             score = scored.get('score', 0)
             grade = scored.get('grade', 'cold')
 

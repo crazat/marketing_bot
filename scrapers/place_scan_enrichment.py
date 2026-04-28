@@ -783,9 +783,17 @@ class SerpFeatureDetector:
         2026-04-14 네이버 클립 × MY플레이스 통합으로 탭 4→3.
         클립이 (a) 자동 리뷰 변환 (auto_from_review) 또는 (b) 직접 업로드 (manual_upload)
         인지 구분 — 가중치 다를 가능성.
+
+        [R3-4] MY플레이스 ↔ 일반 클립 출처 분리 (2026-04-14 시행 후속)
+        - my_place_count: '마이플레이스' / 'MY플레이스 후기' 마크 검출 클립
+        - general_count: 일반 크리에이터 업로드 클립
+        - my_place_link_rate: my_place / total
         """
         import re as _re
-        info = {"count": 0, "urls": [], "source_type": "unknown"}
+        info = {
+            "count": 0, "urls": [], "source_type": "unknown",
+            "my_place_count": 0, "general_count": 0, "my_place_link_rate": 0.0,
+        }
         clip_urls = _re.findall(
             r'(https?://[^"\'\s]*(?:place\.naver\.com|m\.place\.naver\.com)[^"\'\s]*?(?:clips?|video)[^"\'\s]*)',
             page_source, _re.IGNORECASE,
@@ -810,6 +818,21 @@ class SerpFeatureDetector:
             info["source_type"] = "manual_upload"
         elif info["count"] > 0:
             info["source_type"] = "mixed"
+
+        # [R3-4] MY플레이스 ↔ 일반 클립 분리 (2026-04-14 시행)
+        my_place_markers = (
+            'my플레이스 후기', 'myplace', '마이플레이스', 'my_place_clip',
+            'myplace_clip', 'myplaceclip', 'mypl_clip', 'fromMyplace',
+        )
+        my_place_hits = sum(
+            page_low.count(m.lower()) for m in my_place_markers
+        )
+        info["my_place_count"] = min(my_place_hits, info["count"])
+        info["general_count"] = max(0, info["count"] - info["my_place_count"])
+        if info["count"] > 0:
+            info["my_place_link_rate"] = round(
+                info["my_place_count"] / info["count"], 3
+            )
         return info
 
     def analyze_keyword(self, keyword: str) -> Optional[Dict[str, Any]]:
@@ -888,6 +911,10 @@ class SerpFeatureDetector:
                 'place_clip_count': clips["count"],
                 'place_clip_urls': json.dumps(clips["urls"], ensure_ascii=False),
                 'place_clip_source_type': clips.get("source_type", "unknown"),
+                # [R3-4] MY플레이스 ↔ 일반 클립 분리
+                'clip_source_my_place': clips.get("my_place_count", 0),
+                'clip_source_general': clips.get("general_count", 0),
+                'clip_my_place_link_rate': clips.get("my_place_link_rate", 0.0),
             }
             log.info(
                 f"    AI Briefing: {'있음' if has_ai else '없음'}"
@@ -920,8 +947,9 @@ class SerpFeatureDetector:
                  has_shopping_section, has_ad_top, ad_count,
                  has_ai_briefing, our_visibility, scanned_at,
                  ai_briefing_text, ai_briefing_sources, ai_briefing_includes_us,
-                 place_clip_count, place_clip_urls, place_clip_source_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 place_clip_count, place_clip_urls, place_clip_source_type,
+                 clip_source_my_place, clip_source_general, clip_my_place_link_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 result['keyword'],
                 result['has_place_pack'],
@@ -942,6 +970,9 @@ class SerpFeatureDetector:
                 result.get('place_clip_count', 0),
                 result.get('place_clip_urls', '[]'),
                 result.get('place_clip_source_type', 'unknown'),
+                result.get('clip_source_my_place', 0),
+                result.get('clip_source_general', 0),
+                result.get('clip_my_place_link_rate', 0.0),
             ))
             conn.commit()
             log.debug(f"    Saved SERP features for '{result['keyword']}'")

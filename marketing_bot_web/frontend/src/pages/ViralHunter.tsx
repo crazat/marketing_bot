@@ -42,10 +42,27 @@ export default function ViralHunter() {
     maxResults: 500,
   })
 
-  // [X2] URL 쿼리 → filters 초기값
+  // [X2] URL 쿼리 → filters 초기값 (lazy init으로 1회만 평가)
   const [searchParams, setSearchParams] = useSearchParams()
-  const filtersFromUrl: FilterState = (() => {
+  // 필터 상태 — 마운트 시 URL 또는 골든큐 default
+  const [filters, setFilters] = useState<FilterState>(() => {
     const platforms = searchParams.get('platforms')
+    const hasAnyFilter = ['status', 'sort', 'category', 'comment_status', 'date_filter',
+      'search', 'scan_batch', 'platforms', 'min_scan_count',
+      'ai_ad_label', 'specialty_match', 'post_region'].some(k => searchParams.get(k))
+    if (!hasAnyFilter) {
+      // [2026-04-28 강화] 골든큐 = 자연_질문 + 청주 + high + confidence>=0.85 + 미용 주력 카테고리
+      // 정치 뉴스/산후조리원 후기/이재명 같은 노이즈 자동 제외
+      return {
+        status: 'pending',
+        sort: 'specialty',
+        ai_ad_label: '자연_질문',
+        specialty_match: 'high',
+        post_region: '청주',
+        min_confidence: 0.85,
+        category: '다이어트,피부,비대칭/교정,교통사고,통증/디스크',
+      }
+    }
     return {
       status: searchParams.get('status') ?? 'pending',
       sort: searchParams.get('sort') ?? 'priority',
@@ -58,13 +75,13 @@ export default function ViralHunter() {
       min_scan_count: searchParams.get('min_scan_count')
         ? Number(searchParams.get('min_scan_count'))
         : undefined,
+      ai_ad_label: searchParams.get('ai_ad_label') ?? undefined,
+      specialty_match: searchParams.get('specialty_match') ?? undefined,
+      post_region: searchParams.get('post_region') ?? undefined,
     }
-  })()
+  })
 
-  // 필터 상태
-  const [filters, setFilters] = useState<FilterState>(filtersFromUrl)
-
-  // [X2] filters 변경 시 URL 동기화 (view === 'list' 일 때만 의미 있음)
+  // [X2] filters 변경 시 URL 동기화 — setSearchParams reference 의존성 제거 (무한 루프 방지)
   useEffect(() => {
     const params = new URLSearchParams()
     if (filters.status && filters.status !== 'pending') params.set('status', filters.status)
@@ -78,8 +95,12 @@ export default function ViralHunter() {
       params.set('platforms', filters.platforms.join(','))
     }
     if (filters.min_scan_count) params.set('min_scan_count', String(filters.min_scan_count))
+    if (filters.ai_ad_label) params.set('ai_ad_label', filters.ai_ad_label)
+    if (filters.specialty_match) params.set('specialty_match', filters.specialty_match)
+    if (filters.post_region) params.set('post_region', filters.post_region)
     setSearchParams(params, { replace: true })
-  }, [filters, setSearchParams])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters])
 
   // 홈 화면 스캔 배치 필터
   const [homeScanBatch, setHomeScanBatch] = useState<string>('')
@@ -260,6 +281,10 @@ export default function ViralHunter() {
         sort: filters.sort,
         scan_batch: filters.scan_batch,
         offset,
+        ai_ad_label: filters.ai_ad_label,
+        min_confidence: filters.min_confidence,
+        specialty_match: filters.specialty_match,
+        post_region: filters.post_region,
       }
     ).catch(() => []),
     enabled: view === 'list',
@@ -281,6 +306,10 @@ export default function ViralHunter() {
         min_scan_count: filters.min_scan_count,
         search: filters.search,
         scan_batch: filters.scan_batch,
+        ai_ad_label: filters.ai_ad_label,
+        min_confidence: filters.min_confidence,
+        specialty_match: filters.specialty_match,
+        post_region: filters.post_region,
       }
     ).catch(() => ({ total: 0 })),
     enabled: view === 'list',
@@ -883,6 +912,10 @@ export default function ViralHunter() {
         min_scan_count: filters.min_scan_count,
         search: filters.search,
         scan_batch: filters.scan_batch,
+        ai_ad_label: filters.ai_ad_label,
+        specialty_match: filters.specialty_match,
+        post_region: filters.post_region,
+        min_confidence: filters.min_confidence,
       })
       toast.success(`✅ ${result.updated.toLocaleString()}건 ${actionNames[action]} 완료`)
       queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })

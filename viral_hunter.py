@@ -65,6 +65,37 @@ class ViralTarget:
     author: str = ""
     date_str: str = ""
 
+    def __post_init__(self):
+        # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
+        # 시드 키워드만 보면 "산후조리원/지역명"이 모두 "기타"로 떨어지는 문제 해결.
+        try:
+            from services.category_normalizer import normalize_category, STANDARD_CATEGORIES
+        except ImportError:
+            return
+
+        if self.category and self.category != "기타" and self.category in STANDARD_CATEGORIES:
+            return  # 명시적 표준 카테고리 그대로
+
+        # 비표준 값이면 정규화
+        if self.category and self.category != "기타":
+            self.category = normalize_category(self.category)
+            if self.category in STANDARD_CATEGORIES and self.category != "기타":
+                return
+
+        # "기타" 폴백 — title + matched_keywords[0] 둘 다 시도, 미용 카테고리 우선
+        candidates = []
+        if self.title:
+            candidates.append(self.title)
+        if self.matched_keywords:
+            candidates.append(self.matched_keywords[0])
+
+        for raw in candidates:
+            cat = normalize_category(raw)
+            if cat != "기타":
+                self.category = cat
+                return
+        self.category = "기타"
+
     @property
     def id(self) -> str:
         """URL 기반 고유 ID 생성"""
@@ -82,7 +113,9 @@ class ViralTarget:
             'category': self.category,
             'is_commentable': self.is_commentable,
             'generated_comment': self.generated_comment,
-            'priority_score': self.priority_score
+            'priority_score': self.priority_score,
+            'author': self.author,
+            'date_str': self.date_str,
         }
 
 
@@ -662,20 +695,34 @@ class NaverUnifiedSearch:
         logger.info(f"[Kin] '{keyword}' -> {len(targets)}개 발견")
         return targets
 
-    def search_all(self, keyword: str, max_per_platform: int = 100) -> List[ViralTarget]:
-        """3개 채널 통합 검색"""
+    def search_all(
+        self,
+        keyword: str,
+        max_per_platform: int = 100,
+        include_blog: bool = False,
+    ) -> List[ViralTarget]:
+        """카페·지식인 통합 검색.
+
+        [Q10] blog는 본인 광고 글 비율이 높고 게시 전환율 0.02%로 효율 낮음.
+        명시적으로 include_blog=True 줄 때만 수집. 정보 수집 목적이면 search_blog() 직접 호출.
+        """
         all_targets = []
 
         cafe_results = self.search_cafe(keyword, max_per_platform)
         all_targets.extend(cafe_results)
 
-        blog_results = self.search_blog(keyword, max_per_platform)
-        all_targets.extend(blog_results)
+        blog_results: List[ViralTarget] = []
+        if include_blog:
+            blog_results = self.search_blog(keyword, max_per_platform)
+            all_targets.extend(blog_results)
 
         kin_results = self.search_kin(keyword, max_per_platform)
         all_targets.extend(kin_results)
 
-        logger.info(f"[통합] '{keyword}' -> 총 {len(all_targets)}개 (카페:{len(cafe_results)}, 블로그:{len(blog_results)}, 지식인:{len(kin_results)})")
+        logger.info(
+            f"[통합] '{keyword}' -> 총 {len(all_targets)}개 "
+            f"(카페:{len(cafe_results)}, 블로그:{len(blog_results)}, 지식인:{len(kin_results)})"
+        )
         return all_targets
 
 
@@ -969,9 +1016,11 @@ class CommentableFilter:
             # AI 탐지 결과는 target.category와 priority_score에 반영됨
 
             # [Phase 2 개선] 플랫폼별 가중치 (전환율 기반 재조정)
+            # [Q10] blog 18->5: 본인 광고 글 비중 높고 게시 전환율 0.02%로 매우 낮음.
+            #       search_all에서 디폴트 비수집이지만, 외부 호출 대비 가중치도 다운.
             platform_weights = {
-                'cafe': 22,       # 맘카페 = 고전환율 (15→22)
-                'blog': 18,       # 블로그 = 신뢰 정보원 (10→18)
+                'cafe': 22,       # 맘카페 = 고전환율
+                'blog': 5,        # 블로그 = 신뢰도 낮음 (이전 18)
                 'youtube': 16,    # YouTube = 영상 신뢰도
                 'kin': 15,        # 지식인 = 질문 많지만 전환 낮음 (20→15)
                 'instagram': 12,  # Instagram = 참여도 높지만 전환 낮음 (18→12)
@@ -1054,8 +1103,8 @@ class AICommentGenerator:
             style_suffix = styles[style].get('suffix', '')
 
         if not prompt_template:
-            # 기본 프롬프트
-            prompt_template = """당신은 청주 규림한의원의 마케팅 담당자입니다.
+            # 기본 프롬프트 (config/prompts.json 미로드 시 폴백)
+            prompt_template = """당신은 청주 시내(성안길) 거주민이 자기 경험을 공유하듯 댓글을 작성합니다.
 다음 게시글에 자연스럽고 도움이 되는 댓글을 작성해주세요.
 
 [게시글 정보]
@@ -1064,12 +1113,17 @@ class AICommentGenerator:
 내용 미리보기: {content_preview}
 관련 키워드: {keywords}
 
+[중요 — 자연스러운 후기톤]
+- '규림한의원' 풀네임 사용 절대 금지 (광고로 의심받음)
+- 한의원 언급 시 'ㄱㄹ한의원', 'ㄱㄹ', '성안길 ㄱㄹ', '시내 그 한의원' 등 초성/모호 표현 사용
+- 위치는 성안길/시내만. 가경동·율량동·복대동 절대 X
+
 [댓글 작성 가이드]
-1. 자연스러운 어투 사용 (광고 느낌 X)
-2. 게시글 내용에 공감 표현
-3. 도움이 될 수 있는 정보 제공
-4. 필요시 규림한의원 언급 (강제 X)
-5. 2-3문장으로 간결하게
+1. 진짜 시민이 경험 공유하듯 자연스럽게 (광고 톤 절대 X)
+2. 게시글 작성자 고민에 먼저 공감
+3. 본인/지인 경험담처럼 ('저도~', '엄마가~')
+4. 필요할 때만 자연스럽게 추천 (강제 X)
+5. 2-3문장으로 간결하게 (4문장 넘으면 광고 의심)
 
 댓글:"""
 
@@ -1952,6 +2006,8 @@ class ViralHunter:
             is_commentable=d.get('is_commentable', True),
             generated_comment=d.get('generated_comment', ''),
             priority_score=d.get('priority_score', 0.0),
+            author=d.get('author', ''),
+            date_str=d.get('date_str', ''),
         )
 
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,

@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRight, Flame, Clock, Activity } from 'lucide-react'
@@ -42,7 +43,7 @@ export default function TodayFocus() {
   // Primary focus 결정
   let focus: {
     tone: 'urgent' | 'warning' | 'calm'
-    icon: JSX.Element
+    icon: ReactElement
     eyebrow: string
     headline: string
     body: string

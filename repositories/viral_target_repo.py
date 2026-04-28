@@ -236,9 +236,17 @@ class ViralTargetRepository:
             clauses.append("platform = ?")
             params.append(filters["platform"])
 
-        if filters.get("category"):
-            clauses.append("category = ?")
-            params.append(filters["category"])
+        category = filters.get("category")
+        if category:
+            # 콤마 구분 다중값 지원 (골든큐: 다이어트,피부,비대칭/교정,교통사고,통증/디스크)
+            if isinstance(category, str) and "," in category:
+                cats = [c.strip() for c in category.split(",") if c.strip()]
+                placeholders = ",".join(["?"] * len(cats))
+                clauses.append(f"category IN ({placeholders})")
+                params.extend(cats)
+            else:
+                clauses.append("category = ?")
+                params.append(category)
 
         scan_batch = filters.get("scan_batch")
         date_filter = filters.get("date_filter")
@@ -264,6 +272,48 @@ class ViralTargetRepository:
             pat = f"%{search}%"
             params.extend([pat, pat])
 
+        # AI 분류 필터 (2026-04-27 추가)
+        ai_label = filters.get("ai_ad_label")
+        if ai_label:
+            if isinstance(ai_label, str) and "," in ai_label:
+                labels = [l.strip() for l in ai_label.split(",") if l.strip()]
+                placeholders = ",".join(["?"] * len(labels))
+                clauses.append(f"ai_ad_label IN ({placeholders})")
+                params.extend(labels)
+            else:
+                clauses.append("ai_ad_label = ?")
+                params.append(ai_label)
+
+        min_conf = filters.get("min_confidence")
+        if min_conf is not None:
+            try:
+                clauses.append("ai_ad_confidence >= ?")
+                params.append(float(min_conf))
+            except (ValueError, TypeError):
+                pass
+
+        specialty = filters.get("specialty_match")
+        if specialty:
+            if isinstance(specialty, str) and "," in specialty:
+                tiers = [t.strip() for t in specialty.split(",") if t.strip()]
+                placeholders = ",".join(["?"] * len(tiers))
+                clauses.append(f"specialty_match IN ({placeholders})")
+                params.extend(tiers)
+            else:
+                clauses.append("specialty_match = ?")
+                params.append(specialty)
+
+        post_region = filters.get("post_region")
+        if post_region:
+            if isinstance(post_region, str) and "," in post_region:
+                regions = [r.strip() for r in post_region.split(",") if r.strip()]
+                placeholders = ",".join(["?"] * len(regions))
+                clauses.append(f"post_region IN ({placeholders})")
+                params.extend(regions)
+            else:
+                clauses.append("post_region = ?")
+                params.append(post_region)
+
         return ("WHERE " + " AND ".join(clauses), params)
 
     @staticmethod
@@ -272,4 +322,11 @@ class ViralTargetRepository:
             return "ORDER BY discovered_at DESC"
         if sort == "scan_count":
             return "ORDER BY scan_count DESC, discovered_at DESC"
+        if sort == "specialty":
+            # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
+            return ("ORDER BY CASE specialty_match "
+                    "WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+                    "ai_ad_confidence DESC, priority_score DESC")
+        if sort == "ai_confidence":
+            return "ORDER BY ai_ad_confidence DESC, priority_score DESC"
         return "ORDER BY priority_score DESC, discovered_at DESC"

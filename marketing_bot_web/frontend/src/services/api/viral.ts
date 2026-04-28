@@ -140,6 +140,10 @@ export const viralApi = {
       sort?: string
       scan_batch?: string
       offset?: number
+      ai_ad_label?: string
+      min_confidence?: number
+      specialty_match?: string
+      post_region?: string
     }
   ) => {
     const params: Record<string, any> = { status, limit }
@@ -156,6 +160,10 @@ export const viralApi = {
     if (filters?.sort) params.sort = filters.sort
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
     if (filters?.offset && filters.offset > 0) params.offset = filters.offset
+    if (filters?.ai_ad_label) params.ai_ad_label = filters.ai_ad_label
+    if (filters?.min_confidence != null) params.min_confidence = filters.min_confidence
+    if (filters?.specialty_match) params.specialty_match = filters.specialty_match
+    if (filters?.post_region) params.post_region = filters.post_region
 
     const response = await api.get('/viral/targets', { params })
     return response.data
@@ -172,6 +180,10 @@ export const viralApi = {
       min_scan_count?: number
       search?: string
       scan_batch?: string
+      ai_ad_label?: string
+      min_confidence?: number
+      specialty_match?: string
+      post_region?: string
     }
   ): Promise<{ total: number }> => {
     const params: Record<string, any> = { status }
@@ -186,6 +198,10 @@ export const viralApi = {
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.search) params.search = filters.search
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
+    if (filters?.ai_ad_label) params.ai_ad_label = filters.ai_ad_label
+    if (filters?.min_confidence != null) params.min_confidence = filters.min_confidence
+    if (filters?.specialty_match) params.specialty_match = filters.specialty_match
+    if (filters?.post_region) params.post_region = filters.post_region
 
     const response = await api.get('/viral/targets/count', { params })
     return response.data
@@ -361,6 +377,10 @@ export const viralApi = {
       min_scan_count?: number
       search?: string
       scan_batch?: string
+      ai_ad_label?: string
+      specialty_match?: string
+      post_region?: string
+      min_confidence?: number
     },
     options?: {
       max_affected?: number

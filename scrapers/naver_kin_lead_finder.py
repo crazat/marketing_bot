@@ -377,69 +377,6 @@ class NaverKinLeadFinder:
                 return category
         return None
 
-    def _register_viral_target(self, lead: Dict[str, Any]) -> bool:
-        """
-        고점수 리드를 viral_targets 테이블에 자동 등록
-
-        Args:
-            lead: scored lead dict
-
-        Returns:
-            True if registered, False if already exists or failed
-        """
-        try:
-            with self.db.get_new_connection() as conn:
-                cursor = conn.cursor()
-
-                # Check for URL dedup in viral_targets
-                cursor.execute(
-                    'SELECT COUNT(*) FROM viral_targets WHERE url = ?',
-                    (lead['url'],)
-                )
-                count = cursor.fetchone()[0]
-                if count > 0:
-                    return False
-
-                # Detect category from content
-                combined = f"{lead['title']} {lead['content_preview']}"
-                category = self._detect_category(combined) or '기타'
-
-                # Generate a unique ID
-                target_id = f"kin_lead_{self._url_hash(lead['url'])[:12]}"
-
-                cursor.execute('''
-                    INSERT OR IGNORE INTO viral_targets
-                    (id, platform, url, title, content_preview, matched_keywords,
-                     category, is_commentable, comment_status, priority_score,
-                     discovered_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    target_id,
-                    'naver_kin',
-                    lead['url'],
-                    lead['title'][:500],
-                    lead['content_preview'][:1000],
-                    json.dumps([lead.get('keyword', '')], ensure_ascii=False),
-                    category,
-                    1,
-                    'pending',
-                    lead.get('score', 0),
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                ))
-                conn.commit()
-
-                if cursor.rowcount > 0:
-                    logger.info(
-                        f"Registered viral target: {lead['title'][:40]}... "
-                        f"(score={lead.get('score', 0)}, category={category})"
-                    )
-                    return True
-
-        except Exception as e:
-            logger.error(f"Error registering viral target: {e}")
-
-        return False
-
     def _send_telegram_notification(self, lead: Dict[str, Any]):
         """고점수 리드에 대한 Telegram 알림 발송"""
         if not self.telegram_bot:
@@ -460,11 +397,16 @@ class NaverKinLeadFinder:
 
     def save_lead(self, lead: Dict[str, Any]) -> bool:
         """
-        리드를 community_mentions 테이블에 저장
+        리드를 community_mentions 테이블에 저장하고, 점수 ≥ 50이면 mentions 테이블에도 적재 (Lead Manager 노출).
 
         Returns:
             True if inserted (new), False if skipped (duplicate)
         """
+        score = int(lead.get('score', 0) or 0)
+        is_lead_candidate = score >= 50
+        intent = lead.get('intent', 'general_inquiry')
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        inserted = False
         try:
             with self.db.get_new_connection() as conn:
                 cursor = conn.cursor()
@@ -484,15 +426,78 @@ class NaverKinLeadFinder:
                     lead.get('url_hash', ''),
                     0,
                     0,
-                    lead.get('intent', 'general_inquiry'),
-                    1 if lead.get('score', 0) >= 50 else 0,
+                    intent,
+                    1 if is_lead_candidate else 0,
                     0,
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    now,
+                ))
+                inserted = cursor.rowcount > 0
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving lead: {e}")
+            return False
+
+        if is_lead_candidate:
+            self._save_to_mentions(lead, intent, now)
+
+        return inserted
+
+    def _save_to_mentions(self, lead: Dict[str, Any], intent: str, now: str) -> bool:
+        """점수 ≥ 50 리드를 Lead Manager UI(mentions 테이블)에 노출."""
+        score = int(lead.get('score', 0) or 0)
+        if score >= 90:
+            grade = 'S'
+        elif score >= 70:
+            grade = 'A'
+        elif score >= 50:
+            grade = 'B'
+        else:
+            grade = 'C'
+
+        engagement_signal = 'seeking_info' if intent in (
+            'seeking_recommendation', 'comparing_options',
+            'asking_experience', 'general_inquiry'
+        ) else None
+
+        try:
+            with self.db.get_new_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT 1 FROM mentions WHERE url = ? LIMIT 1',
+                    (lead.get('url', ''),)
+                )
+                if cursor.fetchone():
+                    return False
+
+                cursor.execute('''
+                    INSERT INTO mentions
+                    (target_name, keyword, source, title, content, url,
+                     date_posted, scraped_at, status, score, grade,
+                     engagement_signal, source_module, platform, author, category, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    'KinLeadFinder',
+                    lead.get('keyword', ''),
+                    'naver_kin',
+                    lead.get('title', ''),
+                    lead.get('content_preview', ''),
+                    lead.get('url', ''),
+                    '',
+                    now,
+                    'new',
+                    score,
+                    grade,
+                    engagement_signal,
+                    'kin_lead_finder',
+                    'kin',
+                    lead.get('author', ''),
+                    '지식인',
+                    now,
                 ))
                 conn.commit()
                 return cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Error saving lead: {e}")
+            logger.error(f"Error inserting into mentions: {e}")
             return False
 
     def run(self) -> Dict[str, Any]:
@@ -517,7 +522,6 @@ class NaverKinLeadFinder:
         seen_urls: set = set()
         total_requests = 0
         new_saved = 0
-        viral_registered = 0
         telegram_sent = 0
 
         for q_idx, query in enumerate(queries):
@@ -555,14 +559,9 @@ class NaverKinLeadFinder:
 
                 all_leads.append(lead)
 
-                # Save to community_mentions
+                # Save to community_mentions + mentions (점수 ≥ 50이면 Lead Manager 노출)
                 if self.save_lead(lead):
                     new_saved += 1
-
-                # Auto-register high-score leads as viral targets
-                if score >= 70:
-                    if self._register_viral_target(lead):
-                        viral_registered += 1
 
                 # Telegram notification for very high score leads
                 if score >= 80:
@@ -580,7 +579,6 @@ class NaverKinLeadFinder:
             'total_requests': total_requests,
             'total_leads_found': len(all_leads),
             'new_saved': new_saved,
-            'viral_targets_registered': viral_registered,
             'telegram_notifications': telegram_sent,
             'top_leads': all_leads[:20],
             'score_distribution': {
@@ -607,7 +605,6 @@ class NaverKinLeadFinder:
         print(f"  Total API requests:        {summary['total_requests']}")
         print(f"  Total leads found:         {summary['total_leads_found']}")
         print(f"  New records saved:         {summary['new_saved']}")
-        print(f"  Viral targets registered:  {summary['viral_targets_registered']}")
         print(f"  Telegram notifications:    {summary['telegram_notifications']}")
 
         # Score distribution

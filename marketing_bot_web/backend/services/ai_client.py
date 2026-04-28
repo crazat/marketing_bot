@@ -437,7 +437,9 @@ def ai_generate_korean(
         logger.warning(f"[compliance] 모듈 import 실패, 스크린 건너뜀: {e}")
         return text
 
-    result = screen_korean_comment(text)
+    # auto_append_disclosure=False — 해시태그 자동 첨부 금지 (자연 후기톤 유지)
+    # violation은 로그/검수에만 남기고 본문은 그대로
+    result = screen_korean_comment(text, auto_append_disclosure=False)
     retry_count = 0
 
     # high severity 위반 → 1회 재시도 (제약 강화 프롬프트)
@@ -455,7 +457,7 @@ def ai_generate_korean(
             text = _call(retry_prompt)
         except Exception as e:
             logger.warning(f"[compliance] 재시도 실패: {e}")
-        result = screen_korean_comment(text)
+        result = screen_korean_comment(text, auto_append_disclosure=False)
 
     db_path = _resolve_default_db_path()
     if db_path:

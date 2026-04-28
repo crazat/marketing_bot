@@ -215,9 +215,9 @@
   "disabled_reason": {
     "kakao_map": "Kakao REST API 키 만료 - developers.kakao.com에서 재발급 필요",
     "geo_grid": "Naver Local API가 위치 기반 검색 미지원 - 별도 구현 방식 필요",
-    "hira_update": "data.go.kr API 키 미발급",
-    "commercial_data": "data.go.kr API 키 미발급",
-    "medical_reviews": "모두닥/굿닥 검색 URL 404 - URL 패턴 업데이트 필요",
+    "hira_update": "data.go.kr 키 등록 완료(2026-04-27). scripts/hira_oasis_harvester.py로 운영자 수동 트리거",
+    "commercial_data": "data.go.kr 키 등록 완료(2026-04-27). 운영자 수동 실행 권장",
+    "medical_reviews": "모두닥 ToS 명시 금지(무단 수집), 굿닥 SPA noindex, 하이닥 미검증 - 2026-04 재확인",
     "serp_features": "네이버 캡차 차단 - Selenium(Windows) 전용",
     "community_expanded": "삭제됨 - naver_api_community_monitor가 대체",
     "review_intel": "GraphQL 차단으로 avg_rating/response_rate 등 0값만 수집",

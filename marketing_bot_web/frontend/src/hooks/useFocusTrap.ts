@@ -19,7 +19,7 @@ const FOCUSABLE_SELECTOR = [
  */
 export function useFocusTrap(
   active: boolean,
-  containerRef: React.RefObject<HTMLElement>,
+  containerRef: React.RefObject<HTMLElement | null>,
   options: { autoFocusFirst?: boolean } = {},
 ) {
   const { autoFocusFirst = true } = options

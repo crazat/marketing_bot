@@ -76,6 +76,85 @@ python pathfinder_v3_legion.py --target 500 --save-db
 
 ---
 
+## 🤖 Claude Code 자연어 운영 가이드 (2026-04-26 추가)
+
+이 프로젝트는 **스캔/조사/조회는 Claude Code 대화로**, **바이럴 댓글/리드 처리/Q&A 큐레이션은 web UI로** 분담하도록 설계됨.
+
+### 자연어 의도 → 스킬 매핑
+
+사용자가 다음과 같이 말하면, Claude는 해당 SKILL.md를 읽고 그 안의 워크플로우/명령어/보고 템플릿을 따라 실행 → DB 조회 → 자연어 인사이트로 보고.
+
+| 사용자 의도 (예시) | 스킬 | 위치 |
+|---|---|---|
+| "순위 스캔" / "오늘 순위 어때" / "[키워드] 순위" | **scan-ranks** | `skills/scan-ranks/SKILL.md` |
+| "키워드 발굴" / "S급 찾아" / "Legion 모드" | **scan-pathfinder** | `skills/scan-pathfinder/SKILL.md` |
+| "경쟁사 변화" / "리뷰 새로 들어온 거" / "경쟁사 블로그" | **scan-competitors** | `skills/scan-competitors/SKILL.md` |
+| "오늘 종합" / "주간 브리핑" / "임원 보고용" | **brief** | `skills/brief/SKILL.md` |
+| "헬스체크" / "수집 상태" / "API 키 만료된 거" | **data-health** | `skills/data-health/SKILL.md` |
+| 그 외 일반 데이터 질문 ("최근 30일 1위", "뷰 가장 많은") | **query** | `skills/query/SKILL.md` |
+| 단일 lead → 댓글 초안 (web UI/cron 자동) | **viral-comment-drafter** | `skills/viral-comment-drafter/SKILL.md` |
+| "카페 본문 채워줘" / "hot 글 재방문" / "AI 분류 이상해" | **viral-enrich** | `skills/viral-enrich/SKILL.md` |
+| "garbage 정리" / "저품질 강등" / "광고 데이터 갱신" | **pathfinder-quality** | `skills/pathfinder-quality/SKILL.md` |
+| "PAA 수집" / "쇼핑 인사이트" / "한약재 시드" / "보조 키워드 발굴" | **scan-keywords-extra** | `skills/scan-keywords-extra/SKILL.md` |
+| "카카오맵 리뷰" / "Threads 멘션" / "클립 댓글" / "신규 채널" | **viral-channels** | `skills/viral-channels/SKILL.md` |
+| "AEO 측정" / "AI 검색 노출" / "ChatGPT가 우리 추천하나" | **aeo-tracker** | `skills/aeo-tracker/SKILL.md` |
+| "경쟁사 별점" / "비공개 전환" / "단가 비교" | **competitor-watch** | `skills/competitor-watch/SKILL.md` |
+| "가이드북 임베딩" / "단가 게이트" / "의료광고법 컴플라이언스" | **medical-compliance** | `skills/medical-compliance/SKILL.md` |
+| "신규 한의원 개원" / "폐업 / 인허가" / "HIRA 통계" / "정부 정책 시드" / "어르신 주치의" / "첩약 보험" | **clinic-lifecycle** | `skills/clinic-lifecycle/SKILL.md` |
+| "SERP 변동" / "top10 turnover" / "MY플레이스 클립" / "AI FAQ 도입한 경쟁사" | **serp-content-vitality** | `skills/serp-content-vitality/SKILL.md` |
+| "GSC 검색어" / "사이트 진입 키워드" / "Naver Search Advisor" / "Clarity 히트맵" / "PageSpeed" / "Core Web Vitals" | **inbound-analytics** | `skills/inbound-analytics/SKILL.md` |
+| "p-value" / "A/B 통계 검정" / "카니발리제이션" / "콘텐츠 갭" / "Schema.org" / "구조화 데이터" / "의도 재분류" | **content-quality** | `skills/content-quality/SKILL.md` |
+
+### 호출 절차 (Claude가 따라야 할 4단계)
+
+1. **사용자 발화 분류** — 위 표에서 매칭되는 스킬 결정. 모호하면 사용자에게 한 번 묻기.
+2. **SKILL.md 읽기** — 해당 스킬의 SKILL.md를 Read로 읽어 워크플로우/명령어/가드레일 파악.
+3. **Bash로 명령 실행** — SKILL.md에 적힌 명령을 그대로 실행. 장시간(5분+) 작업은 `run_in_background=true`.
+4. **결과 보고** — SKILL.md의 "보고 템플릿"을 따라 자연어 인사이트로 응답. **stdout raw 덤프 절대 금지.**
+
+### 보고 원칙 (모든 스킬 공통)
+
+- **숫자는 SQL로 직접 검증** — 캐시된 리포트 텍스트를 그대로 베끼지 말 것.
+- **인사이트 ≠ 데이터** — "X가 Y개"가 아니라 "X가 Y개로 평소 대비 Z% 증가, 원인은 W로 추정"까지.
+- **추천 액션 포함** — 모든 보고 끝에 "다음에 뭘 할지" 1~3개 제안.
+- **출력 길이 통제** — 변화 10건 이내면 모두, 초과면 top 5 + "외 N개". 임원 브리핑은 30~80줄.
+- **법규 자동 적용** — `ai_generate_korean()` 사용 시 `services/content_compliance.py`가 의료광고법 자동 게이트.
+
+### 절대 금지 사항
+
+- ❌ **자동 게시** — 댓글/포스팅/SNS 자동 발행 절대 금지. 모든 사람 게시는 web UI 또는 Telegram HITL 4-button 통과 필수.
+- ❌ **DML SQL** — INSERT/UPDATE/DELETE/DROP은 query 스킬에서 차단. 데이터 변경은 명시적 마이그레이션 스크립트로만.
+- ❌ **DB 직접 cp 복사** — 반드시 `scripts/safe_db_copy.sh` 또는 `db_backup.py` 사용 (사고 이력: 2026-02-06).
+- ❌ **자기 한의원 타게팅** — `business_profile.json::self_exclusion` 매칭은 모든 결과에서 제외.
+- ❌ **30분/24시간 내 중복 스캔** — 사용자가 명시적으로 "다시" 요청 안 했으면 직전 스캔 시각 보여주고 확인.
+
+### Web UI에서 처리해야 하는 것 (Claude가 대신 안 함)
+
+| 작업 | 이유 |
+|---|---|
+| 바이럴 댓글 초안 검토/수정/승인 | 시각 검토 + 사람 판단 필수 |
+| 리드 카드 처리 (상태 변경, 컨택 기록) | 영업 과정 문서화는 사람이 |
+| Q&A Repository 답변 큐레이션 | 표준 답변 작성/검토는 사람이 |
+| Battle 키워드 추가/등급 조정 | 사업 판단 |
+| Competitor 약점 라벨링 | 사용 여부 표시는 사람이 |
+
+이 작업들이 요청되면 **"web UI(/viral, /leads 등)에서 처리해주세요"** 안내 후 종료.
+
+### 자주 쓰는 빠른 조회 (스킬 없이 즉답 가능)
+
+```bash
+# DB 테이블 카운트 (5초)
+sqlite3 db/marketing_data.db "SELECT 'rank_history' t, COUNT(*) FROM rank_history UNION ALL SELECT 'keyword_insights', COUNT(*) FROM keyword_insights UNION ALL SELECT 'viral_targets', COUNT(*) FROM viral_targets"
+
+# 직전 스캔 시각
+sqlite3 db/marketing_data.db "SELECT MAX(checked_at) FROM rank_history"
+
+# 오늘 cron 실행 결과
+sqlite3 db/marketing_data.db "SELECT job_name, status, started_at FROM job_runs WHERE started_at >= date('now') ORDER BY started_at DESC"
+```
+
+---
+
 ## 프로젝트 구조
 
 ```
@@ -228,6 +307,115 @@ client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
 **예외**: `vision_analyst.py`만 Gemini Vision (이미지 분석)을 직접 사용
 
 **폴백 동작**: `ai_generate_korean()` 호출 실패 시 자동으로 `ai_generate()`(기본 모델)로 재시도
+
+---
+
+## 최근 개선 사항 (2026-04-28) — 바이럴 수집 근본 개혁 + Rules of Hooks 버그 + 골든큐 정의 강화
+
+### 트리거 — 미용 주력인데 골든큐에 미용 비중 거의 0
+
+직원이 ViralHunter 페이지에서 어제 작업한 데이터가 그대로 남아있다 / 페이지 오류 / 오늘 수집한 게 어디 있는지 모르겠다 보고. 진단 결과:
+- 골든큐 280건 중 category=`기타` 87.5% (245건)
+- 다이어트 4건 / 피부·탈모 0건 / 비대칭/교정 0건 (LP 페이지 5/6이 미용인데)
+- AI 분류 reason에 hallucination 다수 (다이어트 글 → reason "우울증 관련 질문")
+
+### 4축 동시 수정 + 골든큐 정의 강화
+
+| 단계 | 파일 | 변경 |
+|---|---|---|
+| **A** | `scripts/generate_viral_seeds.py` (신규) | pathfinder S+A → 미용 주력 시드 자동 생성 (카테고리별 quota: 다이어트 7 / 피부 7 / 탈모 5 / 비대칭 5 / 교정 3 / 교통사고 5 / 통증 4 / 두통 2 / 호흡 2). 사람이 매번 18개 손큐레이션하다가 미용 누락하던 실수 차단 |
+| | `logs/viral_seeds_curated.json` | 18개 (산후조리원 5/지역 7/다이어트 3) → **자동 생성 36개 미용 주력** |
+| **B** | `scripts/ai_ad_classify_submit.py` | content 컬럼 우선 (enrich된 본문 활용) + 본문 잘림 300자 → **1500자**. AI hallucination 감소 |
+| **C** | `viral_hunter.py::ViralTarget.__post_init__` | `matched_keywords[0]`만 보던 분류 → **title도 normalize_category에 통과**. 산후조리원/지역 시드 시드만 봐서 "기타" 87% 떨어지던 문제 해결 |
+| **D** | `scripts/ai_ad_classify_submit.py` SYSTEM_PROMPT | 산후조리원 후기에 한약 한 줄 = medium 명시 + 에스테틱/양방 미용 = low + 미용 주력 5종 high 케이스 예시 4개 추가 |
+| **🆕** | `pages/ViralHunter.tsx` + `repositories/viral_target_repo.py` + `routers/viral.py` | **골든큐 정의 강화** — `자연_질문 + 청주 + high` → `+ confidence>=0.85 + category IN (다이어트,피부,비대칭/교정,교통사고,통증/디스크)`. category 콤마 다중값 지원 추가 |
+
+### 결과 — 양보다 질
+
+| | 변경 전 | 변경 후 |
+|---|:---:|:---:|
+| 골든큐 size | 280건 | **41건** |
+| 미용 주력 카테고리 비중 | 22% | **100%** |
+| `기타` 카테고리 노이즈 | 87.5% | **0%** |
+| 정치 뉴스/산후조리원 후기 노출 | 다수 | 0 |
+| AI confidence 평균 | 혼재 | **모두 0.95** |
+| 카테고리 분포 | 기타 245 / 경쟁사 16 / 교통사고 15 / 다이어트 4 | 교통사고 16 / 다이어트 10 / 피부 10 / 통증/디스크 4 / 비대칭/교정 1 |
+
+### React #310 버그 (시간 1시간+ 허비) — Rules of Hooks 위반
+
+**증상**: `/viral` 진입 시 "이 페이지에서 오류가 발생했습니다" 화면. minified production stack trace로 ViralHunter.tsx 의심해서 수십 번 추측만 함.
+
+**근본 원인**: `marketing_bot_web/frontend/src/components/viral/SmartFilterBar.tsx`
+```tsx
+const { data, isLoading, isError } = useQuery(...)
+if (isLoading) { return (...) }   // ← early return
+const handleApplyQuickFilter = useCallback(...)  // ← hook AFTER early return
+```
+첫 렌더(loading=true) 8개 hook → 데이터 로드 후(loading=false) 9개 hook → React 비교 시 #310.
+
+**Fix**: useCallback을 early return **위로** 이동. 1줄 차이지만 결정적.
+
+**교훈** (메모리 저장됨):
+- minified prod 에러 stack trace로 추측 금지 — `npm run dev`로 5분 안에 정확한 컴포넌트·라인 찾을 수 있음
+- 사용자에게 "콘솔 에러 보내주세요" 반복 요청 금지 — `claude-in-chrome` MCP로 직접 navigate + read_console_messages
+
+### 댓글 프롬프트 자연 후기톤 (사용자 명시 요청)
+
+| 변경 | 결과 |
+|---|---|
+| `config/prompts.json::comment_generation` system+template 전면 개정 | 풀네임 "규림한의원" 사용 금지, ㄱㄹ/ㄱㄹ한의원/성안길 ㄱㄹ 등 초성·모호 표현만 허용 |
+| `config/prompts.json::category_templates` (다이어트/교통사고/여드름/통증) | 4개 카테고리 예시 모두 "규림" → "ㄱㄹ"로 교체 |
+| `viral_hunter.py` fallback 프롬프트 | 동일 톤으로 재작성 |
+| `services/content_compliance.py::screen_korean_comment` | 자동 첨부 해시태그 `"#광고 #규림한의원"` → `"#광고"` 만으로 단순화 |
+| `services/ai_client.py::ai_generate_korean` | `auto_append_disclosure=False` — 사용자 명시 요청에 따라 #광고 자동 첨부 자체 비활성화 |
+
+검증 — 골든 타겟 3건 random 샘플 댓글 생성 결과 모두 "시내 ㄱㄹ한의원" 표현 자연스럽게 사용, 풀네임 0회 등장.
+
+### 백엔드 500 에러 3건 동시 fix
+
+| 엔드포인트 | 원인 | Fix |
+|---|---|---|
+| `/api/leads/pending-alerts` | `scorer.score(lead)` 메서드 없음 | `scorer.calculate_score(lead)` |
+| `/api/pathfinder/stats?apply_filter=true` | `grade_filter` 변수 미정의 (옛 코드 잔재) | `where_clause + params` 파라미터 바인딩으로 통일 |
+| `/api/viral/trend-insights?days=7` | `older_avg=0`일 때 `recent_avg/older_avg` division by zero | `if older_avg > 0` 가드 + `older_avg=0 and recent_avg>0` 분기 추가 |
+
+### ViralHunter.tsx 렌더 안정화 (#310과 별개로 정리)
+
+- `filtersFromUrl` IIFE → `useState(() => {...})` lazy init (마운트 시 1회만 평가)
+- URL 동기화 useEffect deps에서 `setSearchParams` 제거 (react-router v7에서 매 렌더 새 reference 가능 → 잠재 무한 루프 차단)
+- HomeView 헤더 아래에 큰 주황 골든큐 진입 버튼 ("🎯 오늘 우선 처리 골든큐 — 지금 작업 시작 →")
+- `view: 'home'` default 유지 (list로 바꿨다가 다른 사이드 효과 있어 되돌림)
+
+### 신규/수정 파일
+
+**Backend**:
+- `marketing_bot_web/backend/routers/viral.py` — count + bulk-action에 ai_ad_label/specialty_match/post_region/min_confidence 필터 추가
+- `marketing_bot_web/backend/routers/leads.py` — scorer 메서드명 fix
+- `marketing_bot_web/backend/routers/pathfinder.py` — stats 쿼리 파라미터 바인딩 통일
+- `marketing_bot_web/backend/services/ai_client.py` — auto_append_disclosure=False
+- `marketing_bot_web/backend/services/content_compliance.py` — 해시태그 단순화
+- `repositories/viral_target_repo.py` — post_region 필터 + category 콤마 다중값
+
+**Frontend**:
+- `pages/ViralHunter.tsx` — 골든큐 default + lazy init
+- `components/viral/FilterBar.tsx` — FilterState에 post_region 추가
+- `components/viral/SmartFilterBar.tsx` — Rules of Hooks 위반 fix
+- `components/viral/views/HomeView.tsx` — 큰 골든큐 진입 버튼
+- `services/api/viral.ts` — getTargets/getTargetsCount/bulkActionByFilter에 새 필터 4종
+
+**Scripts**:
+- `scripts/generate_viral_seeds.py` (신규) — pathfinder → 시드 자동 생성
+
+**Config**:
+- `config/prompts.json` — 댓글 프롬프트 자연 후기톤 + ㄱㄹ 표현
+- `logs/viral_seeds_curated.json` — 자동 생성으로 갱신
+
+### 운영 메모
+
+- **시드 자동 생성 권장 명령**: `python scripts/generate_viral_seeds.py` — 매번 viral_hunt 전에 실행하면 미용 주력 시드 자동 보장
+- **viral_hunt 권장 흐름**: `generate_viral_seeds.py` → `viral_hunter_curated.py` → `ai_ad_classify_submit.py` → wait → `ai_ad_classify_apply.py`
+- **AI batch 큐 대기 시간**: Gemini batch API가 트래픽 따라 1~2시간까지도 걸림 — wait 스크립트 cap 90 → 180분으로 늘림 (`scripts/_tmp_classify_wait_apply.py`)
+- **골든큐 size 41건**이 적정 — 직원 하루 작업량으로 충분, 양보다 질
 
 ---
 
@@ -511,7 +699,7 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 | `scrapers/kakao_map_tracker.py` | Kakao REST API 키 만료 |
 | `scrapers/hira_api_client.py` | data.go.kr API 키 미발급 |
 | `scrapers/commercial_data_collector.py` | data.go.kr API 키 미발급 |
-| `scrapers/medical_review_monitor.py` | 모두닥/굿닥 URL 404 |
+| `scrapers/medical_review_monitor.py` | 모두닥 ToS 명시 금지("무단 수집"), 굿닥 SPA noindex로 검색 결과 차단, 하이닥 미검증 — 2026-04 재확인 결과 |
 | `scrapers/review_intelligence_collector.py` | GraphQL 차단 → place_scan_enrichment로 대체 |
 | `scrapers/geo_grid_tracker.py` | Naver Local API 위치 미지원 |
 | `scrapers/review_nlp_analyzer.py` | google-genai 패키지 필요 (Windows 전용) |
@@ -592,7 +780,7 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 | `kakao_map` | Kakao REST API 키 만료 |
 | `geo_grid` | Naver Local API 위치 기반 미지원 |
 | `hira_update` / `commercial_data` | data.go.kr API 키 미발급 |
-| `medical_reviews` | 모두닥/굿닥 URL 404 |
+| `medical_reviews` | 모두닥은 ToS로 수집 금지, 굿닥/하이닥은 ToS 검토 후 활성화 가능 |
 | `serp_features` | 네이버 캡차 차단 → Selenium 전용 |
 | `review_intel` | GraphQL 차단 → place_scan_enrichment 대체 |
 | `keyword_clusters` | 테마 기반 분리로 개선 완료 (1→11 클러스터) |

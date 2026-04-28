@@ -343,6 +343,198 @@ def ensure_all_tables():
             )
         """)
 
+        # 45j. [Content Quality] 카니발리제이션 후보
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cannibalization_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                competing_urls TEXT NOT NULL,
+                total_clicks INTEGER,
+                measured_period_start TEXT,
+                measured_period_end TEXT,
+                severity TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cannibal_query "
+            "ON cannibalization_findings(query)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cannibal_severity "
+            "ON cannibalization_findings(severity, detected_at DESC)"
+        )
+
+        # 45k. [Content Quality] 콘텐츠 갭 (BGE-M3 임베딩 비교)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS content_gaps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                competitor_topic TEXT NOT NULL,
+                competitor_url TEXT,
+                closest_self_url TEXT,
+                similarity REAL,
+                suggested_seed TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gaps_sim "
+            "ON content_gaps(similarity, detected_at DESC)"
+        )
+
+        # 45l. [Content Quality] qa_repository / viral_targets 검색의도 컬럼
+        for _tbl in ("qa_repository", "viral_targets"):
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_tbl,)
+            )
+            if cursor.fetchone():
+                cursor.execute(f"PRAGMA table_info({_tbl})")
+                _cols = {r[1] for r in cursor.fetchall()}
+                if "search_intent" not in _cols:
+                    try:
+                        cursor.execute(
+                            f"ALTER TABLE {_tbl} ADD COLUMN search_intent TEXT"
+                        )
+                        logger.info(f"  - {_tbl}: search_intent 컬럼 추가됨")
+                    except Exception as _e:
+                        logger.debug(f"{_tbl}.search_intent 추가 스킵: {_e}")
+
+        # 46. [External Signals 라운드 3] 한의원 인허가 라이프사이클 추적
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clinic_lifecycle_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                clinic_name TEXT NOT NULL,
+                biz_no TEXT,
+                event_type TEXT NOT NULL,
+                event_date TEXT,
+                address TEXT,
+                new_address TEXT,
+                raw_payload TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(biz_no, event_type, event_date)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_clinic_lifecycle_event_date
+            ON clinic_lifecycle_events(event_date DESC, event_type)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_clinic_lifecycle_clinic
+            ON clinic_lifecycle_events(clinic_name)
+        """)
+
+        # 47. [External Signals 라운드 3] SERP 자체 변동성 (top10 turnover)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS serp_volatility (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                measured_date TEXT NOT NULL,
+                device_type TEXT NOT NULL,
+                top10_turnover_rate REAL,
+                new_entrants TEXT,
+                dropouts TEXT,
+                volatility_score REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(keyword, measured_date, device_type)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_serp_volatility_keyword_date
+            ON serp_volatility(keyword, measured_date DESC)
+        """)
+
+        # 48. [Inbound Analytics] 자사 사이트 진입 검색어 (GSC + Naver Advisor)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_search_queries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                query TEXT NOT NULL,
+                landing_url TEXT,
+                impressions INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                ctr REAL,
+                position REAL,
+                measured_date TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, query, landing_url, measured_date)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_inbound_query
+            ON inbound_search_queries(query)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_inbound_date
+            ON inbound_search_queries(measured_date)
+        """)
+
+        # 49. [Inbound Analytics] Microsoft Clarity 일별 행동 메트릭
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clarity_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                measured_date TEXT NOT NULL UNIQUE,
+                sessions INTEGER DEFAULT 0,
+                page_views INTEGER DEFAULT 0,
+                dead_clicks INTEGER DEFAULT 0,
+                rage_clicks INTEGER DEFAULT 0,
+                quick_backs INTEGER DEFAULT 0,
+                scroll_depth_avg REAL,
+                raw_payload TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 50. [Inbound Analytics] PageSpeed Insights / Core Web Vitals
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pagespeed_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_url TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                measured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                performance_score REAL,
+                lcp_ms REAL,
+                inp_ms REAL,
+                cls REAL,
+                fcp_ms REAL,
+                ttfb_ms REAL,
+                crux_origin_summary TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pagespeed_site
+            ON pagespeed_history(site_url, strategy, measured_at)
+        """)
+
+        # 48. [External Signals 라운드 3] serp_features 클립 소스 분리 컬럼
+        try:
+            cursor.execute("ALTER TABLE serp_features ADD COLUMN clip_source_my_place INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE serp_features ADD COLUMN clip_source_general INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE serp_features ADD COLUMN clip_my_place_link_rate REAL")
+        except sqlite3.OperationalError:
+            pass
+
+        # 49. [External Signals 라운드 3] competitor_visual_scores AI FAQ 컬럼
+        try:
+            cursor.execute("ALTER TABLE competitor_visual_scores ADD COLUMN ai_faq_enabled INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE competitor_visual_scores ADD COLUMN ai_faq_detected_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+
+        # 50. [External Signals 라운드 3] mentions source_subtype 컬럼 (이미 있을 수 있음 — 안전 추가)
+        try:
+            cursor.execute("ALTER TABLE mentions ADD COLUMN source_subtype TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
         # 46. [Phase Z] Q&A RAG 인덱스 자동 보강 (sqlite-vec)
@@ -673,6 +865,36 @@ def _ensure_lead_response_tracking(cursor):
         if 'first_seen_at' not in columns:
             cursor.execute("ALTER TABLE viral_targets ADD COLUMN first_seen_at TIMESTAMP")
             logger.info("  - viral_targets: first_seen_at 컬럼 추가됨")
+
+        # [Q4] post_region — AI 분류가 추출한 게시글 거주지/지역 (청주/세종/충주/타지역/불명)
+        if 'post_region' not in columns:
+            cursor.execute("ALTER TABLE viral_targets ADD COLUMN post_region TEXT")
+            logger.info("  - viral_targets: post_region 컬럼 추가됨")
+
+    # [R8] competitor_star_history — 네이버 별점 부활(2026-4-6) 비공개 전환 추적
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS competitor_star_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            competitor_name TEXT NOT NULL,
+            place_id TEXT,
+            star_rating REAL,
+            star_visible INTEGER DEFAULT 1,
+            review_count INTEGER,
+            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            transition_event TEXT,
+            UNIQUE(competitor_name, checked_at)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_star_competitor ON competitor_star_history(competitor_name, checked_at DESC)"
+    )
+
+    # [R9] mentions.source_subtype — clip_comment / threads_post / kakao_map_review 등 세분화
+    cursor.execute("PRAGMA table_info(mentions)")
+    mentions_cols = [r[1] for r in cursor.fetchall()]
+    if 'source_subtype' not in mentions_cols:
+        cursor.execute("ALTER TABLE mentions ADD COLUMN source_subtype TEXT")
+        logger.info("  - mentions: source_subtype 컬럼 추가됨")
 
     logger.debug("  - 리드 응답 시간 추적 컬럼 확인됨")
 

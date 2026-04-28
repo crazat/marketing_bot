@@ -12,6 +12,11 @@ export interface FilterState {
   search?: string;
   sort?: string;
   scan_batch?: string;
+  // [2026-04-27] AI 분류 필터
+  ai_ad_label?: string;        // 자연_질문 / 광고 / 광고성_후기톤 / 기타_노이즈 (콤마 가능)
+  min_confidence?: number;     // 0.0~1.0
+  specialty_match?: string;    // 'high' | 'medium' | 'low' (콤마 가능)
+  post_region?: string;        // '청주' | '타지역' | '불명' (콤마 가능)
 }
 
 export interface ScanBatch {
@@ -65,7 +70,11 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
       filters.min_scan_count ||
       filters.search ||
       (filters.sort && filters.sort !== 'priority') ||
-      filters.scan_batch
+      filters.scan_batch ||
+      filters.specialty_match ||
+      filters.ai_ad_label ||
+      filters.post_region ||
+      filters.min_confidence != null
     );
   }, [filters]);
 
@@ -99,7 +108,7 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
 
   // [V3] 빠른 프리셋 적용
   const applyPreset = useCallback(
-    (preset: 'today_pending' | 'today_all' | 'week_posted' | 'hot_only' | 'reset') => {
+    (preset: 'today_pending' | 'today_all' | 'week_posted' | 'hot_only' | 'specialty_high' | 'natural_only' | 'reset') => {
       switch (preset) {
         case 'today_pending':
           onFilterChange({ ...filters, status: 'pending', date_filter: '오늘', sort: 'priority' });
@@ -112,6 +121,28 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
           break;
         case 'hot_only':
           onFilterChange({ ...filters, status: 'pending', sort: 'priority', date_filter: undefined });
+          break;
+        // [2026-04-27] AI 분류 기반 프리셋
+        case 'specialty_high':
+          // 미용 특화 매칭 + 자연 질문 + 신뢰도 ≥0.85 (HIGH 큐)
+          onFilterChange({
+            ...filters,
+            status: 'pending',
+            comment_status: 'pending',
+            specialty_match: 'high',
+            sort: 'specialty',
+            date_filter: undefined,
+          });
+          break;
+        case 'natural_only':
+          // 자연_질문 라벨만 (광고/노이즈 숨김)
+          onFilterChange({
+            ...filters,
+            status: 'pending',
+            comment_status: 'pending',
+            ai_ad_label: '자연_질문',
+            sort: 'specialty',
+          });
           break;
         case 'reset':
           onReset();
@@ -153,6 +184,21 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
           title="점수 순 대기 HOT LEAD"
         >
           🔥 HOT 대기
+        </button>
+        {/* [2026-04-27] 미용 특화 큐 — AI 분류 + 우리 강점 카테고리 + 청주 권역 */}
+        <button
+          onClick={() => applyPreset('specialty_high')}
+          className="text-xs px-3 py-1.5 rounded-full border border-orange-400 bg-orange-500/10 text-orange-600 dark:text-orange-400 hover:bg-orange-500/20 font-medium"
+          title="다이어트·비대칭·피부·탈모·교통사고 + 청주 권역 + AI 신뢰도 ≥85% 자연 질문"
+        >
+          🎯 미용 특화 큐
+        </button>
+        <button
+          onClick={() => applyPreset('natural_only')}
+          className="text-xs px-3 py-1.5 rounded-full border border-green-400/60 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-500/15"
+          title="AI가 자연 질문으로 분류한 것만 (광고/노이즈 숨김)"
+        >
+          ✓ 자연 질문만
         </button>
         {hasActiveFilters && (
           <button

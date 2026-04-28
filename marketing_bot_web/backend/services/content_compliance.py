@@ -161,6 +161,54 @@ VIOLATION_PATTERNS = {
         "message": "비급여 진료 가격 표시는 허용되지만, 정확한 정보여야 합니다.",
         "recommendation": "표시된 가격이 실제 적용 가격과 일치하는지 확인하세요.",
     },
+
+    # ─────────────────────────────────────────────────────────
+    # [External Signals R3-3] 사전심의 의무 강화 (2026-04-27)
+    # ─────────────────────────────────────────────────────────
+    "사전심의 미통과 의심 단정": {
+        "severity": "high",
+        # "최초/유일/독보적" + 단정 어조 — 한의사협회 사전심의 누락 추정
+        "patterns": [
+            r"(최초|유일|독보적|업계\s*최초)\s*(도입|시술|치료|기술|장비)",
+            r"(최초|유일|독보적)\s*\S{0,15}(한의원|병원|의원|클리닉)",
+            r"(비교\s*우위|압도적|타의\s*추종)\s*(효과|치료|기술)",
+        ],
+        "message": "최초·유일·독보적 단정 표현은 사전심의 의무 (의료법 시행령 제24조). 미통과 시 광고 정지·과태료.",
+        "recommendation": "한의사협회 사전심의(ad.akom.org) 통과 확인 후 게시. 또는 표현 완화.",
+    },
+    "전후 비교 표현": {
+        "severity": "high",
+        # before/after, 전후 비교 — 사진 없어도 텍스트 단독 사용 위험
+        "patterns": [
+            r"(전후|이전\s*대비|치료\s*전후)\s*(비교|변화|개선|차이)",
+            r"\b(before|after|비포|애프터)\b",
+            r"360\s*도\s*(비교|변화|회전)",
+        ],
+        "message": "전후 비교 표현은 사진 없이 텍스트만으로도 사전심의 대상 (적발 강화 2026).",
+        "recommendation": "전후 비교 표현 제거. 일반적인 치료 과정 설명만 유지.",
+    },
+    "비급여 정찰가 단정": {
+        "severity": "medium",
+        # "원 정찰", "정가" + 비급여 시술명 — 단가 변동 가능성 무시 광고
+        "patterns": [
+            r"\d+[,.]?\d*\s*(만\s*)?원\s*(정찰|정가|고정가)",
+            r"(정찰가|정가|고정가)\s*\S{0,10}\d+[,.]?\d*\s*(만\s*)?원",
+            r"(추나|약침|한약|보약|침구)\s*\S{0,10}(정찰|정가)",
+        ],
+        "message": "비급여 정찰가 단정 표현은 가격 변동 시 허위광고. 심평원 공개 단가와 ±10% 이내 일치 확인.",
+        "recommendation": "'기준가' 또는 '시술별 상이'로 표기. R14 verify_price_consistency 자동 검증 활용.",
+    },
+    "월10만 플랫폼 의료 결합": {
+        "severity": "medium",
+        # 채널명 + 의료 단어 결합 시 월 10만 이용자 플랫폼 사전심의 의무 안내
+        "patterns": [
+            r"(네이버\s*블로그|네이버블로그|youtube|유튜브|인스타그램|인스타|틱톡|tiktok|페이스북|facebook)"
+            r"\s*\S{0,15}(한의|치료|시술|효과|진료|한약|침|추나)",
+            r"(블로그|영상|쇼츠|릴스|숏폼)\s*\S{0,15}(추천|후기|리뷰|체험)\s*\S{0,15}(한의원|병원|치료)",
+        ],
+        "message": "월 10만 이용자 플랫폼(네이버블로그/유튜브/인스타/틱톡/페이스북) 의료 콘텐츠 발행 시 사전심의 의무.",
+        "recommendation": "한의사협회 사전심의 통과 후 발행. 협회 가이드북(2025.09) 7장 참조.",
+    },
 }
 
 
@@ -274,6 +322,134 @@ async def check_with_ai(
     return keyword_result
 
 
+def verify_price_consistency(text: str, db_path: Optional[str] = None,
+                             tolerance_pct: float = 10.0) -> Dict[str, Any]:
+    """[R14] 콘텐츠 내 표기 단가가 심평원 공개 단가와 ±tolerance% 이내인지 자동 대조.
+
+    배경: 2026-6-12 비급여 진료비 공개 의무. 일치 안 하면 의료법 위반 위험.
+
+    Args:
+        text: 검사할 콘텐츠 (블로그/댓글/광고).
+        db_path: marketing_data.db 경로 (None이면 기본).
+        tolerance_pct: 허용 편차 (기본 10%).
+
+    Returns:
+        {
+          'has_price_mention': bool,
+          'detected_prices': [{'amount': 50000, 'context': '...'}],
+          'comparisons': [{'item': '추나치료', 'declared': 50000, 'public_avg': 60000,
+                           'deviation_pct': -16.7, 'within_tolerance': False}],
+          'violations': [...],   # tolerance 초과
+          'verdict': 'pass' | 'warn' | 'fail'
+        }
+    """
+    import re as _re
+    import sqlite3 as _sql
+
+    result = {
+        'has_price_mention': False,
+        'detected_prices': [],
+        'comparisons': [],
+        'violations': [],
+        'verdict': 'pass',
+    }
+    if not text:
+        return result
+
+    # 가격 패턴 — 5만원 / 50,000원 / 50000원 / 5만 / 5만원~
+    patterns = [
+        _re.compile(r'(\d+)\s*만\s*원'),                    # 50만원
+        _re.compile(r'(\d{1,3}(?:,\d{3})+)\s*원'),         # 50,000원
+        _re.compile(r'(\d{4,7})\s*원'),                    # 50000원
+    ]
+    matches: list[tuple[int, str]] = []
+    for pat in patterns:
+        for m in pat.finditer(text):
+            raw = m.group(1).replace(',', '')
+            try:
+                amt = int(raw)
+                if pat.pattern.startswith(r'(\d+)\s*만'):
+                    amt *= 10000
+                if 5000 <= amt <= 100_000_000:  # 노이즈 필터
+                    ctx = text[max(0, m.start() - 30):min(len(text), m.end() + 30)]
+                    matches.append((amt, ctx))
+            except (ValueError, TypeError):
+                continue
+
+    if not matches:
+        return result
+    result['has_price_mention'] = True
+    result['detected_prices'] = [{'amount': a, 'context': c} for a, c in matches]
+
+    # hira_nonpay_items 데이터 조회 (R15가 적재한 데이터)
+    db_path = db_path or _resolve_default_db_path()
+    if not db_path:
+        result['verdict'] = 'warn'
+        result['violations'].append('가격 언급 있음 but DB 경로 없음 — 검증 불가')
+        return result
+
+    try:
+        conn = _sql.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hira_nonpay_items'")
+        if not cur.fetchone():
+            result['verdict'] = 'warn'
+            result['violations'].append('hira_nonpay_items 데이터 없음 — R15 수집기 실행 후 재검증')
+            return result
+
+        # 콘텐츠에서 비급여 항목명 추출 (item_name과 매칭)
+        for amt, ctx in matches:
+            cur.execute(
+                """
+                SELECT item_name, AVG(avg_price) avg_p, MIN(min_price) min_p, MAX(max_price) max_p
+                  FROM hira_nonpay_items
+                 WHERE item_name IS NOT NULL
+                 GROUP BY item_name
+                """
+            )
+            for item_name, avg_p, min_p, max_p in cur.fetchall():
+                if not item_name or item_name not in ctx:
+                    continue
+                if avg_p is None or avg_p <= 0:
+                    continue
+                deviation = (amt - avg_p) / avg_p * 100
+                within = abs(deviation) <= tolerance_pct
+                comparison = {
+                    'item': item_name,
+                    'declared': amt,
+                    'public_avg': round(avg_p),
+                    'public_min': round(min_p) if min_p else None,
+                    'public_max': round(max_p) if max_p else None,
+                    'deviation_pct': round(deviation, 1),
+                    'within_tolerance': within,
+                }
+                result['comparisons'].append(comparison)
+                if not within:
+                    result['violations'].append(
+                        f'{item_name}: 표기 {amt:,}원 vs 공개 평균 {round(avg_p):,}원 '
+                        f'(편차 {deviation:+.1f}%, 허용 ±{tolerance_pct}%)'
+                    )
+    except Exception as e:
+        logger.warning(f"단가 대조 실패: {e}")
+        result['verdict'] = 'warn'
+        result['violations'].append(f'대조 실패: {e}')
+        return result
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if result['violations']:
+        result['verdict'] = 'fail'
+    elif result['comparisons']:
+        result['verdict'] = 'pass'
+    else:
+        result['verdict'] = 'warn'  # 가격은 있으나 매칭 항목 없음
+
+    return result
+
+
 def save_compliance_check(
     db_path: str,
     content_type: str,
@@ -372,10 +548,11 @@ def screen_korean_comment(
     final_text = text
     auto_modified = False
 
-    # 의료 콘텐츠인데 표기 누락 → 자동 첨부
+    # 의료 콘텐츠인데 표기 누락 → 자동 #광고만 첨부
+    # (한의원 풀네임 해시태그는 자연 후기톤을 깨뜨리므로 본문에서만 ㄱㄹ로 처리)
     if _is_medical_context(text) and require_disclosure and not _has_disclosure(text):
         if auto_append_disclosure:
-            final_text = (text.rstrip() + "\n\n#광고 #규림한의원").strip()
+            final_text = (text.rstrip() + "\n\n#광고").strip()
             auto_modified = True
         violations.append({
             "category": "광고/협찬 표기 누락",

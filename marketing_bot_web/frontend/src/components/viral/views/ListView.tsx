@@ -18,6 +18,7 @@ import { PlatformBadge } from '@/components/viral/PlatformBadge'
 import { CategoryBadge } from '@/components/viral/CategoryBadge'
 import { EngagementMetrics } from '@/components/viral/EngagementMetrics'
 import { ScanCountBadge } from '@/components/viral/ScanCountBadge'
+import { AIClassificationMini } from '@/components/viral/AIClassificationBadge'
 import { TargetSkeleton } from '@/components/viral/TargetSkeleton'
 import { EmptyState } from '@/components/viral/EmptyState'
 import { ViralTargetData, autoCategorize } from '@/types/viral'
@@ -382,6 +383,7 @@ export function ListView({
                   <th className="px-4 py-3 text-left text-sm font-semibold">플랫폼</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold">제목/내용</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold">카테고리</th>
+                  <th className="px-4 py-3 text-center text-sm font-semibold" title="AI가 분류한 글 성격 + 미용 특화 매칭">AI 판정</th>
                   <th className="px-4 py-3 text-center text-sm font-semibold">참여도</th>
                   <th className="px-4 py-3 text-center text-sm font-semibold">우선순위</th>
                   <th className="px-4 py-3 text-center text-sm font-semibold">재발견</th>
@@ -457,6 +459,23 @@ export function ListView({
                       </td>
                       <td className="px-4 py-3 text-sm">
                         <CategoryBadge category={category} size="sm" />
+                      </td>
+                      <td className="px-4 py-3 text-sm text-center">
+                        <div className="flex flex-col items-center gap-0.5">
+                          <AIClassificationMini
+                            label={target.ai_ad_label}
+                            confidence={target.ai_ad_confidence}
+                            specialtyMatch={target.specialty_match}
+                          />
+                          {target.ai_ad_confidence != null && target.ai_ad_label === '자연_질문' && (
+                            <span
+                              className="text-[10px] text-muted-foreground"
+                              title={target.ai_ad_reason || ''}
+                            >
+                              {Math.round(target.ai_ad_confidence * 100)}%
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-center">
                         <EngagementMetrics

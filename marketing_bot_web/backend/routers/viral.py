@@ -121,10 +121,10 @@ def _create_lead_from_viral(db: DatabaseManager, target_id: str) -> bool:
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
-        # 바이럴 타겟 정보 조회
+        # 바이럴 타겟 정보 조회 — matched_keywords 포함 (실제 키워드 추적용)
         cursor.execute("""
             SELECT id, platform, title, url, author, category, content,
-                   discovered_at, generated_comment
+                   discovered_at, generated_comment, matched_keywords
             FROM viral_targets
             WHERE id = ?
         """, (target_id,))
@@ -133,14 +133,37 @@ def _create_lead_from_viral(db: DatabaseManager, target_id: str) -> bool:
         if not target:
             return False
 
-        target_id_val, platform, title, url, author, category, content, discovered_at, comment = target
+        (target_id_val, platform, title, url, author, category, content,
+         discovered_at, comment, matched_keywords_json) = target
 
-        # mentions 테이블에 source_module 컬럼이 있는지 확인하고 없으면 추가
+        # 실제 키워드 추출: matched_keywords JSON의 첫 요소.
+        # 카테고리 라벨이 keyword 자리에 들어가던 버그 픽스 — 키워드별 ROI 계산의 전제 조건.
+        actual_keyword = ''
+        if matched_keywords_json:
+            try:
+                kws = json.loads(matched_keywords_json) if isinstance(matched_keywords_json, str) else matched_keywords_json
+                if isinstance(kws, list) and kws:
+                    actual_keyword = str(kws[0]).strip()
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if not actual_keyword:
+            actual_keyword = (category or '').strip()  # 폴백: 키워드 추출 실패 시에만 카테고리
+
+        # [Q11] 카테고리 정규화 — keyword_insights/legacy 값이 mentions로 흘러들어와도 표준 11종으로
+        try:
+            from services.category_normalizer import normalize_category
+            normalized_category = normalize_category(category)
+        except ImportError:
+            normalized_category = category or '기타'
+
+        # mentions 테이블 컬럼 체크 (source_module, source_target_id)
         cursor.execute("PRAGMA table_info(mentions)")
         columns = [row[1] for row in cursor.fetchall()]
 
         if 'source_module' not in columns:
             cursor.execute("ALTER TABLE mentions ADD COLUMN source_module TEXT DEFAULT NULL")
+        if 'source_target_id' not in columns:
+            cursor.execute("ALTER TABLE mentions ADD COLUMN source_target_id TEXT DEFAULT NULL")
 
         # 중복 체크 (같은 URL이 이미 있는지)
         cursor.execute("SELECT id FROM mentions WHERE url = ?", (url,))
@@ -158,13 +181,13 @@ def _create_lead_from_viral(db: DatabaseManager, target_id: str) -> bool:
         elif 'instagram' in platform_mapped:
             platform_mapped = 'instagram'
 
-        # 현재 mentions 테이블의 실제 컬럼에 맞춰 INSERT
+        # source_target_id로 viral_targets와 연결 — 양방향 추적용
         cursor.execute("""
             INSERT INTO mentions (
                 platform, title, url, summary, content,
                 author, category, keyword, status,
-                source_module, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'viral_hunter', datetime('now', 'localtime'))
+                source_module, source_target_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'viral_hunter', ?, datetime('now', 'localtime'))
         """, (
             platform_mapped,
             title or '',
@@ -172,8 +195,9 @@ def _create_lead_from_viral(db: DatabaseManager, target_id: str) -> bool:
             content[:500] if content else '',  # summary
             content or '',
             author or '',
-            category or '',
-            category or ''  # keyword
+            normalized_category,   # 표준 11종으로 정규화된 카테고리
+            actual_keyword,        # 실제 키워드 (이전 버그: category가 들어갔음)
+            target_id_val,         # source_target_id 채움 (이전: NULL이었음)
         ))
 
         conn.commit()
@@ -221,6 +245,11 @@ class BulkActionByFilterRequest(BaseModel):
     min_scan_count: Optional[int] = None
     search: Optional[str] = None
     scan_batch: Optional[str] = None
+    # AI 분류 필터 — 골든 큐 안전장치 (직원이 280건 골든타겟에만 일괄 작업 가능)
+    ai_ad_label: Optional[str] = None
+    specialty_match: Optional[str] = None
+    post_region: Optional[str] = None
+    min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     # 안전장치
     max_affected: int = Field(default=10000, ge=1, le=100000)
     dry_run: bool = False
@@ -854,6 +883,10 @@ async def get_viral_targets(
     search: Optional[str] = None,
     sort: Optional[str] = None,
     scan_batch: Optional[str] = None,  # 스캔 배치 필터 (YYYY-MM-DD HH 형식)
+    ai_ad_label: Optional[str] = None,  # AI 분류 라벨 (자연_질문, 광고, 광고성_후기톤, 기타_노이즈) 쉼표 가능
+    min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),  # AI 신뢰도 최소
+    specialty_match: Optional[str] = None,  # high|medium|low (쉼표 가능). 미용 특화 매칭
+    post_region: Optional[str] = None,  # 청주|타지역|불명 (쉼표 가능). 게시글 지역
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
 ) -> List[Dict[str, Any]]:
@@ -893,6 +926,10 @@ async def get_viral_targets(
             "min_scan_count": min_scan_count,
             "search": search,
             "scan_batch": scan_batch,
+            "ai_ad_label": ai_ad_label,
+            "min_confidence": min_confidence,
+            "specialty_match": specialty_match,
+            "post_region": post_region,
         }.items() if v is not None}
 
         targets = repo.list(
@@ -1214,6 +1251,10 @@ async def count_viral_targets(
     min_scan_count: Optional[int] = None,
     search: Optional[str] = None,
     scan_batch: Optional[str] = None,
+    ai_ad_label: Optional[str] = None,
+    min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    specialty_match: Optional[str] = None,
+    post_region: Optional[str] = None,
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
 
@@ -1231,6 +1272,10 @@ async def count_viral_targets(
             "min_scan_count": min_scan_count,
             "search": search,
             "scan_batch": scan_batch,
+            "ai_ad_label": ai_ad_label,
+            "min_confidence": min_confidence,
+            "specialty_match": specialty_match,
+            "post_region": post_region,
         }
         total = repo.count({k: v for k, v in filters.items() if v is not None})
         return {"total": total}
@@ -1914,6 +1959,25 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
             where += " AND (title LIKE ? OR content_preview LIKE ?)"
             pattern = f"%{req.search}%"
             params.extend([pattern, pattern])
+        # AI 분류 필터 — 골든 큐 일괄 작업 안전 (필터 좁힘으로 max_affected 게이트 통과 용이)
+        if req.ai_ad_label:
+            labels = [l.strip() for l in req.ai_ad_label.split(',') if l.strip()] if ',' in req.ai_ad_label else [req.ai_ad_label]
+            placeholders = ','.join(['?'] * len(labels))
+            where += f" AND ai_ad_label IN ({placeholders})"
+            params.extend(labels)
+        if req.specialty_match:
+            tiers = [t.strip() for t in req.specialty_match.split(',') if t.strip()] if ',' in req.specialty_match else [req.specialty_match]
+            placeholders = ','.join(['?'] * len(tiers))
+            where += f" AND specialty_match IN ({placeholders})"
+            params.extend(tiers)
+        if req.post_region:
+            regions = [r.strip() for r in req.post_region.split(',') if r.strip()] if ',' in req.post_region else [req.post_region]
+            placeholders = ','.join(['?'] * len(regions))
+            where += f" AND post_region IN ({placeholders})"
+            params.extend(regions)
+        if req.min_confidence is not None:
+            where += " AND ai_ad_confidence >= ?"
+            params.append(req.min_confidence)
 
         # 매칭 개수 확인
         cursor.execute(f"SELECT COUNT(*) FROM viral_targets {where}", params)
@@ -3075,17 +3139,23 @@ async def get_trend_insights(days: int = 7) -> Dict[str, Any]:
                 recent_avg = sum(d["count"] for d in daily_trends[-3:]) / 3
                 older_avg = sum(d["count"] for d in daily_trends[:-3]) / max(len(daily_trends) - 3, 1)
 
-                if recent_avg > older_avg * 1.3:
+                if older_avg > 0 and recent_avg > older_avg * 1.3:
                     result["insights"].append({
                         "type": "trend_up",
                         "message": f"최근 3일간 타겟 발견이 {int((recent_avg/older_avg - 1) * 100)}% 증가했습니다.",
                         "importance": "high"
                     })
-                elif recent_avg < older_avg * 0.7:
+                elif older_avg > 0 and recent_avg < older_avg * 0.7:
                     result["insights"].append({
                         "type": "trend_down",
                         "message": "최근 타겟 발견이 감소했습니다. 키워드 확장을 고려하세요.",
                         "importance": "medium"
+                    })
+                elif older_avg == 0 and recent_avg > 0:
+                    result["insights"].append({
+                        "type": "trend_up",
+                        "message": f"최근 3일간 타겟이 새로 발견되기 시작했습니다 (일평균 {round(recent_avg, 1)}건).",
+                        "importance": "high"
                     })
 
         if rising_keywords:

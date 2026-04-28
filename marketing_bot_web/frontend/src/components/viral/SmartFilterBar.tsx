@@ -33,18 +33,7 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget }: SmartFilterBar
     refetchInterval: 5 * 60 * 1000, // 5분
   })
 
-  if (isLoading) {
-    return (
-      <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/30 rounded-lg p-4">
-        <div className="flex items-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
-          <span className="text-sm text-muted-foreground">스마트 추천 로딩 중...</span>
-        </div>
-      </div>
-    )
-  }
-
-  // [Phase 7] useCallback으로 메모이제이션
+  // [Phase 7] useCallback으로 메모이제이션 — Rules of Hooks: early return 위에 정의해야 함
   const handleApplyQuickFilter = useCallback((filter: Record<string, unknown>) => {
     const filterState: Partial<FilterState> = {}
 
@@ -56,6 +45,17 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget }: SmartFilterBar
 
     onApplyFilter(filterState)
   }, [onApplyFilter])
+
+  if (isLoading) {
+    return (
+      <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/30 rounded-lg p-4">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
+          <span className="text-sm text-muted-foreground">스마트 추천 로딩 중...</span>
+        </div>
+      </div>
+    )
+  }
 
   if (isError || !data) {
     return null

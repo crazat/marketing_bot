@@ -118,6 +118,41 @@ def _fetch_place_photos(place_id: str, max_photos: int = 20) -> List[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [R3-5] 네이버 톡톡/온서비스 AI FAQ 도입 추적
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def detect_ai_faq(place_id: str) -> bool:
+    """경쟁사 플레이스 페이지에 AI 자동응답/AI 답변/챗봇 응대 마크가 있는지 검출.
+
+    네이버 톡톡 AI FAQ는 2026 출시. 도입한 경쟁사는 응대 빠름 = 강점.
+    미도입 = 약점 → 운영자에게 차별화 콘텐츠 제안 신호.
+    """
+    try:
+        from scrapers.camoufox_engine import CamoufoxFetcher
+    except ImportError:
+        return False
+
+    url = f"https://m.place.naver.com/hospital/{place_id}/home"
+    markers = (
+        'AI 자동응답', 'AI 답변', '챗봇 응대', 'AI FAQ',
+        'ai_faq', 'auto_reply', 'ai-talk', 'aiTalk', 'smartReply',
+        '온서비스 AI', '톡톡 AI',
+    )
+    try:
+        with CamoufoxFetcher(headless=True) as f:
+            html = f.fetch(url, wait_ms=1500)
+            if not html or f.is_blocked(html):
+                return False
+            html_low = html.lower()
+            for m in markers:
+                if m.lower() in html_low:
+                    return True
+    except Exception as e:
+        logger.warning(f"[ai_faq] {place_id}: {e}")
+    return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Analyze
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -147,6 +182,13 @@ def analyze_competitor_photos(
         logger.warning(f"[visual] {competitor_name}: vision 실패")
         return None
 
+    # [R3-5] AI FAQ 도입 여부 검출 (경량 — 페이지 1회 fetch + 마크 체크)
+    ai_faq_enabled = False
+    try:
+        ai_faq_enabled = detect_ai_faq(place_id)
+    except Exception as e:
+        logger.warning(f"[ai_faq] detect 실패: {e}")
+
     out = {
         "competitor_name": competitor_name,
         "place_id": place_id,
@@ -158,6 +200,7 @@ def analyze_competitor_photos(
         "weakness_summary": result.weakness_summary,
         "our_advantage_hint": result.our_advantage_hint,
         "photo_count_analyzed": len(photos),
+        "ai_faq_enabled": ai_faq_enabled,
     }
     _save(out)
     logger.info(
@@ -179,14 +222,16 @@ def _save(row: Dict[str, Any]) -> None:
               (competitor_name, place_id, scanned_date,
                interior_cleanliness, staff_visible, facility_modernity,
                patient_review_photos, weakness_summary, photo_count_analyzed,
-               raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               raw_json, ai_faq_enabled, ai_faq_detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             row["competitor_name"], row["place_id"], row["scanned_date"],
             row["interior_cleanliness"], 1 if row["staff_visible"] else 0,
             row["facility_modernity"], row["patient_review_photos"],
             row["weakness_summary"], row["photo_count_analyzed"],
             json.dumps(row, ensure_ascii=False, default=str),
+            1 if row.get("ai_faq_enabled") else 0,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S') if row.get("ai_faq_enabled") is not None else None,
         ))
         conn.commit()
     except Exception as e:

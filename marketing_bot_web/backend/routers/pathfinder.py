@@ -410,9 +410,9 @@ async def get_pathfinder_stats(
         cursor.execute(f"""
             SELECT source, COUNT(*) as count
             FROM keyword_insights
-            WHERE 1=1 {grade_filter} {date_filter}
+            WHERE {where_clause}
             GROUP BY source
-        """)
+        """, params)
         sources = {row[0]: row[1] for row in cursor.fetchall() if row[0]}
 
         # 트렌드 통계
@@ -422,8 +422,8 @@ async def get_pathfinder_stats(
                 SUM(CASE WHEN trend_status = 'falling' THEN 1 ELSE 0 END) as falling,
                 SUM(CASE WHEN trend_status = 'stable' THEN 1 ELSE 0 END) as stable
             FROM keyword_insights
-            WHERE 1=1 {grade_filter} {date_filter}
-        """)
+            WHERE {where_clause}
+        """, params)
         trend_stats = cursor.fetchone()
 
         conn.close()
@@ -462,11 +462,21 @@ async def get_keywords(
     category: Optional[str] = None,
     source: Optional[str] = None,
     trend_status: Optional[str] = None,
+    max_age_days: Optional[int] = Query(
+        default=60, ge=0, le=3650,
+        description="이 일수 이상 갱신 안 된 키워드 숨김 (0=무제한, 기본 60일)",
+    ),
+    include_low_volume: bool = Query(
+        default=False,
+        description="search_volume<50인 저신뢰 키워드 포함 (기본 False)",
+    ),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="건너뛸 항목 수")
 ) -> List[Dict[str, Any]]:
-    """
-    키워드 목록 조회
+    """키워드 목록 조회.
+
+    [Q12] 운영자가 max_age_days/include_low_volume 토글로 stale·저품질 노이즈 제거 가능.
+    cron 자동 archive 안 쓰고, UI 필터로만 노출 제어.
     """
     try:
         db = DatabaseManager()
@@ -488,7 +498,6 @@ async def get_keywords(
             filters.append("grade = ?")
             params.append(grade)
         if category:
-            # 카테고리 역매핑: 통합 카테고리로 검색 시 모든 변형 포함
             variants = get_category_variants(category)
             placeholders = ",".join(["?" for _ in variants])
             filters.append(f"category IN ({placeholders})")
@@ -499,6 +508,17 @@ async def get_keywords(
         if trend_status:
             filters.append("trend_status = ?")
             params.append(trend_status)
+
+        # [Q12] stale 필터 — 마지막 created_at(=발굴/갱신 시각)이 N일 이내만
+        if max_age_days and max_age_days > 0:
+            filters.append(
+                "ki.created_at >= datetime('now', ?)"
+            )
+            params.append(f"-{max_age_days} days")
+
+        # [Q12] 저신뢰 키워드 필터 — search_volume<50은 신뢰도 부족
+        if not include_low_volume:
+            filters.append("(ki.search_volume IS NOT NULL AND ki.search_volume >= 50)")
 
         where_clause = "WHERE " + " AND ".join(filters) if filters else ""
         params.extend([limit, offset])

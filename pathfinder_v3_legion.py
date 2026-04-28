@@ -57,6 +57,14 @@ try:
 except ImportError:
     HAS_BLOG_MINER = False
 
+# 네이버 검색 API (총 문서수 조회용 - SERP 캡차 우회)
+try:
+    from naver_api_client import NaverApiClient
+    HAS_NAVER_API = True
+except ImportError:
+    HAS_NAVER_API = False
+    print("⚠️ NaverApiClient 미설치 - SERP HTML로 폴백")
+
 
 # ============================================================
 # Scan History 헬퍼 함수 (scan_runs 테이블 연동)
@@ -289,27 +297,43 @@ class KeywordResult:
 class SearchIntentClassifier:
     """검색 의도 자동 분류"""
 
-    # 의도별 패턴
+    # 의도별 패턴 — [R7] Cross-User 행동 모델 대응으로 3종 추가
+    # 우선순위: dict 순서. red_flag → validation → comparison가 commercial/informational보다 위.
+    # AI(발견) → 네이버(검증) → 솔직 후기 확인 흐름의 검증 단계 키워드 분리.
     INTENT_PATTERNS = {
+        'red_flag': [
+            # 부정 검색 (경쟁사·자기 한의원 모두 추적 가치)
+            '부작용', '위험', '단점', '안좋', '문제', '실패', '후회',
+            '사기', '환불', '논란', '의심',
+        ],
+        'validation': [
+            # 신뢰 검증 — Cross-User 핵심 패턴
+            '진짜', '솔직', '찐', '정말', '실제로', '리얼',
+            '진정', '솔직후기', '진짜효과',
+        ],
+        'comparison': [
+            # 명시적 비교 의도
+            'vs', '보다', '차이', '비교',
+            '뭐가나', '어디가더', '뭐가더',
+        ],
         'transactional': [
             # 구매/예약 의도
             '가격', '비용', '할인', '이벤트', '예약', '상담',
             '무료', '체험', '프로모션', '쿠폰',
         ],
         'commercial': [
-            # 비교/검토 의도
-            '추천', '비교', '순위', '랭킹', '베스트', '인기',
+            # 검토/추천 의도 (validation·comparison와 분리됨)
+            '추천', '순위', '랭킹', '베스트', '인기',
             '후기', '리뷰', '평가', '잘하는', '유명한', '좋은',
             '전문', '1위', 'top', '맛집',
         ],
         'informational': [
-            # 정보 탐색 의도
+            # 정보 탐색 (red_flag/comparison 패턴은 위로 분리됨)
             '방법', '효과', '원인', '증상', '치료', '기간',
-            '부작용', '주의', '차이', '종류', '장단점',
+            '주의', '종류', '장단점',
             '란', '이란', '뜻', '의미', '알아보기',
         ],
         'navigational': [
-            # 특정 장소/브랜드 찾기
             '위치', '주소', '전화', '번호', '오시는길',
             '영업시간', '휴무', '주차', '근처', '가까운',
         ],
@@ -342,6 +366,9 @@ class SearchIntentClassifier:
     def get_intent_label(cls, intent: str) -> str:
         """의도 레이블 (한글)"""
         labels = {
+            'red_flag': '⚠️ 부정 검색 (부작용/단점)',
+            'validation': '✅ 신뢰 검증 (진짜/솔직)',
+            'comparison': '⚖️ 비교 의도 (vs/차이)',
             'transactional': '💰 거래형 (가격/예약)',
             'commercial': '🔍 상업형 (비교/후기)',
             'informational': '📚 정보형 (효과/방법)',
@@ -805,11 +832,63 @@ class LegionCollector:
             time.sleep(self.delay - elapsed)
         self._last_call = time.time()
 
+    # ===== 도메인/지역 적합도 헬퍼 (관련도 강등용) =====
+
+    # 한의원 외 의료 일반과 (한의원 콘텐츠 후보 부적합)
+    MEDICAL_GENERAL_TOKENS = (
+        '피부과', '내과', '이비인후과', '안과', '치과',
+        '정형외과', '성형외과', '신경외과', '비뇨기과', '산부인과',
+        '소아과', '가정의학과', '외과', '응급실',
+    )
+
+    # 한방 indicator (이게 있으면 한의원 컨텍스트로 인정)
+    HANBANG_INDICATORS = (
+        '한의원', '한방', '한약', '한약재', '침', '추나',
+        '뜸', '부항', '경혈', '한의사', '한방병원',
+    )
+
+    def _is_medical_general(self, keyword: str) -> bool:
+        """한의원 외 의료 일반과 키워드 (한방 indicator 부재 시 True)"""
+        if not any(t in keyword for t in self.MEDICAL_GENERAL_TOKENS):
+            return False
+        # 한방 indicator 동반 시 한의원 비교 콘텐츠로 활용 가능 → 강등 면제
+        return not any(h in keyword for h in self.HANBANG_INDICATORS)
+
+    def _is_in_target_region(self, keyword: str) -> bool:
+        """본 사업영역(청주 행정구역) 매칭. 인접 시(충주/제천/세종 등)는 False."""
+        return any(r in keyword for r in self.cheongju_regions) or \
+               any(n in keyword for n in self.neighborhoods)
+
+    def apply_relevance_demotion(self, keyword: str, grade: str) -> Tuple[str, Optional[str]]:
+        """
+        도메인/지역 관련도 기반 등급 강등.
+        Returns: (new_grade, reason or None)
+        - 의료 일반과: S/A/B → C (사업 무관)
+        - 비-청주 지역: 2단계 강등 (S→B, A→C — 사업영역 외 격하)
+        """
+        # P1: 의료 일반과 누수 차단
+        if self._is_medical_general(keyword):
+            if grade in ('S', 'A', 'B'):
+                return 'C', 'medical_general'
+        # P2: 비-청주 지역 2단계 강등 (S→B, A→C, B→C)
+        if not self._is_in_target_region(keyword):
+            order = ['S', 'A', 'B', 'C']
+            if grade in order:
+                idx = order.index(grade)
+                new_idx = min(idx + 2, len(order) - 1)
+                if new_idx > idx:
+                    return order[new_idx], 'non_cheongju'
+        return grade, None
+
     def _detect_category(self, keyword: str) -> str:
         kw = keyword.lower()
+        # 한방 indicator는 카테고리 매칭 우선 — "기타" fallback 누수 방지
         for cat, patterns in self.category_patterns.items():
             if any(p in kw for p in patterns):
                 return cat
+        # 한의원/한약 들어있는데 다른 카테고리에 매칭 안 됐으면 한의원일반
+        if any(h in kw for h in ('한의원', '한약', '한방', '한방병원')):
+            return '한의원일반'
         return "기타"
 
     def _is_valid_keyword(self, keyword: str) -> bool:
@@ -1075,6 +1154,8 @@ class SERPAnalyzer:
         self.cache = SERPCache()
         self._analyzed_count = 0
         self._cache_hit_count = 0
+        # 네이버 검색 API (SERP 캡차 우회용 docs count 조회)
+        self.naver_api = NaverApiClient() if HAS_NAVER_API else None
 
     def _rate_limit(self):
         elapsed = time.time() - self._last_call
@@ -1082,68 +1163,82 @@ class SERPAnalyzer:
             time.sleep(self.delay - elapsed)
         self._last_call = time.time()
 
+    def _fetch_document_count(self, keyword: str) -> int:
+        """
+        네이버 검색 API의 total 필드로 진짜 docs count 조회.
+        SERP HTML 셀렉터가 캡차/구조변경에 취약하므로 API가 1차 소스.
+        실패 시 0 반환 → 호출부에서 등급 부여 보류.
+        """
+        if not self.naver_api or not keyword:
+            return 0
+        try:
+            result = self.naver_api.search_blog(keyword, count=1)
+            if isinstance(result, dict):
+                total = result.get('total', 0)
+                if isinstance(total, int) and total > 0:
+                    return total
+        except Exception as e:
+            logger.debug(f"네이버 API docs 조회 실패 [{keyword}]: {e}")
+        return 0
+
     def _parse_document_count(self, soup: BeautifulSoup) -> int:
         """
-        검색 결과 총 문서 수 파싱
-        예: "검색결과 약 1,234,567건" → 1234567
+        SERP HTML에서 총 문서 수 파싱 (보조 폴백).
+        주: 네이버 search.naver.com이 단순 requests에 403을 반환하므로
+        대부분 실패. _fetch_document_count(API) 우선 사용 권장.
+        실패 시 0 반환 (이전: 10000 폴백 → KEI 부풀림 야기, 제거됨).
         """
         document_count = 0
 
-        # 방법 1: 검색 결과 건수 표시 영역 (네이버 블로그 검색)
         result_count_selectors = [
-            'span.title_num',           # 블로그 검색 결과 수
-            'div.title_area span',      # 일반 검색 결과
-            'span.sub_num',             # 서브 결과 수
-            'em.title_num',             # 강조된 결과 수
+            'span.title_num', 'div.title_area span',
+            'span.sub_num', 'em.title_num',
         ]
-
         for selector in result_count_selectors:
             elem = soup.select_one(selector)
             if elem:
                 text = elem.get_text(strip=True)
-                # 숫자 추출: "1,234,567건" 또는 "약 1,234,567개"
                 match = re.search(r'[\d,]+', text)
                 if match:
                     try:
                         document_count = int(match.group().replace(',', ''))
                         if document_count > 0:
-                            break
+                            return document_count
                     except (ValueError, AttributeError):
-                        pass  # 숫자 변환 실패 시 무시
+                        pass
 
-        # 방법 2: 전체 텍스트에서 "검색결과 약 N건" 패턴 찾기
-        if document_count == 0:
-            full_text = soup.get_text()
-            patterns = [
-                r'검색결과\s*약?\s*([\d,]+)\s*건',
-                r'([\d,]+)\s*개의?\s*검색\s*결과',
-                r'총\s*([\d,]+)\s*건',
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, full_text)
-                if match:
-                    try:
-                        document_count = int(match.group(1).replace(',', ''))
-                        if document_count > 0:
-                            break
-                    except (ValueError, AttributeError, IndexError):
-                        pass  # 숫자 변환/그룹 접근 실패 시 무시
+        full_text = soup.get_text()
+        patterns = [
+            r'검색결과\s*약?\s*([\d,]+)\s*건',
+            r'([\d,]+)\s*개의?\s*검색\s*결과',
+            r'총\s*([\d,]+)\s*건',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                try:
+                    document_count = int(match.group(1).replace(',', ''))
+                    if document_count > 0:
+                        return document_count
+                except (ValueError, AttributeError, IndexError):
+                    pass
 
-        # 기본값: 난이도 기반 추정 (문서 수를 모를 때)
-        if document_count == 0:
-            document_count = 10000  # 기본 추정값
+        return 0  # 폴백 10000 제거: 미상이면 0, 등급 보류
 
-        return document_count
+    def _parse_serp(self, html: str, keyword: str = "") -> Tuple[int, int, str, int]:
+        """SERP HTML 파싱 → (난이도, 기회, 등급, 문서수)
 
-    def _parse_serp(self, html: str) -> Tuple[int, int, str, int]:
-        """SERP HTML 파싱 → (난이도, 기회, 등급, 문서수)"""
+        문서수는 네이버 검색 API(total) 우선 사용, HTML 파싱은 폴백.
+        """
         soup = BeautifulSoup(html, 'html.parser')
         post_pattern = re.compile(r'blog\.naver\.com/(\w+)/(\d+)')
         blogs = []
         seen = set()
 
-        # 문서 수 파싱
-        document_count = self._parse_document_count(soup)
+        # 문서 수: API 우선, HTML 폴백 (둘 다 실패 시 0)
+        document_count = self._fetch_document_count(keyword) if keyword else 0
+        if document_count == 0:
+            document_count = self._parse_document_count(soup)
 
         for link in soup.find_all('a', href=True):
             href = link.get('href', '')
@@ -1233,12 +1328,14 @@ class SERPAnalyzer:
 
         try:
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            result = self._parse_serp(response.text)
+            result = self._parse_serp(response.text, keyword)
             self.cache.set(keyword, *result)
             return result
         except Exception as e:
             logger.debug(f"SERP 분석 실패 [{keyword}]: {e}")
-            return 50, 50, "B", 10000
+            # SERP 실패해도 docs는 API에서 보충
+            docs = self._fetch_document_count(keyword)
+            return 50, 50, "B", docs
 
     def analyze_batch(self, keywords: List[str], show_progress: bool = True) -> Dict[str, Tuple[int, int, str, int]]:
         """배치 SERP 분석 (병렬 처리) → {keyword: (difficulty, opportunity, grade, document_count)}"""
@@ -1272,7 +1369,9 @@ class SERPAnalyzer:
                     results[kw] = result
                     self.cache.set(kw, *result)
                 except Exception as e:
-                    results[kw] = (50, 50, "B", 10000)
+                    # 분석 실패해도 docs는 API로 보충 (KEI 신뢰성 확보)
+                    docs = self._fetch_document_count(kw)
+                    results[kw] = (50, 50, "B", docs)
 
                 done_count += 1
                 if show_progress and done_count % 20 == 0:
@@ -1289,10 +1388,11 @@ class SERPAnalyzer:
 
         try:
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            return self._parse_serp(response.text)
+            return self._parse_serp(response.text, keyword)
         except Exception as e:
             logger.debug(f"단일 SERP 분석 실패 [{keyword}]: {e}")
-            return 50, 50, "B", 10000
+            docs = self._fetch_document_count(keyword)
+            return 50, 50, "B", docs
 
     def get_stats(self) -> Dict:
         """분석 통계"""
@@ -1768,9 +1868,12 @@ class PathfinderLegion:
                     difficulty, opportunity, grade, document_count = serp_data
                 else:
                     difficulty, opportunity, grade = serp_data
-                    document_count = 10000  # 기본값
+                    document_count = 0
             else:
-                difficulty, opportunity, grade, document_count = 50, 50, "B", 10000
+                difficulty, opportunity, grade, document_count = 50, 50, "B", 0
+            # docs가 0이면 네이버 API에서 보충 (KEI 신뢰성 회복)
+            if document_count == 0:
+                document_count = self.serp._fetch_document_count(kw)
 
             category = self.collector._detect_category(kw)
 
@@ -1815,11 +1918,21 @@ class PathfinderLegion:
                     # KEI가 낮으면 B급 이하
                     grade = 'B' if difficulty <= 70 else 'C'
             else:
-                # 검색량 데이터 없음 → 무조건 B급 이하
-                if grade in ['S', 'A']:
-                    grade = 'B'
-                # 추정치 설정 (점수 계산용, 등급에는 영향 없음)
-                search_volume = 30
+                # [Q7] 검색량 데이터 없음 → SERP grade 무시하고 C급 강제
+                # 이전: 'B'로 강등했지만 신뢰도 없는 데이터를 B급에 두는 건 부적절
+                grade = 'C'
+                search_volume = 30  # 점수 계산용 추정치
+
+            # 도메인·지역 관련도 강등 (의료일반·비-청주 누수 차단)
+            grade, demote_reason = self.collector.apply_relevance_demotion(kw, grade)
+            if demote_reason and kei_grade in ('S', 'A', 'B'):
+                # KEI 기반 등급도 동일하게 강등 (보고서 일관성)
+                if demote_reason == 'medical_general':
+                    kei_grade = 'C'
+                elif demote_reason == 'non_cheongju':
+                    _order = ['S', 'A', 'B', 'C']
+                    _idx = _order.index(kei_grade)
+                    kei_grade = _order[min(_idx + 2, len(_order) - 1)]
 
             # 우선순위 점수 계산 (KEI 포함)
             priority = self._calculate_priority(difficulty, opportunity, kw, search_volume, kei)
@@ -2531,7 +2644,10 @@ class PathfinderLegion:
                         kei=excluded.kei,
                         kei_grade=excluded.kei_grade,
                         created_at=excluded.created_at,
-                        last_scan_run_id=excluded.last_scan_run_id
+                        last_scan_run_id=excluded.last_scan_run_id,
+                        category=excluded.category,
+                        search_volume=excluded.search_volume,
+                        region=excluded.region
                 ''', (
                     r.keyword, 0, "Low" if r.difficulty < 50 else "High",
                     r.priority_score, tag, now,

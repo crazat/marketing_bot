@@ -7,9 +7,18 @@
     "region": "청주",
     "address": "청주시 흥덕구",
     "phone": "",
-    "website": "",
+    "website": "https://kyurim-webpage.vercel.app",
     "naver_place_id": ""
   },
+
+  "sites_to_monitor": [
+    {"url": "https://kyurim-webpage.vercel.app/", "label": "메인", "category": null},
+    {"url": "https://kyurim-webpage.vercel.app/events/diet", "label": "LP-다이어트", "category": "다이어트"},
+    {"url": "https://kyurim-webpage.vercel.app/events/skin", "label": "LP-피부", "category": "피부"},
+    {"url": "https://kyurim-webpage.vercel.app/events/body", "label": "LP-체형", "category": "비대칭/교정"},
+    {"url": "https://kyurim-webpage.vercel.app/events/pain", "label": "LP-통증", "category": "통증/디스크"},
+    {"url": "https://kyurim-webpage.vercel.app/events/wedding", "label": "LP-웨딩", "category": "다이어트"}
+  ],
 
   "branding": {
     "tagline": "청주 규림한의원 마케팅 자동화 플랫폼",

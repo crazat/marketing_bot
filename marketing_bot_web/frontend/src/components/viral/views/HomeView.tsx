@@ -125,7 +125,18 @@ export function HomeView({
           🔥 바이럴 헌터 워크스테이션
         </h1>
         <p className="text-muted-foreground">카테고리별 우선순위 작업 시스템</p>
-        <div className="mt-4">
+      </div>
+
+      {/* [2026-04-28] 오늘 작업 진입 prominent 카드 — 직원이 매일 첫 화면에서 즉시 진입 */}
+      <div className="text-center">
+        <button
+          onClick={onViewList}
+          className="bg-gradient-to-br from-orange-500/20 to-red-500/20 border-2 border-orange-400 rounded-xl px-8 py-6 text-lg font-bold hover:from-orange-500/30 hover:to-red-500/30 transition-all"
+          title="자연 질문 + 청주 + 미용 특화 매칭 high — 댓글 작성 ROI 가장 높은 큐"
+        >
+          🎯 오늘 우선 처리 골든큐 (280건) — 지금 작업 시작 →
+        </button>
+        <div className="mt-3">
           <Button onClick={onViewList} variant="outline" title="여러 카테고리를 가로질러 필터링하고 일괄 승인/스킵/삭제하는 모드">
             📋 일괄 작업 모드 (전체 관리)
           </Button>

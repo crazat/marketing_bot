@@ -406,39 +406,91 @@ class HiraAPIClient:
 
 
 def main():
-    """메인 실행 함수"""
+    """메인 실행 함수.
+
+    CLI 사용 (External Signals R3-7로 활성화):
+      python scrapers/hira_api_client.py --status
+      python scrapers/hira_api_client.py --region "충북" --year 2025
+      python scrapers/hira_api_client.py --region "충북" --sigungu "청주시" --type 한의원
+      python scrapers/hira_api_client.py --dry-run
+
+    DATA_GO_KR_API_KEY는 config/secrets.json에 등록됨.
+    """
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--region', default='충북', help='시도명 (기본 충북 → 충청북도)')
+    parser.add_argument('--sigungu', default='청주시')
+    parser.add_argument('--type', default='한의원',
+                        choices=['한의원', '의원', '한방병원', '병원'])
+    parser.add_argument('--year', type=int, help='연도 (현재는 metadata 출력용, 본 API는 항상 현재 시점)')
+    parser.add_argument('--status', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
+    # 시도명 별칭 처리
+    sido_full = args.region
+    if args.region in ('충북', '충청북도'):
+        sido_full = '충청북도'
+    elif args.region in ('충남', '충청남도'):
+        sido_full = '충청남도'
+
+    if args.status:
+        try:
+            client = HiraAPIClient()
+            stats = client.get_clinic_stats(sigungu=args.sigungu)
+            print(f'=== HIRA 한의원 데이터 현황 ({args.sigungu}) ===')
+            print(f'  전체: {stats.get("total", 0)}건')
+            for cat, cnt in stats.get('by_category', {}).items():
+                print(f'    {cat:<10} {cnt}건')
+            for sgg, cnt in stats.get('by_sigungu', {}).items():
+                print(f'    [지역] {sgg:<15} {cnt}건')
+            return 0
+        except Exception as e:
+            print(f'status 조회 실패: {e}')
+            return 1
+
     logger.info("=" * 60)
-    logger.info("HIRA 의료기관 정보 수집 시작")
+    logger.info(f"HIRA 의료기관 정보 수집 시작 — {sido_full} {args.sigungu} ({args.type})"
+                + (f' year={args.year}' if args.year else ''))
     logger.info("=" * 60)
+
+    if args.dry_run:
+        print(f'  [dry-run] 대상: {sido_full} {args.sigungu} {args.type}')
+        print('  실제 수집은 --dry-run 제거 후 재실행')
+        return 0
 
     try:
         client = HiraAPIClient()
+        if not client.api_key:
+            print('DATA_GO_KR_API_KEY 미설정. config/secrets.json 등록 필요.')
+            return 1
 
-        # 청주시 한의원 수집
         result = client.collect_hira_clinics(
-            sido='충청북도',
-            sigungu='청주시',
-            clinic_type='한의원'
+            sido=sido_full,
+            sigungu=args.sigungu,
+            clinic_type=args.type,
         )
 
         logger.info(f"\n수집 결과: {json.dumps(result, ensure_ascii=False, indent=2)}")
 
         # 통계 출력
-        stats = client.get_clinic_stats(sigungu='청주')
+        stats = client.get_clinic_stats(sigungu=args.sigungu)
         logger.info(f"\n저장된 데이터 통계:")
         logger.info(f"  전체: {stats['total']}건")
         for cat, cnt in stats.get('by_category', {}).items():
             logger.info(f"  - {cat}: {cnt}건")
+        return 0
 
     except Exception as e:
         logger.error(f"실행 오류: {e}")
         logger.error(traceback.format_exc())
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

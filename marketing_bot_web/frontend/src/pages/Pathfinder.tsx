@@ -60,6 +60,9 @@ export default function Pathfinder() {
   const [categoryFilter, setCategoryFilter] = useUrlState<string>('category', { defaultValue: '' })
   const [sourceFilter, setSourceFilter] = useUrlState<string>('source', { defaultValue: '' })
   const [trendFilter, setTrendFilter] = useUrlState<string>('trend', { defaultValue: '' })
+  // [Q12] stale/저신뢰 노출 토글 — 디폴트는 신선·고신뢰만 노출
+  const [showStale, setShowStale] = useUrlState<string>('show_stale', { defaultValue: '0' })
+  const [showLowVolume, setShowLowVolume] = useUrlState<string>('show_low_volume', { defaultValue: '0' })
 
   // 로컬 상태
   const [selectedMode, setSelectedMode] = useState<'total_war' | 'legion'>('total_war')
@@ -150,8 +153,10 @@ export default function Pathfinder() {
     grade: gradeFilter,
     category: categoryFilter,
     source: sourceFilter,
-    trend_status: trendFilter
-  }), [gradeFilter, categoryFilter, sourceFilter, trendFilter])
+    trend_status: trendFilter,
+    showStale: showStale === '1',
+    showLowVolume: showLowVolume === '1',
+  }), [gradeFilter, categoryFilter, sourceFilter, trendFilter, showStale, showLowVolume])
 
   // 통계 조회
   const {
@@ -182,6 +187,9 @@ export default function Pathfinder() {
       category: filters.category || undefined,
       source: filters.source || undefined,
       trend_status: filters.trend_status || undefined,
+      // [Q12] showStale=true면 max_age_days=0(무제한). 디폴트는 백엔드의 60일.
+      max_age_days: filters.showStale ? 0 : undefined,
+      include_low_volume: filters.showLowVolume,
       limit: 500
     }),
     staleTime: 60000, // [Phase 7] 30초 → 60초
@@ -605,6 +613,28 @@ export default function Pathfinder() {
                 <option value="stable">➡️ Stable</option>
               </select>
             </div>
+          </div>
+
+          {/* [Q12] 노출 토글 — 디폴트는 60일 이내 + search_volume>=50 */}
+          <div className="mt-4 flex flex-wrap gap-4 text-sm">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showStale === '1'}
+                onChange={(e) => setShowStale(e.target.checked ? '1' : '0')}
+                className="rounded border-border focus:ring-primary"
+              />
+              <span className="text-muted-foreground">60일 이상 묵은 키워드 포함</span>
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showLowVolume === '1'}
+                onChange={(e) => setShowLowVolume(e.target.checked ? '1' : '0')}
+                className="rounded border-border focus:ring-primary"
+              />
+              <span className="text-muted-foreground">저신뢰(search_volume&lt;50) 키워드 포함</span>
+            </label>
           </div>
 
           {/* 필터 결과 요약 */}

@@ -9,6 +9,7 @@ import Button from '@/components/ui/Button'
 import { PlatformBadge } from '@/components/viral/PlatformBadge'
 import { ScanCountBadge } from '@/components/viral/ScanCountBadge'
 import { EngagementMetrics } from '@/components/viral/EngagementMetrics'
+import { AIClassificationBadge } from '@/components/viral/AIClassificationBadge'
 import { EmptyState } from '@/components/viral/EmptyState'
 import { CommentPreview } from '@/components/viral/CommentPreview'
 import { TargetContext } from '@/components/viral/TargetContext'
@@ -181,7 +182,7 @@ export function WorkView({
                   <span className="text-xl">{isExpanded ? '▼' : '▶'}</span>
                   <PlatformBadge platform={target.platform} size="sm" />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="font-semibold truncate">{target.title || '제목 없음'}</span>
                       {target.scan_count && target.scan_count >= 2 && (
                         <ScanCountBadge scanCount={target.scan_count} lastScannedAt={target.last_scanned_at} />
@@ -198,6 +199,14 @@ export function WorkView({
                           {target.is_commentable ? '✓ 댓글 가능' : '✗ 댓글 불가'}
                         </span>
                       )}
+                      {/* [2026-04-27] AI 분류 배지 — 한눈에 작업 가치 판단 */}
+                      <AIClassificationBadge
+                        label={target.ai_ad_label}
+                        confidence={target.ai_ad_confidence}
+                        specialtyMatch={target.specialty_match}
+                        reason={target.ai_ad_reason}
+                        size="xs"
+                      />
                     </div>
                     <div className="flex items-center gap-3 text-xs">
                       <span className="text-muted-foreground">

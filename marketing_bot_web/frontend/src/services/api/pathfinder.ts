@@ -17,6 +17,10 @@ export const pathfinderApi = {
     category?: string
     source?: string
     trend_status?: string
+    /** [Q12] N일 이상 갱신 안 된 stale 키워드 숨김. 0=무제한, 기본 60일 */
+    max_age_days?: number
+    /** [Q12] search_volume<50 저신뢰 키워드 포함 (기본 false) */
+    include_low_volume?: boolean
     limit?: number
     offset?: number
   }) => {

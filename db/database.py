@@ -3099,19 +3099,30 @@ class DatabaseManager:
                 content=target_data.get('content_preview', '')
             )
 
+            # 작성자/게시일 (date_str → posted_at, 빈 값이면 NULL)
+            author = target_data.get('author') or None
+            posted_at = target_data.get('date_str') or target_data.get('posted_at') or None
+            # 첫 매칭 키워드를 단일 컬럼에도 저장 (UI/필터 편의용)
+            kws_list = target_data.get('matched_keywords') or []
+            matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
+
             self.cursor.execute('''
                 INSERT INTO viral_targets
-                (id, platform, url, title, content_preview, matched_keywords,
+                (id, platform, url, title, content_preview, matched_keywords, matched_keyword,
                  category, is_commentable, comment_status, generated_comment,
-                 priority_score, discovered_at, last_scanned_at, scan_count, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 priority_score, discovered_at, last_scanned_at, scan_count, content_hash,
+                 author, posted_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title = excluded.title,
                     matched_keywords = excluded.matched_keywords,
+                    matched_keyword = COALESCE(excluded.matched_keyword, viral_targets.matched_keyword),
                     priority_score = excluded.priority_score,
                     last_scanned_at = excluded.last_scanned_at,
                     scan_count = viral_targets.scan_count + 1,
-                    content_hash = excluded.content_hash
+                    content_hash = excluded.content_hash,
+                    author = COALESCE(excluded.author, viral_targets.author),
+                    posted_at = COALESCE(excluded.posted_at, viral_targets.posted_at)
             ''', (
                 target_data.get('id'),
                 target_data.get('platform'),
@@ -3119,6 +3130,7 @@ class DatabaseManager:
                 target_data.get('title'),
                 target_data.get('content_preview', ''),
                 keywords_json,
+                matched_keyword_single,
                 target_data.get('category', '기타'),
                 target_data.get('is_commentable', True),
                 target_data.get('comment_status', 'pending'),
@@ -3127,7 +3139,9 @@ class DatabaseManager:
                 now,  # discovered_at (신규만)
                 now,  # last_scanned_at (매번 업데이트)
                 1,    # scan_count (신규는 1, 중복은 +1)
-                content_hash
+                content_hash,
+                author,
+                posted_at,
             ))
             # [Phase 11 D1] matched_keywords 정규화 저장 (viral_target_keywords)
             try:

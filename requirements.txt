@@ -22,3 +22,10 @@ google-auth-oauthlib==1.2.1
 # 추가 (스크래핑/AI)
 brotli==1.2.0
 aiohttp>=3.9.0,<4.0.0
+
+# 통계 (A/B 검정 chi-square)
+scipy==1.17.0
+
+# 의미 임베딩 (Q&A RAG, 콘텐츠 갭 분석 — BGE-M3 / bge-reranker-v2-m3)
+sentence-transformers==5.4.1
+sqlite-vec==0.1.9

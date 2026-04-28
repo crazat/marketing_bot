@@ -30,6 +30,38 @@
     "동남지구 맛집",
     "강서동 카페"
   ],
+  "cafes": [
+    {
+      "name": "청주 맘스캠프 (맘캠 이야기방)",
+      "base_url": "https://cafe.naver.com/cjcjmom",
+      "menu_id": "12"
+    },
+    {
+      "name": "청주 맘블리 (청주맘이야기)",
+      "base_url": "https://cafe.naver.com/cjcjmommy",
+      "menu_id": "5"
+    },
+    {
+      "name": "청주 테크노폴리스맘 (동네이야기)",
+      "base_url": "https://cafe.naver.com/technomomis",
+      "menu_id": "5"
+    }
+  ],
+  "cafe_candidates": [
+    {
+      "_note": "[Q2] 진단에서 추천된 청주권 활성 맘카페 후보. 운영자가 카페 들어가서 menu_id 확인 후 cafes로 이동.",
+      "_how_to_find_menu_id": "카페 메뉴 클릭 시 URL의 menuId=NN 값. PC 카페 화면에서 '동네이야기' 게시판이 가장 높은 응답률.",
+      "candidates": [
+        {"name": "청주 아르피아 (가족쉐어)", "base_url": "https://cafe.naver.com/arpiashow", "menu_id_unknown": true},
+        {"name": "청주 임산부 모임", "base_url": "https://cafe.naver.com/imsanbu", "menu_id_unknown": true},
+        {"name": "충북 페코 (육아생활)", "base_url": "https://cafe.naver.com/feko", "menu_id_unknown": true},
+        {"name": "청주 칼리지 (지역소통)", "base_url": "https://cafe.naver.com/knife67", "menu_id_unknown": true},
+        {"name": "세종 No1 (세종맘카페)", "base_url": "https://cafe.naver.com/no1sejong", "menu_id_unknown": true},
+        {"name": "청주 어미모 (육아커뮤)", "base_url": "https://cafe.naver.com/eomimo", "menu_id_unknown": true},
+        {"name": "청주 사람들 (지역소통)", "base_url": "https://cafe.naver.com/peopledisc", "menu_id_unknown": true}
+      ]
+    }
+  ],
   "targets": [
     {
       "name": "자연과한의원 청주점",
