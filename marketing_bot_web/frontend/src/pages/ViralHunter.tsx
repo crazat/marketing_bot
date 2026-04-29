@@ -538,10 +538,13 @@ export default function ViralHunter() {
       for (let i = 0; i < targetIds.length; i += batchSize) {
         const batch = targetIds.slice(i, i + batchSize)
 
-        // 각 배치에서 개별 요청 (병렬)
+        // 각 배치에서 개별 요청 (병렬) — 응답의 comment를 expandedComments에 누적
         const promises = batch.map(async (targetId) => {
           try {
-            await viralApi.generateComment(targetId)
+            const result = await viralApi.generateComment(targetId)
+            if (result?.comment) {
+              setExpandedComments(prev => ({ ...prev, [String(targetId)]: result.comment }))
+            }
             successCount++
             return true
           } catch {

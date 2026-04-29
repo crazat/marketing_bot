@@ -160,7 +160,9 @@ export function WorkView({
         ) : (
           categoryTargets.map((target, index) => {
             const isExpanded = expandedTargetId === target.id
-            const comment = expandedComments[target.id]
+            // expandedComments에 없으면 DB에 저장된 generated_comment 폴백
+            // (이전 세션/배치 생성분도 재진입 시 표시되도록)
+            const comment = expandedComments[target.id] ?? target.generated_comment ?? ''
             const isGenerating = generatingTargetId === target.id
 
             return (

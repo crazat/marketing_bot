@@ -310,6 +310,45 @@ client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
 
 ---
 
+## 최근 개선 사항 (2026-04-29) — AI 댓글 "생성 완료만 뜨고 결과물 안 보임" 버그
+
+### 트리거 — 원장님 보고
+
+> "AI 댓글 생성 후 생성완료 문구는 뜨는데 생성된 댓글 확인이 안된다"
+
+### 원인 (3중 결함 동시 존재)
+
+| # | 위치 | 결함 |
+|---|---|---|
+| **A** | `routers/viral.py::generate_comment` (단건) | 댓글을 응답으로만 돌려주고 **DB에 저장 안 함**. 일괄 엔드포인트만 `UPDATE viral_targets SET generated_comment` 정상 저장 |
+| **B** | `pages/ViralHunter.tsx::handleBulkGenerateComments` | 일괄 생성 시 단건 API를 N번 호출하면서 `result.comment`를 **버림** → `successCount++`만 하고 `setExpandedComments` 호출 안 함. 토스트만 뜨고 어디에도 댓글 없음 |
+| **C** | `views/ListView.tsx` | 테이블에 **"생성된 댓글" 칸 자체 없음**. 행마다 `🤖 댓글 생성` 버튼은 있는데 결과 표시할 자리가 없어서, 클릭해도 토스트만 뜨고 끝 |
+
+→ ListView(일괄 작업 모드)에서 작업하는 사용자는 댓글이 어디에도 안 보였음. WorkView(아코디언)는 in-memory `expandedComments`로 표시되긴 했으나 새로고침/재진입 시 사라짐(DB 미저장).
+
+### Fix
+
+| 파일 | 변경 |
+|---|---|
+| `marketing_bot_web/backend/routers/viral.py:1433` | 단건 생성 후 `UPDATE viral_targets SET generated_comment, comment_status='generated'` 저장. persist 실패해도 응답은 성공(받은 텍스트로 작업 가능) |
+| `marketing_bot_web/frontend/src/pages/ViralHunter.tsx:544` | 일괄 생성 핸들러에서 `result.comment`를 `setExpandedComments`에 누적 |
+| `marketing_bot_web/frontend/src/components/viral/views/WorkView.tsx:163` | `expandedComments[id] ?? target.generated_comment ?? ''` 폴백 — 이전 세션/배치 생성분도 재진입 시 표시 |
+| `marketing_bot_web/frontend/src/components/viral/views/ListView.tsx` | 행 `🤖 댓글 생성` 버튼 결과를 모달로 표시 (`commentPreview` state + Modal + 📋 클립보드 복사 버튼) |
+
+### 운영 메모
+
+- 단건 생성도 이제 `comment_status='generated'`로 변경되므로 골든큐(pending) 목록에서 사라짐 — 필터에서 `AI 생성됨` 또는 `comment_status=generated`로 재확인
+- ListView는 가상화 테이블이라 행에 댓글 본문 칸을 추가하면 ROW_HEIGHT 재조정·virtualizer estimateSize 재튜닝 필요 → 모달 방식이 비용 대비 효과 큼
+- WorkView 폴백(target.generated_comment)은 ViralTargetData 타입에 이미 정의돼 있던 필드 → 백엔드가 GET /viral/targets에서 내려주고 있으므로 추가 API 변경 없음
+
+### 교훈 (메모리 저장됨)
+
+- "토스트는 뜨는데 결과물 안 보임" 신고는 **데이터 저장과 표시 둘 다** 점검 — 한쪽만 망가져도 사용자에게는 같은 증상
+- 테이블 뷰에 액션 버튼 추가할 때 **결과 표시 자리도 함께** — 액션만 있고 표시 없는 비대칭 UI 만들지 말 것
+- 단건/일괄 엔드포인트가 같은 모델을 다룰 때 **persist 동작 일치** 필수. 프롬프트 결과를 응답으로만 돌려주는 패턴은 escape route 차단
+
+---
+
 ## 최근 개선 사항 (2026-04-28) — 바이럴 수집 근본 개혁 + Rules of Hooks 버그 + 골든큐 정의 강화
 
 ### 트리거 — 미용 주력인데 골든큐에 미용 비중 거의 0

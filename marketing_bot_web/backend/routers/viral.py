@@ -1431,6 +1431,30 @@ async def generate_comment(request: CommentGenerateRequest) -> Dict[str, Any]:
         )
 
         if comment:
+            # 생성된 댓글을 DB에 저장 (batch 엔드포인트와 동일하게)
+            # 저장 실패해도 응답은 성공으로 — 사용자는 일단 받은 텍스트로 작업 가능
+            import sqlite3
+            conn = None
+            try:
+                conn = sqlite3.connect(db.db_path, timeout=30.0)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE viral_targets
+                    SET generated_comment = ?,
+                        comment_status = 'generated',
+                        updated_at = datetime('now', 'localtime')
+                    WHERE id = ?
+                    """,
+                    (comment, str(request.target_id)),
+                )
+                conn.commit()
+            except Exception as persist_err:
+                print(f"[generate_comment] DB persist 실패 (target_id={request.target_id}): {persist_err}")
+            finally:
+                if conn is not None:
+                    conn.close()
+
             return {
                 'success': True,
                 'comment': comment,

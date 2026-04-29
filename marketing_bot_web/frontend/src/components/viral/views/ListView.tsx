@@ -4,11 +4,11 @@
  * [성능 개선] @tanstack/react-virtual로 가상화 적용
  */
 
-import { useRef, useMemo } from 'react'
+import { useRef, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import Button from '@/components/ui/Button'
-import { ConfirmModal } from '@/components/ui/Modal'
+import Modal, { ConfirmModal } from '@/components/ui/Modal'
 import { safeUrl } from '@/utils/safeUrl'
 import Pagination from '@/components/ui/Pagination'
 import { FilterBar, FilterState, ScanBatch } from '@/components/viral/FilterBar'
@@ -141,6 +141,13 @@ export function ListView({
 
   // [성능 개선] 가상화를 위한 스크롤 컨테이너 참조
   const tableContainerRef = useRef<HTMLDivElement>(null)
+
+  // 생성된 댓글 미리보기 모달
+  const [commentPreview, setCommentPreview] = useState<{
+    targetId: string
+    targetTitle: string
+    comment: string
+  } | null>(null)
 
   // 행 높이 추정치 (실제 콘텐츠에 따라 동적)
   const ROW_HEIGHT = 120
@@ -534,6 +541,11 @@ export function ListView({
                             try {
                               const result = await viralApi.generateComment(target.id)
                               if (result.comment) {
+                                setCommentPreview({
+                                  targetId: String(target.id),
+                                  targetTitle: target.title || '제목 없음',
+                                  comment: result.comment,
+                                })
                                 toast.success('AI 댓글 생성 완료')
                               } else {
                                 toast.warning('댓글이 생성되지 않았습니다')
@@ -669,6 +681,48 @@ export function ListView({
           </div>
         </div>
       )}
+
+      {/* 생성된 AI 댓글 미리보기 모달 — ListView에는 댓글 컬럼이 없어 별도 표시 */}
+      <Modal
+        isOpen={commentPreview !== null}
+        onClose={() => setCommentPreview(null)}
+        title="🤖 AI 댓글 생성 완료"
+        description={commentPreview ? `타겟: ${commentPreview.targetTitle.slice(0, 60)}${commentPreview.targetTitle.length > 60 ? '...' : ''}` : undefined}
+        size="lg"
+        footer={
+          commentPreview ? (
+            <div className="flex gap-2 justify-end">
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(commentPreview.comment)
+                    toast.success('댓글이 클립보드에 복사되었습니다')
+                  } catch {
+                    toast.error('클립보드 복사 실패')
+                  }
+                }}
+              >
+                📋 복사
+              </Button>
+              <Button onClick={() => setCommentPreview(null)}>닫기</Button>
+            </div>
+          ) : null
+        }
+      >
+        {commentPreview && (
+          <div className="space-y-3">
+            <textarea
+              readOnly
+              value={commentPreview.comment}
+              className="w-full min-h-[160px] p-3 bg-muted/30 border border-border rounded-lg text-sm font-mono whitespace-pre-wrap resize-y"
+            />
+            <p className="text-xs text-muted-foreground">
+              💡 댓글은 DB에 저장되었습니다. 게시 상태가 "생성됨"으로 변경되며, 홈의 카테고리 화면 또는 필터(comment_status=generated)에서 다시 확인·승인할 수 있습니다.
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
