@@ -22,6 +22,11 @@ export interface ViralTargetData {
   is_commentable?: boolean
   generated_comment?: string
   author?: string
+  source_scan_run_id?: number
+  matched_keyword_grade?: string | null
+  matched_keyword_kei?: number | null
+  matched_keyword_priority?: number | null
+  matched_keyword_category?: string | null
   // [2026-04-27] AI 분류 결과
   ai_ad_label?: string | null  // '자연_질문' | '광고' | '광고성_후기톤' | '기타_노이즈'
   ai_ad_confidence?: number | null  // 0.0 ~ 1.0

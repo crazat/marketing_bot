@@ -106,6 +106,11 @@ class ChronosScheduler:
             logging.error(f"❌ Task Failed ({label}): {e}")
 
     def start(self):
+        print("\nChronos Scheduler is disabled.")
+        print("Use Codex natural-language commands to run Pathfinder, Viral Hunter, or reports on demand.\n")
+        logging.info("Chronos Scheduler disabled; exiting.")
+        return
+
         print(f"\n⏳ Chronos Scheduler Initiated. Monitoring {len(self.timeline)} events.")
         print("   Keep this window open for automatic marketing execution.\n")
         

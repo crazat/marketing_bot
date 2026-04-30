@@ -473,7 +473,12 @@ class DatabaseManager:
                 priority_score REAL DEFAULT 0,
                 discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_scanned_at TIMESTAMP,
-                scan_count INTEGER DEFAULT 1
+                scan_count INTEGER DEFAULT 1,
+                source_scan_run_id INTEGER DEFAULT 0,
+                matched_keyword_grade TEXT,
+                matched_keyword_kei REAL DEFAULT 0,
+                matched_keyword_priority REAL DEFAULT 0,
+                matched_keyword_category TEXT
             )
         ''')
 
@@ -541,6 +546,19 @@ class DatabaseManager:
             self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN posted_at TIMESTAMP")
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
+
+        # Pathfinder Legion -> Viral Hunter 연결 정보 스냅샷
+        for col, ctype in [
+            ("source_scan_run_id", "INTEGER DEFAULT 0"),
+            ("matched_keyword_grade", "TEXT"),
+            ("matched_keyword_kei", "REAL DEFAULT 0"),
+            ("matched_keyword_priority", "REAL DEFAULT 0"),
+            ("matched_keyword_category", "TEXT"),
+        ]:
+            try:
+                self.cursor.execute(f"ALTER TABLE viral_targets ADD COLUMN {col} {ctype}")
+            except sqlite3.OperationalError:
+                pass
 
         # [Phase 1.3] 리드 스코어링을 위한 score 컬럼 추가
         try:
@@ -829,6 +847,8 @@ class DatabaseManager:
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_mentions_status_source ON mentions(status, source)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_status_platform ON viral_targets(comment_status, platform)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keywords_grade_category ON keyword_insights(grade, category)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_source_scan ON viral_targets(source_scan_run_id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_matched_keyword ON viral_targets(matched_keyword)")
         # [성능 최적화] rank_history 복합 인덱스 - keyword+status 필터링 최적화
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_rank_history_keyword_status ON rank_history(keyword, status)")
 
@@ -3111,8 +3131,9 @@ class DatabaseManager:
                 (id, platform, url, title, content_preview, matched_keywords, matched_keyword,
                  category, is_commentable, comment_status, generated_comment,
                  priority_score, discovered_at, last_scanned_at, scan_count, content_hash,
-                 author, posted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author, posted_at, source_scan_run_id, matched_keyword_grade,
+                 matched_keyword_kei, matched_keyword_priority, matched_keyword_category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title = excluded.title,
                     matched_keywords = excluded.matched_keywords,
@@ -3122,7 +3143,12 @@ class DatabaseManager:
                     scan_count = viral_targets.scan_count + 1,
                     content_hash = excluded.content_hash,
                     author = COALESCE(excluded.author, viral_targets.author),
-                    posted_at = COALESCE(excluded.posted_at, viral_targets.posted_at)
+                    posted_at = COALESCE(excluded.posted_at, viral_targets.posted_at),
+                    source_scan_run_id = COALESCE(NULLIF(excluded.source_scan_run_id, 0), viral_targets.source_scan_run_id),
+                    matched_keyword_grade = COALESCE(excluded.matched_keyword_grade, viral_targets.matched_keyword_grade),
+                    matched_keyword_kei = COALESCE(excluded.matched_keyword_kei, viral_targets.matched_keyword_kei),
+                    matched_keyword_priority = COALESCE(excluded.matched_keyword_priority, viral_targets.matched_keyword_priority),
+                    matched_keyword_category = COALESCE(excluded.matched_keyword_category, viral_targets.matched_keyword_category)
             ''', (
                 target_data.get('id'),
                 target_data.get('platform'),
@@ -3142,6 +3168,11 @@ class DatabaseManager:
                 content_hash,
                 author,
                 posted_at,
+                target_data.get('source_scan_run_id', 0),
+                target_data.get('matched_keyword_grade') or None,
+                target_data.get('matched_keyword_kei', 0),
+                target_data.get('matched_keyword_priority', 0),
+                target_data.get('matched_keyword_category') or None,
             ))
             # [Phase 11 D1] matched_keywords 정규화 저장 (viral_target_keywords)
             try:

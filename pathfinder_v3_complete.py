@@ -40,21 +40,21 @@ except ImportError:
     HAS_EVENT_BUS = False
 
 try:
-    from services.keyword_filter import KeywordQualityFilter
+    from core_services.keyword_filter import KeywordQualityFilter
     HAS_FILTER = True
 except ImportError:
     HAS_FILTER = False
     print("⚠️ KeywordQualityFilter 로드 실패 - 필터링 비활성화")
 
 try:
-    from services.blog_miner import BlogTitleMiner
+    from core_services.blog_miner import BlogTitleMiner
     HAS_BLOG_MINER = True
 except ImportError:
     HAS_BLOG_MINER = False
     print("⚠️ BlogTitleMiner 로드 실패 - 블로그 마이닝 비활성화")
 
 try:
-    from services.ai_keyword_expander import AIKeywordExpander
+    from core_services.ai_keyword_expander import AIKeywordExpander
     HAS_AI_EXPANDER = True
 except ImportError:
     HAS_AI_EXPANDER = False

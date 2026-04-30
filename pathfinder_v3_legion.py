@@ -37,7 +37,7 @@ from functools import lru_cache
 
 # 품질 필터 (노이즈 제거)
 try:
-    from services.keyword_filter import KeywordQualityFilter
+    from core_services.keyword_filter import KeywordQualityFilter
     HAS_QUALITY_FILTER = True
 except ImportError:
     HAS_QUALITY_FILTER = False
@@ -45,14 +45,14 @@ except ImportError:
 
 # AI 키워드 확장 (Gemini)
 try:
-    from services.ai_keyword_expander import AIKeywordExpander
+    from core_services.ai_keyword_expander import AIKeywordExpander
     HAS_AI_EXPANDER = True
 except ImportError:
     HAS_AI_EXPANDER = False
 
 # 블로그 제목 마이닝
 try:
-    from services.blog_miner import BlogTitleMiner
+    from core_services.blog_miner import BlogTitleMiner
     HAS_BLOG_MINER = True
 except ImportError:
     HAS_BLOG_MINER = False
@@ -721,13 +721,9 @@ class LegionCollector:
             "여드름", "여드름흉터", "새살침", "흉터", "피부", "아토피",
             "다이어트", "비만", "살빼", "체중",
             "통증", "디스크", "허리", "어깨", "무릎",
-            "탈모", "두피", "비염", "알레르기",
             "갱년기", "생리", "산후", "불임",
-            "불면", "두통", "어지럼", "소화",
+            "불면", "두통", "어지럼",
             # 추가 (2026-01-31): S/A급 0% 카테고리
-            "면역", "보약", "공진단", "경옥고", "보양",
-            "위장", "역류", "위염", "소화불량", "소화기",
-            "수험생", "집중력", "총명탕", "수능", "학생",
             "편두통", "만성두통", "어지럼증",
             "다한증", "냉증", "수족냉증", "땀",
             "자율신경", "스트레스", "화병", "불안", "우울"
@@ -744,8 +740,8 @@ class LegionCollector:
             "자보", "실비", "건강보험", "의료비", "할인",
             # 구체적 니즈
             "예약", "상담", "초진", "진료시간", "주차",
-            # 결과/신뢰
-            "성공사례", "실제후기", "솔직후기", "비포애프터", "전후사진"
+            # 결과/신뢰. 성공사례/전후사진류는 의료광고 리스크가 커서 자동 확장 제외.
+            "실제후기", "솔직후기"
         ]
 
         # C: 문제 해결형 키워드 (증상 + 고민)
@@ -757,13 +753,8 @@ class LegionCollector:
             # 체형 문제
             "골반틀어짐", "척추측만", "체형불균형", "다리길이차이",
             "휜다리", "오다리", "X자다리", "골반교정",
-            # 여성 건강
-            "생리통", "생리불순", "다낭성난소", "자궁근종", "갱년기",
-            "산후조리", "산후비만", "산후우울", "임신준비", "난임",
-            # 소화/내과
-            "역류성식도염", "과민성대장", "만성소화불량", "변비", "설사",
             # 피부/미용
-            "안면홍조", "주사피부", "탈모", "원형탈모", "지루성피부염",
+            "안면홍조", "주사피부", "여드름흉터", "패인흉터", "모공흉터",
             # 정신/스트레스
             "불면증", "만성피로", "번아웃", "자율신경실조", "공황장애"
         ]
@@ -790,7 +781,7 @@ class LegionCollector:
             ],
             "교통사고": [
                 "교통사고", "자동차사고", "후유증", "입원", "교통사고한의원",
-                "자보한의원", "교통사고입원", "자동차보험", "교통사고보험", "합의금",
+                "자보한의원", "교통사고입원", "자동차보험", "교통사고보험",
                 "교통사고목", "교통사고허리", "교통사고두통", "추돌사고"
             ],
             "리프팅/탄력": [
@@ -890,6 +881,24 @@ class LegionCollector:
         if any(h in kw for h in ('한의원', '한약', '한방', '한방병원')):
             return '한의원일반'
         return "기타"
+
+    def is_focus_candidate(self, keyword: str, category: Optional[str] = None) -> bool:
+        """규림 기본 Legion 타깃: 미용 한의원 + 교통사고 입원실 중심."""
+        if category is None:
+            category = self._detect_category(keyword)
+
+        focus_categories = {
+            "다이어트", "안면비대칭", "체형교정",
+            "피부/여드름", "리프팅/탄력", "교통사고",
+        }
+        if category in focus_categories:
+            return True
+
+        accident_context = ("교통사고", "자동차사고", "사고", "입원", "자보", "자동차보험")
+        if category == "통증/디스크" and any(token in keyword for token in accident_context):
+            return True
+
+        return False
 
     def _is_valid_keyword(self, keyword: str) -> bool:
         """유효한 키워드인지 확인"""
@@ -1616,55 +1625,29 @@ class PathfinderLegion:
             # 다이어트
             "청주 다이어트", "청주 다이어트 한의원", "청주 다이어트 한약",
 
-            # 통증
-            "청주 허리 한의원", "청주 디스크", "청주 어깨통증",
+            # 교통사고/입원실 세부
+            "청주 자동차사고", "청주 자동차사고 한의원", "청주 교통사고 입원치료",
+            "청주 자보 한의원", "청주 교통사고 후유증",
 
-            # 탈모/비염
-            "청주 탈모", "청주 탈모 한의원", "청주 비염", "청주 비염 한의원",
+            # 피부/흉터 세부
+            "청주 여드름흉터 한의원", "청주 패인흉터", "청주 여드름자국",
+            "청주 모공흉터", "청주 흉터치료",
 
-            # 여성/기타
-            "청주 갱년기", "청주 산후조리", "청주 불면증",
-
-            # ========== S/A급 0% 카테고리 시드 추가 (2026-01-31) ==========
-
-            # 면역/보약
-            "청주 면역력", "청주 보약", "청주 공진단", "청주 경옥고",
-            "청주 보약 한의원", "청주 면역력 한약",
-
-            # 소화/위장
-            "청주 소화불량", "청주 위장 한의원", "청주 역류성",
-            "청주 위염 한방", "청주 소화기 한의원",
-
-            # 수험생/집중력
-            "청주 수험생 한약", "청주 집중력", "청주 수능 한약",
-            "청주 총명탕", "청주 학생 보약",
-
-            # 두통/어지럼증
-            "청주 두통 한의원", "청주 어지럼증", "청주 편두통",
-            "청주 만성두통", "청주 두통 한방치료",
-
-            # 다한증/냉증
-            "청주 다한증", "청주 수족냉증", "청주 손발 차가움",
-            "청주 냉증 한의원", "청주 땀 많이",
-
-            # 자율신경/스트레스
-            "청주 자율신경", "청주 스트레스 한의원", "청주 화병",
-            "청주 불안 한방", "청주 우울 한의원",
-
-            # ========== 야간진료 (보고서 분석 반영) ==========
-            "청주 야간진료", "청주 한의원 야간", "율량동 야간진료",
-
-            # 인근 지역 핵심 (보고서 분석 반영)
-            "충주 한의원", "충주 교통사고", "충주 다이어트",
-            "제천 한의원", "제천 다이어트", "제천 탈모",
-            "진천 한의원", "증평 한의원",
+            # 미용/웨딩 세부
+            "청주 웨딩 다이어트", "청주 결혼준비 다이어트", "청주 웨딩 안면비대칭",
+            "청주 한방리프팅", "청주 매선리프팅",
         ]
 
         # ========== 시즌 키워드 추가 (ULTRA 이식) ==========
         seasonal_seeds = SeasonalKeywordDB.get_current_seasonal_keywords()
         if seasonal_seeds:
-            print(f"📅 시즌 키워드 추가: {len(seasonal_seeds)}개 (현재: {datetime.now().month}월)")
-            self.base_seeds.extend([kw for kw, _ in seasonal_seeds])
+            focused_seasonal = [
+                kw for kw, category in seasonal_seeds
+                if category in {"다이어트", "안면비대칭", "여드름", "피부", "교통사고", "리프팅"}
+                   or self.collector.is_focus_candidate(kw)
+            ]
+            print(f"📅 시즌 키워드 추가: {len(focused_seasonal)}/{len(seasonal_seeds)}개 (현재: {datetime.now().month}월)")
+            self.base_seeds.extend(focused_seasonal)
 
         # 수집된 키워드
         self.collected: Dict[str, KeywordResult] = {}
@@ -1724,7 +1707,7 @@ class PathfinderLegion:
             score += 40
 
         # Tier 2: 주요 시술/진료 (+30)
-        tier2 = ['다이어트', '교통사고', '안면비대칭', '여드름', '탈모', '비염', '디스크']
+        tier2 = ['다이어트', '교통사고', '입원', '자동차사고', '안면비대칭', '비대칭', '여드름', '여드름흉터', '흉터', '새살침']
         if any(t in keyword_lower for t in tier2):
             score += 30
 
@@ -1835,6 +1818,19 @@ class PathfinderLegion:
             if filtered_count > 0:
                 print(f"   🧹 품질 필터: {filtered_count}개 제거")
             valid_keywords = passed
+
+        # 기본 Legion은 미용/흉터/비대칭/다이어트/교통사고 입원실에 집중한다.
+        focus_keywords = []
+        non_focus_count = 0
+        for kw in valid_keywords:
+            if self.collector.is_focus_candidate(kw):
+                focus_keywords.append(kw)
+            else:
+                non_focus_count += 1
+
+        if non_focus_count:
+            print(f"   🎯 포커스 필터: 비핵심 진료군 {non_focus_count}개 제외")
+        valid_keywords = focus_keywords
 
         if not valid_keywords:
             return 0
@@ -2053,7 +2049,7 @@ class PathfinderLegion:
         round_num += 1
         print(f"\n[Round {round_num}] 지역 확장 (동네별)...")
 
-        core_terms = ["한의원", "다이어트", "교통사고", "안면비대칭", "여드름", "탈모"]
+        core_terms = ["다이어트", "교통사고", "교통사고 입원", "안면비대칭", "여드름흉터", "새살침"]
         round3_keywords = set()
 
         for dong in self.collector.neighborhoods[:10]:
@@ -2081,13 +2077,19 @@ class PathfinderLegion:
         good_keywords = [kw for kw, r in self.collected.items() if r.grade in ['S', 'A', 'B']]
         round4_keywords = set()
 
-        # 고전환 의도 키워드 우선 (자보, 실비, 가격, 예약 등)
-        high_intent = ["자보", "실비", "가격", "비용", "예약", "후기", "추천"]
-        other_intent = [i for i in self.collector.intent_suffixes if i not in high_intent]
+        generic_high_intent = ["가격", "비용", "예약", "후기", "추천"]
+        accident_high_intent = ["자보", "자동차보험", "보험", "치료비"]
+        high_intent_pool = set(generic_high_intent + accident_high_intent)
+        other_intent = [i for i in self.collector.intent_suffixes if i not in high_intent_pool]
 
         for kw in good_keywords[:70]:  # 50 → 70개로 확대
-            # 고전환 의도 모두 적용
-            for intent in high_intent:
+            result = self.collected.get(kw)
+            category = result.category if result else self.collector._detect_category(kw)
+            high_intents = list(generic_high_intent)
+            if category == "교통사고":
+                high_intents.extend(accident_high_intent)
+
+            for intent in high_intents:
                 new_kw = f"{kw} {intent}"
                 round4_keywords.add(new_kw)
                 suggestions = self.collector.get_autocomplete(new_kw)

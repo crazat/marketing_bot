@@ -75,6 +75,64 @@ from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 router = APIRouter()
 
+VIRAL_CORE_CATEGORIES = [
+    "\ub2e4\uc774\uc5b4\ud2b8",
+    "\uad50\ud1b5\uc0ac\uace0",
+    "\ud53c\ubd80",
+    "\ube44\ub300\uce6d/\uad50\uc815",
+    "\uccb4\ud615\uad50\uc815",
+    "\ub9ac\ud504\ud305/\ud0c4\ub825",
+    "\uacbd\uc7c1\uc0ac_\uc5ed\uacf5\ub7b5",
+]
+
+
+def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
+    try:
+        cursor.execute(
+            """
+            SELECT id
+            FROM scan_runs
+            WHERE mode LIKE '%legion%' AND status = 'completed'
+            ORDER BY completed_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+def _apply_work_scope_sql(
+    cursor: sqlite3.Cursor,
+    work_scope: Optional[str],
+    where: List[str],
+    params: List[Any],
+) -> None:
+    scope = work_scope or "latest_legion"
+    if scope == "all_backlog":
+        return
+    if scope == "latest_legion":
+        scan_id = _latest_legion_scan_id(cursor)
+        if scan_id:
+            where.append("source_scan_run_id = ?")
+            params.append(scan_id)
+    if scope in ("latest_legion", "core"):
+        where.append(f"category IN ({','.join(['?'] * len(VIRAL_CORE_CATEGORIES))})")
+        params.extend(VIRAL_CORE_CATEGORIES)
+
+
+def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], work_scope: Optional[str]) -> None:
+    scope = work_scope or "latest_legion"
+    if scope == "all_backlog":
+        return
+    if scope in ("latest_legion", "core") and not filters.get("category"):
+        filters["include_categories"] = VIRAL_CORE_CATEGORIES
+    if scope == "latest_legion":
+        scan_id = _latest_legion_scan_id(cursor)
+        if scan_id:
+            filters["source_scan_run_id"] = scan_id
+
 # [성능 최적화] ViralHunter 싱글톤 인스턴스
 _viral_hunter_instance: Optional[ViralHunter] = None
 
@@ -233,6 +291,14 @@ class TargetActionRequest(BaseModel):
     idempotency_key: Optional[str] = Field(None, max_length=64)
 
 
+class TargetFeedbackRequest(BaseModel):
+    target_id: str = Field(..., min_length=1, max_length=100)
+    rating: Literal["good", "needs_edit", "bad"]
+    reason: Optional[str] = Field(None, max_length=80)
+    corrected_comment: Optional[str] = Field(None, max_length=2000)
+    staff_user: Optional[str] = Field("staff", max_length=80)
+
+
 class BulkActionByFilterRequest(BaseModel):
     """[F3] 필터 조건으로 매칭되는 전체 타겟에 대한 대량 액션."""
     action: TargetAction
@@ -267,6 +333,114 @@ class BatchCommentRequest(BaseModel):
     category: Optional[str] = Field(None, max_length=50)  # 카테고리 필터
     batch_size: int = Field(20, ge=1, le=100)  # 배치 크기 (1-100개)
     prioritize_by: PrioritizeSortBy = "priority_score"  # 정렬 기준
+
+
+# Quality feedback and ops audit tables are created lazily so existing DBs migrate in place.
+def _ensure_quality_ops_tables(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS viral_target_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL,
+            rating TEXT NOT NULL,
+            reason TEXT,
+            corrected_comment TEXT,
+            staff_user TEXT DEFAULT 'staff',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_viral_target_feedback_target
+        ON viral_target_feedback(target_id, created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_viral_target_feedback_rating
+        ON viral_target_feedback(rating, created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT DEFAULT 'system',
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            metadata_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_events_entity
+        ON audit_events(entity_type, entity_id, created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_events_action
+        ON audit_events(action, created_at DESC)
+        """
+    )
+    conn.commit()
+
+
+def _fetch_target_snapshot(cursor: sqlite3.Cursor, target_id: str) -> Dict[str, Any]:
+    cursor.execute(
+        """
+        SELECT id, title, url, platform, category, comment_status, priority_score,
+               generated_comment, source_scan_run_id, matched_keyword, matched_keyword_grade
+        FROM viral_targets
+        WHERE id = ?
+        """,
+        (target_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {}
+    keys = [
+        "id", "title", "url", "platform", "category", "comment_status", "priority_score",
+        "generated_comment", "source_scan_run_id", "matched_keyword", "matched_keyword_grade",
+    ]
+    return dict(zip(keys, row))
+
+
+def _write_audit_event(
+    conn: sqlite3.Connection,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    before: Optional[Dict[str, Any]] = None,
+    after: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    actor: str = "staff",
+) -> None:
+    _ensure_quality_ops_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO audit_events (
+            actor, action, entity_type, entity_id, before_json, after_json, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor,
+            action,
+            entity_type,
+            entity_id,
+            json.dumps(before or {}, ensure_ascii=False),
+            json.dumps(after or {}, ensure_ascii=False),
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
 
 
 # [Phase 4.0] 댓글 가능 여부 검증 함수
@@ -706,7 +880,8 @@ async def get_viral_stats() -> Dict[str, Any]:
 
 @router.get("/home-stats")
 async def get_viral_home_stats(
-    scan_batch: Optional[str] = None
+    scan_batch: Optional[str] = None,
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog")
 ) -> Dict[str, Any]:
     """
     [Phase 9.0 성능 최적화] 홈 화면용 집계 통계 API
@@ -726,11 +901,13 @@ async def get_viral_home_stats(
         cursor = conn.cursor()
 
         # 스캔 배치 필터 조건
-        batch_condition = ""
+        scope_where: List[str] = []
         params: List[Any] = []
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params)
         if scan_batch:
-            batch_condition = "AND strftime('%Y-%m-%d %H', discovered_at) = ?"
+            scope_where.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
             params.append(scan_batch)
+        batch_condition = f"AND {' AND '.join(scope_where)}" if scope_where else ""
 
         # 1. 플랫폼별 통계 (DB 집계)
         cursor.execute(f"""
@@ -887,6 +1064,7 @@ async def get_viral_targets(
     min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),  # AI 신뢰도 최소
     specialty_match: Optional[str] = None,  # high|medium|low (쉼표 가능). 미용 특화 매칭
     post_region: Optional[str] = None,  # 청주|타지역|불명 (쉼표 가능). 게시글 지역
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
 ) -> List[Dict[str, Any]]:
@@ -931,6 +1109,9 @@ async def get_viral_targets(
             "specialty_match": specialty_match,
             "post_region": post_region,
         }.items() if v is not None}
+
+        db = DatabaseManager()
+        _apply_work_scope_filters(db.cursor, filters, work_scope)
 
         targets = repo.list(
             filters=filters,
@@ -1170,6 +1351,7 @@ async def get_todays_queue(
     total_limit: int = Query(default=30, ge=5, le=100),
     per_category: int = Query(default=5, ge=1, le=20),
     today_only: bool = Query(default=True, description="오늘 발견된 것만 (기본 True)"),
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
 ) -> Dict[str, Any]:
     """오늘 작업할 Top N 카테고리별 묶음 큐.
 
@@ -1190,14 +1372,19 @@ async def get_todays_queue(
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        query = """
+        scope_where: List[str] = []
+        params: List[Any] = []
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params)
+        scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
+
+        query = f"""
             SELECT id, platform, url, title, content_preview, matched_keywords,
                    category, priority_score, discovered_at, author, matched_keyword
             FROM viral_targets
             WHERE comment_status = 'pending'
               AND priority_score >= 80
+              {scope_condition}
         """
-        params: List[Any] = []
         if today_only:
             query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
         query += " ORDER BY priority_score DESC, discovered_at DESC LIMIT ?"
@@ -1255,6 +1442,7 @@ async def count_viral_targets(
     min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     specialty_match: Optional[str] = None,
     post_region: Optional[str] = None,
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
 
@@ -1277,7 +1465,10 @@ async def count_viral_targets(
             "specialty_match": specialty_match,
             "post_region": post_region,
         }
-        total = repo.count({k: v for k, v in filters.items() if v is not None})
+        filters = {k: v for k, v in filters.items() if v is not None}
+        db = DatabaseManager()
+        _apply_work_scope_filters(db.cursor, filters, work_scope)
+        total = repo.count(filters)
         return {"total": total}
     except Exception as e:
         logger.error(f"[Viral Targets Count Error] {e}")
@@ -2305,6 +2496,8 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
         hunter = get_viral_hunter()
 
         lead_created = False
+        audit_conn = sqlite3.connect(hunter.db.db_path)
+        before_snapshot = _fetch_target_snapshot(audit_conn.cursor(), request.target_id)
 
         if request.action == "approve":
             hunter.db.update_viral_target(request.target_id, {
@@ -2351,6 +2544,27 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
         else:
             raise HTTPException(status_code=400, detail="잘못된 액션입니다")
 
+        try:
+            after_snapshot = _fetch_target_snapshot(audit_conn.cursor(), request.target_id)
+            _write_audit_event(
+                audit_conn,
+                action=f"viral_target.{request.action}",
+                entity_type="viral_target",
+                entity_id=request.target_id,
+                before=before_snapshot,
+                after=after_snapshot,
+                metadata={
+                    "lead_created": lead_created,
+                    "skip_reason": request.skip_reason,
+                    "skip_note": request.skip_note,
+                    "has_comment": bool(request.comment),
+                },
+            )
+        except Exception as audit_error:
+            logger.warning(f"[viral audit] action log failed: {audit_error}")
+        finally:
+            audit_conn.close()
+
         return {
             'status': 'success',
             'message': message,
@@ -2360,6 +2574,202 @@ async def target_action(request: TargetActionRequest) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/feedback")
+async def record_target_feedback(request: TargetFeedbackRequest) -> Dict[str, Any]:
+    """Record staff quality feedback for a generated viral comment."""
+    conn = None
+    try:
+        hunter = get_viral_hunter()
+        conn = sqlite3.connect(hunter.db.db_path)
+        _ensure_quality_ops_tables(conn)
+        cursor = conn.cursor()
+        before_snapshot = _fetch_target_snapshot(cursor, request.target_id)
+        if not before_snapshot:
+            raise HTTPException(status_code=404, detail="target not found")
+
+        cursor.execute(
+            """
+            INSERT INTO viral_target_feedback (
+                target_id, rating, reason, corrected_comment, staff_user
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                request.target_id,
+                request.rating,
+                request.reason,
+                request.corrected_comment,
+                request.staff_user or "staff",
+            ),
+        )
+        conn.commit()
+        if request.corrected_comment:
+            cursor.execute(
+                """
+                UPDATE viral_targets
+                SET generated_comment = ?, comment_status = 'generated'
+                WHERE id = ?
+                """,
+                (request.corrected_comment, request.target_id),
+            )
+            conn.commit()
+
+        after_snapshot = _fetch_target_snapshot(cursor, request.target_id)
+        _write_audit_event(
+            conn,
+            action="viral_target.feedback",
+            entity_type="viral_target",
+            entity_id=request.target_id,
+            before=before_snapshot,
+            after=after_snapshot,
+            metadata={
+                "rating": request.rating,
+                "reason": request.reason,
+                "has_corrected_comment": bool(request.corrected_comment),
+            },
+            actor=request.staff_user or "staff",
+        )
+        return {"status": "success", "message": "feedback recorded"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@router.get("/quality-summary")
+async def get_quality_summary(days: int = Query(default=14, ge=1, le=90)) -> Dict[str, Any]:
+    """Summarize staff feedback and action quality for the recent viral workflow."""
+    conn = None
+    try:
+        hunter = get_viral_hunter()
+        conn = sqlite3.connect(hunter.db.db_path)
+        conn.row_factory = sqlite3.Row
+        _ensure_quality_ops_tables(conn)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT rating, COUNT(*) AS count
+            FROM viral_target_feedback
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY rating
+            """,
+            (f"-{days} days",),
+        )
+        feedback_by_rating = {row["rating"]: row["count"] for row in cursor.fetchall()}
+        total_feedback = sum(feedback_by_rating.values())
+        good = feedback_by_rating.get("good", 0)
+        needs_edit = feedback_by_rating.get("needs_edit", 0)
+        bad = feedback_by_rating.get("bad", 0)
+
+        cursor.execute(
+            """
+            SELECT vt.category, f.rating, COUNT(*) AS count
+            FROM viral_target_feedback f
+            JOIN viral_targets vt ON vt.id = f.target_id
+            WHERE f.created_at >= datetime('now', ?)
+            GROUP BY vt.category, f.rating
+            ORDER BY count DESC
+            LIMIT 50
+            """,
+            (f"-{days} days",),
+        )
+        category_rows = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT action, COUNT(*) AS count
+            FROM audit_events
+            WHERE entity_type = 'viral_target'
+              AND created_at >= datetime('now', ?)
+            GROUP BY action
+            """,
+            (f"-{days} days",),
+        )
+        actions = {row["action"]: row["count"] for row in cursor.fetchall()}
+
+        cursor.execute(
+            """
+            SELECT id, actor, action, entity_id, metadata_json, created_at
+            FROM audit_events
+            WHERE entity_type = 'viral_target'
+            ORDER BY created_at DESC
+            LIMIT 20
+            """
+        )
+        recent_audit = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except Exception:
+                item["metadata"] = {}
+            recent_audit.append(item)
+
+        acceptance_rate = round((good / total_feedback) * 100, 1) if total_feedback else None
+        edit_rate = round(((needs_edit + bad) / total_feedback) * 100, 1) if total_feedback else None
+        return {
+            "days": days,
+            "feedback_total": total_feedback,
+            "feedback_by_rating": feedback_by_rating,
+            "acceptance_rate": acceptance_rate,
+            "edit_rate": edit_rate,
+            "category_feedback": category_rows,
+            "actions": actions,
+            "recent_audit": recent_audit,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@router.get("/ops-status")
+async def get_viral_ops_status() -> Dict[str, Any]:
+    """Expose the minimum operating checks staff need without opening restore endpoints."""
+    conn = None
+    try:
+        hunter = get_viral_hunter()
+        conn = sqlite3.connect(hunter.db.db_path)
+        _ensure_quality_ops_tables(conn)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM audit_events")
+        audit_events = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM viral_target_feedback")
+        feedback_events = cursor.fetchone()[0]
+
+        backup_status = {}
+        try:
+            from db_backup import DatabaseBackup
+            backup = DatabaseBackup()
+            backup_status = backup.get_backup_status()
+            if os.path.exists(backup.db_path):
+                backup_status["db_size_mb"] = round(os.path.getsize(backup.db_path) / (1024 * 1024), 2)
+            latest = backup_status.get("latest_backup")
+            if latest:
+                last_backup_time = datetime.fromisoformat(latest["created"])
+                backup_status["days_since_backup"] = (datetime.now() - last_backup_time).days
+            else:
+                backup_status["days_since_backup"] = None
+        except Exception as backup_error:
+            backup_status = {"error": str(backup_error)}
+
+        return {
+            "audit_events": audit_events,
+            "feedback_events": feedback_events,
+            "api_auth_enabled": os.getenv("DISABLE_API_AUTH", "false").lower() != "true",
+            "backup": backup_status,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 ScanPlatform = Literal["cafe", "blog", "kin", "place", "karrot", "youtube", "instagram", "tiktok"]
 
 
@@ -2367,6 +2777,8 @@ class ScanConfig(BaseModel):
     """스캔 설정"""
     platforms: List[ScanPlatform] = ['cafe', 'blog', 'kin', 'place', 'karrot', 'youtube', 'instagram', 'tiktok']
     max_results: int = Field(500, ge=0, le=5000)  # 0 = 무제한, 최대 5000
+    use_latest_legion: bool = True
+    fresh: bool = True
 
 
 @router.post("/scan")
@@ -2409,6 +2821,10 @@ async def scan_viral_targets(
             script_path = os.path.join(parent_dir, "viral_hunter.py")
             if os.path.exists(script_path):
                 cmd = ["python", script_path, "--scan"]
+                if config.fresh:
+                    cmd.append("--fresh")
+                if not config.use_latest_legion:
+                    cmd.append("--legacy-keywords")
                 if config.max_results > 0:
                     cmd.extend(["--limit-keywords", str(min(config.max_results, 5000))])
                 commands.append(cmd)

@@ -49,18 +49,13 @@ export default function ViralHunter() {
     const platforms = searchParams.get('platforms')
     const hasAnyFilter = ['status', 'sort', 'category', 'comment_status', 'date_filter',
       'search', 'scan_batch', 'platforms', 'min_scan_count',
-      'ai_ad_label', 'specialty_match', 'post_region'].some(k => searchParams.get(k))
+      'ai_ad_label', 'specialty_match', 'post_region', 'work_scope'].some(k => searchParams.get(k))
     if (!hasAnyFilter) {
-      // [2026-04-28 강화] 골든큐 = 자연_질문 + 청주 + high + confidence>=0.85 + 미용 주력 카테고리
-      // 정치 뉴스/산후조리원 후기/이재명 같은 노이즈 자동 제외
+      // Default staff queue: latest Legion scan, core clinic categories, pending targets.
       return {
         status: 'pending',
-        sort: 'specialty',
-        ai_ad_label: '자연_질문',
-        specialty_match: 'high',
-        post_region: '청주',
-        min_confidence: 0.85,
-        category: '다이어트,피부,비대칭/교정,교통사고,통증/디스크',
+        sort: 'priority',
+        work_scope: 'latest_legion',
       }
     }
     return {
@@ -78,6 +73,7 @@ export default function ViralHunter() {
       ai_ad_label: searchParams.get('ai_ad_label') ?? undefined,
       specialty_match: searchParams.get('specialty_match') ?? undefined,
       post_region: searchParams.get('post_region') ?? undefined,
+      work_scope: (searchParams.get('work_scope') as FilterState['work_scope']) ?? 'latest_legion',
     }
   })
 
@@ -98,6 +94,7 @@ export default function ViralHunter() {
     if (filters.ai_ad_label) params.set('ai_ad_label', filters.ai_ad_label)
     if (filters.specialty_match) params.set('specialty_match', filters.specialty_match)
     if (filters.post_region) params.set('post_region', filters.post_region)
+    if (filters.work_scope && filters.work_scope !== 'latest_legion') params.set('work_scope', filters.work_scope)
     setSearchParams(params, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters])
@@ -258,6 +255,22 @@ export default function ViralHunter() {
     retry: 2,
   })
 
+  const { data: qualitySummary } = useQuery({
+    queryKey: ['viral-quality-summary'],
+    queryFn: () => viralApi.getQualitySummary(14).catch(() => null),
+    staleTime: 60000,
+    enabled: view === 'home',
+    retry: 1,
+  })
+
+  const { data: opsStatus } = useQuery({
+    queryKey: ['viral-ops-status'],
+    queryFn: () => viralApi.getOpsStatus().catch(() => null),
+    staleTime: 60000,
+    enabled: view === 'home',
+    retry: 1,
+  })
+
   // 필터링된 타겟 (list view용) - 서버 페이지네이션
   const effectiveStatus = filters.comment_status || filters.status || 'pending'
   const offset = (currentPage - 1) * pageSize
@@ -285,6 +298,7 @@ export default function ViralHunter() {
         min_confidence: filters.min_confidence,
         specialty_match: filters.specialty_match,
         post_region: filters.post_region,
+        work_scope: filters.work_scope || 'latest_legion',
       }
     ).catch(() => []),
     enabled: view === 'list',
@@ -310,6 +324,7 @@ export default function ViralHunter() {
         min_confidence: filters.min_confidence,
         specialty_match: filters.specialty_match,
         post_region: filters.post_region,
+        work_scope: filters.work_scope || 'latest_legion',
       }
     ).catch(() => ({ total: 0 })),
     enabled: view === 'list',
@@ -361,6 +376,8 @@ export default function ViralHunter() {
     mutationFn: () => viralApi.runScan({
       platforms: scanSettings.platforms,
       max_results: scanSettings.maxResults,
+      use_latest_legion: true,
+      fresh: true,
     }),
     onSuccess: (data) => {
       toast.success(`바이럴 스캔 시작! (${data.platforms?.length || 0}개 플랫폼, 최대 ${data.max_results === 0 ? '무제한' : data.max_results + '개'})`)
@@ -592,6 +609,7 @@ export default function ViralHunter() {
       const targets = await viralApi.getTargets('pending', category, 500, {
         sort: 'priority',
         scan_batch: homeScanBatch || undefined,
+        work_scope: 'latest_legion',
       })
       setCategoryTargets(targets || [])
     } catch (error) {
@@ -1190,6 +1208,8 @@ export default function ViralHunter() {
         <HomeView
           stats={stats || undefined}
           homeStats={homeStats}
+          qualitySummary={qualitySummary || undefined}
+          opsStatus={opsStatus || undefined}
           scanBatches={scanBatches}
           platformStats={platformStats}
           categoryStats={categoryStats}

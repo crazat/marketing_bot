@@ -17,6 +17,7 @@ export interface FilterState {
   min_confidence?: number;     // 0.0~1.0
   specialty_match?: string;    // 'high' | 'medium' | 'low' (콤마 가능)
   post_region?: string;        // '청주' | '타지역' | '불명' (콤마 가능)
+  work_scope?: 'latest_legion' | 'core' | 'all_backlog';
 }
 
 export interface ScanBatch {

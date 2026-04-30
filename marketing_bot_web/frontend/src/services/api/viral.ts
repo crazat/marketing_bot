@@ -114,9 +114,10 @@ export const viralApi = {
   },
 
   // [Phase 9.0] 홈 화면용 집계 통계 (DB 직접 집계 - 성능 최적화)
-  getHomeStats: async (scanBatch?: string): Promise<HomeStats> => {
+  getHomeStats: async (scanBatch?: string, workScope = 'latest_legion'): Promise<HomeStats> => {
     const params: Record<string, string> = {}
     if (scanBatch) params.scan_batch = scanBatch
+    if (workScope) params.work_scope = workScope
     const response = await api.get('/viral/home-stats', { params })
     return response.data
   },
@@ -144,6 +145,7 @@ export const viralApi = {
       min_confidence?: number
       specialty_match?: string
       post_region?: string
+      work_scope?: string
     }
   ) => {
     const params: Record<string, any> = { status, limit }
@@ -164,6 +166,7 @@ export const viralApi = {
     if (filters?.min_confidence != null) params.min_confidence = filters.min_confidence
     if (filters?.specialty_match) params.specialty_match = filters.specialty_match
     if (filters?.post_region) params.post_region = filters.post_region
+    if (filters?.work_scope) params.work_scope = filters.work_scope
 
     const response = await api.get('/viral/targets', { params })
     return response.data
@@ -184,6 +187,7 @@ export const viralApi = {
       min_confidence?: number
       specialty_match?: string
       post_region?: string
+      work_scope?: string
     }
   ): Promise<{ total: number }> => {
     const params: Record<string, any> = { status }
@@ -202,6 +206,7 @@ export const viralApi = {
     if (filters?.min_confidence != null) params.min_confidence = filters.min_confidence
     if (filters?.specialty_match) params.specialty_match = filters.specialty_match
     if (filters?.post_region) params.post_region = filters.post_region
+    if (filters?.work_scope) params.work_scope = filters.work_scope
 
     const response = await api.get('/viral/targets/count', { params })
     return response.data
@@ -246,9 +251,54 @@ export const viralApi = {
     }
   },
 
-  getTodaysQueue: async (totalLimit = 30, perCategory = 5, todayOnly = true) => {
+  recordTargetFeedback: async (
+    targetId: string,
+    rating: 'good' | 'needs_edit' | 'bad',
+    reason?: string,
+    correctedComment?: string
+  ) => {
+    const response = await api.post('/viral/feedback', {
+      target_id: targetId,
+      rating,
+      reason,
+      corrected_comment: correctedComment,
+      staff_user: 'staff',
+    })
+    return response.data as { status: string; message: string }
+  },
+
+  getQualitySummary: async (days = 14) => {
+    const response = await api.get('/viral/quality-summary', { params: { days } })
+    return response.data as {
+      days: number
+      feedback_total: number
+      feedback_by_rating: Record<string, number>
+      acceptance_rate: number | null
+      edit_rate: number | null
+      actions: Record<string, number>
+      recent_audit: Array<Record<string, unknown>>
+    }
+  },
+
+  getOpsStatus: async () => {
+    const response = await api.get('/viral/ops-status')
+    return response.data as {
+      audit_events: number
+      feedback_events: number
+      api_auth_enabled: boolean
+      backup: {
+        total_backups?: number
+        latest_backup?: { filename: string; created: string; size_mb: number } | null
+        days_since_backup?: number | null
+        db_size_mb?: number
+        error?: string
+      }
+    }
+  },
+
+  getTodaysQueue: async (totalLimit = 30, perCategory = 5, todayOnly = true, workScope = 'latest_legion') => {
     const response = await api.get('/viral/todays-queue', {
-      params: { total_limit: totalLimit, per_category: perCategory, today_only: todayOnly }
+      params: { total_limit: totalLimit, per_category: perCategory, today_only: todayOnly, work_scope: workScope }
     })
     return response.data as {
       total: number
@@ -313,7 +363,7 @@ export const viralApi = {
     return response.data as { items: Array<{ key_type: string; key_value: string; skip_count: number; last_updated: string }> }
   },
 
-  runScan: async (config?: { platforms?: string[]; max_results?: number }) => {
+  runScan: async (config?: { platforms?: string[]; max_results?: number; use_latest_legion?: boolean; fresh?: boolean }) => {
     const response = await api.post('/viral/scan', config || {})
     return response.data
   },

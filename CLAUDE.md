@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-04-30 Memory: Pathfinder Legion -> Viral Hunter Core Flow
+
+- Clinic focus for keyword/viral logic: beauty Korean medicine clinic services (diet, skin/acne scars/새살침, asymmetry/body correction/lifting) plus traffic-accident inpatient care.
+- Pathfinder Legion and Viral Hunter are the core product flow. Viral Hunter should default to the latest completed Legion scan and core clinic categories, not accumulated legacy backlog.
+- Previous records must remain in DB. Frontend default work scope is `latest_legion`; `all_backlog` is only for deliberate historical review.
+- Viral Hunter seed selection is now organic: `core_services/viral_seed_builder.py` builds curated seeds from the latest Legion scan and carries lineage into `viral_targets` (`source_scan_run_id`, matched keyword grade/KEI/priority/category).
+- Scheduler execution is disabled. The program should be driven from natural-language Codex work and explicit UI/API actions, not the old system scheduler.
+- Staff work UX should stay simple: current queue, category start, source check, generate/copy/approve/skip/delete, with only necessary quality/ops signals.
+- Staff comment quality feedback is stored in `viral_target_feedback`; target actions are logged to `audit_events`. Use `/api/viral/quality-summary` and `/api/viral/ops-status` for monitoring.
+- Medical-ad safety remains important: avoid risky promise/case-result keywords such as 성공사례, 비포애프터, 전후사진, 합의금 in automated keyword expansion/comment logic.
+
 ## 프로젝트 개요
 
 **Marketing Bot** - 한의원 마케팅 자동화 시스템

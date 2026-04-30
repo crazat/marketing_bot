@@ -123,14 +123,14 @@ async def lifespan(app: FastAPI):
 
     # 백그라운드 작업 시작
     hud_task = asyncio.create_task(periodic_hud_update())
-    scheduler_task = asyncio.create_task(chronos_scheduler())
+    scheduler_task = None
 
     # FileWatcher 시작 (실시간 로그 스트리밍)
     from services.file_watcher import create_file_watcher
     file_watcher = create_file_watcher(ws_manager)
     await file_watcher.start()
 
-    logger.info("⏰ Chronos 스케줄러 활성화됨")
+    logger.info("⏰ Chronos 스케줄러 비활성화됨 (Codex 자연어 실행 모드)")
     logger.info("📁 FileWatcher 활성화됨 (실시간 로그 스트리밍)")
 
     yield
@@ -143,10 +143,12 @@ async def lifespan(app: FastAPI):
 
     # 백그라운드 작업 취소
     hud_task.cancel()
-    scheduler_task.cancel()
+    if scheduler_task:
+        scheduler_task.cancel()
     try:
         await hud_task
-        await scheduler_task
+        if scheduler_task:
+            await scheduler_task
     except asyncio.CancelledError:
         pass
 
@@ -402,19 +404,19 @@ CMD_MAP = {
     "briefing": ["python", "insight_manager.py", "--mode", "briefing"],
     "ambassador": ["python", "ambassador.py"],
     "cafe_swarm": ["python", "run_cafe_swarm.py"],
-    "viral_hunter": ["python", "viral_hunter.py", "--scan"],
+    "viral_hunter": ["python", "viral_hunter.py", "--scan", "--fresh"],
     "carrot_farm": ["python", "carrot_farmer.py"],
     "instagram": ["python", "scrapers/scraper_instagram.py"],
     "youtube": ["python", "scrapers/scraper_youtube.py"],
     "place_watch": ["python", "scrapers/scraper_live_naver.py"],
     "tiktok": ["python", "scrapers/scraper_tiktok_monitor.py"],
-    "pathfinder": ["python", "pathfinder_v3_complete.py", "--save-db"],
+    "pathfinder": ["python", "pathfinder_v3_legion.py", "--target", "500", "--save-db"],
 }
 
 SCHEDULER_STATE_FILE = os.path.join(project_root, 'db', 'scheduler_state.json')
 SCHEDULER_LOCK_FILE = os.path.join(project_root, 'db', '.scheduler.lock')
-# [안정성 개선] 스케줄러 활성화 여부는 설정에서 가져옴
-SCHEDULER_ENABLED = app_settings.scheduler_enabled
+# 자연어 기반 운영으로 전환: 웹 API는 자동 Chronos 실행을 시작하지 않는다.
+SCHEDULER_ENABLED = False
 
 # [안정성 개선] 스케줄러 상태 파일 동시 접근 방지용 락
 _scheduler_lock = threading.Lock()
@@ -581,7 +583,7 @@ async def chronos_scheduler():
 # API 라우터 임포트
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-from routers import hud, pathfinder, battle, leads, viral, competitors, instagram, backup, agent, qa, export, notifications, preferences, reviews, config, analytics, intelligence, automation, feedback, marketing_enhancement, migration, health, tiktok, scheduler, data_intelligence, rag, predictive, ads, kakao_channel, telegram_webhook
+from routers import hud, pathfinder, battle, leads, viral, competitors, instagram, backup, agent, qa, export, notifications, preferences, reviews, config, analytics, intelligence, automation, feedback, marketing_enhancement, migration, health, tiktok, data_intelligence, rag, predictive, ads, kakao_channel, telegram_webhook
 # [W3] aeo: 프론트 호출자 0건 + services/aeo 미구현으로 등록 제거. _archive/routers/aeo.py 보관
 from routers import viral_utm  # [T2] UTM 하위 라우터
 from routers import viral_templates  # [U1] 템플릿 하위 라우터
@@ -619,7 +621,8 @@ app.include_router(marketing_enhancement.router, prefix="/api/marketing", tags=[
 app.include_router(migration.router, prefix="/api/migration", tags=["Database Migration"])  # [Phase 1-4] 마이그레이션 관리
 app.include_router(health.router, prefix="/api/health", tags=["Health Check"])  # [Phase 3-1] 헬스체크
 app.include_router(tiktok.router, prefix="/api/tiktok", tags=["TikTok"])  # [고도화] 틱톡 멀티채널
-app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"])  # [Phase 4] 스케줄러 제어
+## Scheduler router intentionally removed. Jobs are now run on demand from Codex
+## natural-language commands instead of exposing scheduler control endpoints.
 app.include_router(data_intelligence.router, prefix="/api/data-intelligence", tags=["Data Intelligence"])  # [Phase 9] 정보 수집 고도화
 # [W3] app.include_router(aeo.router, ...) — 미사용으로 비활성화
 app.include_router(rag.router, prefix="/api/rag", tags=["RAG Intelligence"])  # [고도화 C-2] RAG 마케팅 인텔리전스

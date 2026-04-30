@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from 'react'
 import { UseMutationResult } from '@tanstack/react-query'
+import { CheckCircle2, ExternalLink, MessageSquarePlus, SkipForward, Trash2, Copy, Search, ThumbsUp, MessageSquareWarning } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { PlatformBadge } from '@/components/viral/PlatformBadge'
 import { ScanCountBadge } from '@/components/viral/ScanCountBadge'
@@ -80,6 +81,13 @@ const platformIcons: Record<string, string> = {
   karrot: '🥕 당근',
 }
 
+function getWorkLabel(target?: ViralTargetData | null) {
+  if (!target) return '대기'
+  if ((target.priority_score || 0) >= 90) return '최우선'
+  if ((target.priority_score || 0) >= 70) return '우선'
+  return '일반'
+}
+
 export function WorkView({
   selectedCategory,
   categoryTargets,
@@ -114,6 +122,24 @@ export function WorkView({
     }
   }, [expandedTargetId])
 
+  const activeTarget = categoryTargets.find((target) => target.id === expandedTargetId) || categoryTargets[0] || null
+  const activeComment = activeTarget
+    ? (expandedComments[activeTarget.id] ?? activeTarget.generated_comment ?? '')
+    : ''
+  const activeIndex = activeTarget
+    ? categoryTargets.findIndex((target) => target.id === activeTarget.id)
+    : -1
+
+  const submitFeedback = async (rating: 'good' | 'needs_edit' | 'bad', reason?: string) => {
+    if (!activeTarget) return
+    try {
+      await viralApi.recordTargetFeedback(activeTarget.id, rating, reason)
+      toast.success(rating === 'good' ? '좋은 댓글로 기록했습니다' : '수정 필요 의견을 기록했습니다')
+    } catch {
+      toast.error('품질 피드백 저장에 실패했습니다')
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* 헤더 */}
@@ -132,6 +158,127 @@ export function WorkView({
           <kbd className="px-1 py-0.5 bg-muted border border-border rounded">Esc</kbd> 접기
         </div>
       </div>
+
+      {/* 직원 작업 패널 */}
+      {activeTarget && (
+        <div className="sticky top-3 z-20 bg-card/95 backdrop-blur border border-border rounded-lg shadow-sm p-4">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-semibold px-2 py-1 rounded bg-primary/10 text-primary">
+                  {activeIndex + 1}/{categoryTargets.length}
+                </span>
+                <span className="text-xs font-semibold px-2 py-1 rounded bg-muted text-muted-foreground">
+                  {getWorkLabel(activeTarget)} · {activeTarget.priority_score?.toFixed(0) || 0}점
+                </span>
+                <PlatformBadge platform={activeTarget.platform} size="sm" />
+              </div>
+              <button
+                type="button"
+                onClick={() => onSetExpandedTargetId(activeTarget.id)}
+                className="block text-left font-semibold truncate max-w-full hover:text-primary"
+                title={activeTarget.title || ''}
+              >
+                {activeTarget.title || '제목 없음'}
+              </button>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {(activeTarget.matched_keywords || []).slice(0, 4).map((kw) => (
+                  <span key={kw} className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground">
+                    {kw}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => window.open(safeUrl(activeTarget.url), '_blank', 'noopener,noreferrer')}
+              >
+                <ExternalLink className="w-4 h-4" />
+                원문
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onVerifyTarget(activeTarget.id)}
+                loading={verifyTargetMutation.isPending}
+              >
+                <Search className="w-4 h-4" />
+                확인
+              </Button>
+              <Button
+                size="sm"
+                variant={activeComment ? 'outline' : 'primary'}
+                onClick={() => onGenerateComment(activeTarget.id, selectedCommentStyle)}
+                loading={generatingTargetId === activeTarget.id}
+              >
+                <MessageSquarePlus className="w-4 h-4" />
+                댓글
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!activeComment}
+                onClick={async () => {
+                  if (!activeComment) return
+                  await navigator.clipboard.writeText(activeComment)
+                  toast.success('댓글을 복사했습니다')
+                }}
+              >
+                <Copy className="w-4 h-4" />
+                복사
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!activeComment}
+                onClick={() => submitFeedback('good')}
+                title="좋은 댓글 초안으로 기록"
+              >
+                <ThumbsUp className="w-4 h-4" />
+                좋음
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!activeComment}
+                onClick={() => submitFeedback('needs_edit', 'staff_marked_needs_edit')}
+                title="수정이 필요한 댓글 초안으로 기록"
+              >
+                <MessageSquareWarning className="w-4 h-4" />
+                수정필요
+              </Button>
+              <Button
+                size="sm"
+                variant="success"
+                disabled={!activeComment}
+                onClick={() => onTargetAction(activeTarget.id, 'approve')}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                승인
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => onTargetAction(activeTarget.id, 'skip', 'unspecified')}
+                className="bg-yellow-500 hover:bg-yellow-600"
+              >
+                <SkipForward className="w-4 h-4" />
+                건너뜀
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => onTargetAction(activeTarget.id, 'delete')}
+              >
+                <Trash2 className="w-4 h-4" />
+                삭제
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

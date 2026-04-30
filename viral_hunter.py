@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mar
 from db.database import DatabaseManager
 from utils import ConfigManager, logger
 from services.ai_client import ai_generate, ai_generate_korean
+from core_services.viral_seed_builder import ViralSeedBuilder
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -64,6 +65,11 @@ class ViralTarget:
     priority_score: float = 0.0
     author: str = ""
     date_str: str = ""
+    source_scan_run_id: int = 0
+    matched_keyword_grade: str = ""
+    matched_keyword_kei: float = 0.0
+    matched_keyword_priority: float = 0.0
+    matched_keyword_category: str = ""
 
     def __post_init__(self):
         # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
@@ -116,6 +122,11 @@ class ViralTarget:
             'priority_score': self.priority_score,
             'author': self.author,
             'date_str': self.date_str,
+            'source_scan_run_id': self.source_scan_run_id,
+            'matched_keyword_grade': self.matched_keyword_grade,
+            'matched_keyword_kei': self.matched_keyword_kei,
+            'matched_keyword_priority': self.matched_keyword_priority,
+            'matched_keyword_category': self.matched_keyword_category,
         }
 
 
@@ -753,6 +764,28 @@ class CommentableFilter:
         "할인", "이벤트", "무료", "증정", "쿠폰"
     ]
 
+    # 질문/후기가 아니라 병의원 랜딩/SEO 홍보문처럼 보이는 표현
+    PROMOTIONAL_MEDICAL_PATTERNS = [
+        "최고의 선택", "맞춤 프로그램", "패키지", "건강한 변화", "성공하세요",
+        "도와드립니다", "안내드립니다", "소개합니다", "부담 없는", "요요없이",
+        "안전한 맞춤", "최적의", "체계적인 관리", "꼼꼼한 진료", "맞춤 진료",
+        "이런 분께 추천", "이런 분들에게", "본원에서는", "저희 병원",
+        "저희 한의원", "내원해보세요", "예약하세요",
+    ]
+
+    # 자체 제작 랜딩/가이드형 의료 SEO 문서. Q&A라는 단어가 있어도 실제 질문글이 아니다.
+    STRICT_MEDICAL_PROMO_PATTERNS = [
+        "자주 묻는 질문", "q&a", "faq", "목표 설정", "전략 수립",
+        "가장 큰 장점", "개인별 맞춤", "맞춤형 다이어트 계획", "단계별 관리",
+        "시술 과정", "치료 과정", "관리 프로그램", "프로그램 안내",
+        "최고의 선택", "맞춤 프로그램", "건강한 변화", "성공하세요",
+        "부담 없는", "요요없이", "패키지 나왔", "최신 프로그램",
+        "건강한 다이어트", "건강하고 안정적인 감량", "건강하고 안전한 맞춤",
+        "배고플땐 먹기", "음식엔 죄가 없다", "빠지고 있다",
+        "순서만 잘 지켜도", "왜 먹는데", "성공 비법", "이제 가능합니다",
+        "부담없이 건강하게",
+    ]
+
     # NON_RELEVANT: 비관련 업종 - 무조건 제외
     NON_RELEVANT_EXCLUDE = [
         # 기존
@@ -766,7 +799,66 @@ class CommentableFilter:
         "취업", "구인", "알바", "채용공고",
         "중고", "판매합니다", "나눔", "양도",
         "자동차보험료", "자차보험", "차보험 견적",
+        "자탐 모임", "템플스테이", "조계사", "수녀님", "교역자 필독서",
+        "정책뉴스", "자격증취득", "국비지원무료교육",
     ]
+
+    # 검색어는 맞지만 실제 상담 영역이 다른 글. 예: "교정"이 치과 교정 글에 걸리는 경우.
+    OFF_DOMAIN_PATTERNS = {
+        "dental": [
+            "치과", "임플란트", "치아교정", "치열교정", "교정치과", "덧니",
+            "돌출입", "부정교합", "양악", "크라운", "라미네이트", "스케일링",
+            "신경치료", "충치", "잇몸", "사랑니", "치아", "브라켓", "인비절라인",
+        ],
+        "golf": [
+            "골프", "골프레슨", "골프연습장", "스크린골프", "필드레슨",
+            "골프장", "드라이버", "아이언", "퍼팅", "골프채",
+        ],
+        "cosmetic_clinic": [
+            "피부과", "프락셀", "레이저", "레이저토닝", "토닝", "필러",
+            "보톡스", "슈링크", "인모드", "울쎄라", "리쥬란", "스킨부스터",
+            "쥬베룩", "포텐자", "피코토닝",
+        ],
+        "fitness": [
+            "홈트레이닝", "홈트", "pt", "퍼스널트레이닝", "헬스장", "헬스",
+            "필라테스", "요가", "복싱", "무에타이", "킥복싱", "골프레슨",
+            "스포츠상해",
+        ],
+        "surgery": [
+            "지방이식", "가슴성형", "눈성형", "코성형", "쌍수", "양악",
+            "성형외과", "지방흡입", "윤곽수술",
+        ],
+        "urology": [
+            "전립선", "비뇨기", "요실금", "방광염", "발기부전", "prostate",
+        ],
+    }
+
+    DOMAIN_ANCHORS = {
+        "diet": [
+            "다이어트", "감량", "체중", "비만", "살빼", "식욕", "요요",
+            "한약", "다이어트약", "체지방", "뱃살", "허벅지", "한의원", "한방",
+        ],
+        "traffic": [
+            "교통사고", "자동차사고", "차사고", "사고", "자보", "자동차보험",
+            "입원", "후유증", "염좌", "추나", "한의원", "한방병원",
+        ],
+        "scar_skin": [
+            "여드름", "흉터", "여드름흉터", "패인흉터", "새살침", "모공",
+            "트러블", "피부", "자국", "한의원", "한방",
+        ],
+        "asymmetry": [
+            "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
+            "얼굴", "광대", "턱", "추나", "한의원", "한방",
+        ],
+        "body": [
+            "체형", "체형교정", "골반", "골반교정", "척추", "측만", "자세",
+            "거북목", "일자목", "추나", "통증", "한의원", "한방",
+        ],
+        "lifting": [
+            "리프팅", "탄력", "주름", "매선", "한방리프팅", "피부탄력",
+            "노화", "한의원", "한방",
+        ],
+    }
 
     # 사업 권역 지역 키워드 (제목 또는 본문에 하나 이상 포함돼야 통과)
     # 청주·세종·충주·제천·증평·보은·진천·옥천·영동·음성 및 동/지구 단위
@@ -796,7 +888,20 @@ class CommentableFilter:
         "병원", "의원", "치료", "시술", "원장", "진료",
         "예약", "상담", "방문", "다녀", "받았", "받고",
         "좋았", "괜찮", "만족", "불만", "실망", "추천드",
-        "알아보", "찾고", "구해", "필요", "원해", "하고싶"
+        "알아보", "찾고", "찾는중", "구해", "필요", "원해", "하고싶",
+        "해보려고", "하려고", "할까", "고민중", "고민 중",
+    ]
+
+    # 의료 명사(병원/치료/진료 등)를 제외한 실제 질문·탐색 신호
+    REAL_INQUIRY_PATTERNS = [
+        "추천", "어디", "궁금", "있을까요", "있나요", "알려주세요",
+        "다니시는분", "해보신분", "경험", "후기", "좋은곳", "잘하는",
+        "괜찮은", "어떤가요", "어때요", "고민", "도움", "상담", "문의", "질문",
+        "어디로", "어떻게", "뭐가", "효과", "가격", "비용", "예약",
+        "다녀", "받았", "받고", "좋았", "만족", "불만", "실망",
+        "알아보", "찾고", "찾는중", "구해", "필요", "원해", "하고싶",
+        "해보려고", "하려고", "할까", "고민중", "고민 중",
+        "?", "？",
     ]
 
     # 🔥 Hot Lead 키워드 (긴급/높은 전환율)
@@ -879,6 +984,76 @@ class CommentableFilter:
                 score += 5
         return min(score, 40)  # 최대 40점
 
+    @classmethod
+    def _keyword_domain(cls, matched_keywords: List[str]) -> str:
+        """검색 키워드가 어느 진료 축에 속하는지 추정한다."""
+        joined = " ".join(matched_keywords or []).lower()
+        if any(k in joined for k in ["교통사고", "자동차사고", "자보", "입원"]):
+            return "traffic"
+        if any(k in joined for k in ["다이어트", "비만", "감량", "체중"]):
+            return "diet"
+        if any(k in joined for k in ["여드름", "흉터", "새살침", "패인흉터", "모공"]):
+            return "scar_skin"
+        if any(k in joined for k in ["안면비대칭", "얼굴비대칭", "비대칭"]):
+            return "asymmetry"
+        if any(k in joined for k in ["체형", "골반", "척추", "측만", "자세"]):
+            return "body"
+        if any(k in joined for k in ["리프팅", "탄력", "매선", "주름"]):
+            return "lifting"
+        return "general"
+
+    @staticmethod
+    def _contains_any(text: str, patterns: List[str]) -> bool:
+        return any(pattern in text for pattern in patterns)
+
+    @classmethod
+    def _has_domain_anchor(cls, domain: str, text: str) -> bool:
+        """'교정'처럼 넓은 단어만으로 통과하지 않도록 핵심 맥락을 요구한다."""
+        if domain == "general":
+            return True
+        return cls._contains_any(text, cls.DOMAIN_ANCHORS.get(domain, []))
+
+    @classmethod
+    def _is_off_domain(cls, domain: str, text: str) -> bool:
+        """핵심 키워드와 무관한 업종/시술 글을 저장 전 제외한다."""
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["dental"]):
+            return domain in {"asymmetry", "body", "general"}
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["golf"]):
+            return domain in {"body", "general"}
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["cosmetic_clinic"]):
+            hanbang_skin_context = cls._contains_any(text, ["새살침", "한의원", "한방", "침치료"])
+            return domain in {"scar_skin", "lifting", "general"} and not hanbang_skin_context
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["fitness"]):
+            medical_diet_context = cls._contains_any(
+                text, ["한약", "한의원", "한방", "처방", "마운자로", "위고비", "삭센다", "비만"]
+            )
+            if domain == "diet":
+                return not medical_diet_context
+            return domain in {"body", "general"}
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["surgery"]):
+            return True
+        if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["urology"]):
+            return True
+        return False
+
+    @classmethod
+    def final_reject_reason(cls, target: ViralTarget) -> Optional[str]:
+        """AI 적합 판정 이후 DB 저장 직전의 마지막 품질 게이트."""
+        title = (target.title or "").lower()
+        body = (target.content_preview or "").lower()
+        text = f"{title} {body}"
+        domain = cls._keyword_domain(target.matched_keywords)
+
+        if cls._is_off_domain(domain, text):
+            return "off_domain"
+        if cls._contains_any(text, cls.NON_RELEVANT_EXCLUDE):
+            return "non_relevant"
+        if not cls._has_domain_anchor(domain, text):
+            return "domain_mismatch"
+        if cls._contains_any(text, cls.STRICT_MEDICAL_PROMO_PATTERNS):
+            return "medical_promo"
+        return None
+
     @staticmethod
     def _load_self_exclusion() -> Dict[str, List[str]]:
         """business_profile.json에서 자기 업체 제외 규칙 로드 (모듈 시작 시 1회)."""
@@ -926,7 +1101,8 @@ class CommentableFilter:
         """
         filtered = []
         stats = {'self_excluded': 0, 'ad': 0, 'non_relevant': 0, 'too_short': 0,
-                 'no_region': 0, 'title_only': 0, 'not_inquiry_health': 0}
+                 'no_region': 0, 'title_only': 0, 'domain_mismatch': 0,
+                 'off_domain': 0, 'not_inquiry_health': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
@@ -938,13 +1114,24 @@ class CommentableFilter:
             title_lower = (target.title or '').lower()
             body_lower = (target.content_preview or '').lower()
             text = f"{title_lower} {body_lower}"
+            domain = self._keyword_domain(target.matched_keywords)
+            early_is_inquiry = any(pat in text for pat in self.REAL_INQUIRY_PATTERNS)
 
             # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
             if any(ad in text for ad in self.STRICT_AD_PATTERNS):
                 stats['ad'] += 1
                 continue
+            if any(ad in text for ad in self.STRICT_MEDICAL_PROMO_PATTERNS):
+                stats['ad'] += 1
+                continue
+            if not early_is_inquiry and any(ad in text for ad in self.PROMOTIONAL_MEDICAL_PATTERNS):
+                stats['ad'] += 1
+                continue
             if any(ad in text for ad in self.NON_RELEVANT_EXCLUDE):
                 stats['non_relevant'] += 1
+                continue
+            if self._is_off_domain(domain, text):
+                stats['off_domain'] += 1
                 continue
 
             # 2. 본문 최소 길이
@@ -965,12 +1152,15 @@ class CommentableFilter:
                 if tokens and not any(tok in body_lower for tok in tokens):
                     stats['title_only'] += 1
                     continue
+                if not self._has_domain_anchor(domain, text):
+                    stats['domain_mismatch'] += 1
+                    continue
 
             # SOFT 광고 키워드는 감점만
             soft_ad_penalty = sum(-5 for kw in self.SOFT_AD_INDICATORS if kw in text)
 
             # 5. 질문글 여부
-            is_inquiry = any(pat in text for pat in self.INQUIRY_PATTERNS)
+            is_inquiry = early_is_inquiry
 
             # 6. 건강 관련 여부
             is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
@@ -1053,7 +1243,8 @@ class CommentableFilter:
             f"✅ 필터링 완료: {len(targets)}개 -> {len(filtered)}개 (댓글 가능) "
             f"[제외: 광고 {stats['ad']}, 비관련 {stats['non_relevant']}, "
             f"단문 {stats['too_short']}, 지역외 {stats['no_region']}, "
-            f"제목만 {stats['title_only']}, 무관 {stats['not_inquiry_health']}]"
+            f"제목만 {stats['title_only']}, 축불일치 {stats['domain_mismatch']}, "
+            f"오프도메인 {stats['off_domain']}, 무관 {stats['not_inquiry_health']}]"
         )
         return filtered
 
@@ -1532,6 +1723,17 @@ POST_ID: {i}
                 if err:
                     logger.warning(f"   ⚠️ 배치 {batch_idx} 실패({err}) → 보수적 적합 처리")
 
+                final_suitable = []
+                final_rejected = 0
+                for t in suitable:
+                    reject_reason = CommentableFilter.final_reject_reason(t)
+                    if reject_reason:
+                        final_rejected += 1
+                        logger.debug(f"최종 게이트 제외({reject_reason}): {t.title[:60]}")
+                        continue
+                    final_suitable.append(t)
+                suitable = final_suitable
+
                 # 즉시 DB 저장
                 newly_saved = 0
                 if db is not None:
@@ -1548,7 +1750,8 @@ POST_ID: {i}
                     processed_since_checkpoint += 1
                     logger.info(
                         f"   ✅ 배치 {batch_idx}/{total_batches} 완료 "
-                        f"(적합 {len(suitable)}, 부적합 {unsuit}, 경쟁사 {comp}, 저장 {newly_saved}) "
+                        f"(적합 {len(suitable)}, 최종제외 {final_rejected}, "
+                        f"부적합 {unsuit}, 경쟁사 {comp}, 저장 {newly_saved}) "
                         f"[누적 {len(done_batches)}/{total_batches}]"
                     )
                     # 체크포인트 저장
@@ -1788,8 +1991,10 @@ class ViralHunter:
         self.searcher = NaverUnifiedSearch()
         self.filter = CommentableFilter()
         self.generator = AICommentGenerator()
+        self.seed_builder = ViralSeedBuilder()
+        self.keyword_context: Dict[str, dict] = {}
 
-    def _load_keywords(self) -> List[str]:
+    def _load_keywords(self, use_latest_legion: bool = True) -> List[str]:
         """
         Pathfinder 전용 모드 - 검증된 키워드만 사용
 
@@ -1798,6 +2003,22 @@ class ViralHunter:
         - 100% Pathfinder 검증 키워드만 사용
         - 자동 업데이트 지원
         """
+        if use_latest_legion:
+            seeds = self.seed_builder.build()
+            if seeds:
+                self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
+                scan_id = seeds[0].scan_run_id
+                categories = {}
+                for seed in seeds:
+                    categories[seed.category] = categories.get(seed.category, 0) + 1
+                logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                logger.info(f"🎯 최신 Legion scan #{scan_id} 기반 Viral seed {len(seeds)}개 로드")
+                for category, count in categories.items():
+                    logger.info(f"   • {category}: {count}개")
+                logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                return [seed.keyword for seed in seeds]
+            logger.warning("⚠️ 최신 Legion 기반 seed를 찾지 못해 legacy keyword loader로 폴백합니다")
+
         keywords = set()
         keyword_sources = {
             'targets_json': 0,
@@ -1945,6 +2166,27 @@ class ViralHunter:
 
         return list(keywords)
 
+    def _load_keyword_context(self):
+        """Load latest Legion context for provided/custom keyword runs."""
+        if self.keyword_context:
+            return
+        seeds = self.seed_builder.build()
+        self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
+
+    def _apply_keyword_context(self, target: ViralTarget) -> ViralTarget:
+        """Attach Pathfinder lineage to a search result before filtering/storage."""
+        if not target.matched_keywords:
+            return target
+        ctx = self.keyword_context.get(target.matched_keywords[0])
+        if not ctx:
+            return target
+        target.source_scan_run_id = int(ctx.get("scan_run_id") or 0)
+        target.matched_keyword_grade = ctx.get("grade") or ""
+        target.matched_keyword_kei = float(ctx.get("kei") or 0)
+        target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
+        target.matched_keyword_category = ctx.get("category") or ""
+        return target
+
     # ── 체크포인트 유틸 ────────────────────────────────────────────────
 
     def _checkpoint_path(self) -> str:
@@ -2008,12 +2250,18 @@ class ViralHunter:
             priority_score=d.get('priority_score', 0.0),
             author=d.get('author', ''),
             date_str=d.get('date_str', ''),
+            source_scan_run_id=d.get('source_scan_run_id', 0) or 0,
+            matched_keyword_grade=d.get('matched_keyword_grade', '') or '',
+            matched_keyword_kei=d.get('matched_keyword_kei', 0.0) or 0.0,
+            matched_keyword_priority=d.get('matched_keyword_priority', 0.0) or 0.0,
+            matched_keyword_category=d.get('matched_keyword_category', '') or '',
         )
 
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
-             top_n_for_ai: int = 10000, ai_parallel: int = 5) -> List[ViralTarget]:
+             top_n_for_ai: int = 10000, ai_parallel: int = 5,
+             use_latest_legion: bool = True) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -2029,7 +2277,9 @@ class ViralHunter:
             발견된 ViralTarget 리스트
         """
         if keywords is None:
-            keywords = self._load_keywords()
+            keywords = self._load_keywords(use_latest_legion=use_latest_legion)
+        else:
+            self._load_keyword_context()
 
         if limit_keywords:
             keywords = keywords[:limit_keywords]
@@ -2088,6 +2338,7 @@ class ViralHunter:
             for target in results:
                 if target.url not in seen_urls:
                     seen_urls.add(target.url)
+                    self._apply_keyword_context(target)
                     all_targets.append(target)
 
             processed_set.add(kw)
@@ -2169,7 +2420,15 @@ class ViralHunter:
         # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
         raw_saved = 0
         if rest_targets:
+            before_final_gate = len(rest_targets)
+            rest_targets = [
+                t for t in rest_targets
+                if not CommentableFilter.final_reject_reason(t)
+            ]
+            final_gate_removed = before_final_gate - len(rest_targets)
             print(f"\n💾 Raw 저장 (AI 제외 {len(rest_targets)}개, 휴리스틱 점수 기준)...")
+            if final_gate_removed:
+                print(f"   🧹 최종 게이트 제외: {final_gate_removed}개")
             for t in rest_targets:
                 if self.db.insert_viral_target(t.to_dict()):
                     raw_saved += 1
@@ -2402,6 +2661,7 @@ def main():
     parser.add_argument('--test-comment', action='store_true', help='댓글 생성 테스트')
     parser.add_argument('--no-db', action='store_true', help='DB 저장 없이 결과만 출력 (WSL 호환)')
     parser.add_argument('--fresh', action='store_true', help='체크포인트 무시하고 처음부터 스캔')
+    parser.add_argument('--legacy-keywords', action='store_true', help='최신 Legion curated seed 대신 기존 누적 키워드 로더 사용')
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
     parser.add_argument('--top-n-for-ai', type=int, default=10000, help='AI 분석 대상 상위 N개 (나머지는 raw 저장, 기본 10000)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
@@ -2444,29 +2704,8 @@ def main():
         generator = AICommentGenerator()
 
         # 키워드 로드
-        keywords = set()
-        try:
-            targets = cfg.load_targets()
-            for kw in targets.get('community_scan_keywords', []):
-                keywords.add(kw)
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            logger.debug(f"targets.json 로드 실패: {e}")
-
-        try:
-            campaigns_path = os.path.join(cfg.root_dir, 'config', 'campaigns.json')
-            if os.path.exists(campaigns_path):
-                with open(campaigns_path, 'r', encoding='utf-8') as f:
-                    campaigns = json.load(f)
-                for target in campaigns.get('targets', []):
-                    for seed in target.get('seeds', []):
-                        keywords.add(seed)
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            logger.debug(f"campaigns.json 로드 실패: {e}")
-
-        if not keywords:
-            keywords = {"청주 한의원", "청주 다이어트"}
-
-        keywords = list(keywords)
+        seeds = ViralSeedBuilder().build()
+        keywords = [seed.keyword for seed in seeds] or ["청주 한의원", "청주 다이어트"]
         if args.limit_keywords:
             keywords = keywords[:args.limit_keywords]
 
@@ -2561,7 +2800,8 @@ def main():
         keywords = [args.keyword] if args.keyword else None
         hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords,
                     fresh=args.fresh, checkpoint_every=args.checkpoint_every,
-                    top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel)
+                    top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel,
+                    use_latest_legion=not args.legacy_keywords)
         return
 
     if args.generate:

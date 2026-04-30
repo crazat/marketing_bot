@@ -1,4 +1,4 @@
 @echo off
-echo Starting Kyurim MKT OS - Chronos Scheduler...
-python scheduler.py
+echo Chronos Scheduler is disabled.
+echo Use Codex natural-language commands to run marketing jobs on demand.
 pause

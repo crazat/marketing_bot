@@ -208,15 +208,7 @@ class QueryOptimizer:
                     k.search_volume as keyword_volume,
                     k.category as keyword_category
                 FROM viral_targets v
-                LEFT JOIN keyword_insights k ON (
-                    k.keyword = TRIM(
-                        SUBSTR(
-                            REPLACE(v.matched_keywords, '[', ''),
-                            1,
-                            INSTR(REPLACE(v.matched_keywords, '[', '') || ',', ',') - 1
-                        )
-                    )
-                )
+                LEFT JOIN keyword_insights k ON k.keyword = v.matched_keyword
                 {where_sql}
                 ORDER BY v.priority_score DESC
                 LIMIT ? OFFSET ?

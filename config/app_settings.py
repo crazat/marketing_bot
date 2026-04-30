@@ -68,7 +68,7 @@ class AppSettings:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         self.hud_refresh_interval: int = self._get_int('HUD_REFRESH_INTERVAL', 60)
         self.scheduler_check_interval: int = self._get_int('SCHEDULER_CHECK_INTERVAL', 60)
-        self.scheduler_enabled: bool = self._get_bool('SCHEDULER_ENABLED', True)
+        self.scheduler_enabled: bool = self._get_bool('SCHEDULER_ENABLED', False)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 리드 스코어링 설정

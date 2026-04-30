@@ -69,8 +69,9 @@ class SchedulerService:
         self.root_dir = self.config.root_dir
 
     def start(self):
-        logger.info("⏰ Scheduler Service Started. Waiting for jobs...")
-        self.alert_system.bot.send_message("⏰ Marketing OS v5.2 (Swarm+) Online.")
+        logger.info("⏰ Scheduler Service is disabled. Use Codex natural-language commands to run jobs.")
+        self.alert_system.bot.send_message("⏰ 자동 스케줄러는 비활성화되었습니다. Codex 대화로 필요한 작업만 실행합니다.")
+        return
 
         # [Phase 4] Auto Rescan Handler 초기화
         if HAS_AUTO_RESCAN:

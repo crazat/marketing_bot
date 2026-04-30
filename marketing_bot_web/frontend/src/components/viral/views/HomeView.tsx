@@ -1,22 +1,10 @@
-/**
- * Viral Hunter - 홈 화면
- * 전체 현황, 플랫폼별 통계, 카테고리 카드, 스캔 실행
- */
-
 import { UseMutationResult } from '@tanstack/react-query'
 import Button from '@/components/ui/Button'
 import MissionProgress from '@/components/ui/MissionProgress'
-import { PerformanceDashboard } from '@/components/viral/PerformanceDashboard'
-import { CommentPerformance } from '@/components/viral/CommentPerformance'
-import { TrendInsights } from '@/components/viral/TrendInsights'
-import { ViralCharts } from '@/components/viral/ViralCharts'
 import TodaysQueue from '@/components/viral/TodaysQueue'
-import KpiWidget from '@/components/viral/KpiWidget'
 import { ScanBatch } from '@/components/viral/FilterBar'
 import { CategoryStatResult } from '@/types/viral'
 import { HomeStats } from '@/services/api/viral'
-import { TerminalGuide } from '@/components/ui/TerminalGuide'
-import { getPageCommands } from '@/utils/terminalCommands'
 
 interface ViralStats {
   total_targets: number
@@ -37,21 +25,35 @@ interface ScanSettings {
 }
 
 interface HomeViewProps {
-  // 데이터
   stats?: ViralStats
-  homeStats?: HomeStats  // [Phase 9.0] 백엔드 집계 통계
+  homeStats?: HomeStats
+  qualitySummary?: {
+    feedback_total: number
+    acceptance_rate: number | null
+    edit_rate: number | null
+    feedback_by_rating: Record<string, number>
+  } | null
+  opsStatus?: {
+    audit_events: number
+    feedback_events: number
+    api_auth_enabled: boolean
+    backup: {
+      total_backups?: number
+      days_since_backup?: number | null
+      db_size_mb?: number
+      error?: string
+    }
+  } | null
   scanBatches?: ScanBatch[]
   platformStats: Record<string, PlatformStat>
   categoryStats: CategoryStatResult[]
 
-  // 스캔 상태
   scanningModule: string | null
   isScanning: boolean
   showScanSettings: boolean
   scanSettings: ScanSettings
   homeScanBatch: string
 
-  // 검증 상태
   isVerifying: boolean
   verifyLimit: number
   verifyResults: {
@@ -60,13 +62,11 @@ interface HomeViewProps {
     not_commentable: number
   } | null
 
-  // 핸들러
   onMissionComplete: () => void
   onMissionStop: () => void
   onSelectCategory: (category: string) => void
   onBatchVerify: (category: string | undefined, limit: number) => void
   onViewList: () => void
-  // [V2] KPI 카드 클릭 → 필터링된 ListView 이동
   onKpiNavigate?: (target: 'pending' | 'today_processed' | 'week_processed' | 'hot_pending') => void
   onToggleScanSettings: () => void
   onScanSettingsChange: (settings: ScanSettings) => void
@@ -76,25 +76,29 @@ interface HomeViewProps {
   stopScan: () => Promise<void>
 }
 
-const platformIcons: Record<string, { icon: string; label: string }> = {
-  cafe: { icon: '☕', label: '네이버 카페' },
-  blog: { icon: '📝', label: '블로그' },
-  kin: { icon: '❓', label: '지식iN' },
-  youtube: { icon: '📺', label: '유튜브' },
-  instagram: { icon: '📸', label: '인스타그램' },
-  tiktok: { icon: '🎵', label: '틱톡' },
-  place: { icon: '📍', label: '플레이스' },
-  karrot: { icon: '🥕', label: '당근' },
-  other: { icon: '📌', label: '기타' },
+const allPlatforms = ['cafe', 'blog', 'kin', 'place', 'karrot', 'youtube', 'instagram', 'tiktok']
+
+const platformLabels: Record<string, string> = {
+  cafe: '카페',
+  blog: '블로그',
+  kin: '지식iN',
+  place: '플레이스',
+  karrot: '당근',
+  youtube: 'YouTube',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
 }
 
-const allPlatforms = ['cafe', 'blog', 'kin', 'place', 'karrot', 'youtube', 'instagram', 'tiktok']
+function formatCount(value?: number) {
+  return (value || 0).toLocaleString('ko-KR')
+}
 
 export function HomeView({
   stats,
   homeStats,
+  qualitySummary,
+  opsStatus,
   scanBatches,
-  platformStats,
   categoryStats,
   scanningModule,
   isScanning,
@@ -109,7 +113,6 @@ export function HomeView({
   onSelectCategory,
   onBatchVerify,
   onViewList,
-  onKpiNavigate,
   onToggleScanSettings,
   onScanSettingsChange,
   onVerifyLimitChange,
@@ -117,42 +120,87 @@ export function HomeView({
   runScanMutation,
   stopScan,
 }: HomeViewProps) {
+  const workTotal = homeStats?.total_count ?? 0
+  const processedTotal = (stats?.posted || 0) + (stats?.skipped || 0)
+
   return (
     <div className="space-y-6">
-      {/* 헤더 */}
-      <div className="text-center py-8 border-b border-border">
-        <h1 className="text-4xl font-bold bg-gradient-to-r from-yellow-500 to-red-500 bg-clip-text text-transparent mb-2">
-          🔥 바이럴 헌터 워크스테이션
-        </h1>
-        <p className="text-muted-foreground">카테고리별 우선순위 작업 시스템</p>
-      </div>
-
-      {/* [2026-04-28] 오늘 작업 진입 prominent 카드 — 직원이 매일 첫 화면에서 즉시 진입 */}
-      <div className="text-center">
-        <button
-          onClick={onViewList}
-          className="bg-gradient-to-br from-orange-500/20 to-red-500/20 border-2 border-orange-400 rounded-xl px-8 py-6 text-lg font-bold hover:from-orange-500/30 hover:to-red-500/30 transition-all"
-          title="자연 질문 + 청주 + 미용 특화 매칭 high — 댓글 작성 ROI 가장 높은 큐"
-        >
-          🎯 오늘 우선 처리 골든큐 (280건) — 지금 작업 시작 →
-        </button>
-        <div className="mt-3">
-          <Button onClick={onViewList} variant="outline" title="여러 카테고리를 가로질러 필터링하고 일괄 승인/스킵/삭제하는 모드">
-            📋 일괄 작업 모드 (전체 관리)
-          </Button>
+      <section className="border-b border-border pb-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-normal">바이럴 댓글 작업</h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              최신 Legion 스캔에서 나온 핵심 진료 카테고리만 기본 작업 큐로 보여줍니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onViewList} variant="primary" size="lg">
+              전체 작업 목록
+            </Button>
+            {isScanning ? (
+              <Button onClick={stopScan} variant="danger" size="lg">
+                스캔 중지
+              </Button>
+            ) : (
+              <Button onClick={() => runScanMutation.mutate()} variant="outline" size="lg">
+                새 스캔 실행
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
+      </section>
 
-      {/* [U6/V2] KPI 위젯 — 카드 클릭으로 ListView 진입 */}
-      <KpiWidget onNavigate={onKpiNavigate} />
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">현재 작업 큐</div>
+          <div className="mt-1 text-2xl font-bold">{formatCount(workTotal)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">전체 대기</div>
+          <div className="mt-1 text-2xl font-bold">{formatCount(stats?.pending)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">처리 완료</div>
+          <div className="mt-1 text-2xl font-bold">{formatCount(processedTotal)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">댓글 가능 검증</div>
+          <div className="mt-1 text-2xl font-bold">
+            {verifyResults ? `${verifyResults.commentable}/${verifyResults.total}` : '-'}
+          </div>
+        </div>
+      </section>
 
-      {/* [U1] 오늘의 작업 큐 — 최우선 노출 */}
-      <TodaysQueue
-        onOpenCategory={(cat) => onSelectCategory(cat)}
-      />
+      <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">댓글 품질 피드백</div>
+          <div className="mt-1 text-2xl font-bold">
+            {qualitySummary?.feedback_total ?? 0}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            좋음 {qualitySummary?.feedback_by_rating?.good ?? 0} / 수정필요 {qualitySummary?.feedback_by_rating?.needs_edit ?? 0}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">초안 수용률</div>
+          <div className="mt-1 text-2xl font-bold">
+            {qualitySummary?.acceptance_rate != null ? `${qualitySummary.acceptance_rate}%` : '-'}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            최근 14일 직원 피드백 기준
+          </div>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-xs text-muted-foreground">운영 기록 / 백업</div>
+          <div className="mt-1 text-2xl font-bold">
+            {opsStatus?.audit_events ?? 0}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            마지막 백업 {opsStatus?.backup?.days_since_backup ?? '-'}일 전
+          </div>
+        </div>
+      </section>
 
-
-      {/* 실시간 스캔 진행 상황 */}
       {scanningModule && (
         <MissionProgress
           moduleName={scanningModule}
@@ -162,246 +210,24 @@ export function HomeView({
         />
       )}
 
-      {/* 전체 현황 */}
-      <div>
-        <h2 className="text-2xl font-bold mb-4">📊 전체 현황</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-card border border-border rounded-lg p-6 text-center">
-            <div className="text-4xl font-bold text-yellow-500">{stats?.total_targets || 0}</div>
-            <div className="text-sm text-muted-foreground mt-2">총 타겟</div>
-          </div>
-          <div className="bg-card border border-border rounded-lg p-6 text-center">
-            <div className="text-4xl font-bold text-yellow-500">{stats?.pending || 0}</div>
-            <div className="text-sm text-muted-foreground mt-2">⏳ 대기중</div>
-          </div>
-          <div className="bg-card border border-border rounded-lg p-6 text-center">
-            <div className="text-4xl font-bold text-green-500">{stats?.posted || 0}</div>
-            <div className="text-sm text-muted-foreground mt-2">✅ 완료</div>
-          </div>
-          <div className="bg-card border border-border rounded-lg p-6 text-center">
-            <div className="text-4xl font-bold text-blue-500">{stats?.skipped || 0}</div>
-            <div className="text-sm text-muted-foreground mt-2">⏭️ 건너뜀</div>
-          </div>
-        </div>
-      </div>
+      <TodaysQueue onOpenCategory={(category) => onSelectCategory(category)} />
 
-      {/* 플랫폼별 통계 */}
-      {Object.keys(platformStats).length > 0 && (
-        <div>
-          <h2 className="text-lg font-semibold mb-3">📊 플랫폼별 현황</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Object.entries(platformStats).map(([platform, platformData]) => {
-              const info = platformIcons[platform] || platformIcons.other
-              const statData = platformData as PlatformStat
-              return (
-                <div
-                  key={platform}
-                  className="bg-card border border-border rounded-lg p-4 hover:border-primary/50 transition-colors"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xl">{info.icon}</span>
-                    <span className="font-medium text-sm">{info.label}</span>
-                  </div>
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    <div className="flex justify-between">
-                      <span>타겟 수:</span>
-                      <span className="font-semibold text-foreground">{statData.count}개</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>평균 점수:</span>
-                      <span className="font-semibold text-foreground">{statData.avgScore.toFixed(1)}점</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>최고 점수:</span>
-                      <span className="font-semibold text-foreground">{statData.maxScore.toFixed(0)}점</span>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Decision Intelligence 컴포넌트들 */}
-      <PerformanceDashboard compact={true} />
-      <CommentPerformance days={30} compact={true} />
-      <TrendInsights compact={false} />
-
-      {/* [Phase 9.0] 데이터 시각화 - 백엔드 집계 통계 사용 */}
-      {homeStats && (
-        <ViralCharts statsData={homeStats} compact={true} />
-      )}
-
-      {/* 스캔 실행 */}
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="flex items-center justify-between">
+      <section className="rounded-lg border border-border bg-card p-5">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h3 className="text-lg font-semibold mb-1">🔍 바이럴 타겟 스캔</h3>
-            <p className="text-sm text-muted-foreground">
-              네이버 블로그, 카페, 지식iN에서 새로운 타겟을 발굴합니다
+            <h2 className="text-xl font-bold">카테고리별 작업</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              직원은 아래 카테고리에서 바로 댓글 작업을 시작하면 됩니다.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <Button onClick={onToggleScanSettings} variant="secondary" size="sm">
-              ⚙️ 설정 {showScanSettings ? '접기' : '펼치기'}
-            </Button>
-            {isScanning ? (
-              <Button onClick={stopScan} variant="danger" size="lg">
-                ⏹️ 스캔 중지
-              </Button>
-            ) : (
-              <Button
-                onClick={() => runScanMutation.mutate()}
-                size="lg"
-                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600"
-              >
-                🔍 스캔 실행
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* 스캔 설정 패널 */}
-        {showScanSettings && (
-          <div className="mt-4 pt-4 border-t border-border space-y-4">
-            {/* 플랫폼 선택 */}
-            <div>
-              <label className="block text-sm font-medium mb-2">플랫폼 선택</label>
-              <div className="flex flex-wrap gap-2">
-                {allPlatforms.map((platform) => {
-                  const info = platformIcons[platform] || platformIcons.other
-                  const isSelected = scanSettings.platforms.includes(platform)
-                  return (
-                    <button
-                      key={platform}
-                      onClick={() => {
-                        const newPlatforms = isSelected
-                          ? scanSettings.platforms.filter((p) => p !== platform)
-                          : [...scanSettings.platforms, platform]
-                        onScanSettingsChange({ ...scanSettings, platforms: newPlatforms })
-                      }}
-                      className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                        isSelected
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground hover:bg-accent'
-                      }`}
-                    >
-                      {info.icon} {info.label}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* 최대 결과 수 */}
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                최대 결과 수: {scanSettings.maxResults}개
-              </label>
-              <input
-                type="range"
-                min="100"
-                max="1000"
-                step="100"
-                value={scanSettings.maxResults}
-                onChange={(e) =>
-                  onScanSettingsChange({
-                    ...scanSettings,
-                    maxResults: parseInt(e.target.value),
-                  })
-                }
-                className="w-full"
-              />
-              <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                <span>100</span>
-                <span>500</span>
-                <span>1000</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 터미널 실행 가이드 */}
-        <div className="mt-4">
-          <TerminalGuide commands={getPageCommands('viral')} />
-        </div>
-      </div>
-
-      {/* 일괄 검증 */}
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-semibold mb-1">🔍 타겟 일괄 검증</h3>
-            <p className="text-sm text-muted-foreground">
-              댓글 작성 가능 여부를 일괄 확인합니다
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={verifyLimit}
-              onChange={(e) => onVerifyLimitChange(Number(e.target.value))}
-              className="px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              disabled={isVerifying}
-            >
-              <option value={20}>20개</option>
-              <option value={50}>50개</option>
-              <option value={100}>100개</option>
-              <option value={200}>200개</option>
-              <option value={0}>전체</option>
-            </select>
-            <Button
-              onClick={() => onBatchVerify(undefined, verifyLimit)}
-              loading={isVerifying}
-              size="lg"
-              className="bg-blue-500 hover:bg-blue-600"
-            >
-              🔍 검증 시작 {verifyLimit === 0 ? '(전체)' : `(${verifyLimit}개)`}
-            </Button>
-          </div>
-        </div>
-        {verifyResults && (
-          <div className="mt-4 p-4 bg-muted/50 rounded-lg">
-            <div className="flex items-center gap-6">
-              <div className="text-center">
-                <div className="text-2xl font-bold">{verifyResults.total}</div>
-                <div className="text-xs text-muted-foreground">검증됨</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-green-500">{verifyResults.commentable}</div>
-                <div className="text-xs text-muted-foreground">댓글 가능</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-red-500">{verifyResults.not_commentable}</div>
-                <div className="text-xs text-muted-foreground">댓글 불가</div>
-              </div>
-              <div className="flex-1 text-right">
-                <div className="text-sm text-muted-foreground">
-                  성공률:{' '}
-                  <span className="font-bold text-green-500">
-                    {verifyResults.total > 0
-                      ? ((verifyResults.commentable / verifyResults.total) * 100).toFixed(1)
-                      : 0}%
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 카테고리 카드 */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold">🎯 카테고리별 작업</h2>
           {scanBatches && scanBatches.length > 0 && (
             <select
               value={homeScanBatch}
-              onChange={(e) => onHomeScanBatchChange(e.target.value)}
-              className="px-3 py-2 bg-card border border-border rounded-lg text-sm"
+              onChange={(event) => onHomeScanBatchChange(event.target.value)}
+              className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
             >
-              <option value="">전체 스캔</option>
-              {scanBatches.map((batch) => (
+              <option value="">최신 작업 큐</option>
+              {scanBatches.slice(0, 12).map((batch) => (
                 <option key={batch.batch_id} value={batch.batch_id}>
                   {batch.batch_label}
                 </option>
@@ -411,108 +237,144 @@ export function HomeView({
         </div>
 
         {categoryStats.length === 0 ? (
-          <section
-            aria-label="대기 타겟 없음"
-            className="relative bg-card border border-border p-10 md:p-12 overflow-hidden"
-          >
-            <span
-              aria-hidden
-              className="absolute right-6 top-2 text-[10rem] md:text-[12rem] leading-none font-display text-foreground/[0.03] select-none pointer-events-none"
+          <div className="rounded-lg border border-dashed border-border p-8 text-center">
+            <div className="text-lg font-semibold">작업할 타겟이 없습니다</div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              새 스캔을 실행하면 최신 Legion 기반 작업 큐가 다시 채워집니다.
+            </p>
+            <Button
+              onClick={() => runScanMutation.mutate()}
+              disabled={isScanning}
+              variant="primary"
+              size="lg"
+              className="mt-4"
             >
-              空
-            </span>
-            <div className="relative max-w-xl">
-              <div className="caps text-muted-foreground mb-4">Empty Queue · 대기 없음</div>
-              <h3 className="font-display text-2xl md:text-3xl leading-tight mb-3">
-                오늘 처리할 타겟이 없습니다
-              </h3>
-              <p className="text-sm md:text-base text-muted-foreground leading-relaxed mb-6">
-                좋은 상태예요. 새로운 바이럴 스캔을 실행해 잠재 고객이 있는
-                블로그·카페·지식인 글을 발굴해 보세요. 스캔은 보통 1–2시간이 걸립니다.
-              </p>
-              <ol className="text-sm text-muted-foreground space-y-2 mb-7 border-l border-border pl-4">
-                <li><span className="font-display text-primary mr-2">01</span>스캔 실행 → 바이럴 타겟 수집</li>
-                <li><span className="font-display text-primary mr-2">02</span>AI 댓글 생성 → 승인/스킵</li>
-                <li><span className="font-display text-primary mr-2">03</span>네이버·카페 현장에 댓글 게시</li>
-              </ol>
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  onClick={() => runScanMutation.mutate()}
-                  disabled={isScanning}
-                  variant="primary"
-                  size="lg"
-                >
-                  🚀 지금 스캔 실행
-                </Button>
-                <Button onClick={onViewList} variant="ghost" size="lg" title="필터·일괄 처리 모드">
-                  📋 일괄 작업 모드
-                </Button>
-              </div>
-            </div>
-          </section>
+              새 스캔 실행
+            </Button>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {categoryStats.map(({ category, count, avgScore, maxScore, priority }) => (
-              <div
-                key={category}
-                className="bg-card border border-border rounded-lg p-6 hover:border-primary/50 transition-all group"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xl font-bold">{category}</h3>
-                  <span className="text-3xl font-bold text-yellow-500">{count}</span>
-                </div>
-
-                <div className="space-y-2 text-sm text-muted-foreground mb-4">
-                  <div className="flex justify-between">
-                    <span>평균 우선순위:</span>
-                    <span className="font-semibold text-foreground">{avgScore.toFixed(1)}점</span>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {categoryStats.map(({ category, count, avgScore }) => (
+              <div key={category} className="rounded-lg border border-border bg-background p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-bold">{category}</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      평균 우선순위 {avgScore.toFixed(1)}점
+                    </p>
                   </div>
-                  <div className="flex justify-between">
-                    <span>최고 우선순위:</span>
-                    <span className="font-semibold text-foreground">{maxScore.toFixed(0)}점</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>작업 우선도:</span>
-                    <span className="font-semibold text-foreground">{priority.toFixed(0)}</span>
-                  </div>
+                  <div className="text-2xl font-bold text-primary">{formatCount(count)}</div>
                 </div>
-
-                {/* 우선순위 바 */}
-                <div className="w-full bg-muted rounded-full h-2 mb-4">
-                  <div
-                    className="bg-gradient-to-r from-yellow-500 to-red-500 h-2 rounded-full"
-                    style={{ width: `${Math.min((maxScore / 150) * 100, 100)}%` }}
-                  />
-                </div>
-
-                <div className="flex gap-2">
+                <div className="mt-4 grid grid-cols-2 gap-2">
                   <Button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onBatchVerify(category, 0)
-                    }}
-                    disabled={isVerifying}
-                    size="lg"
-                    className="bg-blue-500 hover:bg-blue-600"
-                    title={`이 카테고리의 모든 타겟 (${count}개) 검증`}
+                    onClick={() => onSelectCategory(category)}
+                    size="sm"
+                    variant="primary"
                   >
-                    {isVerifying ? '⏳' : '🔍'} 전체 검증 ({count}개)
+                    작업 시작
                   </Button>
                   <Button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onSelectCategory(category)
-                    }}
-                    size="lg"
+                    onClick={() => onBatchVerify(category, 0)}
+                    disabled={isVerifying}
+                    size="sm"
+                    variant="outline"
                   >
-                    → 작업 시작
+                    검증
                   </Button>
                 </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </section>
+
+      <section className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-lg font-bold">스캔 설정</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              기본값 그대로 실행하면 최신 Legion 키워드 기반으로 새 타겟을 수집합니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onToggleScanSettings} variant="outline" size="sm">
+              {showScanSettings ? '설정 닫기' : '설정 열기'}
+            </Button>
+            <Button
+              onClick={() => onBatchVerify(undefined, verifyLimit)}
+              loading={isVerifying}
+              variant="secondary"
+              size="sm"
+            >
+              일괄 검증
+            </Button>
+          </div>
+        </div>
+
+        {showScanSettings && (
+          <div className="mt-5 space-y-5 border-t border-border pt-5">
+            <div>
+              <div className="mb-2 text-sm font-medium">수집 플랫폼</div>
+              <div className="flex flex-wrap gap-2">
+                {allPlatforms.map((platform) => {
+                  const selected = scanSettings.platforms.includes(platform)
+                  return (
+                    <button
+                      key={platform}
+                      onClick={() => {
+                        const platforms = selected
+                          ? scanSettings.platforms.filter((item) => item !== platform)
+                          : [...scanSettings.platforms, platform]
+                        onScanSettingsChange({ ...scanSettings, platforms })
+                      }}
+                      className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                        selected
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border bg-background hover:bg-muted'
+                      }`}
+                    >
+                      {platformLabels[platform] || platform}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium">
+                  최대 결과 수: {scanSettings.maxResults.toLocaleString('ko-KR')}
+                </span>
+                <input
+                  type="range"
+                  min="100"
+                  max="1000"
+                  step="100"
+                  value={scanSettings.maxResults}
+                  onChange={(event) =>
+                    onScanSettingsChange({
+                      ...scanSettings,
+                      maxResults: parseInt(event.target.value, 10),
+                    })
+                  }
+                  className="w-full"
+                />
+              </label>
+              <select
+                value={verifyLimit}
+                onChange={(event) => onVerifyLimitChange(Number(event.target.value))}
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              >
+                <option value={20}>20개 검증</option>
+                <option value={50}>50개 검증</option>
+                <option value={100}>100개 검증</option>
+                <option value={200}>200개 검증</option>
+                <option value={0}>전체 검증</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   )
 }

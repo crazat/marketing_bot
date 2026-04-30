@@ -248,6 +248,32 @@ class ViralTargetRepository:
                 clauses.append("category = ?")
                 params.append(category)
 
+        include_categories = filters.get("include_categories")
+        if include_categories and not category:
+            if isinstance(include_categories, str):
+                include_categories = [c.strip() for c in include_categories.split(",") if c.strip()]
+            if include_categories:
+                placeholders = ",".join(["?"] * len(include_categories))
+                clauses.append(f"category IN ({placeholders})")
+                params.extend(include_categories)
+
+        exclude_categories = filters.get("exclude_categories")
+        if exclude_categories:
+            if isinstance(exclude_categories, str):
+                exclude_categories = [c.strip() for c in exclude_categories.split(",") if c.strip()]
+            if exclude_categories:
+                placeholders = ",".join(["?"] * len(exclude_categories))
+                clauses.append(f"COALESCE(category, '') NOT IN ({placeholders})")
+                params.extend(exclude_categories)
+
+        source_scan_run_id = filters.get("source_scan_run_id")
+        if source_scan_run_id is not None:
+            try:
+                clauses.append("source_scan_run_id = ?")
+                params.append(int(source_scan_run_id))
+            except (TypeError, ValueError):
+                pass
+
         scan_batch = filters.get("scan_batch")
         date_filter = filters.get("date_filter")
         if scan_batch:
