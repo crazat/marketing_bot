@@ -43,7 +43,17 @@ class AIOrchestrator:
         self.root_dir = self.config.root_dir
         self.db_path = self.config.db_path
         self.task_manager = TaskManager()
-        self.has_llm = True
+        ai_disabled = os.getenv("MARKETING_BOT_DISABLE_AI", os.getenv("DISABLE_AI", "false")).lower()
+        tests_disable_ai = (
+            "pytest" in sys.modules
+            and os.getenv("MARKETING_BOT_ENABLE_AI_IN_TESTS", "false").lower() != "true"
+        )
+        self.has_llm = bool(self.config.get_api_key("GEMINI_API_KEY")) and not tests_disable_ai and ai_disabled not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     # _load_api_key removed (using centralized ai_client)
         

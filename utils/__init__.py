@@ -45,7 +45,11 @@ class ConfigManager:
 
         self.secrets_path = os.path.join(self.root_dir, 'config', 'secrets.json')
         self.prompts_path = os.path.join(self.root_dir, 'config', 'prompts.json')
-        self.db_path = os.path.join(self.root_dir, 'db', 'marketing_data.db')
+        self.db_path = (
+            os.environ.get('MARKETING_BOT_DB_PATH')
+            or os.environ.get('APP_DB_PATH')
+            or os.path.join(self.root_dir, 'db', 'marketing_data.db')
+        )
 
     def load_secrets(self) -> Dict[str, Any]:
         """Loads secrets from secrets.json."""

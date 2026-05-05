@@ -1,250 +1,208 @@
 """
-Marketing Bot Database Backup
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Marketing Bot SQLite backup utilities.
 
-데이터베이스 백업 및 유지보수
-- SQLite 백업 (복사 방식)
-- 무결성 검사
-- 자동 백업 정리
-- API 연동 지원
+Backups are created with SQLite's online backup API so WAL-mode databases are
+copied consistently while the application is running.
 """
 
+from __future__ import annotations
+
+import logging
 import sqlite3
-import shutil
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseBackup:
-    """데이터베이스 백업 관리 클래스"""
+    """Create, verify, restore-support, and maintain SQLite database backups."""
 
-    def __init__(self, db_path: str = None, backup_dir: str = None):
-        """
-        초기화
+    BACKUP_PREFIX = "marketing_data.db.backup_"
+    PRE_RESTORE_PREFIX = "pre_restore_"
+    BACKUP_SUFFIX = ".db"
 
-        Args:
-            db_path: DB 파일 경로 (기본: 프로젝트/db/marketing_data.db)
-            backup_dir: 백업 디렉토리 (기본: 프로젝트/db/backups)
-        """
-        if db_path:
-            self.db_path = db_path
-        else:
-            self.db_path = str(Path(__file__).parent / "db" / "marketing_data.db")
+    def __init__(self, db_path: Optional[str] = None, backup_dir: Optional[str] = None):
+        root = Path(__file__).resolve().parent
+        self.db_path = str(Path(db_path) if db_path else root / "db" / "marketing_data.db")
+        self.backup_dir = str(Path(backup_dir) if backup_dir else root / "db" / "backups")
 
-        if backup_dir:
-            self.backup_dir = backup_dir
-        else:
-            self.backup_dir = str(Path(__file__).parent / "db" / "backups")
+    def _backup_directory(self) -> Path:
+        backup_dir = Path(self.backup_dir)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        return backup_dir
+
+    def _iter_backup_files(self) -> List[Path]:
+        backup_dir = Path(self.backup_dir)
+        if not backup_dir.exists():
+            return []
+
+        files = set(backup_dir.glob(f"{self.BACKUP_PREFIX}*"))
+        files.update(backup_dir.glob(f"{self.PRE_RESTORE_PREFIX}*{self.BACKUP_SUFFIX}"))
+        return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+
+    @staticmethod
+    def _integrity_check(db_path: str) -> bool:
+        try:
+            with sqlite3.connect(db_path, timeout=30.0) as conn:
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                return bool(result and result[0] == "ok")
+        except sqlite3.Error as exc:
+            logger.warning("SQLite integrity check failed for %s: %s", db_path, exc)
+            return False
 
     def get_backup_status(self) -> Dict[str, Any]:
-        """
-        백업 상태 조회
-
-        Returns:
-            - total_backups: 총 백업 수
-            - latest_backup: 최근 백업 정보
-            - backups: 최근 5개 백업 목록
-        """
         backups = []
-        backup_path = Path(self.backup_dir)
-
-        if backup_path.exists():
-            # 모든 백업 파일 찾기
-            for f in backup_path.glob("marketing_data.db.backup_*"):
-                backups.append({
-                    'filename': f.name,
-                    'size_mb': round(f.stat().st_size / (1024 * 1024), 2),
-                    'created': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
-                })
-
-        # 최신순 정렬
-        backups.sort(key=lambda x: x['created'], reverse=True)
+        for path in self._iter_backup_files():
+            stat = path.stat()
+            backups.append(
+                {
+                    "filename": path.name,
+                    "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                    "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                }
+            )
 
         return {
-            'total_backups': len(backups),
-            'latest_backup': backups[0] if backups else None,
-            'backups': backups[:5]  # 최근 5개만
+            "total_backups": len(backups),
+            "latest_backup": backups[0] if backups else None,
+            "backups": backups[:5],
         }
 
-    def create_backup(self) -> str:
-        """
-        백업 생성
+    def list_backup_files(self) -> List[Path]:
+        return self._iter_backup_files()
 
-        Returns:
-            백업 파일 경로
-        """
-        # 백업 디렉토리 생성
-        backup_dir = Path(self.backup_dir)
-        backup_dir.mkdir(exist_ok=True)
+    def check_file_integrity(self, db_path: str) -> bool:
+        return self._integrity_check(db_path)
 
-        # 타임스탬프 생성
+    def create_backup(self, prefix: Optional[str] = None) -> str:
+        if not Path(self.db_path).exists():
+            raise FileNotFoundError(f"Database not found: {self.db_path}")
+
+        backup_dir = self._backup_directory()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = backup_dir / f"marketing_data.db.backup_{timestamp}"
+        name_prefix = prefix if prefix is not None else self.BACKUP_PREFIX.rstrip("_")
+        backup_path = backup_dir / f"{name_prefix}_{timestamp}{self.BACKUP_SUFFIX}"
 
-        # 파일 복사
-        shutil.copy2(self.db_path, str(backup_path))
+        source = sqlite3.connect(self.db_path, timeout=30.0)
+        target = sqlite3.connect(str(backup_path), timeout=30.0)
+        try:
+            try:
+                source.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                logger.debug("WAL checkpoint skipped before backup", exc_info=True)
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
+
+        if not self._integrity_check(str(backup_path)):
+            backup_path.unlink(missing_ok=True)
+            raise sqlite3.DatabaseError("Backup integrity check failed")
 
         return str(backup_path)
 
     def verify_backup(self, backup_path: str) -> bool:
-        """
-        백업 무결성 검사
+        if not Path(backup_path).exists():
+            return False
+        if not self._integrity_check(backup_path):
+            return False
 
-        Args:
-            backup_path: 백업 파일 경로
+        tables = [
+            "keyword_insights",
+            "rank_history",
+            "viral_targets",
+            "mentions",
+            "competitor_reviews",
+        ]
 
-        Returns:
-            무결성 검사 통과 여부
-        """
         try:
-            # 원본 레코드 수
-            original_conn = sqlite3.connect(self.db_path)
-            original_cursor = original_conn.cursor()
-
-            # 백업 레코드 수
-            backup_conn = sqlite3.connect(backup_path)
-            backup_cursor = backup_conn.cursor()
-
-            # 주요 테이블 검증
-            tables = [
-                'keyword_insights',
-                'rank_history',
-                'viral_targets',
-                'mentions',
-                'competitor_reviews'
-            ]
-
-            all_match = True
-
-            for table in tables:
-                try:
-                    original_cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    original_count = original_cursor.fetchone()[0]
-
-                    backup_cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    backup_count = backup_cursor.fetchone()[0]
-
+            with sqlite3.connect(self.db_path, timeout=30.0) as original_conn, sqlite3.connect(
+                backup_path, timeout=30.0
+            ) as backup_conn:
+                for table in tables:
+                    try:
+                        original_count = original_conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                        backup_count = backup_conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    except sqlite3.OperationalError:
+                        continue
                     if original_count != backup_count:
-                        all_match = False
-                        break
+                        logger.warning(
+                            "Backup row count mismatch for %s: original=%s backup=%s",
+                            table,
+                            original_count,
+                            backup_count,
+                        )
+                        return False
+        except sqlite3.Error as exc:
+            logger.warning("Backup verification failed for %s: %s", backup_path, exc)
+            return False
 
-                except sqlite3.OperationalError:
-                    # 테이블이 없으면 스킵
-                    continue
+        return True
 
-            original_conn.close()
-            backup_conn.close()
+    def check_integrity(self) -> bool:
+        return self._integrity_check(self.db_path)
 
-            return all_match
+    def enable_wal_mode(self) -> bool:
+        try:
+            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                conn.execute("PRAGMA synchronous=NORMAL")
+                return str(mode).lower() == "wal"
+        except sqlite3.Error as exc:
+            logger.warning("Failed to enable WAL mode: %s", exc)
+            return False
 
-        except Exception as e:
-            print(f"[Backup Verify Error] {e}")
+    def vacuum_database(self) -> bool:
+        try:
+            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+            return self.check_integrity()
+        except sqlite3.Error as exc:
+            logger.warning("VACUUM failed: %s", exc)
             return False
 
     def cleanup_old_backups(self, keep_count: int = 30) -> int:
-        """
-        오래된 백업 정리
+        if keep_count < 0:
+            raise ValueError("keep_count must be non-negative")
 
-        Args:
-            keep_count: 유지할 백업 수
-
-        Returns:
-            삭제된 백업 수
-        """
-        backup_dir = Path(self.backup_dir)
-
-        if not backup_dir.exists():
-            return 0
-
-        # 모든 백업 파일 찾기
-        backups = sorted(
-            backup_dir.glob("marketing_data.db.backup_*"),
-            key=lambda x: x.stat().st_mtime,
-            reverse=True
-        )
-
-        # 오래된 백업 삭제
         deleted_count = 0
-        if len(backups) > keep_count:
-            old_backups = backups[keep_count:]
-            for backup in old_backups:
-                backup.unlink()
-                deleted_count += 1
-
+        for backup in self._iter_backup_files()[keep_count:]:
+            backup.unlink()
+            deleted_count += 1
         return deleted_count
 
     def run_daily_maintenance(self) -> Dict[str, Any]:
-        """
-        일일 유지보수 실행 (백업 + 검증 + 정리)
-
-        Returns:
-            - backup_path: 백업 파일 경로
-            - integrity_ok: 무결성 검사 통과 여부
-            - backups_cleaned: 삭제된 백업 수
-        """
-        # 1. 백업 생성
         backup_path = self.create_backup()
-
-        # 2. 무결성 검사
         integrity_ok = self.verify_backup(backup_path)
-
-        # 3. 오래된 백업 정리
         backups_cleaned = self.cleanup_old_backups(keep_count=30)
 
         return {
-            'backup_path': backup_path,
-            'integrity_ok': integrity_ok,
-            'backups_cleaned': backups_cleaned
+            "backup_path": backup_path,
+            "integrity_ok": integrity_ok,
+            "backups_cleaned": backups_cleaned,
         }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 스크립트 실행 (CLI용)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def main():
-    """메인 실행 함수 (CLI 모드)"""
-
-    print("=" * 70)
-    print("Marketing Bot - Database Backup")
-    print("=" * 70)
-
+def main() -> None:
     backup = DatabaseBackup()
-
-    # DB 파일 크기 확인
     db_path = Path(backup.db_path)
-    if db_path.exists():
-        db_size = db_path.stat().st_size / (1024 * 1024)
-        print(f"\nDB 파일: {db_path}")
-        print(f"크기: {db_size:.2f} MB\n")
-    else:
-        print(f"\n❌ DB 파일을 찾을 수 없습니다: {db_path}")
+    if not db_path.exists():
+        print(f"Database not found: {db_path}")
         return
 
-    # 백업 실행
-    print("📦 백업 시작...")
     result = backup.run_daily_maintenance()
-
-    # 결과 출력
-    print(f"✅ 백업 완료!")
-    print(f"   백업 파일: {result['backup_path']}")
-    print(f"   무결성 검사: {'✅ 통과' if result['integrity_ok'] else '❌ 실패'}")
-    print(f"   정리된 백업: {result['backups_cleaned']}개")
-
-    # 백업 상태 확인
-    status = backup.get_backup_status()
-    print(f"\n📊 백업 상태:")
-    print(f"   총 백업 수: {status['total_backups']}개")
-
-    if status['latest_backup']:
-        print(f"   최근 백업: {status['latest_backup']['filename']}")
-        print(f"   생성 시간: {status['latest_backup']['created']}")
-
-    print("\n" + "=" * 70)
-    print("✅ 전체 작업 완료!")
-    print("=" * 70)
+    print("Backup completed")
+    print(f"backup_path={result['backup_path']}")
+    print(f"integrity_ok={result['integrity_ok']}")
+    print(f"backups_cleaned={result['backups_cleaned']}")
 
 
 if __name__ == "__main__":

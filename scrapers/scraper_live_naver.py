@@ -49,6 +49,7 @@ class NaverLiveScraper:
             # We store ctx to exit later if needed (manual mode)
             self._driver_ctx = SafeSeleniumDriver(headless=True)
             self.driver = self._driver_ctx.__enter__()
+            self.driver.set_page_load_timeout(30)
         except Exception as e:
             print(f"❌ Driver Init Failed: {e}")
             raise

@@ -10,6 +10,7 @@ import sys
 import sqlite3
 import logging
 from datetime import datetime, timedelta
+from contextlib import closing
 from functools import wraps
 
 # Add project root
@@ -53,7 +54,7 @@ class APIUsageTracker:
     
     def _ensure_table(self):
         """Create api_usage table if not exists"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS api_usage (
@@ -92,7 +93,7 @@ class APIUsageTracker:
             cost = tokens * 0.0001  # Rough estimate
         
         try:
-            with sqlite3.connect(self.db_path, timeout=5) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=5)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO api_usage (api_name, endpoint, tokens_used, cost_estimate, success, error_message, created_at)
@@ -131,7 +132,7 @@ class APIUsageTracker:
             date = datetime.now().strftime("%Y-%m-%d")
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT COUNT(*) FROM api_usage
@@ -147,7 +148,7 @@ class APIUsageTracker:
             date = datetime.now().strftime("%Y-%m-%d")
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 
@@ -184,7 +185,7 @@ class APIUsageTracker:
         date_prefix = f"{year}-{month:02d}"
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 

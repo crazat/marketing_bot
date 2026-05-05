@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils import ConfigManager
 from retry_helper import safe_subprocess
+from core_utils import safe_close
 
 # [Phase 5-1] 설정값 외부화
 try:
@@ -35,7 +36,7 @@ class InsightManager:
         """Creates a new insight record if it doesn't duplicate a recent active one."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # Check duplication (same title, status='new', created within 24h)
             cursor.execute("SELECT id FROM insights WHERE title=? AND status='new'", (title,))
             existing = cursor.fetchone()
@@ -241,7 +242,7 @@ class InsightManager:
         
         cursor.execute("SELECT competitor_name, content FROM competitor_reviews WHERE review_date=? AND source='naver_place_real'", (today,))
         rows = cursor.fetchall()
-        conn.close()
+        safe_close(conn)
         
         if not rows:
             self.log_activity("Sentinel", "No new competitor reviews found today.")
@@ -467,6 +468,42 @@ class InsightManager:
         except Exception as e:
             self.log_activity("Sentinel", f"Visual Analysis Error: {e}")
 
+    def _generate_prophet_forecast_insights(self) -> bool:
+        try:
+            from prophet import TheProphet
+
+            forecast = TheProphet().predict_next_week()
+            trends = forecast.get("rising_trends", []) if forecast else []
+            if not trends:
+                return False
+
+            for trend in trends[:3]:
+                keyword = trend.get("keyword", "")
+                growth = trend.get("predicted_growth", "Trend")
+                evidence = trend.get("evidence", "")
+                action = trend.get("action", "content_preloading")
+                self.create_insight(
+                    i_type="trend_forecast",
+                    title=f"🔮 [Prophet] {growth} : '{keyword}'",
+                    content=(
+                        f"**[Forecast]**\n"
+                        f"- Period: {forecast.get('target_period', 'N/A')}\n"
+                        f"- Keyword: {keyword}\n"
+                        f"- Evidence: {evidence}"
+                    ),
+                    meta={
+                        "suggested_action": action,
+                        "args": keyword,
+                        "forecast": forecast.get("target_period"),
+                        "evidence": evidence,
+                    },
+                )
+            self.log_activity("Sentinel", f"Prophet forecast generated {len(trends[:3])} insights.")
+            return True
+        except Exception as e:
+            self.log_activity("Sentinel", f"Prophet Forecast Error: {e}", "ERROR")
+            return False
+
     def generate_prophet_insights(self):
         """
         The Prophet: Reports on 'Rising Stars' (High Trend Velocity) from DB.
@@ -487,9 +524,11 @@ class InsightManager:
                 LIMIT 3
             """)
             rising_stars = cursor.fetchall()
-            conn.close()
-            
+            safe_close(conn)
+
             if not rising_stars:
+                if self._generate_prophet_forecast_insights():
+                    return
                 self.log_activity("Sentinel", "Prophet: No significant rising trends found yet.")
                 return
 
@@ -497,10 +536,10 @@ class InsightManager:
             top_kw = rising_stars[0]
             slope = top_kw['trend_slope']
             vol = top_kw['search_volume']
-            
+
             # Construct Evidence String for AI
             evidence = f"Trend Slope: {slope:.4f} (Very High), Search Volume: {vol}"
-            
+
             self.create_insight(
                 i_type="trend_forecast",
                 title=f"📈 [급상승] '{top_kw['keyword']}' 트렌드 포착!",
@@ -516,9 +555,10 @@ class InsightManager:
                 }
             )
             self.log_activity("Sentinel", f"Prophet Reported Trend: {top_kw['keyword']}")
-            
+
         except Exception as e:
             self.log_activity("Sentinel", f"Prophet Error: {e}", "ERROR")
+            self._generate_prophet_forecast_insights()
 
     def generate_ambassador_insights(self):
         """
@@ -911,7 +951,7 @@ class BriefingRunner:
             ''', (week_ago,))
             keyword_freq = [(row['keyword'], row['cnt']) for row in cursor.fetchall()]
 
-            conn.close()
+            safe_close(conn)
 
             # 리포트 생성
             report_lines = [

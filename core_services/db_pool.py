@@ -63,17 +63,26 @@ class DatabasePool:
         return cls._instance
 
     def __init__(self, db_path: str = None) -> None:
-        if self._initialized:
+        resolved_db_path = (
+            os.environ.get('MARKETING_BOT_DB_PATH')
+            or os.environ.get('APP_DB_PATH')
+            or db_path
+            or str(DEFAULT_DB_PATH)
+        )
+
+        if self._initialized and os.path.abspath(self.db_path) == os.path.abspath(resolved_db_path):
             return
+        if self._initialized:
+            self.close_all()
 
         # 환경 변수로 DB 경로 오버라이드 가능
-        db_override = os.environ.get('MARKETING_BOT_DB_PATH')
+        db_override = os.environ.get('MARKETING_BOT_DB_PATH') or os.environ.get('APP_DB_PATH')
         if db_override:
             self.db_path = db_override
         elif db_path:
             self.db_path = db_path
         else:
-            self.db_path = str(DEFAULT_DB_PATH)
+            self.db_path = resolved_db_path
 
         self._write_lock = threading.RLock()  # 재진입 가능 락
         self._local = threading.local()
@@ -83,6 +92,10 @@ class DatabasePool:
         self._init_database()
 
         logger.info(f"🔌 DatabasePool 초기화: {self.db_path}")
+
+    def close_all(self) -> None:
+        """Compatibility hook for resetting the singleton path in tests."""
+        self._local = threading.local()
 
     def _init_database(self) -> None:
         """데이터베이스 초기 설정"""

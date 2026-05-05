@@ -105,6 +105,7 @@ class Platform(str, Enum):
     INSTAGRAM = "instagram"
 
 class LeadStatus(str, Enum):
+    NEW = "new"
     PENDING = "pending"
     CONTACTED = "contacted"
     REPLIED = "replied"
@@ -293,11 +294,14 @@ async def get_lead_stats() -> Dict[str, Any]:
                 key = _normalize_platform(row[0])
                 by_platform[key] = by_platform.get(key, 0) + row[1]
 
-    return success_response({
+    stats = {
         'total': total if total else 0,
         'by_platform': by_platform,
         'by_status': by_status,
-    })
+    }
+    response = success_response(stats)
+    response.update(stats)
+    return response
 
 
 @router.get("/conversion-rates")
@@ -784,6 +788,33 @@ async def get_leads(
         enriched_leads.sort(key=lambda x: x.get('score', 0), reverse=reverse)
 
     return success_response(enriched_leads)
+
+
+@router.get("/")
+@handle_exceptions
+async def get_leads_legacy(
+    platform: Optional[Platform] = None,
+    status: Optional[LeadStatus] = None,
+    category: Optional[str] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    sort_by: str = Query(default="created_at"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+) -> List[Dict[str, Any]]:
+    """Backward-compatible list response for /api/leads/."""
+    response = await get_leads(
+        platform=platform,
+        status=status,
+        category=category,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
+    if isinstance(response, dict) and response.get("status") == "success":
+        data = response.get("data", [])
+        return data if isinstance(data, list) else []
+    return response
 
 
 @router.get("/youtube")

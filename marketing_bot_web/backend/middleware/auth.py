@@ -123,17 +123,25 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         self.public_paths = public_paths or PUBLIC_PATHS
         self.enabled = enabled
 
+    @staticmethod
+    def _path_matches(path: str, prefix: str) -> bool:
+        """Return True for exact path matches or path-segment prefix matches."""
+        normalized = prefix.rstrip("/") or "/"
+        if normalized == "/":
+            return path == "/"
+        return path == normalized or path.startswith(f"{normalized}/")
+
     def _is_protected_path(self, path: str) -> bool:
         """보호된 경로인지 확인"""
         for protected in self.protected_paths:
-            if path.startswith(protected):
+            if self._path_matches(path, protected):
                 return True
         return False
 
     def _is_public_path(self, path: str) -> bool:
         """공개 경로인지 확인"""
         for public in self.public_paths:
-            if path.startswith(public):
+            if self._path_matches(path, public):
                 return True
         return False
 

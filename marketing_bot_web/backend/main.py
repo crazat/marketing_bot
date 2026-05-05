@@ -271,9 +271,24 @@ async def api_root():
         "docs": "/docs"
     }
 
-@app.get("/api/health")
-async def health_check():
-    """헬스 체크"""
+@app.get("/")
+async def root(request: Request):
+    """API root for non-HTML clients, SPA shell for browser requests."""
+    accept = request.headers.get("accept", "").lower()
+    frontend_build_dir = Path(__file__).parent.parent / "frontend" / "dist"
+    index_file = frontend_build_dir / "index.html"
+    if "text/html" in accept and index_file.exists():
+        return FileResponse(index_file)
+    return {
+        "message": "Marketing Bot Web API",
+        "version": "2.0.0",
+        "status": "healthy",
+        "docs": "/docs",
+    }
+
+@app.get("/health")
+async def simple_health_check():
+    """Lightweight health check."""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat()
@@ -629,7 +644,7 @@ app.include_router(rag.router, prefix="/api/rag", tags=["RAG Intelligence"])  # 
 app.include_router(predictive.router, prefix="/api/predictive", tags=["Predictive Analytics"])  # [고도화 D-2] 시계열 예측
 app.include_router(ads.router, prefix="/api/ads", tags=["Ads Management"])  # [고도화 D-3] 통합 광고 관리
 app.include_router(kakao_channel.router, prefix="/api/kakao", tags=["Kakao Channel"])  # [고도화 D-4] 카카오톡 채널
-app.include_router(telegram_webhook.router, prefix="/api/telegram", tags=["Telegram Webhook"])  # [고도화 V2-2] 텔레그램 승인
+app.include_router(telegram_webhook.router, prefix="/api/telegram/legacy", tags=["Telegram Webhook Legacy"])  # [고도화 V2-2] 텔레그램 승인
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 프론트엔드 정적 파일 서빙 (프로덕션)
@@ -644,8 +659,7 @@ if FRONTEND_BUILD_DIR.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_BUILD_DIR / "assets"), name="assets")
 
     # 루트 경로 - index.html 서빙
-    @app.get("/")
-    async def serve_index():
+    async def _deprecated_serve_index():
         """메인 페이지 서빙"""
         index_file = FRONTEND_BUILD_DIR / "index.html"
         if index_file.exists():

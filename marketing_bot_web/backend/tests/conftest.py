@@ -23,6 +23,11 @@ project_root = backend_path.parent.parent  # marketing_bot
 sys.path.insert(0, str(backend_path))
 sys.path.insert(0, str(project_root))
 
+os.environ.setdefault("DISABLE_API_AUTH", "true")
+os.environ.setdefault("MARKETING_BOT_API_KEY", "test-key")
+os.environ.setdefault("MARKETING_BOT_DISABLE_AI", "true")
+os.environ.setdefault("MARKETING_BOT_QA_RAG_AUTO_INDEX", "false")
+
 from main import app
 
 

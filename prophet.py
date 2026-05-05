@@ -27,9 +27,10 @@ class TheProphet:
         from selenium.webdriver.common.by import By
         from retry_helper import SafeSeleniumDriver
         import time
-        
+
         logger.info("Prophet: Checking Real Weather Data for Cheongju...")
-        
+        driver = None
+
         try:
              # Use SafeContext Manager for cleanup
              with SafeSeleniumDriver(headless=True, mobile=False, timeout=20) as driver:

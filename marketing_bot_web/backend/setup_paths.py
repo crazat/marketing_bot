@@ -14,6 +14,7 @@
     from setup_paths import PROJECT_ROOT, BACKEND_DIR
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def get_config_path(filename: str) -> Path:
 
 def get_db_path(filename: str = 'marketing_data.db') -> Path:
     """데이터베이스 파일 경로 반환"""
+    if filename == 'marketing_data.db':
+        override = os.getenv('MARKETING_BOT_DB_PATH') or os.getenv('APP_DB_PATH')
+        if override:
+            return Path(override)
     return DB_DIR / filename
 
 

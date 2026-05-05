@@ -96,7 +96,6 @@ export default function ViralHunter() {
     if (filters.post_region) params.set('post_region', filters.post_region)
     if (filters.work_scope && filters.work_scope !== 'latest_legion') params.set('work_scope', filters.work_scope)
     setSearchParams(params, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters])
 
   // 홈 화면 스캔 배치 필터

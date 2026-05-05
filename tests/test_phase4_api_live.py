@@ -31,7 +31,7 @@ BASE_URL = "http://localhost:8000"
 results = []
 
 
-def test_endpoint(method: str, endpoint: str, expected_keys: list = None, data: dict = None):
+def check_endpoint(method: str, endpoint: str, expected_keys: list = None, data: dict = None):
     """API 엔드포인트 테스트"""
     url = f"{BASE_URL}{endpoint}"
 
@@ -107,7 +107,7 @@ def main():
 
     # 1. 스케줄러 건강도 조회
     print("📊 Testing Scheduler Health API...")
-    success, data = test_endpoint("GET", "/api/scheduler/health", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/health", ["success"])
     print_result("GET /api/scheduler/health", success)
     if success and "data" in data:
         summary = data.get("data", {}).get("summary", {})
@@ -117,13 +117,13 @@ def main():
 
     # 2. 피크 시간대 분석
     print("⏰ Testing Peak Hours API...")
-    success, data = test_endpoint("GET", "/api/scheduler/peak-hours", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/peak-hours", ["success"])
     print_result("GET /api/scheduler/peak-hours", success)
     print()
 
     # 3. 키워드 우선순위 조회
     print("🔑 Testing Keyword Priorities API...")
-    success, data = test_endpoint("GET", "/api/scheduler/keyword-priorities", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/keyword-priorities", ["success"])
     print_result("GET /api/scheduler/keyword-priorities", success)
     if success and "data" in data:
         summary = data.get("data", {})
@@ -134,7 +134,7 @@ def main():
 
     # 4. 자동 재스캔 상태
     print("🔄 Testing Auto-Rescan Status API...")
-    success, data = test_endpoint("GET", "/api/scheduler/auto-rescan/status", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/auto-rescan/status", ["success"])
     print_result("GET /api/scheduler/auto-rescan/status", success)
     if success and "data" in data:
         status = data.get("data", {})
@@ -145,7 +145,7 @@ def main():
 
     # 5. 리드 재알림 상태
     print("🔔 Testing Lead Reminders Status API...")
-    success, data = test_endpoint("GET", "/api/scheduler/lead-reminders/status", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/lead-reminders/status", ["success"])
     print_result("GET /api/scheduler/lead-reminders/status", success)
     if success and "data" in data:
         status = data.get("data", {})
@@ -156,7 +156,7 @@ def main():
 
     # 6. 리드 상태 전이 미리보기
     print("🔀 Testing Lead Transitions Preview API...")
-    success, data = test_endpoint("GET", "/api/scheduler/lead-transitions/preview", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/lead-transitions/preview", ["success"])
     print_result("GET /api/scheduler/lead-transitions/preview", success)
     if success and "data" in data:
         preview = data.get("data", {})
@@ -169,7 +169,7 @@ def main():
 
     # 7. 권장사항 적용 (POST - 실제로 적용하지 않으려면 주석 처리)
     print("⚡ Testing Apply Recommendations API...")
-    success, data = test_endpoint("POST", "/api/scheduler/apply-recommendations", ["success"])
+    success, data = check_endpoint("POST", "/api/scheduler/apply-recommendations", ["success"])
     print_result("POST /api/scheduler/apply-recommendations", success)
     if success and "data" in data:
         result = data.get("data", {})
@@ -179,7 +179,7 @@ def main():
 
     # 8. 리드 상태 요약
     print("📋 Testing Lead Status Summary API...")
-    success, data = test_endpoint("GET", "/api/scheduler/lead-status/summary", ["success"])
+    success, data = check_endpoint("GET", "/api/scheduler/lead-status/summary", ["success"])
     print_result("GET /api/scheduler/lead-status/summary", success)
     if success and "data" in data:
         summary = data.get("data", {})

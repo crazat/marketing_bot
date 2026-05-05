@@ -1,5 +1,18 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-05 Memory: Stability Audit Baseline
+
+- Full stability audit fixes are complete. Current verification baseline:
+  - `python -m pip check` -> no broken requirements.
+  - `python -m pytest -q` -> 149 passed, 1 skipped.
+  - `python -m pytest marketing_bot_web\backend\tests -q` -> 49 passed.
+  - Frontend `npm audit --audit-level=moderate`, `npm run lint`, `npm run typecheck`, and `npm run build` all pass.
+- DB path handling is centralized through `MARKETING_BOT_DB_PATH` / `APP_DB_PATH`; keep SQLite access on the shared helper path and avoid ad hoc cwd-relative DB paths.
+- DB backup/restore must use `db_backup.py` or the backend backup router, both based on SQLite Backup API and integrity checks. Do not restore by direct file overwrite while the app may be running.
+- AI/RAG side effects are opt-in for tests and local deterministic flows. Keep pytest paths free from real Gemini/RAG calls unless an explicit environment flag enables them.
+- Frontend is on Vite 8 with `@vitejs/plugin-react` and OXC minification. Keep the flat ESLint config (`frontend/eslint.config.js`) and package lock in sync when changing frontend tooling.
+- Known residual environment note: Python 3.14 can emit a Langfuse/Pydantic v1 compatibility warning. It is non-blocking under the current test baseline.
+
 ## 2026-04-30 Memory: Pathfinder Legion -> Viral Hunter Core Flow
 
 - Clinic focus for keyword/viral logic: beauty Korean medicine clinic services (diet, skin/acne scars/새살침, asymmetry/body correction/lifting) plus traffic-accident inpatient care.
@@ -33,7 +46,7 @@
 - **React 19** + TypeScript 5.6
 - **TanStack Query v5** (데이터 페칭)
 - **Tailwind CSS** (스타일링)
-- **Vite 5** (빌드)
+- **Vite 8** (빌드)
 - **PWA** (manifest + service worker, production 빌드 시 자동 활성화)
 - SSE 스트리밍 (useAIStream 훅)
 

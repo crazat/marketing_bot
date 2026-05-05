@@ -60,19 +60,16 @@ function format(level: LogLevel, message: string, args: unknown[]): LogEntry {
 export const logger = {
   debug(message: string, ...args: unknown[]) {
     if (isDev) {
-      // eslint-disable-next-line no-console
       console.debug(`[debug]`, message, ...args)
     }
   },
   info(message: string, ...args: unknown[]) {
     if (isDev) {
-      // eslint-disable-next-line no-console
       console.info(`[info]`, message, ...args)
     }
   },
   warn(message: string, ...args: unknown[]) {
     // 경고는 모든 환경 출력
-    // eslint-disable-next-line no-console
     console.warn(`[warn]`, message, ...args)
     if (!isDev) {
       enqueueError(format('warn', message, args))

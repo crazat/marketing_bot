@@ -160,9 +160,9 @@ class BrowserPool:
         """모든 브라우저 종료"""
         with self.lock:
             self._closed = True
-            for browser in self.browsers:
+            for driver in self.browsers:
                 try:
-                    browser.quit()
+                    driver.quit()
                 except Exception as e:
                     logger.debug(f"Browser quit failed during pool close: {e}")
             self.browsers.clear()

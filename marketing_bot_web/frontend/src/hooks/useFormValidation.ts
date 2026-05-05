@@ -78,7 +78,7 @@ export function useFormValidation<T extends Record<string, any>>(
       values[key as keyof T] = (initialValues?.[key] ?? '') as T[keyof T]
     }
     return values as T
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   const [values, setValuesState] = useState<T>(defaultValues)
   const [errors, setErrors] = useState<FormErrors<T>>({})

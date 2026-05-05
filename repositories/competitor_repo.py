@@ -202,12 +202,23 @@ class CompetitorRepository:
         with self._conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                f"""
-                SELECT rank, scanned_date, note FROM competitor_rankings
+                """
+                SELECT MAX(scanned_date) FROM competitor_rankings
                 WHERE competitor_name = ? AND keyword = ?
-                  AND scanned_date >= DATE('now', '-{int(days)} days')
-                ORDER BY scanned_date ASC
                 """,
                 (competitor_name, keyword),
+            )
+            latest_date = cur.fetchone()[0]
+            if not latest_date:
+                return []
+
+            cur.execute(
+                """
+                SELECT rank, scanned_date, note FROM competitor_rankings
+                WHERE competitor_name = ? AND keyword = ?
+                  AND scanned_date >= DATE(?, ?)
+                ORDER BY scanned_date ASC
+                """,
+                (competitor_name, keyword, latest_date, f"-{int(days)} days"),
             )
             return [dict(r) for r in cur.fetchall()]

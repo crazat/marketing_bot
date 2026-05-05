@@ -31,9 +31,9 @@ class AppSettings:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         self.db_timeout: int = self._get_int('DB_TIMEOUT', 30)
         self.db_max_connections: int = self._get_int('DB_MAX_CONNECTIONS', 5)
-        self.db_path: str = self._get_str(
-            'DB_PATH',
-            str(PROJECT_ROOT / 'db' / 'marketing_data.db')
+        self.db_path: str = (
+            os.getenv('MARKETING_BOT_DB_PATH')
+            or self._get_str('DB_PATH', str(PROJECT_ROOT / 'db' / 'marketing_data.db'))
         )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

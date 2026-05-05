@@ -673,6 +673,24 @@ async def get_ranking_trends(
             except Exception:
                 pass
 
+@router.get("/rank-trend")
+async def get_rank_trend_legacy(
+    keyword: Optional[str] = None,
+    days: int = 14,
+    device_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Backward-compatible alias for older clients/tests."""
+    result = await get_ranking_trends(days=days, keyword_filter=keyword, device_type=device_type)
+    keywords = result.get("keywords", {}) if isinstance(result, dict) else {}
+    if keyword and keyword in keywords:
+        return keywords[keyword].get(device_type or "mobile", []) or keywords[keyword].get("desktop", [])
+    flattened = []
+    for key, device_data in keywords.items():
+        for history in device_data.values():
+            for item in history:
+                flattened.append({"keyword": key, **item})
+    return flattened
+
 @router.post("/ranking-keywords")
 async def add_ranking_keyword(keyword: RankingKeyword) -> Dict[str, str]:
     """

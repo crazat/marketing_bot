@@ -50,6 +50,7 @@ class CompetitorAdd(BaseModel):
             raise ValueError('카테고리는 필수입니다')
         return v.strip()
 
+@router.get("/")
 @router.get("/list")
 @cached(ttl=600)
 @handle_exceptions

@@ -77,6 +77,7 @@ class CarrotFarmer:
             self.config = ConfigManager()
             self.crew = AgentCrew()
             self.db = DatabaseManager()
+        self.driver = None
 
     def _google_search_karrot(self, keyword="청주 다이어트"):
         """

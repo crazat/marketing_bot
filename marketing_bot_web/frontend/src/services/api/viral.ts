@@ -169,7 +169,7 @@ export const viralApi = {
     if (filters?.work_scope) params.work_scope = filters.work_scope
 
     const response = await api.get('/viral/targets', { params })
-    return response.data
+    return Array.isArray(response.data) ? response.data : (response.data?.targets ?? [])
   },
 
   getTargetsCount: async (

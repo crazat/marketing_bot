@@ -1,363 +1,219 @@
-"""
-Database Backup API
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""Database backup and maintenance API."""
 
-데이터베이스 백업 관리 및 상태 조회
-"""
+from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Dict, Any, List
-import sys
 import os
 import re
-from pathlib import Path
+import shutil
+import sqlite3
+import sys
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
 
-# 상위 디렉토리를 path에 추가
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+
 parent_dir = str(Path(__file__).parent.parent.parent)
-sys.path.insert(0, parent_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-from db_backup import DatabaseBackup
 from backend_utils.error_handlers import handle_exceptions
+from db.database import DatabaseManager
+from db_backup import DatabaseBackup
 
 router = APIRouter()
+
+
+def _safe_backup_path(backup: DatabaseBackup, filename: str) -> Path:
+    if not re.match(r"^[A-Za-z0-9_.-]+$", filename):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename. Use only letters, numbers, _, -, and .",
+        )
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    backup_dir = Path(backup.backup_dir).resolve()
+    backup_path = (backup_dir / filename).resolve()
+    try:
+        backup_path.relative_to(backup_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="File path is outside backup directory") from exc
+
+    if not backup_path.exists():
+        raise HTTPException(status_code=404, detail="Backup file not found")
+    return backup_path
 
 
 @router.get("/status")
 @handle_exceptions
 async def get_backup_status() -> Dict[str, Any]:
-    """
-    백업 상태 조회
+    backup = DatabaseBackup()
+    status = backup.get_backup_status()
 
-    Returns:
-        - total_backups: 총 백업 수
-        - latest_backup: 가장 최근 백업 정보
-        - backups: 최근 5개 백업 목록
-        - db_size_mb: 현재 DB 크기 (MB)
-        - days_since_backup: 마지막 백업 이후 경과 일수
-    """
-    try:
-        backup = DatabaseBackup()
-        status = backup.get_backup_status()
+    if os.path.exists(backup.db_path):
+        db_size_bytes = os.path.getsize(backup.db_path)
+        status["db_size_mb"] = round(db_size_bytes / (1024 * 1024), 2)
+    else:
+        status["db_size_mb"] = 0
 
-        # DB 크기 추가
-        if os.path.exists(backup.db_path):
-            db_size_bytes = os.path.getsize(backup.db_path)
-            status['db_size_mb'] = round(db_size_bytes / (1024 * 1024), 2)
+    if status["latest_backup"]:
+        last_backup_time = datetime.fromisoformat(status["latest_backup"]["created"])
+        days_diff = (datetime.now() - last_backup_time).days
+        status["days_since_backup"] = days_diff
+        if days_diff >= 7:
+            status["warning_level"] = "critical"
+        elif days_diff >= 3:
+            status["warning_level"] = "warning"
         else:
-            status['db_size_mb'] = 0
+            status["warning_level"] = "ok"
+    else:
+        status["days_since_backup"] = None
+        status["warning_level"] = "critical"
 
-        # 마지막 백업 이후 경과 일수 계산
-        if status['latest_backup']:
-            last_backup_time = datetime.fromisoformat(status['latest_backup']['created'])
-            days_diff = (datetime.now() - last_backup_time).days
-            status['days_since_backup'] = days_diff
-
-            # 경고 레벨 결정
-            if days_diff >= 7:
-                status['warning_level'] = 'critical'
-            elif days_diff >= 3:
-                status['warning_level'] = 'warning'
-            else:
-                status['warning_level'] = 'ok'
-        else:
-            status['days_since_backup'] = None
-            status['warning_level'] = 'critical'
-
-        return status
-
-    except Exception as e:
-        print(f"[Backup Status Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"백업 상태 조회 실패: {str(e)}")
+    return status
 
 
 @router.post("/create")
 @handle_exceptions
 async def create_backup(background_tasks: BackgroundTasks) -> Dict[str, Any]:
-    """
-    수동 백업 생성 (백그라운드 실행)
+    del background_tasks
+    backup = DatabaseBackup()
+    result = backup.run_daily_maintenance()
 
-    Returns:
-        - status: 시작 상태
-        - message: 상태 메시지
-    """
-    try:
-        backup = DatabaseBackup()
-
-        # 동기적으로 백업 실행 (빠른 작업이므로)
-        result = backup.run_daily_maintenance()
-
-        if result['backup_path']:
-            return {
-                'status': 'success',
-                'message': '백업이 성공적으로 완료되었습니다',
-                'backup_path': result['backup_path'],
-                'integrity_ok': result['integrity_ok'],
-                'backups_cleaned': result['backups_cleaned']
-            }
-        else:
-            raise HTTPException(status_code=500, detail="백업 생성에 실패했습니다")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Backup Create Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"백업 생성 실패: {str(e)}")
+    return {
+        "status": "success",
+        "message": "Backup completed successfully",
+        "backup_path": result["backup_path"],
+        "integrity_ok": result["integrity_ok"],
+        "backups_cleaned": result["backups_cleaned"],
+    }
 
 
 @router.get("/list")
 @handle_exceptions
 async def list_backups() -> List[Dict[str, Any]]:
-    """
-    모든 백업 목록 조회
+    backup = DatabaseBackup()
+    backups: List[Dict[str, Any]] = []
 
-    Returns:
-        백업 파일 목록 (전체)
-    """
-    try:
-        backup = DatabaseBackup()
+    for path in backup.list_backup_files():
+        stat = path.stat()
+        backups.append(
+            {
+                "filename": path.name,
+                "size_kb": round(stat.st_size / 1024, 1),
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            }
+        )
 
-        backups = []
-        if os.path.exists(backup.backup_dir):
-            for f in os.listdir(backup.backup_dir):
-                if f.endswith(".db"):
-                    path = os.path.join(backup.backup_dir, f)
-                    backups.append({
-                        'filename': f,
-                        'size_kb': round(os.path.getsize(path) / 1024, 1),
-                        'size_mb': round(os.path.getsize(path) / (1024 * 1024), 2),
-                        'created': datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
-                    })
-
-        # 최신순 정렬
-        backups.sort(key=lambda x: x['created'], reverse=True)
-
-        return backups
-
-    except Exception as e:
-        print(f"[Backup List Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"백업 목록 조회 실패: {str(e)}")
+    backups.sort(key=lambda item: item["created"], reverse=True)
+    return backups
 
 
 @router.post("/integrity-check")
 @handle_exceptions
 async def check_integrity() -> Dict[str, Any]:
-    """
-    데이터베이스 무결성 검사
-
-    Returns:
-        - integrity_ok: 무결성 상태
-        - message: 결과 메시지
-    """
-    try:
-        backup = DatabaseBackup()
-        is_ok = backup.check_integrity()
-
-        return {
-            'integrity_ok': is_ok,
-            'message': '데이터베이스가 정상입니다' if is_ok else '데이터베이스에 문제가 있습니다',
-            'checked_at': datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        print(f"[Integrity Check Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"무결성 검사 실패: {str(e)}")
+    backup = DatabaseBackup()
+    is_ok = backup.check_integrity()
+    return {
+        "integrity_ok": is_ok,
+        "message": "Database integrity check passed" if is_ok else "Database integrity check failed",
+        "checked_at": datetime.now().isoformat(),
+    }
 
 
 @router.post("/vacuum")
 @handle_exceptions
 async def vacuum_database() -> Dict[str, Any]:
-    """
-    데이터베이스 최적화 (VACUUM)
+    backup = DatabaseBackup()
+    before_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
+    success = backup.vacuum_database()
+    after_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
 
-    Returns:
-        - success: 성공 여부
-        - message: 결과 메시지
-    """
-    try:
-        backup = DatabaseBackup()
-
-        # VACUUM 전 크기
-        before_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
-
-        success = backup.vacuum_database()
-
-        # VACUUM 후 크기
-        after_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
-
-        saved_kb = round((before_size - after_size) / 1024, 1)
-
-        return {
-            'success': success,
-            'message': 'VACUUM 최적화가 완료되었습니다' if success else 'VACUUM 실패',
-            'before_size_mb': round(before_size / (1024 * 1024), 2),
-            'after_size_mb': round(after_size / (1024 * 1024), 2),
-            'saved_kb': saved_kb
-        }
-
-    except Exception as e:
-        print(f"[Vacuum Error] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"VACUUM 실패: {str(e)}")
+    return {
+        "success": success,
+        "message": "VACUUM completed" if success else "VACUUM failed",
+        "before_size_mb": round(before_size / (1024 * 1024), 2),
+        "after_size_mb": round(after_size / (1024 * 1024), 2),
+        "saved_kb": round((before_size - after_size) / 1024, 1),
+    }
 
 
 @router.post("/restore/{filename}")
 @handle_exceptions
 async def restore_backup(filename: str) -> Dict[str, Any]:
-    """
-    [Phase 5.2] 백업 복구
+    backup = DatabaseBackup()
+    backup_path = _safe_backup_path(backup, filename)
 
-    **주의**: 현재 데이터베이스가 선택한 백업으로 덮어씌워집니다.
-    복구 전에 현재 상태의 백업이 자동으로 생성됩니다.
-
-    Args:
-        filename: 복구할 백업 파일명
-
-    Returns:
-        - success: 복구 성공 여부
-        - message: 결과 메시지
-        - pre_restore_backup: 복구 전 생성된 백업 파일명
-    """
-    import shutil
-    import sqlite3
+    if not backup.check_file_integrity(str(backup_path)):
+        raise HTTPException(status_code=400, detail="Backup file integrity check failed")
 
     try:
-        backup = DatabaseBackup()
+        pre_restore_path = backup.create_backup(prefix="pre_restore")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {exc}") from exc
 
-        # [보안] Path Traversal 방어
-        # 1. 파일명 패턴 검증 (알파벳, 숫자, 언더스코어, 하이픈, 점만 허용)
-        if not re.match(r'^[a-zA-Z0-9_\-\.]+\.db$', filename):
-            raise HTTPException(
-                status_code=400,
-                detail="유효하지 않은 파일명입니다. 파일명은 알파벳, 숫자, _, -, .만 포함할 수 있습니다."
-            )
-
-        # 2. 경로 탐색 문자 차단
-        if '..' in filename or '/' in filename or '\\' in filename:
-            raise HTTPException(
-                status_code=400,
-                detail="잘못된 파일 경로입니다."
-            )
-
-        # 3. 경로 정규화 후 범위 확인
-        backup_path = (Path(backup.backup_dir) / filename).resolve()
-        backup_dir_resolved = Path(backup.backup_dir).resolve()
-
-        # 4. 백업 디렉토리 내부인지 확인
+    try:
+        source = sqlite3.connect(str(backup_path), timeout=30.0)
+        target = sqlite3.connect(backup.db_path, timeout=30.0)
         try:
-            backup_path.relative_to(backup_dir_resolved)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="허용되지 않은 파일 경로입니다."
-            )
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
+    except Exception as exc:
+        shutil.copy2(pre_restore_path, backup.db_path)
+        raise HTTPException(status_code=500, detail=f"Restore failed and was rolled back: {exc}") from exc
 
-        backup_path_str = str(backup_path)
+    if not backup.check_integrity():
+        shutil.copy2(pre_restore_path, backup.db_path)
+        raise HTTPException(status_code=500, detail="Restored database failed integrity check and was rolled back")
 
-        # 5. 백업 파일 존재 확인
-        if not os.path.exists(backup_path_str):
-            raise HTTPException(status_code=404, detail="백업 파일을 찾을 수 없습니다.")
+    return {
+        "success": True,
+        "message": f'Restored from backup "{filename}"',
+        "pre_restore_backup": Path(pre_restore_path).name,
+        "restored_at": datetime.now().isoformat(),
+    }
 
-        # 6. 백업 파일 무결성 검사
-        try:
-            conn = sqlite3.connect(backup_path_str)
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA integrity_check")
-            result = cursor.fetchone()[0]
-            conn.close()
-
-            if result != "ok":
-                raise HTTPException(status_code=400, detail="선택한 백업 파일이 손상되었습니다")
-        except sqlite3.Error as e:
-            raise HTTPException(status_code=400, detail=f"백업 파일 검증 실패: {str(e)}")
-
-        # 7. 현재 DB 백업 (복구 전 안전 백업)
-        pre_restore_backup = f"pre_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        pre_restore_path = str(Path(backup.backup_dir) / pre_restore_backup)
-
-        try:
-            shutil.copy2(backup.db_path, pre_restore_path)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"복구 전 백업 생성 실패: {str(e)}")
-
-        # 8. 복구 실행
-        try:
-            shutil.copy2(backup_path_str, backup.db_path)
-        except Exception as e:
-            # 복구 실패 시 롤백
-            shutil.copy2(pre_restore_path, backup.db_path)
-            raise HTTPException(status_code=500, detail=f"복구 실패, 원래 상태로 롤백됨: {str(e)}")
-
-        # 9. 복구된 DB 무결성 검사
-        try:
-            conn = sqlite3.connect(backup.db_path)
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA integrity_check")
-            result = cursor.fetchone()[0]
-            conn.close()
-
-            if result != "ok":
-                # 복구 실패 시 롤백
-                shutil.copy2(pre_restore_path, backup.db_path)
-                raise HTTPException(status_code=500, detail="복구된 DB에 문제가 있어 롤백되었습니다")
-        except sqlite3.Error:
-            shutil.copy2(pre_restore_path, backup.db_path)
-            raise HTTPException(status_code=500, detail="복구된 DB 검증 실패, 롤백되었습니다")
-
-        return {
-            'success': True,
-            'message': f'백업 "{filename}"에서 복구가 완료되었습니다',
-            'pre_restore_backup': pre_restore_backup,
-            'restored_at': datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Restore Error] {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"복구 실패: {str(e)}")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# [고도화 V3-4] 데이터 보존 정책
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/retention/preview")
 async def preview_retention_cleanup():
-    """[고도화 V3-4] 보존 정책 적용 시 삭제 예정 데이터 미리보기 (dry run)"""
     try:
-        from services.data_retention import run_retention_cleanup, get_table_sizes
+        from services.data_retention import get_table_sizes, run_retention_cleanup
+
         db = DatabaseManager()
         preview = run_retention_cleanup(db.db_path, dry_run=True)
         preview["table_sizes"] = get_table_sizes(db.db_path)[:15]
         return preview
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/retention/execute")
 async def execute_retention_cleanup():
-    """[고도화 V3-4] 보존 정책 실행 (오래된 데이터 삭제 + VACUUM)"""
     try:
         from services.data_retention import run_full_maintenance
+
         db = DatabaseManager()
         return run_full_maintenance(db.db_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/retention/table-sizes")
 async def get_all_table_sizes():
-    """[고도화 V3-4] 전체 테이블 행 수 및 보존 기간"""
     try:
         from services.data_retention import get_table_sizes
+
         db = DatabaseManager()
         sizes = get_table_sizes(db.db_path)
         return {
             "tables": sizes,
             "total_tables": len(sizes),
-            "total_rows": sum(t["rows"] for t in sizes),
+            "total_rows": sum(row["rows"] for row in sizes),
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -19,8 +19,9 @@ class Pathfinder:
     def __init__(self):
         self.config = ConfigManager()
         # reusing crew's model for brainstorming
-        self.crew = AgentCrew() 
-        self.db_lock = threading.Lock() 
+        self.crew = AgentCrew()
+        self.db_lock = threading.Lock()
+        self.driver = None
 
     def run_campaign(self):
         """

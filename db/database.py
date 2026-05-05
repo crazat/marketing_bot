@@ -28,22 +28,43 @@ class DatabaseManager:
                     cls._instance._initialized = False
         return cls._instance
 
+    @staticmethod
+    def _resolve_db_path(db_path=None) -> str:
+        if db_path is not None:
+            return str(db_path)
+
+        db_override = (
+            os.environ.get('MARKETING_BOT_DB_PATH')
+            or os.environ.get('APP_DB_PATH')
+        )
+        if db_override:
+            return db_override
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_dir, "marketing_data.db")
+
+    @staticmethod
+    def _same_path(left: str, right: str) -> bool:
+        return os.path.abspath(str(left)) == os.path.abspath(str(right))
+
     def __init__(self, db_path=None):
-        # 이미 초기화되었으면 스킵 (싱글톤)
-        if self._initialized:
+        resolved_db_path = self._resolve_db_path(db_path)
+
+        # 이미 초기화되었으면 같은 DB는 재사용하고, 테스트/격리용 DB 변경은 재초기화
+        if self._initialized and self._same_path(self.db_path, resolved_db_path):
             return
 
-        if db_path is None:
-            # 환경 변수로 DB 경로 오버라이드 가능
-            db_override = os.environ.get('MARKETING_BOT_DB_PATH')
-            if db_override:
-                self.db_path = db_override
-            else:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                self.db_path = os.path.join(base_dir, "marketing_data.db")
-                # 항상 Windows DB 사용 (WSL 환경 감지 제거됨)
-        else:
-            self.db_path = db_path
+        if self._initialized:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self._viral_target_repo = None
+            self._lead_repo = None
+            self._competitor_repo = None
+            self._keyword_repo = None
+
+        self.db_path = resolved_db_path
 
         self._conn_lock = threading.Lock()
         self._init_db()
@@ -238,6 +259,7 @@ class DatabaseManager:
                 url TEXT UNIQUE,
                 date_posted TEXT,
                 scraped_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'New',
                 memo TEXT DEFAULT ''
             )
@@ -466,6 +488,7 @@ class DatabaseManager:
                 title TEXT,
                 content_preview TEXT,
                 matched_keywords TEXT DEFAULT '[]',
+                matched_keyword TEXT,
                 category TEXT,
                 is_commentable BOOLEAN DEFAULT 1,
                 comment_status TEXT DEFAULT 'pending',
@@ -490,6 +513,11 @@ class DatabaseManager:
 
         try:
             self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN scan_count INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass  # 컬럼이 이미 있으면 무시
+
+        try:
+            self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword TEXT")
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
 
@@ -568,6 +596,11 @@ class DatabaseManager:
 
         try:
             self.cursor.execute("ALTER TABLE mentions ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass  # 컬럼이 이미 있으면 무시
+
+        try:
+            self.cursor.execute("ALTER TABLE mentions ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
 

@@ -83,9 +83,21 @@ _gemini_client = None  # google.genai.Client (지연 초기화)
 
 # ── Client init ────────────────────────────────────────────────────────
 
+def _ai_disabled() -> bool:
+    disabled = os.getenv("MARKETING_BOT_DISABLE_AI", os.getenv("DISABLE_AI", "false"))
+    if disabled.lower() in {"1", "true", "yes", "on"}:
+        return True
+    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("MARKETING_BOT_ENABLE_AI_IN_TESTS", "false").lower() != "true":
+        return True
+    return False
+
+
 def _get_gemini_client():
     """google-genai 클라이언트 싱글톤"""
     global _gemini_client
+    if _ai_disabled():
+        logger.info("AI client disabled by environment")
+        return None
     if _gemini_client is not None:
         return _gemini_client
 
@@ -181,7 +193,7 @@ def ai_generate(
     """
     client = _get_gemini_client()
     if client is None:
-        return "[AI] API 클라이언트 초기화 실패"
+        return "[AI Error] API client is unavailable"
 
     model_id = _normalize_model(model, _MODEL_CLASSIFY)
 

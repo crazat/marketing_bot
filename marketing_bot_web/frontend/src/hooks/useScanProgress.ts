@@ -137,7 +137,7 @@ export function useScanProgress(
       disconnect()
       connect()
     }
-  }, [moduleName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [moduleName])
 
   return {
     ...data,

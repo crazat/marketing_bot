@@ -1067,7 +1067,7 @@ async def get_viral_targets(
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
     바이럴 타겟 목록 조회 (필터링 및 정렬 지원)
 
@@ -1121,7 +1121,12 @@ async def get_viral_targets(
         )
         # matched_keywords는 Repository에서 이미 list로 디코드됨 — 추가 변환 불필요
 
-        return targets
+        return {
+            "targets": targets,
+            "total": len(targets),
+            "limit": limit,
+            "offset": offset,
+        }
 
     except Exception as e:
         print(f"[Viral Targets Error] {str(e)}")

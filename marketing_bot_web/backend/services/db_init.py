@@ -11,6 +11,7 @@ Database Initialization Service
 - MigrationManager를 통한 버전 관리
 """
 
+import os
 import sqlite3
 from pathlib import Path
 import logging
@@ -19,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 # 프로젝트 루트 (backend -> marketing_bot_web -> marketing_bot)
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-DB_PATH = PROJECT_ROOT / 'db' / 'marketing_data.db'
+DB_PATH = Path(
+    os.getenv('MARKETING_BOT_DB_PATH')
+    or os.getenv('APP_DB_PATH')
+    or PROJECT_ROOT / 'db' / 'marketing_data.db'
+)
 
 
 def ensure_all_tables():
@@ -548,7 +553,7 @@ def ensure_all_tables():
                 n_emb = cur2.fetchone()[0]
             except Exception:
                 n_emb = -1  # 테이블 없음 → engine init 시 생성됨
-            if n_qa > 0 and n_emb != n_qa:
+            if os.getenv("MARKETING_BOT_QA_RAG_AUTO_INDEX", "false").lower() == "true" and n_qa > 0 and n_emb != n_qa:
                 logger.info(f"📚 Q&A RAG 인덱싱 필요 (qa={n_qa}, emb={n_emb})")
                 from services.rag.qa_search import get_qa_engine
                 indexed = get_qa_engine().index_all()

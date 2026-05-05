@@ -100,7 +100,13 @@ def setup_logging(
     
     # Console Handler
     if console_output:
-        console_handler = logging.StreamHandler(sys.stdout)
+        console_stream = sys.stdout
+        try:
+            if hasattr(console_stream, "reconfigure"):
+                console_stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        console_handler = logging.StreamHandler(console_stream)
         console_handler.setLevel(log_level)
         
         # Use colors on Windows if supported, plain format otherwise

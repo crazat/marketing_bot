@@ -12,6 +12,7 @@ class TheAmbassador:
     """
     def __init__(self):
         self.crew = AgentCrew()
+        self.driver = None
 
     def _google_search_influencers(self, location="청주", niche="협찬"):
         """
