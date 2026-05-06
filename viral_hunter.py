@@ -65,6 +65,7 @@ class ViralTarget:
     priority_score: float = 0.0
     author: str = ""
     date_str: str = ""
+    comment_status: str = "pending"
     source_scan_run_id: int = 0
     matched_keyword_grade: str = ""
     matched_keyword_kei: float = 0.0
@@ -122,6 +123,7 @@ class ViralTarget:
             'priority_score': self.priority_score,
             'author': self.author,
             'date_str': self.date_str,
+            'comment_status': self.comment_status,
             'source_scan_run_id': self.source_scan_run_id,
             'matched_keyword_grade': self.matched_keyword_grade,
             'matched_keyword_kei': self.matched_keyword_kei,
@@ -1555,8 +1557,9 @@ POST_ID: {i}
 
             except Exception as e:
                 logger.error(f"침투적합도 평가 배치 실패: {e}")
-                # 실패한 배치는 일단 적합으로 처리 (보수적)
-                suitable_targets.extend(batch)
+                # 실패한 배치는 큐에 넣지 않고 재시도 대상으로 남긴다.
+                for target in batch:
+                    target.comment_status = "needs_ai_retry"
                 continue
 
         # 결과 요약
@@ -1637,8 +1640,9 @@ POST_ID: {i}
 
             except Exception as e:
                 logger.error(f"통합 분석 배치 실패: {e}")
-                # 실패한 배치는 일단 적합으로 처리 (보수적)
-                suitable_targets.extend(batch)
+                # 실패한 배치는 큐에 넣지 않고 재시도 대상으로 남긴다.
+                for target in batch:
+                    target.comment_status = "needs_ai_retry"
                 continue
 
         # 결과 요약
@@ -1679,6 +1683,7 @@ POST_ID: {i}
         batch_size = unified_config.get('batch_size', batch_size)
         total_batches = (len(targets) + batch_size - 1) // batch_size
         skip = skip_batch_indices or set()
+        self.last_failed_ai_batches = set()
 
         logger.info(
             f"🔬 AI 통합 분석 시작(병렬): {len(targets)}개, 배치 {batch_size}, "
@@ -1699,8 +1704,7 @@ POST_ID: {i}
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
                 return batch_idx, suitable, unsuit, comp, None
             except Exception as e:
-                # 실패 시 보수적: 배치 전체를 적합으로 반환
-                return batch_idx, list(batch), 0, 0, e
+                return batch_idx, [], 0, 0, e, list(batch)
 
         suitable_all: List[ViralTarget] = []
         done_batches = set(skip)
@@ -1719,9 +1723,28 @@ POST_ID: {i}
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(run_batch, idx, b): idx for idx, b in pending}
             for fut in as_completed(futures):
-                batch_idx, suitable, unsuit, comp, err = fut.result()
+                result = fut.result()
+                if len(result) == 5:
+                    batch_idx, suitable, unsuit, comp, err = result
+                    failed_batch = []
+                else:
+                    batch_idx, suitable, unsuit, comp, err, failed_batch = result
                 if err:
-                    logger.warning(f"   ⚠️ 배치 {batch_idx} 실패({err}) → 보수적 적합 처리")
+                    self.last_failed_ai_batches.add(batch_idx)
+                    retry_saved = 0
+                    if db is not None:
+                        for t in failed_batch:
+                            t.comment_status = "needs_ai_retry"
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    retry_saved += 1
+                            except Exception as save_err:
+                                logger.warning(f"AI 재시도 대상 저장 실패: {save_err}")
+                    logger.warning(
+                        f"   ⚠️ 배치 {batch_idx} 실패({err}) → pending 제외, "
+                        f"needs_ai_retry {retry_saved}개 저장"
+                    )
+                    continue
 
                 final_suitable = []
                 final_rejected = 0
@@ -1820,7 +1843,7 @@ POST_ID: {i}
 
             # SUITABLE 추출
             suitable_match = re.search(r'SUITABLE:\s*(true|false)', post_result, re.IGNORECASE)
-            is_suitable = suitable_match.group(1).lower() == 'true' if suitable_match else True
+            is_suitable = suitable_match.group(1).lower() == 'true' if suitable_match else False
 
             # SCORE 추출
             score_match = re.search(r'SCORE:\s*(\d+)', post_result)
@@ -1875,10 +1898,10 @@ POST_ID: {i}
             else:
                 unsuitable_count += 1
 
-        # 파싱되지 않은 타겟은 적합으로 처리 (보수적)
+        # 파싱되지 않은 타겟은 pending에 넣지 않는다.
         for i, target in enumerate(targets):
             if i not in processed_ids:
-                suitable.append(target)
+                unsuitable_count += 1
 
         return suitable, unsuitable_count, competitor_count
 
@@ -1926,8 +1949,7 @@ POST_ID: {i}
             # SUITABLE 추출
             suitable_match = re.search(r'SUITABLE:\s*(true|false)', post_result, re.IGNORECASE)
             if not suitable_match:
-                # 파싱 실패 시 적합으로 처리 (보수적)
-                suitable.append(target)
+                unsuitable_count += 1
                 continue
 
             is_suitable = suitable_match.group(1).lower() == 'true'
@@ -1964,10 +1986,10 @@ POST_ID: {i}
                 unsuitable_count += 1
                 logger.debug(f"❌ 침투부적합: {target.title[:30]}... ({post_type})")
 
-        # 파싱되지 않은 타겟은 적합으로 처리 (보수적)
+        # 파싱되지 않은 타겟은 pending에 넣지 않는다.
         for i, target in enumerate(targets):
             if i not in processed_ids:
-                suitable.append(target)
+                unsuitable_count += 1
 
         return suitable, unsuitable_count
 
@@ -2250,6 +2272,7 @@ class ViralHunter:
             priority_score=d.get('priority_score', 0.0),
             author=d.get('author', ''),
             date_str=d.get('date_str', ''),
+            comment_status=d.get('comment_status', 'pending') or 'pending',
             source_scan_run_id=d.get('source_scan_run_id', 0) or 0,
             matched_keyword_grade=d.get('matched_keyword_grade', '') or '',
             matched_keyword_kei=d.get('matched_keyword_kei', 0.0) or 0.0,
@@ -2257,10 +2280,94 @@ class ViralHunter:
             matched_keyword_category=d.get('matched_keyword_category', '') or '',
         )
 
+    @staticmethod
+    def _viral_target_from_db_row(row) -> ViralTarget:
+        """DB row를 리포팅/체크포인트 복원용 ViralTarget으로 변환."""
+        matched_keywords = row["matched_keywords"] or "[]"
+        if isinstance(matched_keywords, str):
+            try:
+                matched_keywords = json.loads(matched_keywords)
+            except Exception:
+                matched_keywords = []
+
+        return ViralTarget(
+            platform=row["platform"] or "",
+            url=row["url"] or "",
+            title=row["title"] or "",
+            content_preview=row["content_preview"] or "",
+            matched_keywords=matched_keywords or [],
+            category=row["category"] or "기타",
+            is_commentable=bool(row["is_commentable"]),
+            generated_comment=row["generated_comment"] or "",
+            priority_score=row["priority_score"] or 0.0,
+            author=row["author"] or "",
+            date_str=row["posted_at"] or "",
+            comment_status=row["comment_status"] or "pending",
+            source_scan_run_id=row["source_scan_run_id"] or 0,
+            matched_keyword_grade=row["matched_keyword_grade"] or "",
+            matched_keyword_kei=row["matched_keyword_kei"] or 0.0,
+            matched_keyword_priority=row["matched_keyword_priority"] or 0.0,
+            matched_keyword_category=row["matched_keyword_category"] or "",
+        )
+
+    def _load_existing_targets_by_urls(self, urls: List[str]) -> List[ViralTarget]:
+        """체크포인트 재개 시 이미 저장된 AI 분석 결과를 리포트에 다시 합산."""
+        compact_urls = [u for u in dict.fromkeys(urls) if u]
+        if not compact_urls:
+            return []
+
+        loaded_by_url: Dict[str, ViralTarget] = {}
+        import sqlite3 as _sql
+
+        try:
+            conn = _sql.connect(self.db.db_path)
+            conn.row_factory = _sql.Row
+            cur = conn.cursor()
+            for start in range(0, len(compact_urls), 500):
+                chunk = compact_urls[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = cur.execute(
+                    f"""
+                    SELECT platform, url, title, content_preview, matched_keywords,
+                           category, is_commentable, generated_comment, priority_score,
+                           author, posted_at, comment_status, source_scan_run_id,
+                           matched_keyword_grade, matched_keyword_kei,
+                           matched_keyword_priority, matched_keyword_category
+                    FROM viral_targets
+                    WHERE url IN ({placeholders})
+                      AND COALESCE(comment_status, 'pending') != 'needs_ai_retry'
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    loaded_by_url[row["url"]] = self._viral_target_from_db_row(row)
+            conn.close()
+        except Exception as e:
+            logger.warning(f"AI 체크포인트 DB 결과 복원 실패: {e}")
+            return []
+
+        return [loaded_by_url[u] for u in compact_urls if u in loaded_by_url]
+
+    @staticmethod
+    def _urls_for_batch_indices(
+        targets: List[ViralTarget],
+        batch_size: int,
+        batch_indices: set,
+    ) -> List[str]:
+        urls: List[str] = []
+        for batch_idx in sorted(batch_indices):
+            start = (batch_idx - 1) * batch_size
+            if start < 0:
+                continue
+            for target in targets[start:start + batch_size]:
+                if target.url:
+                    urls.append(target.url)
+        return urls
+
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
-             top_n_for_ai: int = 10000, ai_parallel: int = 5,
+             top_n_for_ai: int = 300, ai_parallel: int = 5,
              use_latest_legion: bool = True) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
@@ -2367,19 +2474,16 @@ class ViralHunter:
             progress_callback("필터링중", len(keywords), len(keywords), f"{len(all_targets)}개 타겟 필터링 중...")
         filtered = self.filter.filter(all_targets)
 
-        # 중복 타겟 방지 (DB에 이미 있는 URL 제외)
+        # 중복 URL도 upsert로 보내 scan_count/source_scan_run_id를 갱신한다.
         if filtered:
             print(f"\n🔄 중복 체크 중...")
             try:
-                existing_targets = self.db.get_viral_targets(limit=100000)  # 모든 타겟 조회
-                existing_urls = set(row['url'] for row in existing_targets if row.get('url'))
-
-                new_targets = [t for t in filtered if t.url not in existing_urls]
-
-                if len(new_targets) < len(filtered):
-                    duplicate_count = len(filtered) - len(new_targets)
-                    print(f"   ✅ 중복 제거: {len(filtered)}개 → {len(new_targets)}개 (중복 {duplicate_count}개)")
-                    filtered = new_targets
+                existing_urls = self.db.get_existing_viral_urls([t.url for t in filtered])
+                if existing_urls:
+                    print(
+                        f"   ✅ 기존 URL {len(existing_urls)}개 발견: 저장 단계에서 "
+                        f"scan_count/source_scan_run_id 갱신"
+                    )
                 else:
                     print(f"   ✅ 중복 없음: {len(filtered)}개 모두 신규")
             except Exception as e:
@@ -2426,10 +2530,11 @@ class ViralHunter:
                 if not CommentableFilter.final_reject_reason(t)
             ]
             final_gate_removed = before_final_gate - len(rest_targets)
-            print(f"\n💾 Raw 저장 (AI 제외 {len(rest_targets)}개, 휴리스틱 점수 기준)...")
+            print(f"\n💾 Raw 백로그 저장 (AI 제외 {len(rest_targets)}개, pending 큐 제외)...")
             if final_gate_removed:
                 print(f"   🧹 최종 게이트 제외: {final_gate_removed}개")
             for t in rest_targets:
+                t.comment_status = "raw_backlog"
                 if self.db.insert_viral_target(t.to_dict()):
                     raw_saved += 1
             print(f"   ✅ Raw {raw_saved}개 저장 완료")
@@ -2445,6 +2550,15 @@ class ViralHunter:
             # 체크포인트에서 이미 분석한 배치 인덱스 로드 (ai_processed_batches)
             cp_path = self._checkpoint_path()
             already_done_batches: set = set()
+            ai_batch_size = 25
+            try:
+                ai_batch_size = int(
+                    self.generator._load_prompts()
+                    .get('unified_analysis', {})
+                    .get('batch_size', ai_batch_size)
+                )
+            except Exception:
+                ai_batch_size = 25
             if os.path.exists(cp_path):
                 try:
                     with open(cp_path, 'r', encoding='utf-8') as f:
@@ -2452,6 +2566,19 @@ class ViralHunter:
                     already_done_batches = set(cp.get('ai_processed_batches') or [])
                 except Exception:
                     pass
+
+            resumed_analyzed_targets: List[ViralTarget] = []
+            if already_done_batches:
+                resumed_urls = self._urls_for_batch_indices(
+                    ai_targets,
+                    ai_batch_size,
+                    already_done_batches,
+                )
+                resumed_analyzed_targets = self._load_existing_targets_by_urls(resumed_urls)
+                print(
+                    f"   ♻️ AI 체크포인트 복원: 배치 {len(already_done_batches)}개, "
+                    f"DB 결과 {len(resumed_analyzed_targets)}개 합산"
+                )
 
             def save_progress(done_batch_indices: set):
                 """현재까지 분석된 배치 인덱스를 체크포인트에 저장"""
@@ -2469,14 +2596,15 @@ class ViralHunter:
                 except Exception as e:
                     logger.warning(f"AI 체크포인트 저장 실패: {e}")
 
-            analyzed_targets = self.generator.unified_analysis_parallel(
+            newly_analyzed_targets = self.generator.unified_analysis_parallel(
                 ai_targets,
-                batch_size=25,
+                batch_size=ai_batch_size,
                 max_workers=ai_parallel,
                 db=self.db,
                 skip_batch_indices=already_done_batches,
                 on_batch_done=save_progress,
             )
+            analyzed_targets = resumed_analyzed_targets + newly_analyzed_targets
 
         # 총 저장 수: raw + AI로 분석되어 이미 저장된 것
         saved = raw_saved + len(analyzed_targets)
@@ -2519,8 +2647,15 @@ class ViralHunter:
             else:
                 print(f"   ℹ️ Tier 1 HOT LEAD 없음 — 즉시 알림 스킵 (Daily Brief에서 요약)")
 
-        # 체크포인트 삭제 (성공 완료)
-        self._clear_checkpoint()
+        failed_ai_batches = set(getattr(self.generator, "last_failed_ai_batches", set()) or set())
+        if failed_ai_batches:
+            print(
+                f"   ⚠️ AI 실패 배치 {len(failed_ai_batches)}개가 남아 "
+                f"체크포인트를 보존합니다. 다음 실행에서 재시도됩니다."
+            )
+        else:
+            # 체크포인트 삭제 (성공 완료)
+            self._clear_checkpoint()
 
         # CSV 자동 저장
         csv_path = None
@@ -2663,7 +2798,7 @@ def main():
     parser.add_argument('--fresh', action='store_true', help='체크포인트 무시하고 처음부터 스캔')
     parser.add_argument('--legacy-keywords', action='store_true', help='최신 Legion curated seed 대신 기존 누적 키워드 로더 사용')
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
-    parser.add_argument('--top-n-for-ai', type=int, default=10000, help='AI 분석 대상 상위 N개 (나머지는 raw 저장, 기본 10000)')
+    parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
 
     args = parser.parse_args()

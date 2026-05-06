@@ -106,15 +106,30 @@ def create_scan_run(scan_type: str = "legion", mode: str = "legion", target_coun
                 status TEXT DEFAULT 'running',
                 total_keywords INTEGER DEFAULT 0,
                 new_keywords INTEGER DEFAULT 0,
+                updated_keywords INTEGER DEFAULT 0,
                 s_grade_count INTEGER DEFAULT 0,
                 a_grade_count INTEGER DEFAULT 0,
                 b_grade_count INTEGER DEFAULT 0,
                 c_grade_count INTEGER DEFAULT 0,
+                sources_json TEXT DEFAULT '{}',
+                categories_json TEXT DEFAULT '{}',
                 error_message TEXT,
                 top_keywords_json TEXT DEFAULT '[]',
-                execution_time_seconds INTEGER DEFAULT 0
+                execution_time_seconds INTEGER DEFAULT 0,
+                notes TEXT
             )
         ''')
+
+        for col, ctype in [
+            ("updated_keywords", "INTEGER DEFAULT 0"),
+            ("sources_json", "TEXT DEFAULT '{}'"),
+            ("categories_json", "TEXT DEFAULT '{}'"),
+            ("notes", "TEXT"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE scan_runs ADD COLUMN {col} {ctype}")
+            except sqlite3.OperationalError:
+                pass
 
         cursor.execute('''
             INSERT INTO scan_runs (scan_type, mode, target_count, status)
@@ -134,9 +149,10 @@ def create_scan_run(scan_type: str = "legion", mode: str = "legion", target_coun
 
 def update_scan_run(run_id: int, status: str = "completed",
                     total_keywords: int = 0, new_keywords: int = 0,
+                    updated_keywords: int = 0,
                     s_count: int = 0, a_count: int = 0, b_count: int = 0, c_count: int = 0,
                     top_keywords: list = None, error_message: str = None,
-                    execution_time: int = 0):
+                    execution_time: int = 0, notes: str = None):
     """스캔 실행 레코드 업데이트"""
     if not run_id:
         return
@@ -149,6 +165,17 @@ def update_scan_run(run_id: int, status: str = "completed",
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        for col, ctype in [
+            ("updated_keywords", "INTEGER DEFAULT 0"),
+            ("sources_json", "TEXT DEFAULT '{}'"),
+            ("categories_json", "TEXT DEFAULT '{}'"),
+            ("notes", "TEXT"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE scan_runs ADD COLUMN {col} {ctype}")
+            except sqlite3.OperationalError:
+                pass
+
         top_json = json.dumps(top_keywords[:10] if top_keywords else [], ensure_ascii=False)
 
         cursor.execute('''
@@ -157,16 +184,19 @@ def update_scan_run(run_id: int, status: str = "completed",
                 completed_at = CURRENT_TIMESTAMP,
                 total_keywords = ?,
                 new_keywords = ?,
+                updated_keywords = ?,
                 s_grade_count = ?,
                 a_grade_count = ?,
                 b_grade_count = ?,
                 c_grade_count = ?,
                 top_keywords_json = ?,
                 error_message = ?,
-                execution_time_seconds = ?
+                execution_time_seconds = ?,
+                notes = ?
             WHERE id = ?
-        ''', (status, total_keywords, new_keywords, s_count, a_count, b_count, c_count,
-              top_json, error_message, execution_time, run_id))
+        ''', (status, total_keywords, new_keywords, updated_keywords,
+              s_count, a_count, b_count, c_count,
+              top_json, error_message, execution_time, notes, run_id))
 
         conn.commit()
         conn.close()
@@ -2509,7 +2539,7 @@ class PathfinderLegion:
 
         print(f"\n📁 결과 저장: {filename}")
 
-    def save_to_db(self, results: List[KeywordResult], db_path: str = None, scan_run_id: int = 0):
+    def save_to_db(self, results: List[KeywordResult], db_path: str = None, scan_run_id: int = 0) -> dict:
         """DB 저장 (WSL + Dropbox 환경: 로컬 임시 파일 사용)"""
         import sqlite3
         import os
@@ -2606,6 +2636,8 @@ class PathfinderLegion:
 
         # 저장 (배치 처리로 Dropbox 충돌 최소화)
         saved = 0
+        inserted = 0
+        updated = 0
         errors = 0
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         batch_size = 50  # 50개씩 배치 커밋
@@ -2623,6 +2655,9 @@ class PathfinderLegion:
                     tag = "구매의도"
                 elif any(w in r.keyword for w in ["후기", "추천"]):
                     tag = "신뢰의도"
+
+                cursor.execute("SELECT 1 FROM keyword_insights WHERE keyword = ?", (r.keyword,))
+                existed = cursor.fetchone() is not None
 
                 cursor.execute('''
                     INSERT INTO keyword_insights (
@@ -2660,6 +2695,10 @@ class PathfinderLegion:
                     scan_run_id, scan_run_id
                 ))
                 saved += 1
+                if existed:
+                    updated += 1
+                else:
+                    inserted += 1
 
                 # 배치 커밋 (Dropbox 동기화 충돌 방지)
                 if (i + 1) % batch_size == 0:
@@ -2699,7 +2738,17 @@ class PathfinderLegion:
                 print(f"   임시 파일 위치: {temp_db}")
                 print(f"   수동으로 복사하세요: cp {temp_db} {db_path}")
 
-        print(f"   ✅ {saved}/{len(results)}개 저장 완료" + (f" (에러: {errors}개)" if errors else ""))
+        print(
+            f"   ✅ {saved}/{len(results)}개 처리 완료"
+            f" (신규: {inserted}개, 업데이트: {updated}개)"
+            + (f" (에러: {errors}개)" if errors else "")
+        )
+        return {
+            "processed": saved,
+            "inserted": inserted,
+            "updated": updated,
+            "errors": errors,
+        }
 
 
 def main():
@@ -2748,7 +2797,7 @@ def main():
 
         # DB 저장 (기본값: True, --no-db로 비활성화)
         if not args.no_db:
-            legion.save_to_db(results, scan_run_id=scan_run_id)
+            save_stats = legion.save_to_db(results, scan_run_id=scan_run_id)
 
             # 스캔 완료 통계 계산
             s_count = sum(1 for r in results if r.grade == 'S')
@@ -2769,13 +2818,15 @@ def main():
                 run_id=scan_run_id,
                 status="completed",
                 total_keywords=len(results),
-                new_keywords=len(results),  # 전체를 new로 기록 (실제로는 기존+신규)
+                new_keywords=save_stats.get("inserted", 0),
+                updated_keywords=save_stats.get("updated", 0),
                 s_count=s_count,
                 a_count=a_count,
                 b_count=b_count,
                 c_count=c_count,
                 top_keywords=top_keywords,
-                execution_time=execution_time
+                execution_time=execution_time,
+                notes="keyword_insights.scan_run_id=first_seen, last_scan_run_id=last_seen"
             )
 
     except Exception as e:

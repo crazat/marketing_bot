@@ -142,8 +142,8 @@ def build_prompt(platform: str, title: str, preview: str, url: str) -> str:
     )
 
 
-def fetch_pending(limit: int | None = None):
-    conn = sqlite3.connect('db/marketing_data.db')
+def fetch_pending(limit: int | None = None, source_scan_run_id: int | None = None):
+    conn = sqlite3.connect(os.environ.get('MARKETING_BOT_DB_PATH', 'db/marketing_data.db'))
     c = conn.cursor()
     # [2026-04-28] content(enrich된 본문) 있으면 우선, 없으면 content_preview
     # AI hallucination 감소를 위해 본문을 길게 제공 (1500자)
@@ -153,11 +153,15 @@ def fetch_pending(limit: int | None = None):
                COALESCE(url,'')
         FROM viral_targets
         WHERE comment_status='pending' AND ai_ad_label IS NULL
-        ORDER BY platform, id
     """
+    params = []
+    if source_scan_run_id is not None:
+        sql += " AND source_scan_run_id = ?"
+        params.append(int(source_scan_run_id))
+    sql += " ORDER BY platform, id"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    rows = c.execute(sql).fetchall()
+    rows = c.execute(sql, params).fetchall()
     conn.close()
     return rows
 
@@ -167,11 +171,15 @@ def main():
     p.add_argument('--limit', type=int, default=None, help='최대 제출 건수 (기본: 전체)')
     p.add_argument('--chunk', type=int, default=5000, help='배치당 최대 요청 수')
     p.add_argument('--dry-run', action='store_true', help='제출 안 하고 카운트만')
+    p.add_argument('--source-scan-run-id', type=int, default=None,
+                   help='특정 source_scan_run_id의 viral_targets만 제출')
     args = p.parse_args()
 
-    rows = fetch_pending(args.limit)
+    rows = fetch_pending(args.limit, args.source_scan_run_id)
     total = len(rows)
     print(f'대상: {total:,}건')
+    if args.source_scan_run_id is not None:
+        print(f'source_scan_run_id: {args.source_scan_run_id}')
     if total == 0:
         print('처리할 pending 없음.')
         return
@@ -235,6 +243,7 @@ def main():
                 'job_name': job_name,
                 'display_name': display_name,
                 'target_ids': target_ids,
+                'source_scan_run_id': args.source_scan_run_id,
                 'count': len(target_ids),
                 'submitted_at': datetime.now().isoformat(),
             }, f, ensure_ascii=False, indent=2)
@@ -242,7 +251,7 @@ def main():
         print(f'  ✅ {job_name}  ({len(target_ids):,}건) → {path}')
 
         # ai_batch_job 컬럼에 마킹 (회수 추적용)
-        conn = sqlite3.connect('db/marketing_data.db')
+        conn = sqlite3.connect(os.environ.get('MARKETING_BOT_DB_PATH', 'db/marketing_data.db'))
         c = conn.cursor()
         placeholders = ','.join('?' * len(target_ids))
         c.execute(f'UPDATE viral_targets SET ai_batch_job=? WHERE id IN ({placeholders})',

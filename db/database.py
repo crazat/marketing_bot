@@ -3175,6 +3175,15 @@ class DatabaseManager:
                     last_scanned_at = excluded.last_scanned_at,
                     scan_count = viral_targets.scan_count + 1,
                     content_hash = excluded.content_hash,
+                    comment_status = CASE
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') IN ('needs_ai_retry', 'raw_backlog')
+                             AND COALESCE(excluded.comment_status, 'pending') = 'pending'
+                            THEN 'pending'
+                        WHEN COALESCE(excluded.comment_status, 'pending') != 'pending'
+                             AND COALESCE(viral_targets.comment_status, 'pending') IN ('pending', 'raw_backlog')
+                            THEN excluded.comment_status
+                        ELSE viral_targets.comment_status
+                    END,
                     author = COALESCE(excluded.author, viral_targets.author),
                     posted_at = COALESCE(excluded.posted_at, viral_targets.posted_at),
                     source_scan_run_id = COALESCE(NULLIF(excluded.source_scan_run_id, 0), viral_targets.source_scan_run_id),
@@ -3224,6 +3233,28 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"insert_viral_target error: {e}")
             return False
+
+    def get_existing_viral_urls(self, urls: list[str], chunk_size: int = 500) -> set[str]:
+        """Return URLs already present in viral_targets without loading the whole table."""
+        if not urls:
+            return set()
+
+        existing: set[str] = set()
+        compact_urls = [u for u in dict.fromkeys(urls) if u]
+
+        try:
+            for start in range(0, len(compact_urls), chunk_size):
+                chunk = compact_urls[start:start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                self.cursor.execute(
+                    f"SELECT url FROM viral_targets WHERE url IN ({placeholders})",
+                    chunk,
+                )
+                existing.update(row[0] for row in self.cursor.fetchall() if row[0])
+            return existing
+        except Exception as e:
+            logger.error(f"get_existing_viral_urls error: {e}")
+            return set()
 
     def get_viral_targets(self, status: str = None, platform: str = None,
                           category: str = None, date_filter: str = None,

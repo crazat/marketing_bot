@@ -1,5 +1,23 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-06 Memory: Pathfinder/Viral Hunter Reliability Baseline
+
+- Latest Pathfinder Legion run records keyword lineage as first-seen/last-seen:
+  - `keyword_insights.scan_run_id` means first discovery run.
+  - `keyword_insights.last_scan_run_id` means latest run that refreshed the keyword.
+  - Use `last_scan_run_id` when reporting a specific Legion run's full result set.
+- `scan_runs.new_keywords` is now inserted rows only. Existing refreshed keywords are counted in `scan_runs.updated_keywords`; do not treat `new_keywords` as total run size.
+- Viral Hunter defaults to `--top-n-for-ai 300`. Targets beyond the AI quota should be saved as `raw_backlog`, not staff-ready `pending`.
+- AI failures and parse failures must fail closed:
+  - Viral Hunter AI batch failures are saved as `needs_ai_retry`, excluded from pending, and failed checkpoints are preserved for retry.
+  - Missing `SUITABLE` in AI output is not suitable by default.
+  - Ad-classification parse failures are marked `needs_ai_retry` with `ai_ad_reason='parse_failed'`.
+- Duplicate viral URLs should go through DB upsert so `scan_count` and `source_scan_run_id` are refreshed. Do not prefilter by loading the full `viral_targets` table.
+- Batch ad-classification apply supports source-run scoping. Prefer `--source-scan-run-id` or batch metadata when applying results from a specific Legion run.
+- Current targeted verification for this flow:
+  - `python -m py_compile pathfinder_v3_legion.py viral_hunter.py db\database.py scripts\ai_ad_classify_submit.py scripts\ai_ad_classify_apply.py tests\test_pathfinder_viral_stability.py`
+  - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_target_repo.py tests\test_router_smoke.py -q`
+
 ## 2026-05-05 Memory: Stability Audit Baseline
 
 - Full stability audit fixes are complete. Current verification baseline:

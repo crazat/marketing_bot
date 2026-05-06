@@ -9,7 +9,7 @@ Logic:
 
 Run: python scripts/ai_ad_classify_apply.py db/batch_jobs/ad_classify_<TS>
 """
-import sys, os, json, glob, re, sqlite3
+import sys, os, json, glob, re, sqlite3, argparse
 from datetime import datetime
 from collections import Counter
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'marketing_bot_web', 'backend'))
@@ -51,11 +51,34 @@ def parse_response(text: str) -> dict | None:
     return None
 
 
+def _execute_scoped_update(
+    cur: sqlite3.Cursor,
+    set_sql: str,
+    params: list,
+    target_id: str,
+    source_scan_run_id: int | None,
+) -> int:
+    if source_scan_run_id is None:
+        cur.execute(f"UPDATE viral_targets SET {set_sql} WHERE id=?", params + [target_id])
+    else:
+        cur.execute(
+            f"UPDATE viral_targets SET {set_sql} WHERE id=? AND source_scan_run_id=?",
+            params + [target_id, int(source_scan_run_id)],
+        )
+    return cur.rowcount
+
+
 def main():
-    if len(sys.argv) < 2:
-        print('Usage: python scripts/ai_ad_classify_apply.py <batch_jobs_dir>')
-        sys.exit(1)
-    job_dir = sys.argv[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('job_dir', help='db/batch_jobs/ad_classify_<TS>')
+    parser.add_argument(
+        '--source-scan-run-id',
+        type=int,
+        default=None,
+        help='이 run의 target만 업데이트. 미지정 시 batch JSON metadata 값을 사용',
+    )
+    args = parser.parse_args()
+    job_dir = args.job_dir
 
     files = sorted(glob.glob(os.path.join(job_dir, 'batch_*.json')))
     files = [f for f in files if 'FAILED' not in f]
@@ -81,13 +104,16 @@ def main():
     print('✅ 모두 SUCCEEDED')
 
     # 결과 회수 + UPDATE
-    conn = sqlite3.connect('db/marketing_data.db')
+    db_path = os.environ.get('MARKETING_BOT_DB_PATH', 'db/marketing_data.db')
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     label_count = Counter()
     parse_fail = 0
     updated = 0
     filtered = 0
     review_q = 0
+    retry_marked = 0
+    skipped_scope = 0
 
     now = datetime.now().isoformat()
 
@@ -96,6 +122,11 @@ def main():
             meta = json.load(f)
         job_name = meta['job_name']
         target_ids = meta['target_ids']
+        batch_source_scan_run_id = (
+            args.source_scan_run_id
+            if args.source_scan_run_id is not None
+            else meta.get('source_scan_run_id')
+        )
         results = ai_batch_results(job_name)
         if results is None or len(results) != len(target_ids):
             print(f'⚠️ {os.path.basename(fp)}: 결과 길이 불일치 (expected {len(target_ids)}, got {len(results) if results else 0})')
@@ -105,9 +136,20 @@ def main():
             parsed = parse_response(txt)
             if parsed is None:
                 parse_fail += 1
+                rowcount = _execute_scoped_update(
+                    cur,
+                    "ai_ad_reason=?, ai_classified_at=?, comment_status=?",
+                    ['parse_failed', now, 'needs_ai_retry'],
+                    tid,
+                    batch_source_scan_run_id,
+                )
+                if rowcount:
+                    retry_marked += rowcount
+                    updated += rowcount
+                else:
+                    skipped_scope += 1
                 continue
 
-            label_count[parsed['label']] += 1
             new_status = None
 
             # [Q4] 타지역 글은 무조건 filter (자연_질문이라도 우리에게 응답 가치 없음)
@@ -115,42 +157,53 @@ def main():
             high_conf = parsed['confidence'] >= CONFIDENCE_THRESHOLD
             if high_conf and parsed['post_region'] == '타지역':
                 new_status = 'filtered_out_ai'
-                filtered += 1
             elif high_conf and parsed['label'] in FILTER_LABELS:
                 new_status = 'filtered_out_ai'
-                filtered += 1
             elif (
                 high_conf
                 and parsed['specialty_match'] == 'low'
                 and parsed['label'] != '자연_질문'
             ):
                 new_status = 'filtered_out_ai'
-                filtered += 1
-            elif parsed['confidence'] < CONFIDENCE_THRESHOLD:
-                review_q += 1
-                # status 유지
 
             if new_status:
-                cur.execute("""
-                    UPDATE viral_targets
-                    SET ai_ad_label=?, ai_ad_confidence=?, ai_ad_reason=?, ai_classified_at=?,
-                        post_region=?, specialty_match=?, comment_status=?
-                    WHERE id=?
-                """, (
+                rowcount = _execute_scoped_update(
+                    cur,
+                    """
+                    ai_ad_label=?, ai_ad_confidence=?, ai_ad_reason=?, ai_classified_at=?,
+                    post_region=?, specialty_match=?, comment_status=?
+                    """,
+                    [
                     parsed['label'], parsed['confidence'], parsed['reason'], now,
-                    parsed['post_region'], parsed['specialty_match'], new_status, tid,
-                ))
+                    parsed['post_region'], parsed['specialty_match'], new_status,
+                    ],
+                    tid,
+                    batch_source_scan_run_id,
+                )
             else:
-                cur.execute("""
-                    UPDATE viral_targets
-                    SET ai_ad_label=?, ai_ad_confidence=?, ai_ad_reason=?, ai_classified_at=?,
-                        post_region=?, specialty_match=?
-                    WHERE id=?
-                """, (
+                rowcount = _execute_scoped_update(
+                    cur,
+                    """
+                    ai_ad_label=?, ai_ad_confidence=?, ai_ad_reason=?, ai_classified_at=?,
+                    post_region=?, specialty_match=?
+                    """,
+                    [
                     parsed['label'], parsed['confidence'], parsed['reason'], now,
-                    parsed['post_region'], parsed['specialty_match'], tid,
-                ))
-            updated += 1
+                    parsed['post_region'], parsed['specialty_match'],
+                    ],
+                    tid,
+                    batch_source_scan_run_id,
+                )
+
+            if rowcount:
+                updated += rowcount
+                label_count[parsed['label']] += rowcount
+                if new_status == 'filtered_out_ai':
+                    filtered += rowcount
+                elif parsed['confidence'] < CONFIDENCE_THRESHOLD:
+                    review_q += rowcount
+            else:
+                skipped_scope += 1
 
         conn.commit()
         print(f'  ✅ {os.path.basename(fp)}: {len(target_ids):,}건 처리')
@@ -162,6 +215,9 @@ def main():
     print('=' * 70)
     print(f'\n  총 UPDATE: {updated:,}건')
     print(f'  파싱 실패: {parse_fail:,}건')
+    print(f'  → 재시도 큐 표시: {retry_marked:,}건')
+    if skipped_scope:
+        print(f'  → source_scan_run_id 범위 불일치/미존재로 건너뜀: {skipped_scope:,}건')
     print(f'  → filtered_out_ai 적용: {filtered:,}건')
     print(f'  → 사람 검토 큐 (낮은 신뢰도): {review_q:,}건')
     print('\n  라벨 분포:')
@@ -169,7 +225,7 @@ def main():
         print(f'    {label:<15}  {n:>6,}건')
 
     # 최종 viral_targets 분포
-    conn = sqlite3.connect('db/marketing_data.db')
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     print('\n  최종 comment_status 분포:')
     for r in cur.execute("SELECT comment_status, COUNT(*) FROM viral_targets GROUP BY comment_status ORDER BY 2 DESC").fetchall():
