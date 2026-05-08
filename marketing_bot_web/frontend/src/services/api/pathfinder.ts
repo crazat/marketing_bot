@@ -21,6 +21,10 @@ export const pathfinderApi = {
     max_age_days?: number
     /** [Q12] search_volume<50 저신뢰 키워드 포함 (기본 false) */
     include_low_volume?: boolean
+    /** 최신 완료 Legion run + document_count>0 키워드만 조회 */
+    latest_verified_only?: boolean
+    /** 실제 유입 핵심군만 조회 */
+    business_core_only?: boolean
     limit?: number
     offset?: number
   }) => {
@@ -42,7 +46,12 @@ export const pathfinderApi = {
     return response.data
   },
 
-  exportAllKeywords: async (params?: { grade?: string; category?: string }) => {
+  exportAllKeywords: async (params?: {
+    grade?: string
+    category?: string
+    latest_verified_only?: boolean
+    business_core_only?: boolean
+  }) => {
     const response = await api.get('/pathfinder/keywords/export-all', { params })
     return response.data
   },

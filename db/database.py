@@ -679,7 +679,8 @@ class DatabaseManager:
                 search_intent TEXT DEFAULT 'unknown',
                 document_count INTEGER DEFAULT 0,
                 kei REAL DEFAULT 0.0,
-                kei_grade TEXT DEFAULT 'C'
+                kei_grade TEXT DEFAULT 'C',
+                business_core INTEGER DEFAULT 0
             )
         ''')
 
@@ -860,7 +861,13 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
 
+        try:
+            self.cursor.execute("ALTER TABLE keyword_insights ADD COLUMN business_core INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # 컬럼이 이미 있으면 무시
+
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keywords_scan_run ON keyword_insights(scan_run_id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword_insights_business_core ON keyword_insights(business_core)")
 
         # [Phase 5.0] 성능 최적화 - 추가 인덱스
         # 자주 사용되는 필터 조건에 대한 인덱스

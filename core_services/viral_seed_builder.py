@@ -102,7 +102,9 @@ class ViralSeedBuilder:
                 FROM keyword_insights
                 WHERE last_scan_run_id = ?
                   AND grade IN ({placeholders})
-                  AND status = 'active'
+                  AND COALESCE(status, 'active') = 'active'
+                  AND COALESCE(document_count, 0) > 0
+                  AND COALESCE(business_core, 0) = 1
                 ORDER BY
                   CASE grade WHEN 'S' THEN 0 WHEN 'A' THEN 1 ELSE 2 END,
                   priority_v3 DESC,

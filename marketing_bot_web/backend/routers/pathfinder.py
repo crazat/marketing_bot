@@ -157,15 +157,19 @@ def calculate_kei(keyword_data: dict) -> float:
     """
     KEI (Keyword Effectiveness Index) 계산
 
-    공식: KEI = (search_volume / max(1, difficulty)) * 10
+    공식: KEI = search_volume² / document_count
 
     높을수록 효율적인 키워드 (검색량 대비 경쟁이 낮음)
-    - KEI >= 50: 매우 효율적 (S급)
-    - KEI >= 30: 효율적 (A급)
-    - KEI >= 15: 보통 (B급)
-    - KEI < 15: 비효율적 (C급)
+    - KEI >= 500: 매우 효율적 (S급)
+    - KEI >= 200: 효율적 (A급)
+    - KEI >= 50: 보통 (B급)
+    - KEI < 50: 비효율적 (C급)
     """
     search_volume = keyword_data.get('search_volume') or 0
+    document_count = keyword_data.get('document_count') or 0
+    if search_volume > 0 and document_count > 0:
+        return round((search_volume ** 2) / document_count, 2)
+
     difficulty = keyword_data.get('difficulty') or 50
 
     # 0으로 나누기 방지
@@ -268,6 +272,78 @@ def get_category_variants(standard_category: str) -> List[str]:
     return _REVERSE_CATEGORY_MAPPING.get(standard_category, [standard_category])
 
 
+def _keyword_insights_columns(cursor: sqlite3.Cursor) -> set:
+    return {row[1] for row in cursor.execute("PRAGMA table_info(keyword_insights)").fetchall()}
+
+
+def _latest_completed_legion_run_id(cursor: sqlite3.Cursor) -> Optional[int]:
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_runs'")
+    if not cursor.fetchone():
+        return None
+    try:
+        row = cursor.execute(
+            """
+            SELECT id
+            FROM scan_runs
+            WHERE status = 'completed'
+              AND scan_type = 'legion'
+            ORDER BY completed_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return int(row[0]) if row else None
+
+
+def _qcol(column: str, alias: str = "ki") -> str:
+    return f"{alias}.{column}" if alias else column
+
+
+def _append_latest_verified_filters(
+    cursor: sqlite3.Cursor,
+    filters: List[str],
+    params: List[Any],
+    *,
+    alias: str = "ki",
+    latest_verified_only: bool = True,
+    require_document_count: bool = True,
+) -> Optional[int]:
+    """최신 완료 Legion run과 문서수 검증 데이터를 기본 노출 기준으로 사용."""
+    columns = _keyword_insights_columns(cursor)
+    latest_run_id = _latest_completed_legion_run_id(cursor)
+
+    if "status" in columns:
+        filters.append(f"COALESCE({_qcol('status', alias)}, 'active') != 'archived'")
+
+    if latest_verified_only and latest_run_id and "last_scan_run_id" in columns:
+        filters.append(f"{_qcol('last_scan_run_id', alias)} = ?")
+        params.append(latest_run_id)
+
+    if require_document_count and "document_count" in columns:
+        filters.append(f"COALESCE({_qcol('document_count', alias)}, 0) > 0")
+
+    return latest_run_id
+
+
+def _append_business_core_filter(
+    cursor: sqlite3.Cursor,
+    filters: List[str],
+    *,
+    alias: str = "ki",
+    business_core_only: bool = False,
+) -> None:
+    if not business_core_only:
+        return
+    columns = _keyword_insights_columns(cursor)
+    if "business_core" in columns:
+        filters.append(f"COALESCE({_qcol('business_core', alias)}, 0) = 1")
+    else:
+        filters.append(
+            f"{_qcol('category', alias)} IN ('다이어트', '교통사고', '안면비대칭', '피부/여드름', '체형교정')"
+        )
+
+
 @router.get("/live-status")
 async def get_live_status() -> Dict[str, Any]:
     """
@@ -319,7 +395,15 @@ class PathfinderRequest(BaseModel):
 @handle_exceptions
 async def get_pathfinder_stats(
     apply_filter: bool = True,
-    days: Optional[int] = Query(None, ge=1, le=365, description="조회 기간 (1-365일)")
+    days: Optional[int] = Query(None, ge=1, le=365, description="조회 기간 (1-365일)"),
+    latest_verified_only: bool = Query(
+        default=True,
+        description="최신 완료 Legion run과 문서수 검증 키워드만 집계",
+    ),
+    business_core_only: bool = Query(
+        default=False,
+        description="실제 유입 핵심군(business_core=1)만 집계",
+    ),
 ) -> Dict[str, Any]:
     """
     Pathfinder 통계 조회
@@ -356,6 +440,20 @@ async def get_pathfinder_stats(
         # 쿼리 조건 및 파라미터 구성
         where_conditions = ["1=1"]
         params = []
+        latest_run_id = _append_latest_verified_filters(
+            cursor,
+            where_conditions,
+            params,
+            alias="",
+            latest_verified_only=latest_verified_only,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            where_conditions,
+            alias="",
+            business_core_only=business_core_only,
+        )
 
         # 등급 필터
         if apply_filter:
@@ -439,6 +537,9 @@ async def get_pathfinder_stats(
             "c_grade": stats[4] if stats and stats[4] else 0,
             "categories": categories,
             "sources": sources,
+            "latest_run_id": latest_run_id,
+            "latest_verified_only": latest_verified_only,
+            "business_core_only": business_core_only,
             "trends": {
                 "rising": trend_stats[0] if trend_stats and trend_stats[0] else 0,
                 "falling": trend_stats[1] if trend_stats and trend_stats[1] else 0,
@@ -473,6 +574,14 @@ async def get_keywords(
         default=False,
         description="search_volume<50인 저신뢰 키워드 포함 (기본 False)",
     ),
+    latest_verified_only: bool = Query(
+        default=True,
+        description="최신 완료 Legion run + document_count>0 키워드만 조회",
+    ),
+    business_core_only: bool = Query(
+        default=False,
+        description="실제 유입 핵심군(business_core=1)만 조회",
+    ),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="건너뛸 항목 수")
 ) -> List[Dict[str, Any]]:
@@ -497,6 +606,20 @@ async def get_keywords(
         # SQL 인젝션 방지를 위한 파라미터 바인딩
         filters = []
         params = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="ki",
+            latest_verified_only=latest_verified_only,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="ki",
+            business_core_only=business_core_only,
+        )
         if grade:
             filters.append("grade = ?")
             params.append(grade)
@@ -521,7 +644,12 @@ async def get_keywords(
 
         # [Q12] 저신뢰 키워드 필터 — search_volume<50은 신뢰도 부족
         if not include_low_volume:
-            filters.append("(ki.search_volume IS NOT NULL AND ki.search_volume >= 50)")
+            filters.append(
+                "("
+                "(ki.search_volume IS NOT NULL AND ki.search_volume >= 50)"
+                " OR (COALESCE(ki.business_core, 0) = 1 AND ki.grade IN ('S', 'A'))"
+                ")"
+            )
 
         where_clause = "WHERE " + " AND ".join(filters) if filters else ""
         params.extend([limit, offset])
@@ -532,6 +660,8 @@ async def get_keywords(
                 ki.keyword, ki.search_volume, ki.competition,
                 ki.difficulty, ki.opportunity, ki.grade, ki.category,
                 ki.source, ki.trend_status, ki.created_at, ki.kei,
+                ki.document_count, ki.last_scan_run_id,
+                COALESCE(ki.business_core, 0) as business_core,
                 ki.memo, ki.user_tags,
                 rh.rank as current_rank,
                 rh.status as rank_status
@@ -596,7 +726,15 @@ async def get_keywords(
 @router.get("/keywords/export-all")
 async def export_all_keywords(
     grade: Optional[str] = None,
-    category: Optional[str] = None
+    category: Optional[str] = None,
+    latest_verified_only: bool = Query(
+        default=True,
+        description="최신 완료 Legion run + document_count>0 키워드만 내보내기",
+    ),
+    business_core_only: bool = Query(
+        default=False,
+        description="실제 유입 핵심군(business_core=1)만 내보내기",
+    ),
 ) -> List[Dict[str, Any]]:
     """
     전체 키워드 일괄 내보내기 (limit 없음)
@@ -613,6 +751,20 @@ async def export_all_keywords(
         # 필터 조건 구성
         filters = []
         params = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="ki",
+            latest_verified_only=latest_verified_only,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="ki",
+            business_core_only=business_core_only,
+        )
         if grade:
             filters.append("ki.grade = ?")
             params.append(grade)
@@ -629,6 +781,8 @@ async def export_all_keywords(
                 ki.keyword, ki.search_volume, ki.competition,
                 ki.difficulty, ki.opportunity, ki.grade, ki.category,
                 ki.source, ki.trend_status, ki.created_at, ki.kei,
+                ki.document_count, ki.last_scan_run_id,
+                COALESCE(ki.business_core, 0) as business_core,
                 rh.rank as current_rank
             FROM keyword_insights ki
             LEFT JOIN (
@@ -741,7 +895,17 @@ async def run_pathfinder(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/clusters")
-async def get_keyword_clusters(min_cluster_size: int = 3) -> List[Dict[str, Any]]:
+async def get_keyword_clusters(
+    min_cluster_size: int = 3,
+    latest_verified_only: bool = Query(
+        default=True,
+        description="최신 완료 Legion run + document_count>0 키워드만 클러스터링",
+    ),
+    business_core_only: bool = Query(
+        default=False,
+        description="실제 유입 핵심군(business_core=1)만 클러스터링",
+    ),
+) -> List[Dict[str, Any]]:
     """
     키워드 클러스터 조회
     """
@@ -757,8 +921,26 @@ async def get_keyword_clusters(min_cluster_size: int = 3) -> List[Dict[str, Any]
             conn.close()
             return []
 
+        filters = ["grade IN ('S', 'A')"]
+        params: List[Any] = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="",
+            latest_verified_only=latest_verified_only,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="",
+            business_core_only=business_core_only,
+        )
+        where_clause = " AND ".join(filters)
+
         # 간단한 클러스터링: 카테고리별 그룹화
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 category,
                 COUNT(*) as count,
@@ -771,11 +953,11 @@ async def get_keyword_clusters(min_cluster_size: int = 3) -> List[Dict[str, Any]
                     ELSE 1
                 END) as avg_grade
             FROM keyword_insights
-            WHERE grade IN ('S', 'A')
+            WHERE {where_clause}
             GROUP BY category
             HAVING count >= ?
             ORDER BY count DESC
-        """, (min_cluster_size,))
+        """, (*params, min_cluster_size))
 
         # 카테고리 통합을 위해 딕셔너리로 먼저 수집
         cluster_map = {}
@@ -1027,7 +1209,7 @@ async def generate_content_calendar(weeks: int = 12) -> Dict[str, Any]:
     """
     [Phase 4.0] 키워드 클러스터 기반 콘텐츠 캘린더 생성
 
-    S/A 등급 키워드를 클러스터링하여 12주간의 콘텐츠 발행 계획을 생성합니다.
+    최신 검증된 실제 유입 핵심군(S/A/B)을 클러스터링하여 콘텐츠 발행 계획을 생성합니다.
 
     Args:
         weeks: 캘린더 기간 (기본 12주)
@@ -1042,14 +1224,32 @@ async def generate_content_calendar(weeks: int = 12) -> Dict[str, Any]:
         conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
-        # S/A 등급 키워드 조회
-        cursor.execute("""
+        filters = ["grade IN ('S', 'A', 'B')"]
+        params: List[Any] = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="",
+            latest_verified_only=True,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="",
+            business_core_only=True,
+        )
+        where_clause = " AND ".join(filters)
+
+        cursor.execute(f"""
             SELECT keyword, category, search_volume, grade
             FROM keyword_insights
-            WHERE grade IN ('S', 'A')
-            AND status != 'archived'
-            ORDER BY search_volume DESC
-        """)
+            WHERE {where_clause}
+            ORDER BY
+                CASE grade WHEN 'S' THEN 1 WHEN 'A' THEN 2 WHEN 'B' THEN 3 ELSE 4 END,
+                search_volume DESC
+        """, params)
         keywords = cursor.fetchall()
         conn.close()
 
@@ -1057,7 +1257,7 @@ async def generate_content_calendar(weeks: int = 12) -> Dict[str, Any]:
             return {
                 "weekly_plan": [],
                 "summary": {"total_keywords": 0, "total_traffic": 0},
-                "message": "S/A 등급 키워드가 없습니다. Pathfinder를 실행해주세요."
+                "message": "최신 검증 핵심 키워드가 없습니다. Pathfinder Legion을 실행해주세요."
             }
 
         # 카테고리별 그룹화
@@ -1857,13 +2057,30 @@ async def get_content_suggestions(
         suggestions = []
 
         # 1. 상승 트렌드 키워드 기반 제안
-        query = """
+        filters = [
+            "trend_status = 'rising'",
+            "grade IN ('S', 'A', 'B')",
+        ]
+        params = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="",
+            latest_verified_only=True,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="",
+            business_core_only=True,
+        )
+        query = f"""
             SELECT keyword, category, search_volume, grade, trend_status
             FROM keyword_insights
-            WHERE trend_status = 'rising'
-              AND grade IN ('S', 'A', 'B')
+            WHERE {' AND '.join(filters)}
         """
-        params = []
         if category:
             query += " AND category = ?"
             params.append(category)
@@ -1890,13 +2107,30 @@ async def get_content_suggestions(
             })
 
         # 2. 고검색량 키워드 기반 제안
-        query = """
+        filters = [
+            "grade IN ('S', 'A', 'B')",
+            "search_volume >= 100",
+        ]
+        params = []
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="",
+            latest_verified_only=True,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="",
+            business_core_only=True,
+        )
+        query = f"""
             SELECT keyword, category, search_volume, grade
             FROM keyword_insights
-            WHERE grade IN ('S', 'A')
-              AND search_volume >= 1000
+            WHERE {' AND '.join(filters)}
         """
-        params = []
         if category:
             query += " AND category = ?"
             params.append(category)
@@ -1997,7 +2231,15 @@ async def get_content_suggestions(
 @router.get("/keywords/top-kei")
 async def get_top_kei_keywords(
     limit: int = 20,
-    min_volume: int = 10
+    min_volume: int = 10,
+    latest_verified_only: bool = Query(
+        default=True,
+        description="최신 완료 Legion run + document_count>0 키워드만 조회",
+    ),
+    business_core_only: bool = Query(
+        default=False,
+        description="실제 유입 핵심군(business_core=1)만 조회",
+    ),
 ) -> Dict[str, Any]:
     """
     [Phase 6.2] KEI 상위 키워드 조회
@@ -2018,21 +2260,40 @@ async def get_top_kei_keywords(
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        cursor.execute("""
+        filters = ["search_volume >= ?"]
+        params: List[Any] = [min_volume]
+        _append_latest_verified_filters(
+            cursor,
+            filters,
+            params,
+            alias="",
+            latest_verified_only=latest_verified_only,
+            require_document_count=True,
+        )
+        _append_business_core_filter(
+            cursor,
+            filters,
+            alias="",
+            business_core_only=business_core_only,
+        )
+        where_clause = " AND ".join(filters)
+        params.append(limit)
+
+        cursor.execute(f"""
             SELECT
                 keyword, search_volume, difficulty, opportunity,
-                grade, category, kei,
+                grade, category, kei, document_count,
+                COALESCE(business_core, 0) as business_core,
                 CASE
-                    WHEN kei IS NULL OR kei = 0 THEN
-                        ROUND((COALESCE(search_volume, 0) * 10.0) / MAX(1, COALESCE(difficulty, 50)), 2)
+                    WHEN (kei IS NULL OR kei = 0) AND COALESCE(document_count, 0) > 0 THEN
+                        ROUND((COALESCE(search_volume, 0) * COALESCE(search_volume, 0) * 1.0) / document_count, 2)
                     ELSE kei
                 END as calculated_kei
             FROM keyword_insights
-            WHERE search_volume >= ?
-            AND status != 'archived'
+            WHERE {where_clause}
             ORDER BY calculated_kei DESC
             LIMIT ?
-        """, (min_volume, limit))
+        """, params)
 
         keywords = []
         for row in cursor.fetchall():
@@ -2040,11 +2301,11 @@ async def get_top_kei_keywords(
             kw['category'] = normalize_category(kw.get('category', '기타'))
             # KEI 등급 부여
             kei = kw['calculated_kei'] or 0
-            if kei >= 50:
+            if kei >= 500:
                 kw['kei_grade'] = 'S'
-            elif kei >= 30:
+            elif kei >= 200:
                 kw['kei_grade'] = 'A'
-            elif kei >= 15:
+            elif kei >= 50:
                 kw['kei_grade'] = 'B'
             else:
                 kw['kei_grade'] = 'C'
@@ -2092,7 +2353,21 @@ async def recalculate_kei_values() -> Dict[str, Any]:
         # KEI 일괄 업데이트
         cursor.execute("""
             UPDATE keyword_insights
-            SET kei = ROUND((COALESCE(search_volume, 0) * 10.0) / MAX(1, COALESCE(difficulty, 50)), 2)
+            SET
+                kei = CASE
+                    WHEN COALESCE(search_volume, 0) > 0
+                     AND COALESCE(document_count, 0) > 0
+                    THEN ROUND((search_volume * search_volume * 1.0) / document_count, 2)
+                    ELSE 0
+                END,
+                kei_grade = CASE
+                    WHEN COALESCE(search_volume, 0) <= 0
+                      OR COALESCE(document_count, 0) <= 0 THEN 'C'
+                    WHEN ((search_volume * search_volume * 1.0) / document_count) >= 500 THEN 'S'
+                    WHEN ((search_volume * search_volume * 1.0) / document_count) >= 200 THEN 'A'
+                    WHEN ((search_volume * search_volume * 1.0) / document_count) >= 50 THEN 'B'
+                    ELSE 'C'
+                END
             WHERE search_volume IS NOT NULL
         """)
 
@@ -2106,10 +2381,10 @@ async def recalculate_kei_values() -> Dict[str, Any]:
                 ROUND(AVG(kei), 2) as avg_kei,
                 ROUND(MAX(kei), 2) as max_kei,
                 ROUND(MIN(kei), 2) as min_kei,
-                SUM(CASE WHEN kei >= 50 THEN 1 ELSE 0 END) as s_grade_count,
-                SUM(CASE WHEN kei >= 30 AND kei < 50 THEN 1 ELSE 0 END) as a_grade_count,
-                SUM(CASE WHEN kei >= 15 AND kei < 30 THEN 1 ELSE 0 END) as b_grade_count,
-                SUM(CASE WHEN kei < 15 THEN 1 ELSE 0 END) as c_grade_count
+                SUM(CASE WHEN kei >= 500 THEN 1 ELSE 0 END) as s_grade_count,
+                SUM(CASE WHEN kei >= 200 AND kei < 500 THEN 1 ELSE 0 END) as a_grade_count,
+                SUM(CASE WHEN kei >= 50 AND kei < 200 THEN 1 ELSE 0 END) as b_grade_count,
+                SUM(CASE WHEN kei < 50 THEN 1 ELSE 0 END) as c_grade_count
             FROM keyword_insights
             WHERE kei IS NOT NULL
         """)

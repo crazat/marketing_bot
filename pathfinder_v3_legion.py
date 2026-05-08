@@ -314,6 +314,7 @@ class KeywordResult:
     document_count: int = 0  # 총 검색 결과 문서 수
     kei: float = 0.0  # 실제 KEI = 검색량² / 문서수
     kei_grade: str = "C"  # KEI 기반 등급 (S/A/B/C)
+    business_core: bool = False  # 실제 유입 핵심군 여부 (등급과 별도)
 
     def __post_init__(self):
         if self.merged_from is None:
@@ -598,6 +599,7 @@ class KeywordMerger:
             # 병합 정보 추가
             others = [k for k in group if k != best]
             best_result.merged_from = others
+            best_result.business_core = any(results[k].business_core for k in group)
 
             # 검색량 합산 (옵션)
             total_volume = sum(results[k].search_volume for k in group)
@@ -748,7 +750,7 @@ class LegionCollector:
             "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭",
             "체형교정", "골반교정", "척추교정", "자세교정",
             "교통사고", "자동차사고", "후유증", "입원",
-            "여드름", "여드름흉터", "새살침", "흉터", "피부", "아토피",
+            "여드름", "여드름흉터", "새살침", "흉터", "아토피",
             "다이어트", "비만", "살빼", "체중",
             "통증", "디스크", "허리", "어깨", "무릎",
             "갱년기", "생리", "산후", "불임",
@@ -804,10 +806,9 @@ class LegionCollector:
             ],
             "체형교정": ["체형교정", "골반교정", "자세교정", "척추측만"],
             "피부/여드름": [
-                "여드름", "여드름흉터", "새살침", "피부", "흉터",
-                "여드름한의원", "피부한의원", "성인여드름", "턱여드름", "등여드름",
-                "여드름자국", "흉터치료", "패인흉터", "여드름압출", "피부트러블", "모공",
-                "기미", "주근깨", "잡티", "사마귀"
+                "여드름", "여드름흉터", "새살침", "흉터",
+                "여드름한의원", "성인여드름", "턱여드름", "등여드름",
+                "여드름자국", "흉터치료", "패인흉터", "모공흉터", "여드름압출"
             ],
             "교통사고": [
                 "교통사고", "자동차사고", "후유증", "입원", "교통사고한의원",
@@ -846,6 +847,14 @@ class LegionCollector:
             "야간진료": ["야간진료", "야간한의원", "늦게까지", "저녁진료", "주말진료"],
             "한의원일반": ["한의원", "한방병원"],
         }
+
+        self.business_core_categories = {
+            "다이어트", "교통사고", "안면비대칭", "체형교정",
+        }
+        self.business_core_skin_tokens = (
+            "여드름", "여드름흉터", "여드름자국", "새살침",
+            "흉터", "패인흉터", "모공흉터", "흉터치료",
+        )
 
     def _rate_limit(self):
         elapsed = time.time() - self._last_call
@@ -912,6 +921,21 @@ class LegionCollector:
             return '한의원일반'
         return "기타"
 
+    def _is_core_skin_keyword(self, keyword: str) -> bool:
+        """실제 유입 핵심인 여드름/흉터/새살침 계열만 피부 핵심군으로 본다."""
+        return any(token in keyword for token in self.business_core_skin_tokens)
+
+    def is_business_core_keyword(self, keyword: str, category: Optional[str] = None) -> bool:
+        """등급과 별개로 사업상 실제 유입 핵심군인지 판정."""
+        if category is None:
+            category = self._detect_category(keyword)
+
+        if category in self.business_core_categories:
+            return True
+        if category == "피부/여드름":
+            return self._is_core_skin_keyword(keyword)
+        return False
+
     def is_focus_candidate(self, keyword: str, category: Optional[str] = None) -> bool:
         """규림 기본 Legion 타깃: 미용 한의원 + 교통사고 입원실 중심."""
         if category is None:
@@ -919,10 +943,12 @@ class LegionCollector:
 
         focus_categories = {
             "다이어트", "안면비대칭", "체형교정",
-            "피부/여드름", "리프팅/탄력", "교통사고",
+            "리프팅/탄력", "교통사고",
         }
         if category in focus_categories:
             return True
+        if category == "피부/여드름":
+            return self._is_core_skin_keyword(keyword)
 
         accident_context = ("교통사고", "자동차사고", "사고", "입원", "자보", "자동차보험")
         if category == "통증/디스크" and any(token in keyword for token in accident_context):
@@ -1650,7 +1676,7 @@ class PathfinderLegion:
 
             # 피부/여드름
             "청주 여드름", "청주 여드름 한의원", "청주 여드름흉터",
-            "청주 새살침", "청주 피부 한의원", "청주 아토피",
+            "청주 새살침",
 
             # 다이어트
             "청주 다이어트", "청주 다이어트 한의원", "청주 다이어트 한약",
@@ -1673,7 +1699,7 @@ class PathfinderLegion:
         if seasonal_seeds:
             focused_seasonal = [
                 kw for kw, category in seasonal_seeds
-                if category in {"다이어트", "안면비대칭", "여드름", "피부", "교통사고", "리프팅"}
+                if category in {"다이어트", "안면비대칭", "여드름", "교통사고", "리프팅"}
                    or self.collector.is_focus_candidate(kw)
             ]
             print(f"📅 시즌 키워드 추가: {len(focused_seasonal)}/{len(seasonal_seeds)}개 (현재: {datetime.now().month}월)")
@@ -1978,7 +2004,8 @@ class PathfinderLegion:
                 search_intent=search_intent,
                 document_count=document_count,
                 kei=kei,
-                kei_grade=kei_grade
+                kei_grade=kei_grade,
+                business_core=self.collector.is_business_core_keyword(kw, category)
             )
 
             self.collected[kw] = result
@@ -2079,7 +2106,11 @@ class PathfinderLegion:
         round_num += 1
         print(f"\n[Round {round_num}] 지역 확장 (동네별)...")
 
-        core_terms = ["다이어트", "교통사고", "교통사고 입원", "안면비대칭", "여드름흉터", "새살침"]
+        core_terms = [
+            "다이어트", "교통사고", "교통사고 입원",
+            "안면비대칭", "여드름", "여드름흉터",
+            "새살침", "체형교정",
+        ]
         round3_keywords = set()
 
         for dong in self.collector.neighborhoods[:10]:
@@ -2153,7 +2184,20 @@ class PathfinderLegion:
             with open(competitors_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
 
-            competitors = config.get("competitors", [])
+            competitors = list(config.get("competitors", []))
+            if not competitors:
+                for category_config in config.get("category_competitors", {}).values():
+                    competitors.extend(category_config.get("main_competitors", []))
+
+            deduped_competitors = []
+            seen_competitors = set()
+            for comp in competitors:
+                key = (comp.get("name", ""), comp.get("blog_url", ""))
+                if key in seen_competitors:
+                    continue
+                seen_competitors.add(key)
+                deduped_competitors.append(comp)
+            competitors = deduped_competitors
             print(f"   경쟁사 {len(competitors)}개 분석 중...")
 
             for comp in competitors:
@@ -2177,7 +2221,7 @@ class PathfinderLegion:
                             round5_keywords.update(suggestions)
 
                 # 3. 경쟁사 + 키워드 조합 (그들의 강점 파악)
-                region = self.collector.regions[0] if self.collector.regions else "청주"
+                region = self.collector.cheongju_regions[0] if self.collector.cheongju_regions else "청주"
                 for cat in ["다이어트", "교통사고", "한의원"]:
                     seed = f"{region} {cat} {comp_name.split()[0] if comp_name else ''}"
                     suggestions = self.collector.get_autocomplete(seed.strip())
@@ -2529,7 +2573,7 @@ class PathfinderLegion:
                 'keyword', 'search_volume', 'difficulty', 'opportunity',
                 'grade', 'category', 'priority_score', 'source',
                 'trend_slope', 'trend_status', 'search_intent',
-                'document_count', 'kei', 'kei_grade'  # KEI 필드 추가
+                'document_count', 'kei', 'kei_grade', 'business_core'
             ])
             writer.writeheader()
             for r in results:
@@ -2628,7 +2672,8 @@ class PathfinderLegion:
                            ("kei_grade", "TEXT DEFAULT 'C'"),
                            # 스캔 히스토리 연동
                            ("scan_run_id", "INTEGER DEFAULT 0"),
-                           ("last_scan_run_id", "INTEGER DEFAULT 0")]:
+                           ("last_scan_run_id", "INTEGER DEFAULT 0"),
+                           ("business_core", "INTEGER DEFAULT 0")]:
             try:
                 cursor.execute(f"ALTER TABLE keyword_insights ADD COLUMN {col} {ctype}")
             except Exception:
@@ -2666,8 +2711,8 @@ class PathfinderLegion:
                         difficulty, opportunity, priority_v3, grade, source,
                         trend_slope, trend_status, search_intent,
                         document_count, kei, kei_grade,
-                        scan_run_id, last_scan_run_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scan_run_id, last_scan_run_id, business_core
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(keyword) DO UPDATE SET
                         difficulty=excluded.difficulty,
                         opportunity=excluded.opportunity,
@@ -2682,6 +2727,7 @@ class PathfinderLegion:
                         kei_grade=excluded.kei_grade,
                         created_at=excluded.created_at,
                         last_scan_run_id=excluded.last_scan_run_id,
+                        business_core=excluded.business_core,
                         category=excluded.category,
                         search_volume=excluded.search_volume,
                         region=excluded.region
@@ -2692,7 +2738,7 @@ class PathfinderLegion:
                     r.difficulty, r.opportunity, r.priority_score, r.grade, r.source,
                     r.trend_slope, r.trend_status, r.search_intent,
                     r.document_count, r.kei, r.kei_grade,
-                    scan_run_id, scan_run_id
+                    scan_run_id, scan_run_id, 1 if r.business_core else 0
                 ))
                 saved += 1
                 if existed:

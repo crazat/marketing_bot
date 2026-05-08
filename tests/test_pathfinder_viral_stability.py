@@ -1,7 +1,7 @@
 import sqlite3
 
 from db.database import DatabaseManager
-from pathfinder_v3_legion import KeywordResult, PathfinderLegion
+from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
 from scripts.ai_ad_classify_apply import _execute_scoped_update
 import viral_hunter
 from viral_hunter import AICommentGenerator, ViralTarget
@@ -14,12 +14,13 @@ def _keyword(keyword: str, grade: str = "A", priority: float = 100.0) -> Keyword
         difficulty=30,
         opportunity=80,
         grade=grade,
-        category="피부",
+        category="피부/여드름",
         priority_score=priority,
         source="test",
         document_count=1000,
         kei=10.0,
         kei_grade=grade,
+        business_core=True,
     )
 
 
@@ -38,14 +39,36 @@ def test_pathfinder_save_counts_insert_update_and_last_seen(tmp_path):
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             """
-            SELECT scan_run_id, last_scan_run_id, priority_v3
+            SELECT scan_run_id, last_scan_run_id, priority_v3, business_core
             FROM keyword_insights
             WHERE keyword = ?
             """,
             ("청주 여드름 한의원",),
         ).fetchone()
 
-    assert row == (1, 2, 120.0)
+    assert row == (1, 2, 120.0, 1)
+
+
+def test_legion_business_core_filter_matches_actual_acquisition_categories():
+    collector = LegionCollector(delay=0.0, use_google=False)
+
+    for keyword in [
+        "청주 다이어트 한의원",
+        "청주 교통사고 입원",
+        "청주 안면비대칭",
+        "청주 여드름",
+        "청주 여드름흉터",
+        "청주 새살침",
+        "청주 체형교정",
+    ]:
+        category = collector._detect_category(keyword)
+        assert collector.is_business_core_keyword(keyword, category)
+        assert collector.is_focus_candidate(keyword, category)
+
+    for keyword in ["청주 피부과", "청주 기미 한의원", "청주 추나"]:
+        category = collector._detect_category(keyword)
+        assert not collector.is_business_core_keyword(keyword, category)
+        assert not collector.is_focus_candidate(keyword, category)
 
 
 def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_path):

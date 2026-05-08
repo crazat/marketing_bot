@@ -146,6 +146,7 @@ export const viralApi = {
       specialty_match?: string
       post_region?: string
       work_scope?: string
+      exclude_revisited?: boolean
     }
   ) => {
     const params: Record<string, any> = { status, limit }
@@ -167,6 +168,7 @@ export const viralApi = {
     if (filters?.specialty_match) params.specialty_match = filters.specialty_match
     if (filters?.post_region) params.post_region = filters.post_region
     if (filters?.work_scope) params.work_scope = filters.work_scope
+    if (filters?.exclude_revisited != null) params.exclude_revisited = filters.exclude_revisited
 
     const response = await api.get('/viral/targets', { params })
     return Array.isArray(response.data) ? response.data : (response.data?.targets ?? [])
@@ -188,6 +190,7 @@ export const viralApi = {
       specialty_match?: string
       post_region?: string
       work_scope?: string
+      exclude_revisited?: boolean
     }
   ): Promise<{ total: number }> => {
     const params: Record<string, any> = { status }
@@ -207,6 +210,7 @@ export const viralApi = {
     if (filters?.specialty_match) params.specialty_match = filters.specialty_match
     if (filters?.post_region) params.post_region = filters.post_region
     if (filters?.work_scope) params.work_scope = filters.work_scope
+    if (filters?.exclude_revisited != null) params.exclude_revisited = filters.exclude_revisited
 
     const response = await api.get('/viral/targets/count', { params })
     return response.data
@@ -431,6 +435,8 @@ export const viralApi = {
       specialty_match?: string
       post_region?: string
       min_confidence?: number
+      work_scope?: string
+      exclude_revisited?: boolean
     },
     options?: {
       max_affected?: number

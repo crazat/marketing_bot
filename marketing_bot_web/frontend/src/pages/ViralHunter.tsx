@@ -936,6 +936,7 @@ export default function ViralHunter() {
         specialty_match: filters.specialty_match,
         post_region: filters.post_region,
         min_confidence: filters.min_confidence,
+        work_scope: filters.work_scope || 'latest_legion',
       })
       toast.success(`✅ ${result.updated.toLocaleString()}건 ${actionNames[action]} 완료`)
       queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })

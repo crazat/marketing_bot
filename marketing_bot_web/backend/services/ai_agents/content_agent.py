@@ -32,8 +32,20 @@ class ContentAgent(BaseAgent):
         trending = self.query_db("""
             SELECT keyword, search_volume, grade
             FROM keyword_insights
-            WHERE grade IN ('S', 'A')
-            ORDER BY search_volume DESC
+            WHERE COALESCE(business_core, 0) = 1
+              AND COALESCE(document_count, 0) > 0
+              AND grade IN ('S', 'A', 'B')
+              AND last_scan_run_id = (
+                  SELECT id
+                  FROM scan_runs
+                  WHERE status = 'completed'
+                    AND scan_type = 'legion'
+                  ORDER BY completed_at DESC, id DESC
+                  LIMIT 1
+              )
+            ORDER BY
+              CASE grade WHEN 'S' THEN 1 WHEN 'A' THEN 2 ELSE 3 END,
+              search_volume DESC
             LIMIT 15
         """)
 
@@ -93,8 +105,20 @@ class ContentAgent(BaseAgent):
         keywords = self.query_db("""
             SELECT keyword, grade, category
             FROM keyword_insights
-            WHERE grade IN ('S', 'A', 'B')
-            ORDER BY search_volume DESC
+            WHERE COALESCE(business_core, 0) = 1
+              AND COALESCE(document_count, 0) > 0
+              AND grade IN ('S', 'A', 'B')
+              AND last_scan_run_id = (
+                  SELECT id
+                  FROM scan_runs
+                  WHERE status = 'completed'
+                    AND scan_type = 'legion'
+                  ORDER BY completed_at DESC, id DESC
+                  LIMIT 1
+              )
+            ORDER BY
+              CASE grade WHEN 'S' THEN 1 WHEN 'A' THEN 2 ELSE 3 END,
+              search_volume DESC
             LIMIT 20
         """)
 

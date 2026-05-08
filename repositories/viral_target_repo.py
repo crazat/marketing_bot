@@ -291,6 +291,12 @@ class ViralTargetRepository:
         if min_scan_count and min_scan_count > 0:
             clauses.append("scan_count >= ?")
             params.append(min_scan_count)
+        else:
+            exclude_revisited = filters.get("exclude_revisited")
+            if isinstance(exclude_revisited, str):
+                exclude_revisited = exclude_revisited.strip().lower() in {"1", "true", "yes", "y", "on"}
+            if exclude_revisited:
+                clauses.append("COALESCE(scan_count, 1) <= 1")
 
         search = filters.get("search")
         if search:

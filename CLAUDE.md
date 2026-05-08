@@ -1,5 +1,18 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-08 Memory: Core Keyword/Viral Staff Queue Baseline
+
+- Clinic acquisition core keywords are intentionally narrow: 다이어트, 교통사고, 안면비대칭, 여드름흉터, 여드름, 새살침, 체형교정. Treat adjacent categories as secondary unless the user explicitly broadens scope.
+- Pathfinder Legion now marks acquisition-fit rows with `keyword_insights.business_core`; downstream APIs and Viral Hunter seed selection should prefer `business_core=1` plus verified `document_count > 0`.
+- Viral Hunter seed selection must use `core_services/viral_seed_builder.py` against the latest completed Legion scan, with bounded quotas and lineage fields carried into `viral_targets`.
+- Staff-facing Viral Hunter queues (`latest_legion`/`core`) should hide rediscovered duplicate URLs by default via `scan_count <= 1`. Keep `all_backlog` and `min_scan_count >= 2` available for deliberate historical/re-discovery review.
+- Latest manual run reference:
+  - Legion `scan_run_id=10`: 483 keywords, 482 business_core, completed 2026-05-08 11:48:12.
+  - Viral Hunter from scan 10: 42 seeds, 4,410 discovered, 2,050 saved, 87 pending all 신규, duplicate overlap report at `reports/viral_overlap_scan10_20260508_210238.csv`.
+- Current targeted verification for this flow:
+  - `python -m pytest tests/test_viral_target_repo.py tests/test_router_smoke.py tests/test_pathfinder_viral_stability.py`
+  - `npm run typecheck` in `marketing_bot_web/frontend`
+
 ## 2026-05-08 Memory: Web/API Stability Hardening Baseline
 
 - Current verified baseline:

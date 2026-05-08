@@ -110,9 +110,12 @@ def _apply_work_scope_sql(
     work_scope: Optional[str],
     where: List[str],
     params: List[Any],
+    exclude_revisited: Optional[bool] = None,
 ) -> None:
     scope = work_scope or "latest_legion"
     if scope == "all_backlog":
+        if exclude_revisited:
+            where.append("COALESCE(scan_count, 1) <= 1")
         return
     if scope == "latest_legion":
         scan_id = _latest_legion_scan_id(cursor)
@@ -122,6 +125,10 @@ def _apply_work_scope_sql(
     if scope in ("latest_legion", "core"):
         where.append(f"category IN ({','.join(['?'] * len(VIRAL_CORE_CATEGORIES))})")
         params.extend(VIRAL_CORE_CATEGORIES)
+    if exclude_revisited is None:
+        exclude_revisited = True
+    if exclude_revisited:
+        where.append("COALESCE(scan_count, 1) <= 1")
 
 
 def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], work_scope: Optional[str]) -> None:
@@ -134,6 +141,8 @@ def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], w
         scan_id = _latest_legion_scan_id(cursor)
         if scan_id:
             filters["source_scan_run_id"] = scan_id
+    if filters.get("exclude_revisited") is None and not filters.get("min_scan_count"):
+        filters["exclude_revisited"] = True
 
 # [성능 최적화] ViralHunter 싱글톤 인스턴스
 _viral_hunter_instance: Optional[ViralHunter] = None
@@ -318,6 +327,8 @@ class BulkActionByFilterRequest(BaseModel):
     specialty_match: Optional[str] = None
     post_region: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    work_scope: Optional[str] = "latest_legion"
+    exclude_revisited: Optional[bool] = None
     # 안전장치
     max_affected: int = Field(default=10000, ge=1, le=100000)
     dry_run: bool = False
@@ -883,7 +894,8 @@ async def get_viral_stats() -> Dict[str, Any]:
 @router.get("/home-stats")
 async def get_viral_home_stats(
     scan_batch: Optional[str] = None,
-    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog")
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
+    exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues")
 ) -> Dict[str, Any]:
     """
     [Phase 9.0 성능 최적화] 홈 화면용 집계 통계 API
@@ -905,7 +917,7 @@ async def get_viral_home_stats(
         # 스캔 배치 필터 조건
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params)
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
         if scan_batch:
             scope_where.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
             params.append(scan_batch)
@@ -1067,6 +1079,7 @@ async def get_viral_targets(
     specialty_match: Optional[str] = None,  # high|medium|low (쉼표 가능). 미용 특화 매칭
     post_region: Optional[str] = None,  # 청주|타지역|불명 (쉼표 가능). 게시글 지역
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
+    exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
 ) -> Dict[str, Any]:
@@ -1110,6 +1123,7 @@ async def get_viral_targets(
             "min_confidence": min_confidence,
             "specialty_match": specialty_match,
             "post_region": post_region,
+            "exclude_revisited": exclude_revisited,
         }.items() if v is not None}
 
         db = DatabaseManager()
@@ -1359,6 +1373,7 @@ async def get_todays_queue(
     per_category: int = Query(default=5, ge=1, le=20),
     today_only: bool = Query(default=True, description="오늘 발견된 것만 (기본 True)"),
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
+    exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
 ) -> Dict[str, Any]:
     """오늘 작업할 Top N 카테고리별 묶음 큐.
 
@@ -1381,7 +1396,7 @@ async def get_todays_queue(
         cursor = conn.cursor()
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params)
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
 
         query = f"""
@@ -1450,6 +1465,7 @@ async def count_viral_targets(
     specialty_match: Optional[str] = None,
     post_region: Optional[str] = None,
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
+    exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
 
@@ -1471,6 +1487,7 @@ async def count_viral_targets(
             "min_confidence": min_confidence,
             "specialty_match": specialty_match,
             "post_region": post_region,
+            "exclude_revisited": exclude_revisited,
         }
         filters = {k: v for k, v in filters.items() if v is not None}
         db = DatabaseManager()
@@ -2153,6 +2170,19 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         # WHERE 절 구성 (GET /targets/count와 동일 로직)
         where = "WHERE 1=1"
         params: List[Any] = []
+        scope_where: List[str] = []
+        exclude_revisited = req.exclude_revisited
+        if exclude_revisited is None and req.min_scan_count and req.min_scan_count > 0:
+            exclude_revisited = False
+        _apply_work_scope_sql(
+            cursor,
+            req.work_scope,
+            scope_where,
+            params,
+            exclude_revisited=exclude_revisited,
+        )
+        if scope_where:
+            where += " AND " + " AND ".join(scope_where)
         effective_status = req.comment_status if req.comment_status else req.status
         if effective_status:
             where += " AND comment_status = ?"

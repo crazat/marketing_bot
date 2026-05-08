@@ -21,6 +21,7 @@ interface KeywordData {
   memo?: string
   user_tags?: string[]
   likelihood_score?: number
+  business_core?: boolean | number
 }
 
 interface KeywordTableProps {
@@ -351,6 +352,11 @@ function KeywordTableComponent({
                   <span className="hover:text-primary hover:underline transition-colors">
                     {kw.keyword}
                   </span>
+                  {Boolean(kw.business_core) && (
+                    <span className="ml-2 inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                      핵심
+                    </span>
+                  )}
                 </KeywordPopover>
               </td>
               <td className="px-3 py-2 whitespace-nowrap text-center">

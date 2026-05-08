@@ -107,6 +107,50 @@ def test_list_and_count_filtered(tmp_db):
     assert rows[0]["priority_score"] >= rows[-1]["priority_score"]
 
 
+def test_exclude_revisited_hides_duplicate_scan_targets(tmp_db):
+    repo = ViralTargetRepository(tmp_db)
+
+    repo.insert({
+        "id": "fresh",
+        "platform": "kin",
+        "url": "https://x/fresh",
+        "title": "fresh target",
+        "comment_status": "pending",
+        "priority_score": 90,
+        "matched_keywords": [],
+    })
+    repo.insert({
+        "id": "dup-1",
+        "platform": "cafe",
+        "url": "https://x/duplicate",
+        "title": "duplicate target",
+        "comment_status": "pending",
+        "priority_score": 80,
+        "matched_keywords": [],
+    })
+    repo.insert({
+        "id": "dup-2",
+        "platform": "cafe",
+        "url": "https://x/duplicate",
+        "title": "duplicate target rediscovered",
+        "comment_status": "pending",
+        "priority_score": 85,
+        "matched_keywords": [],
+    })
+
+    assert repo.count({"status": "pending"}) == 2
+    assert repo.count({"status": "pending", "exclude_revisited": True}) == 1
+
+    rows = repo.list({"status": "pending", "exclude_revisited": True}, limit=10)
+    assert [row["url"] for row in rows] == ["https://x/fresh"]
+
+    rediscovered = repo.list(
+        {"status": "pending", "exclude_revisited": True, "min_scan_count": 2},
+        limit=10,
+    )
+    assert [row["url"] for row in rediscovered] == ["https://x/duplicate"]
+
+
 def test_update(tmp_db):
     repo = ViralTargetRepository(tmp_db)
     repo.insert({"id": "t1", "platform": "cafe", "url": "https://x/1", "title": "A", "priority_score": 50})
