@@ -1486,7 +1486,7 @@ POST_ID: {i}
 
                 # 우선순위 점수 가산 (역공략 기회 점수 기반)
                 bonus = min(counter_score // 4, 25)  # 최대 25점 가산
-                target.priority_score = min(target.priority_score + bonus, 100)
+                target.priority_score = min((target.priority_score or 0) + bonus, 150)
 
                 # content_preview에 태그 추가
                 if "⚔️경쟁사" not in target.content_preview:
@@ -1868,7 +1868,7 @@ POST_ID: {i}
             if is_suitable:
                 # 적합한 글: 점수 반영 및 태그 추가
                 bonus = min(infiltration_score // 5, 20)  # 최대 20점 가산
-                target.priority_score = min(target.priority_score + bonus, 100)
+                target.priority_score = min((target.priority_score or 0) + bonus, 150)
 
                 # 타입별 태그 추가
                 type_tags = {
@@ -1889,7 +1889,7 @@ POST_ID: {i}
 
                     # 역공략 점수 가산
                     counter_bonus = min(counter_score // 4, 25)
-                    target.priority_score = min(target.priority_score + counter_bonus, 100)
+                    target.priority_score = min((target.priority_score or 0) + counter_bonus, 150)
 
                     if comp_name and comp_name != "N/A" and "⚔️" not in target.content_preview:
                         target.content_preview = f"[⚔️{comp_name}] {target.content_preview}"
@@ -1965,7 +1965,7 @@ POST_ID: {i}
             if is_suitable:
                 # 적합한 글: 점수 반영 및 태그 추가
                 bonus = min(infiltration_score // 5, 20)  # 최대 20점 가산
-                target.priority_score = min(target.priority_score + bonus, 100)
+                target.priority_score = min((target.priority_score or 0) + bonus, 150)
 
                 # 타입별 태그 추가
                 type_tags = {
@@ -2364,6 +2364,59 @@ class ViralHunter:
                     urls.append(target.url)
         return urls
 
+    def _exclude_existing_targets_before_ai(
+        self,
+        targets: List[ViralTarget],
+    ) -> tuple[List[ViralTarget], int]:
+        """Remove DB-existing URLs before raw backlog and AI analysis.
+
+        The rediscovered URLs are still touched in DB so scan_count and latest
+        Legion lineage remain useful, but they do not consume AI quota.
+        """
+        if not targets:
+            return targets, 0
+
+        unique_targets: List[ViralTarget] = []
+        seen_urls: set[str] = set()
+        in_batch_duplicates = 0
+        for target in targets:
+            if not target.url:
+                continue
+            if target.url in seen_urls:
+                in_batch_duplicates += 1
+                continue
+            seen_urls.add(target.url)
+            unique_targets.append(target)
+
+        if in_batch_duplicates:
+            print(f"   ♻️ 실행 내 중복 URL {in_batch_duplicates}개 제외")
+        targets = unique_targets
+        if not targets:
+            return [], in_batch_duplicates
+
+        existing_urls = self.db.get_existing_viral_urls([t.url for t in targets])
+        if not existing_urls:
+            print(f"   ✅ 중복 없음: {len(targets)}개 모두 신규")
+            return targets, in_batch_duplicates
+
+        duplicate_targets = [t for t in targets if t.url in existing_urls]
+        fresh_targets = [t for t in targets if t.url not in existing_urls]
+
+        refreshed = 0
+        try:
+            refreshed = self.db.refresh_existing_viral_targets(
+                [t.to_dict() for t in duplicate_targets]
+            )
+        except Exception as e:
+            logger.warning(f"기존 URL 메타데이터 갱신 실패: {e}")
+
+        print(
+            f"   ♻️ 기존 URL {len(duplicate_targets)}개 제외: "
+            f"scan_count/source_scan_run_id 갱신 {refreshed}개, "
+            f"AI 후보 {len(targets)}개 -> {len(fresh_targets)}개"
+        )
+        return fresh_targets, len(duplicate_targets) + in_batch_duplicates
+
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
@@ -2474,18 +2527,11 @@ class ViralHunter:
             progress_callback("필터링중", len(keywords), len(keywords), f"{len(all_targets)}개 타겟 필터링 중...")
         filtered = self.filter.filter(all_targets)
 
-        # 중복 URL도 upsert로 보내 scan_count/source_scan_run_id를 갱신한다.
+        # 기존 URL은 scan_count/source_scan_run_id만 갱신하고 AI 판별 전 제외한다.
         if filtered:
             print(f"\n🔄 중복 체크 중...")
             try:
-                existing_urls = self.db.get_existing_viral_urls([t.url for t in filtered])
-                if existing_urls:
-                    print(
-                        f"   ✅ 기존 URL {len(existing_urls)}개 발견: 저장 단계에서 "
-                        f"scan_count/source_scan_run_id 갱신"
-                    )
-                else:
-                    print(f"   ✅ 중복 없음: {len(filtered)}개 모두 신규")
+                filtered, _existing_before_ai = self._exclude_existing_targets_before_ai(filtered)
             except Exception as e:
                 logger.warning(f"중복 체크 실패 (계속 진행): {e}")
 

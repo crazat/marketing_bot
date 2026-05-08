@@ -107,6 +107,48 @@ def test_list_and_count_filtered(tmp_db):
     assert rows[0]["priority_score"] >= rows[-1]["priority_score"]
 
 
+def test_score_and_commentable_filters_match_smart_quick_filters(tmp_db):
+    repo = ViralTargetRepository(tmp_db)
+    repo.insert({
+        "id": "hot-commentable",
+        "platform": "cafe",
+        "url": "https://x/hot-commentable",
+        "title": "hot commentable",
+        "comment_status": "pending",
+        "priority_score": 90,
+        "is_commentable": True,
+        "matched_keywords": [],
+    })
+    repo.insert({
+        "id": "hot-closed",
+        "platform": "blog",
+        "url": "https://x/hot-closed",
+        "title": "hot closed",
+        "comment_status": "pending",
+        "priority_score": 85,
+        "is_commentable": False,
+        "matched_keywords": [],
+    })
+    repo.insert({
+        "id": "cold-commentable",
+        "platform": "kin",
+        "url": "https://x/cold-commentable",
+        "title": "cold commentable",
+        "comment_status": "pending",
+        "priority_score": 40,
+        "is_commentable": True,
+        "matched_keywords": [],
+    })
+
+    assert repo.count({"status": "pending", "min_score": 80}) == 2
+
+    rows = repo.list(
+        {"status": "pending", "min_score": "80", "commentable_only": "true"},
+        limit=10,
+    )
+    assert [row["url"] for row in rows] == ["https://x/hot-commentable"]
+
+
 def test_exclude_revisited_hides_duplicate_scan_targets(tmp_db):
     repo = ViralTargetRepository(tmp_db)
 
@@ -149,6 +191,31 @@ def test_exclude_revisited_hides_duplicate_scan_targets(tmp_db):
         limit=10,
     )
     assert [row["url"] for row in rediscovered] == ["https://x/duplicate"]
+
+
+def test_insert_conflict_recovers_null_scan_count(tmp_db):
+    repo = ViralTargetRepository(tmp_db)
+    sample = {
+        "id": "legacy",
+        "platform": "cafe",
+        "url": "https://x/legacy",
+        "title": "legacy",
+        "comment_status": "pending",
+        "priority_score": 50,
+        "matched_keywords": [],
+    }
+    assert repo.insert(sample)
+
+    with sqlite3.connect(tmp_db) as conn:
+        conn.execute("UPDATE viral_targets SET scan_count = NULL WHERE url = ?", (sample["url"],))
+        conn.commit()
+
+    assert repo.insert({**sample, "id": "legacy-again", "priority_score": 55})
+
+    row = repo.get("legacy")
+    assert row is not None
+    assert row["scan_count"] == 1
+    assert row["priority_score"] == 55
 
 
 def test_update(tmp_db):

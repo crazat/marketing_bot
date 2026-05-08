@@ -73,6 +73,8 @@ export interface ViralFilterState {
   category?: string
   comment_status?: string
   min_scan_count?: number
+  min_score?: number
+  commentable_only?: boolean
   search?: string
   sort?: string
   scan_batch?: string

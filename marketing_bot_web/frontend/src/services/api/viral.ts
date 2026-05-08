@@ -137,6 +137,8 @@ export const viralApi = {
       category?: string
       comment_status?: string
       min_scan_count?: number
+      min_score?: number
+      commentable_only?: boolean
       search?: string
       sort?: string
       scan_batch?: string
@@ -159,6 +161,8 @@ export const viralApi = {
     }
     if (filters?.comment_status) params.comment_status = filters.comment_status
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
+    if (filters?.min_score != null) params.min_score = filters.min_score
+    if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.sort) params.sort = filters.sort
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
@@ -183,6 +187,8 @@ export const viralApi = {
       category?: string
       comment_status?: string
       min_scan_count?: number
+      min_score?: number
+      commentable_only?: boolean
       search?: string
       scan_batch?: string
       ai_ad_label?: string
@@ -203,6 +209,8 @@ export const viralApi = {
     }
     if (filters?.comment_status) params.comment_status = filters.comment_status
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
+    if (filters?.min_score != null) params.min_score = filters.min_score
+    if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
     if (filters?.ai_ad_label) params.ai_ad_label = filters.ai_ad_label
@@ -429,6 +437,8 @@ export const viralApi = {
       platforms?: string[]
       comment_status?: string
       min_scan_count?: number
+      min_score?: number
+      commentable_only?: boolean
       search?: string
       scan_batch?: string
       ai_ad_label?: string
@@ -520,8 +530,10 @@ export const viralApi = {
     return response.data
   },
 
-  getSmartRecommendations: async (): Promise<SmartRecommendations> => {
-    const response = await api.get('/viral/smart-recommendations')
+  getSmartRecommendations: async (workScope = 'latest_legion'): Promise<SmartRecommendations> => {
+    const response = await api.get('/viral/smart-recommendations', {
+      params: { work_scope: workScope }
+    })
     return response.data
   },
 

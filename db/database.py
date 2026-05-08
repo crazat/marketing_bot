@@ -497,6 +497,7 @@ class DatabaseManager:
                 generated_comment TEXT,
                 priority_score REAL DEFAULT 0,
                 discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                first_seen_at TIMESTAMP,
                 last_scanned_at TIMESTAMP,
                 scan_count INTEGER DEFAULT 1,
                 source_scan_run_id INTEGER DEFAULT 0,
@@ -515,6 +516,11 @@ class DatabaseManager:
 
         try:
             self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN scan_count INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass  # 컬럼이 이미 있으면 무시
+
+        try:
+            self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN first_seen_at TIMESTAMP")
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
 
@@ -3172,17 +3178,19 @@ class DatabaseManager:
                 INSERT INTO viral_targets
                 (id, platform, url, title, content_preview, matched_keywords, matched_keyword,
                  category, is_commentable, comment_status, generated_comment,
-                 priority_score, discovered_at, last_scanned_at, scan_count, content_hash,
+                 priority_score, discovered_at, first_seen_at, last_scanned_at, scan_count, content_hash,
                  author, posted_at, source_scan_run_id, matched_keyword_grade,
                  matched_keyword_kei, matched_keyword_priority, matched_keyword_category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title = excluded.title,
+                    content_preview = COALESCE(NULLIF(excluded.content_preview, ''), viral_targets.content_preview),
                     matched_keywords = excluded.matched_keywords,
                     matched_keyword = COALESCE(excluded.matched_keyword, viral_targets.matched_keyword),
-                    priority_score = excluded.priority_score,
+                    category = COALESCE(NULLIF(NULLIF(excluded.category, ''), '기타'), viral_targets.category),
+                    priority_score = COALESCE(NULLIF(excluded.priority_score, 0), viral_targets.priority_score),
                     last_scanned_at = excluded.last_scanned_at,
-                    scan_count = viral_targets.scan_count + 1,
+                    scan_count = COALESCE(viral_targets.scan_count, 0) + 1,
                     content_hash = excluded.content_hash,
                     comment_status = CASE
                         WHEN COALESCE(viral_targets.comment_status, 'pending') IN ('needs_ai_retry', 'raw_backlog')
@@ -3197,8 +3205,8 @@ class DatabaseManager:
                     posted_at = COALESCE(excluded.posted_at, viral_targets.posted_at),
                     source_scan_run_id = COALESCE(NULLIF(excluded.source_scan_run_id, 0), viral_targets.source_scan_run_id),
                     matched_keyword_grade = COALESCE(excluded.matched_keyword_grade, viral_targets.matched_keyword_grade),
-                    matched_keyword_kei = COALESCE(excluded.matched_keyword_kei, viral_targets.matched_keyword_kei),
-                    matched_keyword_priority = COALESCE(excluded.matched_keyword_priority, viral_targets.matched_keyword_priority),
+                    matched_keyword_kei = COALESCE(NULLIF(excluded.matched_keyword_kei, 0), viral_targets.matched_keyword_kei),
+                    matched_keyword_priority = COALESCE(NULLIF(excluded.matched_keyword_priority, 0), viral_targets.matched_keyword_priority),
                     matched_keyword_category = COALESCE(excluded.matched_keyword_category, viral_targets.matched_keyword_category)
             ''', (
                 target_data.get('id'),
@@ -3214,6 +3222,7 @@ class DatabaseManager:
                 target_data.get('generated_comment', ''),
                 target_data.get('priority_score', 0),
                 now,  # discovered_at (신규만)
+                now,  # first_seen_at (신규만)
                 now,  # last_scanned_at (매번 업데이트)
                 1,    # scan_count (신규는 1, 중복은 +1)
                 content_hash,
@@ -3264,6 +3273,109 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"get_existing_viral_urls error: {e}")
             return set()
+
+    def refresh_existing_viral_targets(self, targets_data: list[dict]) -> int:
+        """Refresh scan metadata for existing viral URLs without changing workflow status.
+
+        Viral Hunter uses this before AI analysis: rediscovered URLs should keep
+        scan_count/source lineage, but should not be re-sent to AI or promoted
+        into the staff queue by a duplicate upsert.
+        """
+        if not targets_data:
+            return 0
+
+        try:
+            import json
+
+            deduped: dict[str, dict] = {}
+            for target_data in targets_data:
+                url = target_data.get('url')
+                if not url:
+                    continue
+                current = deduped.get(url)
+                if current is None:
+                    deduped[url] = target_data
+                    continue
+                if (target_data.get('priority_score') or 0) > (current.get('priority_score') or 0):
+                    deduped[url] = target_data
+
+            now = datetime.now().isoformat()
+            refreshed = 0
+
+            for target_data in deduped.values():
+                url = target_data.get('url')
+                if not url:
+                    continue
+
+                kws_list = target_data.get('matched_keywords') or []
+                if isinstance(kws_list, str):
+                    try:
+                        parsed_keywords = json.loads(kws_list)
+                        kws_list = parsed_keywords if isinstance(parsed_keywords, list) else [kws_list]
+                    except Exception:
+                        kws_list = [kws_list] if kws_list else []
+                keywords_json = json.dumps(kws_list, ensure_ascii=False)
+                matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
+                author = target_data.get('author') or None
+                posted_at = target_data.get('date_str') or target_data.get('posted_at') or None
+                content_hash = self.calculate_content_hash(
+                    url=url,
+                    title=target_data.get('title', ''),
+                    content=target_data.get('content_preview', ''),
+                )
+
+                self.cursor.execute(
+                    '''
+                    UPDATE viral_targets
+                    SET title = COALESCE(NULLIF(?, ''), title),
+                        content_preview = COALESCE(NULLIF(?, ''), content_preview),
+                        matched_keywords = COALESCE(NULLIF(?, '[]'), matched_keywords),
+                        matched_keyword = COALESCE(?, matched_keyword),
+                        category = COALESCE(NULLIF(NULLIF(?, ''), '기타'), category),
+                        priority_score = COALESCE(NULLIF(?, 0), priority_score),
+                        last_scanned_at = ?,
+                        scan_count = COALESCE(scan_count, 0) + 1,
+                        content_hash = COALESCE(?, content_hash),
+                        author = COALESCE(?, author),
+                        posted_at = COALESCE(?, posted_at),
+                        source_scan_run_id = COALESCE(NULLIF(?, 0), source_scan_run_id),
+                        matched_keyword_grade = COALESCE(?, matched_keyword_grade),
+                        matched_keyword_kei = COALESCE(NULLIF(?, 0), matched_keyword_kei),
+                        matched_keyword_priority = COALESCE(NULLIF(?, 0), matched_keyword_priority),
+                        matched_keyword_category = COALESCE(?, matched_keyword_category)
+                    WHERE url = ?
+                    ''',
+                    (
+                        target_data.get('title') or '',
+                        target_data.get('content_preview') or '',
+                        keywords_json,
+                        matched_keyword_single,
+                        target_data.get('category') or None,
+                        target_data.get('priority_score'),
+                        now,
+                        content_hash,
+                        author,
+                        posted_at,
+                        target_data.get('source_scan_run_id', 0),
+                        target_data.get('matched_keyword_grade') or None,
+                        target_data.get('matched_keyword_kei'),
+                        target_data.get('matched_keyword_priority'),
+                        target_data.get('matched_keyword_category') or None,
+                        url,
+                    ),
+                )
+                if self.cursor.rowcount > 0:
+                    refreshed += self.cursor.rowcount
+
+            self.conn.commit()
+            return refreshed
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"refresh_existing_viral_targets error: {e}")
+            return 0
 
     def get_viral_targets(self, status: str = None, platform: str = None,
                           category: str = None, date_filter: str = None,

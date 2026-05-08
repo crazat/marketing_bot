@@ -5,13 +5,20 @@
 - Clinic acquisition core keywords are intentionally narrow: 다이어트, 교통사고, 안면비대칭, 여드름흉터, 여드름, 새살침, 체형교정. Treat adjacent categories as secondary unless the user explicitly broadens scope.
 - Pathfinder Legion now marks acquisition-fit rows with `keyword_insights.business_core`; downstream APIs and Viral Hunter seed selection should prefer `business_core=1` plus verified `document_count > 0`.
 - Viral Hunter seed selection must use `core_services/viral_seed_builder.py` against the latest completed Legion scan, with bounded quotas and lineage fields carried into `viral_targets`.
-- Staff-facing Viral Hunter queues (`latest_legion`/`core`) should hide rediscovered duplicate URLs by default via `scan_count <= 1`. Keep `all_backlog` and `min_scan_count >= 2` available for deliberate historical/re-discovery review.
+- Staff-facing Viral Hunter queues (`latest_legion`/`core`/`all_backlog`) should hide rediscovered duplicate URLs by default via `scan_count <= 1`. Use `min_scan_count >= 2` or explicit `exclude_revisited=false` only for deliberate historical/re-discovery review.
+- Unknown Viral Hunter `work_scope` values must fall back to `latest_legion`; never let malformed scope input bypass core-category staff filters.
+- Viral Hunter smart recommendations and quick filters must use the same staff scope and filter vocabulary as `/viral/targets`: `min_score`, `commentable_only`, `exclude_revisited`, and `work_scope` should round-trip from recommendation cards to list/count/bulk APIs.
+- Smart recommendation quick-filter and platform-priority clicks should apply their own query contract, not stack stale `comment_status`, search, scan batch, or AI filters from the previous list state.
+- Viral Hunter should exclude DB-existing URLs before raw backlog storage and AI suitability analysis. Use `DatabaseManager.refresh_existing_viral_targets()` to refresh `scan_count`, `last_scanned_at`, and source lineage without changing `comment_status`.
+- Viral target rediscovery updates must be idempotent per URL in a single run, tolerate legacy `scan_count=NULL`, and must not overwrite existing priority/KEI lineage with zero-value placeholders.
+- AI suitability/competitor bonuses must preserve the 150-point Viral Hunter scale. Do not cap back to 100, or 120+ HOT LEAD thresholds become unstable.
 - Latest manual run reference:
   - Legion `scan_run_id=10`: 483 keywords, 482 business_core, completed 2026-05-08 11:48:12.
   - Viral Hunter from scan 10: 42 seeds, 4,410 discovered, 2,050 saved, 87 pending all 신규, duplicate overlap report at `reports/viral_overlap_scan10_20260508_210238.csv`.
 - Current targeted verification for this flow:
   - `python -m pytest tests/test_viral_target_repo.py tests/test_router_smoke.py tests/test_pathfinder_viral_stability.py`
   - `npm run typecheck` in `marketing_bot_web/frontend`
+- Latest commit verification: `python -m pytest tests -q` -> 167 passed, 1 skipped; frontend `npm run typecheck` passed.
 
 ## 2026-05-08 Memory: Web/API Stability Hardening Baseline
 
@@ -39,7 +46,7 @@
   - Viral Hunter AI batch failures are saved as `needs_ai_retry`, excluded from pending, and failed checkpoints are preserved for retry.
   - Missing `SUITABLE` in AI output is not suitable by default.
   - Ad-classification parse failures are marked `needs_ai_retry` with `ai_ad_reason='parse_failed'`.
-- Duplicate viral URLs should go through DB upsert so `scan_count` and `source_scan_run_id` are refreshed. Do not prefilter by loading the full `viral_targets` table.
+- Duplicate viral URLs should not be loaded via full-table scans. Use indexed URL lookups; in Viral Hunter runs, refresh existing URL metadata before AI and exclude them from AI/raw queues.
 - Batch ad-classification apply supports source-run scoping. Prefer `--source-scan-run-id` or batch metadata when applying results from a specific Legion run.
 - Current targeted verification for this flow:
   - `python -m py_compile pathfinder_v3_legion.py viral_hunter.py db\database.py scripts\ai_ad_classify_submit.py scripts\ai_ad_classify_apply.py tests\test_pathfinder_viral_stability.py`

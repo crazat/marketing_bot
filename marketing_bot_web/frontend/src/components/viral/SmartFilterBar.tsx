@@ -12,6 +12,7 @@ import type { FilterState } from './FilterBar'
 interface SmartFilterBarProps {
   onApplyFilter: (filter: Partial<FilterState>) => void
   onSelectTarget?: (targetId: string) => void
+  workScope?: string
 }
 
 const platformLabels: Record<string, string> = {
@@ -25,26 +26,61 @@ const platformLabels: Record<string, string> = {
   karrot: '당근'
 }
 
-export function SmartFilterBar({ onApplyFilter, onSelectTarget }: SmartFilterBarProps) {
+export function SmartFilterBar({ onApplyFilter, onSelectTarget, workScope = 'latest_legion' }: SmartFilterBarProps) {
   const { data, isLoading, isError } = useQuery<SmartRecommendations>({
-    queryKey: ['smart-recommendations'],
-    queryFn: viralApi.getSmartRecommendations,
+    queryKey: ['smart-recommendations', workScope],
+    queryFn: () => viralApi.getSmartRecommendations(workScope),
     staleTime: 2 * 60 * 1000, // 2분
     refetchInterval: 5 * 60 * 1000, // 5분
   })
 
   // [Phase 7] useCallback으로 메모이제이션 — Rules of Hooks: early return 위에 정의해야 함
-  const handleApplyQuickFilter = useCallback((filter: Record<string, unknown>) => {
-    const filterState: Partial<FilterState> = {}
+  const buildSmartFilterState = useCallback((filter: Record<string, unknown>): Partial<FilterState> => {
+    const filterState: Partial<FilterState> = {
+      status: 'pending',
+      comment_status: undefined,
+      category: undefined,
+      platforms: undefined,
+      date_filter: undefined,
+      min_scan_count: undefined,
+      min_score: undefined,
+      commentable_only: undefined,
+      search: undefined,
+      scan_batch: undefined,
+      ai_ad_label: undefined,
+      min_confidence: undefined,
+      specialty_match: undefined,
+      post_region: undefined,
+    }
 
-    if (filter.min_score) filterState.min_scan_count = undefined // reset
+    if (Array.isArray(filter.platforms)) {
+      filterState.platforms = filter.platforms.filter((platform): platform is string => typeof platform === 'string')
+    }
+    if (filter.min_score) {
+      filterState.min_score = Number(filter.min_score)
+    }
+    if (filter.commentable_only != null) {
+      filterState.commentable_only = Boolean(filter.commentable_only)
+    }
     if (filter.date_filter) filterState.date_filter = filter.date_filter as string
     if (filter.min_scan_count) filterState.min_scan_count = filter.min_scan_count as number
     if (filter.sort) filterState.sort = filter.sort as string
     if (filter.status) filterState.status = filter.status as string
 
-    onApplyFilter(filterState)
-  }, [onApplyFilter])
+    return filterState
+  }, [])
+
+  const handleApplyQuickFilter = useCallback((filter: Record<string, unknown>) => {
+    onApplyFilter(buildSmartFilterState(filter))
+  }, [buildSmartFilterState, onApplyFilter])
+
+  const handleApplyPlatformFilter = useCallback((platform: string) => {
+    onApplyFilter(buildSmartFilterState({
+      status: 'pending',
+      sort: 'priority',
+      platforms: [platform],
+    }))
+  }, [buildSmartFilterState, onApplyFilter])
 
   if (isLoading) {
     return (
@@ -135,7 +171,7 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget }: SmartFilterBar
             {data.platform_priorities.slice(0, 4).map((p, idx) => (
               <button
                 key={p.platform}
-                onClick={() => onApplyFilter({ platforms: [p.platform] })}
+                onClick={() => handleApplyPlatformFilter(p.platform)}
                 className={`flex-shrink-0 px-3 py-2 rounded-lg border text-center transition-colors ${
                   idx === 0
                     ? 'bg-purple-500/20 border-purple-500/50 hover:bg-purple-500/30'

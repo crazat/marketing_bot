@@ -87,6 +87,13 @@ VIRAL_CORE_CATEGORIES = [
     "\uacbd\uc7c1\uc0ac_\uc5ed\uacf5\ub7b5",
 ]
 
+VALID_VIRAL_WORK_SCOPES = {"latest_legion", "core", "all_backlog"}
+
+
+def _normalize_work_scope(work_scope: Optional[str]) -> str:
+    scope = (work_scope or "latest_legion").strip()
+    return scope if scope in VALID_VIRAL_WORK_SCOPES else "latest_legion"
+
 
 def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
     try:
@@ -112,7 +119,9 @@ def _apply_work_scope_sql(
     params: List[Any],
     exclude_revisited: Optional[bool] = None,
 ) -> None:
-    scope = work_scope or "latest_legion"
+    scope = _normalize_work_scope(work_scope)
+    if exclude_revisited is None:
+        exclude_revisited = True
     if scope == "all_backlog":
         if exclude_revisited:
             where.append("COALESCE(scan_count, 1) <= 1")
@@ -125,16 +134,12 @@ def _apply_work_scope_sql(
     if scope in ("latest_legion", "core"):
         where.append(f"category IN ({','.join(['?'] * len(VIRAL_CORE_CATEGORIES))})")
         params.extend(VIRAL_CORE_CATEGORIES)
-    if exclude_revisited is None:
-        exclude_revisited = True
     if exclude_revisited:
         where.append("COALESCE(scan_count, 1) <= 1")
 
 
 def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], work_scope: Optional[str]) -> None:
-    scope = work_scope or "latest_legion"
-    if scope == "all_backlog":
-        return
+    scope = _normalize_work_scope(work_scope)
     if scope in ("latest_legion", "core") and not filters.get("category"):
         filters["include_categories"] = VIRAL_CORE_CATEGORIES
     if scope == "latest_legion":
@@ -327,6 +332,8 @@ class BulkActionByFilterRequest(BaseModel):
     specialty_match: Optional[str] = None
     post_region: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    min_score: Optional[float] = Field(None, ge=0.0, le=150.0)
+    commentable_only: Optional[bool] = None
     work_scope: Optional[str] = "latest_legion"
     exclude_revisited: Optional[bool] = None
     # 안전장치
@@ -1080,6 +1087,8 @@ async def get_viral_targets(
     post_region: Optional[str] = None,  # 청주|타지역|불명 (쉼표 가능). 게시글 지역
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
+    min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
+    commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
 ) -> Dict[str, Any]:
@@ -1124,10 +1133,12 @@ async def get_viral_targets(
             "specialty_match": specialty_match,
             "post_region": post_region,
             "exclude_revisited": exclude_revisited,
+            "min_score": min_score,
+            "commentable_only": commentable_only,
         }.items() if v is not None}
 
-        db = DatabaseManager()
-        _apply_work_scope_filters(db.cursor, filters, work_scope)
+        with sqlite3.connect(get_db_path()) as scope_conn:
+            _apply_work_scope_filters(scope_conn.cursor(), filters, work_scope)
 
         targets = repo.list(
             filters=filters,
@@ -1135,11 +1146,12 @@ async def get_viral_targets(
             limit=limit,
             offset=offset,
         )
+        total = repo.count(filters)
         # matched_keywords는 Repository에서 이미 list로 디코드됨 — 추가 변환 불필요
 
         return {
             "targets": targets,
-            "total": len(targets),
+            "total": total,
             "limit": limit,
             "offset": offset,
         }
@@ -1466,6 +1478,8 @@ async def count_viral_targets(
     post_region: Optional[str] = None,
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
+    min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
+    commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
 
@@ -1488,10 +1502,12 @@ async def count_viral_targets(
             "specialty_match": specialty_match,
             "post_region": post_region,
             "exclude_revisited": exclude_revisited,
+            "min_score": min_score,
+            "commentable_only": commentable_only,
         }
         filters = {k: v for k, v in filters.items() if v is not None}
-        db = DatabaseManager()
-        _apply_work_scope_filters(db.cursor, filters, work_scope)
+        with sqlite3.connect(get_db_path()) as scope_conn:
+            _apply_work_scope_filters(scope_conn.cursor(), filters, work_scope)
         total = repo.count(filters)
         return {"total": total}
     except Exception as e:
@@ -2230,6 +2246,11 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         if req.min_confidence is not None:
             where += " AND ai_ad_confidence >= ?"
             params.append(req.min_confidence)
+        if req.min_score is not None:
+            where += " AND COALESCE(priority_score, 0) >= ?"
+            params.append(req.min_score)
+        if req.commentable_only:
+            where += " AND COALESCE(is_commentable, 0) = 1"
 
         # 매칭 개수 확인
         cursor.execute(f"SELECT COUNT(*) FROM viral_targets {where}", params)
@@ -3071,6 +3092,7 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
         - competitor_mentions: 경쟁사 언급 분석
         - target_history: 타겟 이력
     """
+    conn = None
     try:
         db_path = get_db_path()
         conn = sqlite3.connect(db_path)
@@ -3244,7 +3266,6 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
                 "importance": "low"
             })
 
-        conn.close()
         return result
 
     except HTTPException:
@@ -3252,6 +3273,9 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"[Target Context Error] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
 
 
 # ===========================================================================
@@ -3259,7 +3283,10 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
 # ===========================================================================
 
 @router.get("/smart-recommendations")
-async def get_smart_recommendations() -> Dict[str, Any]:
+async def get_smart_recommendations(
+    work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
+    exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
+) -> Dict[str, Any]:
     """
     스마트 추천 및 필터 프리셋
 
@@ -3270,6 +3297,7 @@ async def get_smart_recommendations() -> Dict[str, Any]:
         - today_focus: 오늘 집중해야 할 타겟
         - insights: 추천 근거 인사이트
     """
+    conn = None
     try:
         db_path = get_db_path()
         conn = sqlite3.connect(db_path)
@@ -3283,13 +3311,24 @@ async def get_smart_recommendations() -> Dict[str, Any]:
             "platform_priorities": []
         }
 
+        visible_where: List[str] = []
+        visible_params: List[Any] = []
+        _apply_work_scope_sql(cursor, work_scope, visible_where, visible_params, exclude_revisited=exclude_revisited)
+        visible_condition = f" AND {' AND '.join(visible_where)}" if visible_where else ""
+
+        recurring_where: List[str] = []
+        recurring_params: List[Any] = []
+        _apply_work_scope_sql(cursor, work_scope, recurring_where, recurring_params, exclude_revisited=False)
+        recurring_condition = f" AND {' AND '.join(recurring_where)}" if recurring_where else ""
+
         # 1. 빠른 필터 프리셋 생성
 
         # 고우선순위 타겟 (80점 이상)
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
             WHERE comment_status = 'pending' AND priority_score >= 80
-        """)
+            {visible_condition}
+        """, visible_params)
         high_priority_count = cursor.fetchone()[0]
 
         if high_priority_count > 0:
@@ -3299,15 +3338,16 @@ async def get_smart_recommendations() -> Dict[str, Any]:
                 "icon": "🔥",
                 "description": f"{high_priority_count}개의 80점 이상 타겟",
                 "count": high_priority_count,
-                "filter": {"min_score": 80, "sort": "priority"}
+                "filter": {"status": "pending", "min_score": 80, "sort": "priority"}
             })
 
         # 오늘 발견된 타겟
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
             WHERE comment_status = 'pending'
-            AND discovered_at >= datetime('now', 'start of day')
-        """)
+            AND discovered_at >= datetime('now', 'localtime', 'start of day')
+            {visible_condition}
+        """, visible_params)
         today_count = cursor.fetchone()[0]
 
         if today_count > 0:
@@ -3317,14 +3357,15 @@ async def get_smart_recommendations() -> Dict[str, Any]:
                 "icon": "🆕",
                 "description": f"오늘 발견된 {today_count}개 타겟",
                 "count": today_count,
-                "filter": {"date_filter": "오늘", "sort": "date"}
+                "filter": {"status": "pending", "date_filter": "오늘", "sort": "date"}
             })
 
         # 재발견된 타겟 (scan_count >= 2)
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
             WHERE comment_status = 'pending' AND scan_count >= 2
-        """)
+            {recurring_condition}
+        """, recurring_params)
         recurring_count = cursor.fetchone()[0]
 
         if recurring_count > 0:
@@ -3334,14 +3375,15 @@ async def get_smart_recommendations() -> Dict[str, Any]:
                 "icon": "🔄",
                 "description": f"여러 번 발견된 {recurring_count}개 타겟",
                 "count": recurring_count,
-                "filter": {"min_scan_count": 2, "sort": "scan_count"}
+                "filter": {"status": "pending", "min_scan_count": 2, "sort": "scan_count"}
             })
 
         # 댓글 가능 타겟
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
             WHERE comment_status = 'pending' AND is_commentable = 1
-        """)
+            {visible_condition}
+        """, visible_params)
         commentable_count = cursor.fetchone()[0]
 
         if commentable_count > 0:
@@ -3351,14 +3393,15 @@ async def get_smart_recommendations() -> Dict[str, Any]:
                 "icon": "✅",
                 "description": f"즉시 작업 가능한 {commentable_count}개 타겟",
                 "count": commentable_count,
-                "filter": {"commentable_only": True, "sort": "priority"}
+                "filter": {"status": "pending", "commentable_only": True, "sort": "priority"}
             })
 
         # AI 생성된 댓글 대기 중
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
             WHERE comment_status = 'generated'
-        """)
+            {visible_condition}
+        """, visible_params)
         generated_count = cursor.fetchone()[0]
 
         if generated_count > 0:
@@ -3372,15 +3415,16 @@ async def get_smart_recommendations() -> Dict[str, Any]:
             })
 
         # 2. 오늘 집중해야 할 타겟 (Top 5)
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, title, platform, priority_score, matched_keywords, scan_count
             FROM viral_targets
             WHERE comment_status = 'pending'
+            {visible_condition}
             ORDER BY
                 CASE WHEN scan_count >= 2 THEN 1 ELSE 0 END DESC,
                 priority_score DESC
             LIMIT 5
-        """)
+        """, visible_params)
 
         focus_targets = []
         for row in cursor.fetchall():
@@ -3396,13 +3440,14 @@ async def get_smart_recommendations() -> Dict[str, Any]:
         result["today_focus"] = focus_targets
 
         # 3. 플랫폼별 우선순위
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT platform, COUNT(*) as count, AVG(priority_score) as avg_score
             FROM viral_targets
             WHERE comment_status = 'pending'
+            {visible_condition}
             GROUP BY platform
             ORDER BY avg_score DESC
-        """)
+        """, visible_params)
 
         platform_priorities = []
         for row in cursor.fetchall():
@@ -3445,12 +3490,14 @@ async def get_smart_recommendations() -> Dict[str, Any]:
                 "importance": "medium"
             })
 
-        conn.close()
         return result
 
     except Exception as e:
         print(f"[Smart Recommendations Error] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
 
 
 # ===========================================================================

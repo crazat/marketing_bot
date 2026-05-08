@@ -109,7 +109,7 @@ class ViralTargetRepository:
                         matched_keywords = excluded.matched_keywords,
                         priority_score = excluded.priority_score,
                         last_scanned_at = excluded.last_scanned_at,
-                        scan_count = {self.TABLE}.scan_count + 1,
+                        scan_count = COALESCE({self.TABLE}.scan_count, 0) + 1,
                         content_hash = excluded.content_hash
                     """,
                     (
@@ -273,6 +273,20 @@ class ViralTargetRepository:
                 params.append(int(source_scan_run_id))
             except (TypeError, ValueError):
                 pass
+
+        min_score = filters.get("min_score")
+        if min_score is not None:
+            try:
+                clauses.append("COALESCE(priority_score, 0) >= ?")
+                params.append(float(min_score))
+            except (TypeError, ValueError):
+                pass
+
+        commentable_only = filters.get("commentable_only")
+        if isinstance(commentable_only, str):
+            commentable_only = commentable_only.strip().lower() in {"1", "true", "yes", "y", "on"}
+        if commentable_only:
+            clauses.append("COALESCE(is_commentable, 0) = 1")
 
         scan_batch = filters.get("scan_batch")
         date_filter = filters.get("date_filter")

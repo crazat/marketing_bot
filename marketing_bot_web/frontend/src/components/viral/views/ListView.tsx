@@ -227,6 +227,7 @@ export function ListView({
       <SmartFilterBar
         onApplyFilter={(filter) => onFilterChange({ ...filters, ...filter })}
         onSelectTarget={(targetId) => onSetExpandedTargetId(targetId)}
+        workScope={filters.work_scope || 'latest_legion'}
       />
 
       {/* 필터 바 */}

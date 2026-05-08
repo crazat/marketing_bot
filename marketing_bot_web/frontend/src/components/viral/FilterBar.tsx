@@ -9,6 +9,8 @@ export interface FilterState {
   category?: string;           // 카테고리 필터 추가
   comment_status?: string;     // 댓글 상태 필터 추가
   min_scan_count?: number;
+  min_score?: number;
+  commentable_only?: boolean;
   search?: string;
   sort?: string;
   scan_batch?: string;
@@ -69,6 +71,8 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
       filters.category ||
       filters.comment_status ||
       filters.min_scan_count ||
+      filters.min_score ||
+      filters.commentable_only ||
       filters.search ||
       (filters.sort && filters.sort !== 'priority') ||
       filters.scan_batch ||

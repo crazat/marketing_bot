@@ -98,6 +98,187 @@ def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_pat
     assert db.get_existing_viral_urls([target["url"], "https://example.com/new"]) == {target["url"]}
 
 
+def test_duplicate_upsert_handles_legacy_null_scan_count_and_preserves_scores(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_null_scan.db"))
+
+    target = {
+        "id": "legacy",
+        "platform": "kin",
+        "url": "https://example.com/legacy",
+        "title": "청주 교통사고 질문",
+        "matched_keywords": ["청주 교통사고"],
+        "category": "교통사고",
+        "comment_status": "pending",
+        "priority_score": 95,
+        "matched_keyword_kei": 100.0,
+        "matched_keyword_priority": 80.0,
+        "source_scan_run_id": 1,
+    }
+    assert db.insert_viral_target(target)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE viral_targets SET scan_count = NULL WHERE url = ?",
+            (target["url"],),
+        )
+        conn.commit()
+
+    assert db.insert_viral_target({
+        **target,
+        "id": "legacy-again",
+        "priority_score": 0,
+        "matched_keyword_kei": 0,
+        "matched_keyword_priority": 0,
+        "source_scan_run_id": 2,
+    })
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scan_count, priority_score, matched_keyword_kei,
+                   matched_keyword_priority, source_scan_run_id
+            FROM viral_targets
+            WHERE url = ?
+            """,
+            (target["url"],),
+        ).fetchone()
+
+    assert row == (1, 95.0, 100.0, 80.0, 2)
+
+
+def test_viral_hunter_excludes_existing_urls_before_ai_but_refreshes_metadata(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_before_ai.db"))
+    existing = {
+        "id": "old",
+        "platform": "kin",
+        "url": "https://example.com/seen",
+        "title": "old title",
+        "matched_keywords": ["old"],
+        "comment_status": "posted",
+        "source_scan_run_id": 1,
+    }
+    assert db.insert_viral_target(existing)
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = db
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/seen",
+            title="new title",
+            matched_keywords=["청주 여드름"],
+            source_scan_run_id=10,
+            matched_keyword_grade="B",
+            matched_keyword_kei=3.2,
+            matched_keyword_priority=71.0,
+            matched_keyword_category="피부/여드름",
+        ),
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/fresh",
+            title="fresh title",
+            matched_keywords=["청주 여드름"],
+            source_scan_run_id=10,
+        ),
+    ]
+
+    fresh_targets, duplicate_count = hunter._exclude_existing_targets_before_ai(targets)
+
+    assert duplicate_count == 1
+    assert [target.url for target in fresh_targets] == ["https://example.com/fresh"]
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scan_count, source_scan_run_id, comment_status,
+                   matched_keyword, matched_keyword_category
+            FROM viral_targets
+            WHERE url = ?
+            """,
+            ("https://example.com/seen",),
+        ).fetchone()
+
+    assert row == (2, 10, "posted", "청주 여드름", "피부/여드름")
+
+
+def test_existing_url_refresh_is_deduped_and_does_not_zero_out_priority(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_refresh.db"))
+    existing = {
+        "id": "seen",
+        "platform": "kin",
+        "url": "https://example.com/seen-once",
+        "title": "old title",
+        "matched_keywords": ["청주 다이어트"],
+        "category": "다이어트",
+        "comment_status": "posted",
+        "priority_score": 88,
+        "source_scan_run_id": 1,
+    }
+    assert db.insert_viral_target(existing)
+
+    refreshed = db.refresh_existing_viral_targets([
+        {
+            **existing,
+            "title": "new zero score",
+            "priority_score": 0,
+            "source_scan_run_id": 10,
+            "matched_keywords": ["청주 다이어트약"],
+        },
+        {
+            **existing,
+            "title": "duplicate same run",
+            "priority_score": 0,
+            "source_scan_run_id": 10,
+            "matched_keywords": ["청주 다이어트약"],
+        },
+    ])
+
+    assert refreshed == 1
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scan_count, priority_score, source_scan_run_id, matched_keyword
+            FROM viral_targets
+            WHERE url = ?
+            """,
+            (existing["url"],),
+        ).fetchone()
+
+    assert row == (2, 88.0, 10, "청주 다이어트약")
+
+
+def test_unified_ai_bonus_keeps_hot_lead_score_above_tier_threshold():
+    generator = AICommentGenerator()
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/hot",
+        title="청주 교통사고 입원 질문",
+        content_preview="청주에서 교통사고 입원 상담 가능한 곳 찾습니다.",
+        matched_keywords=["청주 교통사고"],
+        category="교통사고",
+        priority_score=130,
+    )
+
+    suitable, unsuitable_count, competitor_count = generator._parse_unified_results(
+        [target],
+        """
+        ---
+        POST_ID: 1
+        SUITABLE: true
+        SCORE: 95
+        TYPE: consultation
+        COMPETITOR: false
+        COUNTER_SCORE: 0
+        REASON: 상담 요청
+        ---
+        """,
+    )
+
+    assert unsuitable_count == 0
+    assert competitor_count == 0
+    assert suitable[0].priority_score == 149
+    assert suitable[0].priority_score >= 120
+
+
 def test_raw_backlog_can_be_promoted_to_pending_on_later_ai_success(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral_promote.db"))
     raw = {
