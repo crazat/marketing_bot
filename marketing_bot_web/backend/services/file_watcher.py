@@ -68,6 +68,7 @@ class FileWatcher:
         self.observer: Optional[Observer] = None
         self.running = False
         self._polling_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # 프로젝트 루트 경로 (backend -> marketing_bot_web -> marketing_bot)
         self.project_root = Path(__file__).parent.parent.parent.parent
@@ -82,6 +83,7 @@ class FileWatcher:
     async def start(self):
         """파일 감시 시작"""
         self.running = True
+        self._loop = asyncio.get_running_loop()
 
         # 로그 디렉토리 생성
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -109,14 +111,18 @@ class FileWatcher:
                 await self._polling_task
             except asyncio.CancelledError:
                 pass
+            self._polling_task = None
+
+        self._loop = None
 
         print("📁 FileWatcher 중지됨")
 
     async def _start_watchdog(self):
         """watchdog 기반 파일 감시"""
         def on_new_line(line: str):
-            # asyncio 이벤트 루프에서 브로드캐스트
-            asyncio.create_task(self._broadcast_log(line))
+            loop = self._loop
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(self._broadcast_log(line), loop)
 
         handler = LogFileHandler(str(self.log_file), on_new_line)
         self.observer = Observer()

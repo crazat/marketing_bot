@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { hudApi } from '@/services/api'
+import { withApiKeyQuery } from '@/services/api/base'
 import { Square, ChevronDown, ChevronRight, Clock, FileText, Wifi, WifiOff } from 'lucide-react'
 import { useNotification, createScanCompleteNotification } from '@/hooks/useNotification'
 
@@ -98,7 +99,7 @@ export default function MissionProgress({
 
     // SSE 연결 시도
     const connectSSE = () => {
-      const url = `/api/hud/mission/${moduleName}/progress/stream`
+      const url = withApiKeyQuery(`/api/hud/mission/${moduleName}/progress/stream`)
       const eventSource = new EventSource(url)
 
       eventSource.onopen = () => {

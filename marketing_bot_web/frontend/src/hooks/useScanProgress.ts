@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { getApiAuthHeaders, withApiKeyQuery } from '@/services/api/base'
 
 export interface ScanProgressData {
   status: 'idle' | 'running' | 'completed' | 'error' | 'timeout'
@@ -60,7 +61,7 @@ export function useScanProgress(
       return
     }
 
-    const url = `/api/hud/mission/${moduleName}/progress/stream`
+    const url = withApiKeyQuery(`/api/hud/mission/${moduleName}/progress/stream`)
     const eventSource = new EventSource(url)
 
     eventSource.onopen = () => {
@@ -168,7 +169,9 @@ export function useScanProgressPolling(
 
     const fetchProgress = async () => {
       try {
-        const response = await fetch(`/api/hud/mission/${moduleName}/progress`)
+        const response = await fetch(`/api/hud/mission/${moduleName}/progress`, {
+          headers: getApiAuthHeaders(),
+        })
         if (response.ok) {
           const progressData = await response.json()
           setData({

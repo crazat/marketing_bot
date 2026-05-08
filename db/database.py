@@ -66,7 +66,7 @@ class DatabaseManager:
 
         self.db_path = resolved_db_path
 
-        self._conn_lock = threading.Lock()
+        self._conn_lock = threading.RLock()
         self._init_db()
         self._initialized = True
         # [S3] Repository 레이어 lazy 캐시 (신규 코드에서 사용 권장)
@@ -121,12 +121,13 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(...)
         """
-        # 기존 연결 재사용 (check_same_thread=False로 이미 스레드 안전)
-        try:
-            yield self.conn
-        except Exception as e:
-            logger.error(f"DB 작업 오류: {e}")
-            raise
+        # 기존 연결 재사용 구간은 락으로 직렬화한다.
+        with self._conn_lock:
+            try:
+                yield self.conn
+            except Exception as e:
+                logger.error(f"DB 작업 오류: {e}")
+                raise
 
     @contextmanager
     def get_new_connection(self):
@@ -146,7 +147,7 @@ class DatabaseManager:
         # [Phase 1] WAL 모드 및 동시성 설정 적용
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")  # 5초 대기
+        conn.execute("PRAGMA busy_timeout=10000")  # 10초 대기
         try:
             yield conn
         finally:
@@ -156,6 +157,7 @@ class DatabaseManager:
         # [Robustness] Increase timeout to 30s to handle concurrent writes (File Lock)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
         self.cursor = self.conn.cursor()
+        self.cursor.execute("PRAGMA busy_timeout=10000")
 
         # [성능 최적화] WAL 모드 설정 - 동시 읽기/쓰기 성능 향상
         # [W8] 마이그레이션 버전 추적 테이블 — _ensure_wal_mode보다 먼저 준비

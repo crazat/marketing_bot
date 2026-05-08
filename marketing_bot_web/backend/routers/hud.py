@@ -33,6 +33,7 @@ from core_services.sql_builder import (
 )
 from backend_utils.error_handlers import handle_exceptions
 from backend_utils.logger import get_router_logger
+from services.process_jobs import popen_process_group_kwargs, terminate_process_tree
 from schemas.response import success_response, error_response
 
 logger = get_router_logger('hud')
@@ -99,6 +100,7 @@ CHRONOS_SCHEDULE, CMD_MAP = load_schedule_config()
 
 # 실행 중인 프로세스 추적 (스레드 안전을 위한 lock 추가)
 running_processes: Dict[str, subprocess.Popen] = {}
+starting_modules: set[str] = set()
 running_processes_lock = threading.Lock()
 
 # 스캔 진행률 추적 (SSE용, 스레드 안전을 위한 lock 추가)
@@ -814,6 +816,8 @@ def run_module_in_background(module_name: str):
     global running_processes
 
     if module_name not in CMD_MAP:
+        with running_processes_lock:
+            starting_modules.discard(module_name)
         return
 
     cmd = CMD_MAP[module_name]
@@ -832,10 +836,12 @@ def run_module_in_background(module_name: str):
                 cwd=parent_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                shell=False
+                shell=False,
+                **popen_process_group_kwargs(),
             )
             with running_processes_lock:
                 running_processes[module_name] = process
+                starting_modules.discard(module_name)
 
             # [Phase 8] Subprocess 모니터링 - 프로세스 완료 시 정리
             def cleanup_pathfinder(proc, mod_name):
@@ -844,12 +850,13 @@ def run_module_in_background(module_name: str):
                     proc.wait(timeout=1800)
                 except subprocess.TimeoutExpired:
                     logger.warning(f"프로세스 타임아웃 ({mod_name}), 강제 종료")
-                    proc.kill()
+                    terminate_process_tree(proc, force=True)
                     proc.wait()
                 finally:
                     with running_processes_lock:
                         if mod_name in running_processes:
                             del running_processes[mod_name]
+                        starting_modules.discard(mod_name)
                     logger.info(f"프로세스 종료 및 정리 완료: {mod_name}")
 
             threading.Thread(
@@ -869,7 +876,8 @@ def run_module_in_background(module_name: str):
                     cwd=parent_dir,
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
-                    shell=False
+                    shell=False,
+                    **popen_process_group_kwargs(),
                 )
             except Exception as e:
                 if log_handle is not None:
@@ -881,6 +889,7 @@ def run_module_in_background(module_name: str):
 
             with running_processes_lock:
                 running_processes[module_name] = process
+                starting_modules.discard(module_name)
 
             # [Phase 8] Subprocess 모니터링 - 프로세스 완료 대기 및 정리
             def cleanup_with_monitoring(proc, mod_name, handle):
@@ -889,13 +898,14 @@ def run_module_in_background(module_name: str):
                     proc.wait(timeout=1800)
                 except subprocess.TimeoutExpired:
                     logger.warning(f"프로세스 타임아웃 ({mod_name}), 강제 종료")
-                    proc.kill()
+                    terminate_process_tree(proc, force=True)
                     proc.wait()
                 finally:
                     handle.close()
                     with running_processes_lock:
                         if mod_name in running_processes:
                             del running_processes[mod_name]
+                        starting_modules.discard(mod_name)
                     logger.info(f"프로세스 종료 및 정리 완료: {mod_name}")
 
             threading.Thread(
@@ -926,6 +936,8 @@ def run_module_in_background(module_name: str):
             json.dump(scheduler_state, f, indent=2)
 
     except Exception as e:
+        with running_processes_lock:
+            starting_modules.discard(module_name)
         logger.error(f"모듈 실행 오류 ({module_name}): {e}")
 
 
@@ -947,6 +959,13 @@ async def execute_mission(module_name: str, background_tasks: BackgroundTasks) -
 
     # 이미 실행 중인지 확인 (스레드 안전)
     with running_processes_lock:
+        if module_name in starting_modules:
+            return {
+                "success": False,
+                "message": f"{module_name} module is starting.",
+                "module": module_name,
+                "status": "already_running"
+            }
         if module_name in running_processes:
             process = running_processes[module_name]
             if process.poll() is None:  # 아직 실행 중
@@ -958,6 +977,26 @@ async def execute_mission(module_name: str, background_tasks: BackgroundTasks) -
                 }
 
     # 백그라운드에서 모듈 실행
+    with running_processes_lock:
+        if module_name in starting_modules:
+            return {
+                "success": False,
+                "message": f"{module_name} module is starting.",
+                "module": module_name,
+                "status": "already_running"
+            }
+        if module_name in running_processes and running_processes[module_name].poll() is None:
+            return {
+                "success": False,
+                "message": f"{module_name} module is already running.",
+                "module": module_name,
+                "status": "already_running"
+            }
+        if module_name in running_processes and running_processes[module_name].poll() is not None:
+            del running_processes[module_name]
+            starting_modules.discard(module_name)
+        starting_modules.add(module_name)
+
     background_tasks.add_task(run_module_in_background, module_name)
 
     return {
@@ -982,6 +1021,7 @@ async def stop_mission(module_name: str) -> Dict[str, Any]:
     """
     with running_processes_lock:
         if module_name not in running_processes:
+            starting_modules.discard(module_name)
             return {
                 "success": False,
                 "message": f"{module_name} 모듈이 실행 중이 아닙니다."
@@ -990,15 +1030,17 @@ async def stop_mission(module_name: str) -> Dict[str, Any]:
         process = running_processes[module_name]
         if process.poll() is not None:  # 이미 종료됨
             del running_processes[module_name]
+            starting_modules.discard(module_name)
             return {
                 "success": True,
                 "message": f"{module_name} 모듈이 이미 종료되었습니다."
             }
 
         try:
-            process.terminate()
+            terminate_process_tree(process, force=True)
             process.wait(timeout=5)
             del running_processes[module_name]
+            starting_modules.discard(module_name)
             return {
                 "success": True,
                 "message": f"{module_name} 모듈이 중지되었습니다."
@@ -1026,6 +1068,7 @@ async def get_running_modules() -> Dict[str, Any]:
                 completed.append(module_name)
                 # 완료된 프로세스 정리
                 del running_processes[module_name]
+                starting_modules.discard(module_name)
 
     return {
         "running": running,
@@ -3390,6 +3433,7 @@ async def stream_mission_progress(module_name: str):
                 if module_name in running_processes:
                     # 프로세스가 있었다가 종료됨
                     del running_processes[module_name]
+                    starting_modules.discard(module_name)
                     yield f"data: {json.dumps({'status': 'completed', 'progress': 100, 'message': '완료', 'is_running': False}, ensure_ascii=False)}\n\n"
                     break
 
@@ -3441,6 +3485,7 @@ async def get_mission_progress(module_name: str) -> Dict[str, Any]:
         # 프로세스가 종료되었는지 확인
         if module_name in running_processes:
             del running_processes[module_name]
+            starting_modules.discard(module_name)
             return {"status": "completed", "progress": 100, "message": "완료", "is_running": False}
 
         return {"status": "idle", "progress": 0, "message": "대기 중", "is_running": False}

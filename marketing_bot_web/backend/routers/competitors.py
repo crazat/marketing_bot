@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sqlite3
 import json
+import asyncio
 
 # 상위 디렉토리를 path에 추가 (marketing_bot 루트)
 # routers -> backend -> marketing_bot_web -> marketing_bot
@@ -549,6 +550,200 @@ async def mark_opportunity_used(keyword: str) -> Dict[str, str]:
             except Exception:
                 pass
 
+def _ensure_competitor_analysis_tables(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS competitor_weaknesses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            competitor_name TEXT,
+            weakness_type TEXT,
+            description TEXT,
+            severity TEXT DEFAULT 'Medium',
+            evidence TEXT,
+            opportunity_keywords TEXT,
+            source_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("PRAGMA table_info(competitor_weaknesses)")
+    weakness_columns = {row[1] for row in cursor.fetchall()}
+    if "evidence" not in weakness_columns:
+        cursor.execute("ALTER TABLE competitor_weaknesses ADD COLUMN evidence TEXT")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS opportunity_keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT UNIQUE,
+            weakness_type TEXT,
+            opportunity_description TEXT,
+            priority_score REAL DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def _coerce_priority(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _analyze_reviews_for_weaknesses_sync() -> Dict[str, Any]:
+    """Run AI review analysis without holding a long SQLite write lock."""
+    from services.ai_client import ai_generate_json
+
+    db = DatabaseManager()
+    conn = sqlite3.connect(db.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        _ensure_competitor_analysis_tables(cursor)
+        conn.commit()
+        cursor.execute("""
+            SELECT competitor_name, GROUP_CONCAT(content, ' ||| ') as reviews
+            FROM competitor_reviews
+            WHERE content IS NOT NULL AND content != ''
+            GROUP BY competitor_name
+        """)
+        competitors_reviews = cursor.fetchall()
+    finally:
+        conn.close()
+
+    all_weaknesses: List[Dict[str, Any]] = []
+    all_opportunity_keywords: List[Dict[str, Any]] = []
+
+    for comp in competitors_reviews:
+        competitor_name = comp["competitor_name"]
+        reviews_text = comp["reviews"] or ""
+        if len(reviews_text) > 15000:
+            reviews_text = reviews_text[:15000] + "..."
+
+        prompt = f"""
+Analyze customer reviews for the competitor "{competitor_name}".
+
+Reviews:
+{reviews_text}
+
+Return JSON only:
+{{
+  "weaknesses": [
+    {{
+      "type": "service|price|facility|wait_time|effect|other",
+      "description": "specific weakness in 50 Korean characters or fewer",
+      "severity": "Critical|High|Medium|Low",
+      "evidence": "short review evidence"
+    }}
+  ],
+  "opportunity_keywords": [
+    {{
+      "keyword": "marketing keyword we can target",
+      "description": "how this keyword can differentiate us",
+      "priority": 1
+    }}
+  ],
+  "summary": "brief summary"
+}}
+
+Only include complaints directly about "{competitor_name}". If no weakness is found,
+return empty arrays.
+"""
+
+        try:
+            result = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
+        except Exception as exc:
+            print(f"[Gemini] {competitor_name} analysis error: {exc}")
+            continue
+
+        if not isinstance(result, dict):
+            result = {"weaknesses": [], "opportunity_keywords": [], "summary": ""}
+
+        for weakness in result.get("weaknesses", []) or []:
+            if not isinstance(weakness, dict):
+                continue
+            all_weaknesses.append({
+                "competitor_name": competitor_name,
+                "weakness_type": weakness.get("type", "other"),
+                "description": weakness.get("description", ""),
+                "severity": weakness.get("severity", "Medium"),
+                "evidence": weakness.get("evidence", ""),
+                "opportunity_keywords": "",
+                "source_url": "",
+            })
+
+        for keyword in result.get("opportunity_keywords", []) or []:
+            if not isinstance(keyword, dict) or not keyword.get("keyword"):
+                continue
+            all_opportunity_keywords.append({
+                "keyword": keyword.get("keyword", ""),
+                "weakness_type": competitor_name,
+                "opportunity_description": keyword.get("description", ""),
+                "priority_score": _coerce_priority(keyword.get("priority", 5)),
+            })
+
+    write_conn = sqlite3.connect(db.db_path)
+    try:
+        cursor = write_conn.cursor()
+        _ensure_competitor_analysis_tables(cursor)
+        cursor.execute("DELETE FROM competitor_weaknesses")
+        cursor.execute("DELETE FROM opportunity_keywords")
+
+        cursor.executemany("""
+            INSERT INTO competitor_weaknesses
+            (competitor_name, weakness_type, description, severity, evidence, opportunity_keywords, source_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [
+            (
+                weakness["competitor_name"],
+                weakness["weakness_type"],
+                weakness["description"],
+                weakness["severity"],
+                weakness["evidence"],
+                weakness["opportunity_keywords"],
+                weakness["source_url"],
+            )
+            for weakness in all_weaknesses
+        ])
+
+        cursor.executemany("""
+            INSERT OR IGNORE INTO opportunity_keywords
+            (keyword, weakness_type, opportunity_description, priority_score, status)
+            VALUES (?, ?, ?, ?, 'pending')
+        """, [
+            (
+                keyword["keyword"],
+                keyword["weakness_type"],
+                keyword["opportunity_description"],
+                keyword["priority_score"],
+            )
+            for keyword in all_opportunity_keywords
+        ])
+
+        write_conn.commit()
+    except Exception:
+        write_conn.rollback()
+        raise
+    finally:
+        write_conn.close()
+
+    type_counts: Dict[str, int] = {}
+    for weakness in all_weaknesses:
+        weakness_type = str(weakness["weakness_type"])
+        type_counts[weakness_type] = type_counts.get(weakness_type, 0) + 1
+
+    return {
+        "status": "success",
+        "message": (
+            f"{len(all_weaknesses)} weaknesses and "
+            f"{len(all_opportunity_keywords)} opportunity keywords analyzed"
+        ),
+        "competitors_analyzed": len(competitors_reviews),
+        "weaknesses_found": len(all_weaknesses),
+        "opportunity_keywords_found": len(all_opportunity_keywords),
+        "by_type": type_counts,
+    }
+
+
 @router.post("/analyze-reviews")
 async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
     """
@@ -558,180 +753,8 @@ async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
     - 경쟁사별로 리뷰를 그룹화하여 일괄 분석
     - 약점 유형, 심각도, 기회 키워드 추출
     """
-    from services.ai_client import ai_generate_json
-
     try:
-        db = DatabaseManager()
-        conn = None
-        conn = sqlite3.connect(db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # competitor_weaknesses 테이블 생성
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS competitor_weaknesses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                competitor_name TEXT,
-                weakness_type TEXT,
-                description TEXT,
-                severity TEXT DEFAULT 'Medium',
-                opportunity_keywords TEXT,
-                source_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # opportunity_keywords 테이블 생성
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS opportunity_keywords (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                keyword TEXT UNIQUE,
-                weakness_type TEXT,
-                opportunity_description TEXT,
-                priority_score REAL DEFAULT 0,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # 기존 데이터 삭제 (재분석)
-        cursor.execute("DELETE FROM competitor_weaknesses")
-        cursor.execute("DELETE FROM opportunity_keywords")
-
-        # 경쟁사별 리뷰 조회
-        cursor.execute("""
-            SELECT competitor_name, GROUP_CONCAT(content, ' ||| ') as reviews
-            FROM competitor_reviews
-            WHERE content IS NOT NULL AND content != ''
-            GROUP BY competitor_name
-        """)
-
-        competitors_reviews = cursor.fetchall()
-        all_weaknesses = []
-        all_opportunity_keywords = []
-
-        for comp in competitors_reviews:
-            competitor_name = comp['competitor_name']
-            reviews_text = comp['reviews']
-
-            # 리뷰가 너무 길면 잘라서 분석
-            if len(reviews_text) > 15000:
-                reviews_text = reviews_text[:15000] + "..."
-
-            prompt = f"""당신은 마케팅 전략 분석가입니다. 아래는 "{competitor_name}" 한의원의 고객 리뷰입니다.
-
-리뷰 내용:
-{reviews_text}
-
-위 리뷰들을 분석하여 "{competitor_name}"의 약점을 찾아주세요.
-
-⚠️ 중요 규칙:
-1. 오직 "{competitor_name}"에 대한 직접적인 불만/약점만 추출하세요.
-2. 리뷰에서 "다른 병원", "타 병원", "예전에 다니던 곳" 등에 대한 불만은 절대 포함하지 마세요.
-3. "{competitor_name}"을 칭찬하면서 타 병원을 비교하는 내용은 약점이 아닙니다.
-4. 고객이 "{competitor_name}"에서 직접 겪은 부정적 경험만 약점으로 분류하세요.
-
-다음 JSON 형식으로 정확히 응답해주세요 (다른 텍스트 없이 JSON만):
-{{
-    "weaknesses": [
-        {{
-            "type": "서비스|가격|시설|대기시간|효과|기타 중 하나",
-            "description": "{competitor_name}의 구체적인 약점 설명 (50자 이내)",
-            "severity": "Critical|High|Medium|Low 중 하나",
-            "evidence": "리뷰에서 {competitor_name}에 대한 불만 문장 직접 인용"
-        }}
-    ],
-    "opportunity_keywords": [
-        {{
-            "keyword": "우리가 활용할 수 있는 마케팅 키워드",
-            "description": "이 키워드로 어떻게 차별화할 수 있는지",
-            "priority": 1-10 점수
-        }}
-    ],
-    "summary": "전체 분석 요약 (100자 이내)"
-}}
-
-약점은 최대 5개, 기회 키워드는 최대 3개까지만 추출하세요.
-{competitor_name}에 대한 실제 불만만 포함하고, 타 병원에 대한 언급은 무시하세요.
-약점을 찾을 수 없으면 빈 배열([])을 반환하세요."""
-
-            try:
-                result = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
-
-                if not result:
-                    print(f"[AI] {competitor_name} JSON 생성 실패")
-                    result = {'weaknesses': [], 'opportunity_keywords': [], 'summary': ''}
-
-                # 약점 저장
-                for w in result.get('weaknesses', []):
-                    weakness_data = {
-                        'competitor_name': competitor_name,
-                        'weakness_type': w.get('type', '기타'),
-                        'description': w.get('description', ''),
-                        'severity': w.get('severity', 'Medium'),
-                        'evidence': w.get('evidence', ''),
-                        'opportunity_keywords': '',
-                        'source_url': ''
-                    }
-                    all_weaknesses.append(weakness_data)
-
-                    cursor.execute("""
-                        INSERT INTO competitor_weaknesses
-                        (competitor_name, weakness_type, description, severity, evidence, opportunity_keywords, source_url)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        weakness_data['competitor_name'],
-                        weakness_data['weakness_type'],
-                        weakness_data['description'],
-                        weakness_data['severity'],
-                        weakness_data['evidence'],
-                        weakness_data['opportunity_keywords'],
-                        weakness_data['source_url']
-                    ))
-
-                # 기회 키워드 저장
-                for kw in result.get('opportunity_keywords', []):
-                    keyword = kw.get('keyword', '')
-                    if keyword:
-                        all_opportunity_keywords.append(kw)
-                        try:
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO opportunity_keywords
-                                (keyword, weakness_type, opportunity_description, priority_score, status)
-                                VALUES (?, ?, ?, ?, 'pending')
-                            """, (
-                                keyword,
-                                competitor_name,
-                                kw.get('description', ''),
-                                kw.get('priority', 5)
-                            ))
-                        except sqlite3.Error as e:
-                            print(f"[DB] opportunity_keywords 삽입 실패: {e}")
-
-                print(f"[Gemini] {competitor_name} 분석 완료: {len(result.get('weaknesses', []))}개 약점")
-
-            except Exception as e:
-                print(f"[Gemini] {competitor_name} 분석 오류: {e}")
-                continue
-
-        conn.commit()
-        conn.close()
-
-        # 유형별 통계
-        type_counts = {}
-        for w in all_weaknesses:
-            t = w['weakness_type']
-            type_counts[t] = type_counts.get(t, 0) + 1
-
-        return {
-            'status': 'success',
-            'message': f'{len(all_weaknesses)}개 약점, {len(all_opportunity_keywords)}개 기회 키워드 분석 완료',
-            'competitors_analyzed': len(competitors_reviews),
-            'weaknesses_found': len(all_weaknesses),
-            'opportunity_keywords_found': len(all_opportunity_keywords),
-            'by_type': type_counts
-        }
-
+        return await asyncio.to_thread(_analyze_reviews_for_weaknesses_sync)
     except HTTPException:
         raise
     except Exception as e:
@@ -739,13 +762,6 @@ async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # [Phase 4.0] 경쟁사 약점 기반 콘텐츠 아웃라인 자동 생성

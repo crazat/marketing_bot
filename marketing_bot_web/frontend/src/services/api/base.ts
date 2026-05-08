@@ -2,7 +2,7 @@
  * API 기본 설정 - axios 인스턴스, 타입 정의, 헬퍼 함수
  */
 
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { parseApiError } from '@/utils/errorMessages'
 
 // 개발 환경에서만 로그 출력
@@ -447,10 +447,99 @@ export const longRunningApi = axios.create({
   timeout: 300000, // 5분
 })
 
+const API_KEY_STORAGE_KEY = 'marketing_bot_api_key'
+
+type ApiRequestConfigWithRetry = InternalAxiosRequestConfig & {
+  _apiKeyRetry?: boolean
+}
+
+export function getConfiguredApiKey(): string | null {
+  if (typeof window !== 'undefined') {
+    const storedKey = window.localStorage.getItem(API_KEY_STORAGE_KEY)
+    if (storedKey) return storedKey
+  }
+  const envKey = import.meta.env.VITE_MARKETING_BOT_API_KEY as string | undefined
+  return envKey || null
+}
+
+export function setConfiguredApiKey(apiKey: string | null): void {
+  if (typeof window === 'undefined') return
+  if (apiKey && apiKey.trim()) {
+    window.localStorage.setItem(API_KEY_STORAGE_KEY, apiKey.trim())
+  } else {
+    window.localStorage.removeItem(API_KEY_STORAGE_KEY)
+  }
+}
+
+export function getApiAuthHeaders(): Record<string, string> {
+  const apiKey = getConfiguredApiKey()
+  return apiKey ? { 'X-API-Key': apiKey } : {}
+}
+
+export function withApiKeyQuery(url: string): string {
+  const apiKey = getConfiguredApiKey()
+  if (!apiKey) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}api_key=${encodeURIComponent(apiKey)}`
+}
+
+function attachApiKey(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+  const apiKey = getConfiguredApiKey()
+  if (apiKey) {
+    config.headers = config.headers ?? {}
+    ;(config.headers as Record<string, string>)['X-API-Key'] = apiKey
+  }
+  return config
+}
+
+function promptForApiKey(status?: number): string | null {
+  if (typeof window === 'undefined') return null
+  const current = getConfiguredApiKey() ?? ''
+  const message =
+    status === 403
+      ? 'API key is invalid. Enter a valid Marketing Bot API key.'
+      : 'Enter the Marketing Bot API key.'
+  const apiKey = window.prompt(message, current)
+  if (!apiKey || !apiKey.trim()) return null
+  setConfiguredApiKey(apiKey)
+  return apiKey.trim()
+}
+
+async function retryWithApiKeyPrompt(
+  error: AxiosError<{ detail?: string; message?: string }>,
+  client: AxiosInstance,
+) {
+  const status = error.response?.status
+  const originalRequest = error.config as ApiRequestConfigWithRetry | undefined
+
+  if (
+    typeof window === 'undefined' ||
+    !originalRequest ||
+    originalRequest._apiKeyRetry ||
+    (status !== 401 && status !== 403)
+  ) {
+    return null
+  }
+
+  const apiKey = promptForApiKey(status)
+  if (!apiKey) return null
+
+  originalRequest._apiKeyRetry = true
+  originalRequest.headers = originalRequest.headers ?? {}
+  ;(originalRequest.headers as Record<string, string>)['X-API-Key'] = apiKey
+  return client.request(originalRequest)
+}
+
+api.interceptors.request.use(attachApiKey)
+longRunningApi.interceptors.request.use(attachApiKey)
+
 // longRunningApi에도 동일한 인터셉터 적용
 longRunningApi.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<{ detail?: string; message?: string }>) => {
+  async (error: AxiosError<{ detail?: string; message?: string }>) => {
+    const retryResponse = await retryWithApiKeyPrompt(error, longRunningApi)
+    if (retryResponse) return retryResponse
+
     const parsedError = parseApiError(error)
 
     const apiError: ApiError = {
@@ -546,7 +635,10 @@ function notifyAuthFailure(status: number) {
 // 응답 인터셉터 - 에러 처리
 api.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<{ detail?: string; message?: string }>) => {
+  async (error: AxiosError<{ detail?: string; message?: string }>) => {
+    const retryResponse = await retryWithApiKeyPrompt(error, api)
+    if (retryResponse) return retryResponse
+
     const parsedError = parseApiError(error)
     const status = parsedError.statusCode ?? error.response?.status
 

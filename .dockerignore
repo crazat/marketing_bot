@@ -1,0 +1,12 @@
+.env
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+logs
+marketing_bot_web/backend.log
+marketing_bot_web/frontend.log

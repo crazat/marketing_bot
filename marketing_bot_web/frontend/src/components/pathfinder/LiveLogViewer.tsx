@@ -8,6 +8,7 @@ import {
 } from '@/hooks/useWebSocket'
 import Button from '@/components/ui/Button'
 import { Trash2 } from 'lucide-react'
+import { getApiAuthHeaders } from '@/services/api/base'
 
 interface LiveLogViewerProps {
   maxLines?: number
@@ -26,7 +27,9 @@ export default function LiveLogViewer({ maxLines = 200 }: LiveLogViewerProps) {
   const { data: initialData, refetch } = useQuery({
     queryKey: ['pathfinder-live-status'],
     queryFn: async () => {
-      const res = await fetch('/api/pathfinder/live-status')
+      const res = await fetch('/api/pathfinder/live-status', {
+        headers: getApiAuthHeaders(),
+      })
       if (!res.ok) throw new Error('Failed to fetch live status')
       return res.json()
     },

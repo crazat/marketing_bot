@@ -1,5 +1,19 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-08 Memory: Web/API Stability Hardening Baseline
+
+- Current verified baseline:
+  - `python -m pytest -q` in `marketing_bot_web/backend` -> 56 passed, 1 warning.
+  - `python -m pytest tests -q` from repo root -> 156 passed, 1 skipped, 1 warning.
+  - Frontend `npm run typecheck` and `npm run build` pass.
+  - `python -m compileall marketing_bot_web\backend db\database.py` passes.
+- Config API writes are guarded by a process-local lock, normalized/deduplicated, backed up with microsecond filenames, and persisted through atomic JSON replacement. Keep backup restore filename validation.
+- Backup/restore/VACUUM/retention operations run off the FastAPI event loop via `asyncio.to_thread` and share a backup operation lock. Do not add direct DB file overwrites.
+- Long-running UI-triggered scripts should use `services/process_jobs.py` so duplicate jobs are rejected, process trees can be stopped, timeouts are enforced, and old completed jobs are pruned.
+- WebSocket clients carry API keys through `withApiKeyQuery`; reconnects must stop on unmount and auth close code 1008. Server broadcasts use send timeouts and stale-connection cleanup.
+- Service worker must never cache `/api/*`; navigation is network-first and asset requests should not fall back to `index.html`.
+- Production frontend must not bake admin API keys into JS. The browser stores the operator-provided key in `localStorage` as `marketing_bot_api_key`.
+
 ## 2026-05-06 Memory: Pathfinder/Viral Hunter Reliability Baseline
 
 - Latest Pathfinder Legion run records keyword lineage as first-seen/last-seen:

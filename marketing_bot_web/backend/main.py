@@ -28,6 +28,31 @@ project_root = str(Path(__file__).parent.parent.parent)  # 프로젝트 루트
 backend_dir = str(Path(__file__).parent)  # backend 디렉토리
 sys.path.insert(0, project_root)
 
+
+def load_environment_files() -> None:
+    """Load local .env files before settings and auth read os.environ."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+
+    candidates = [
+        Path(project_root) / ".env",
+        Path(__file__).parent.parent / ".env",
+        Path.cwd() / ".env",
+    ]
+    seen = set()
+    for env_path in candidates:
+        resolved = env_path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+
+
+load_environment_files()
+
 # 루트 모듈 먼저 import (utils 충돌 방지)
 from utils import ConfigManager, logger
 from history_manager import HistoryManager
@@ -54,6 +79,9 @@ except ImportError:
 
 # 그 후 backend 경로 추가 (백엔드 services용)
 sys.path.insert(0, backend_dir)
+
+from backend_utils.sqlite_safety import install_sqlite_safety
+install_sqlite_safety()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Lifespan 이벤트 (startup/shutdown)
@@ -183,7 +211,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-API-Key"],
     max_age=600,  # 프리플라이트 캐시 10분
 )
@@ -195,7 +223,7 @@ app.add_middleware(
 # 참고: 기존 라우터와의 호환성 문제로 비활성화. 새 라우터는 success_response() 사용 권장
 
 # [Phase 8 / C1] API 인증 미들웨어 - 민감 엔드포인트 보호
-from middleware.auth import APIKeyMiddleware
+from middleware.auth import APIKeyMiddleware, api_auth_enabled, validate_api_key_value
 # [C1] Fail-closed: MARKETING_BOT_API_KEY 미설정 시 경고 로그 + 미들웨어는 동작(요청은 500 반환)
 # DISABLE_API_AUTH는 로컬 개발 편의용 — 프로덕션에서는 사용 금지
 _api_auth_enabled = os.getenv("DISABLE_API_AUTH", "false").lower() != "true"
@@ -303,6 +331,13 @@ from services.websocket_manager import ws_manager
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 엔드포인트 (실시간 업데이트용)"""
+    if api_auth_enabled():
+        api_key = websocket.query_params.get("api_key") or websocket.headers.get("X-API-Key")
+        ok, _, _ = validate_api_key_value(api_key)
+        if not ok:
+            await websocket.close(code=1008)
+            return
+
     await ws_manager.connect(websocket)
 
     try:
@@ -396,6 +431,7 @@ async def periodic_hud_update():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 import subprocess
+from services.process_jobs import popen_process_group_kwargs
 
 # 스케줄 정의 (hud.py와 동일)
 CHRONOS_SCHEDULE = [
@@ -528,7 +564,8 @@ def run_scheduled_module(cmd_key: str):
                 cwd=project_root,
                 stdout=f,
                 stderr=subprocess.STDOUT,
-                shell=False
+                shell=False,
+                **popen_process_group_kwargs(),
             )
         logger.info(f"✅ {cmd_key} 모듈 실행 완료 (로그: {log_file})")
     except Exception as e:

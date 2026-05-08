@@ -260,7 +260,7 @@ async def mark_all_as_read() -> Dict[str, Any]:
     })
 
 
-@router.delete("/{notification_id}")
+@router.delete("/{notification_id:int}")
 @handle_exceptions
 async def delete_notification(notification_id: int) -> Dict[str, Any]:
     """

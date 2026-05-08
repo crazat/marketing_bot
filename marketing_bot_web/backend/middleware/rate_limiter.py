@@ -8,6 +8,8 @@ Rate Limiter Middleware
 - 슬라이딩 윈도우 알고리즘
 """
 
+import ipaddress
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -50,10 +52,11 @@ class RateLimiter:
         )
         # 경로별 규칙
         self._rules: Dict[str, RateLimitRule] = {}
-        # 기본 규칙
-        self._default_rule = RateLimitRule(requests=100, window=60)  # 분당 100회
-        # 스레드 안전성
+        # Default rule: 100 requests per minute.
+        self._default_rule = RateLimitRule(requests=100, window=60)
         self._lock = threading.Lock()
+        self._last_cleanup = 0.0
+        self._cleanup_interval = 60
 
     def set_rule(self, path_prefix: str, rule: RateLimitRule):
         """특정 경로에 대한 규칙 설정"""
@@ -91,6 +94,10 @@ class RateLimiter:
         window_start = now - rule.window
 
         with self._lock:
+            if now - self._last_cleanup >= self._cleanup_interval:
+                self._cleanup_expired_locked(now)
+                self._last_cleanup = now
+
             record = self._records[client_ip][path]
 
             # 윈도우 내 요청만 유지
@@ -117,6 +124,28 @@ class RateLimiter:
             info["remaining"] = remaining - 1
 
             return True, info
+
+    def _cleanup_expired_locked(self, now: float) -> None:
+        """Drop expired timestamps while the caller holds self._lock."""
+        ips_to_remove = []
+
+        for ip, paths in self._records.items():
+            paths_to_remove = []
+            for path, record in paths.items():
+                rule = self.get_rule(path)
+                cutoff = now - rule.window
+                record.timestamps = [ts for ts in record.timestamps if ts > cutoff]
+                if not record.timestamps:
+                    paths_to_remove.append(path)
+
+            for path in paths_to_remove:
+                del paths[path]
+
+            if not paths:
+                ips_to_remove.append(ip)
+
+        for ip in ips_to_remove:
+            del self._records[ip]
 
     def cleanup(self, max_age: int = 3600):
         """오래된 기록 정리"""
@@ -214,20 +243,36 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
     def _get_client_ip(self, request: Request) -> str:
         """클라이언트 IP 추출"""
-        # 프록시 뒤에 있는 경우
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        if self._trust_proxy_headers():
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                client_ip = self._normalize_ip(forwarded.split(",")[0].strip())
+                if client_ip:
+                    return client_ip
 
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
+            real_ip = request.headers.get("X-Real-IP")
+            if real_ip:
+                client_ip = self._normalize_ip(real_ip.strip())
+                if client_ip:
+                    return client_ip
 
         # 직접 연결
         if request.client:
-            return request.client.host
+            return self._normalize_ip(request.client.host) or request.client.host
 
         return "unknown"
+
+    @staticmethod
+    def _trust_proxy_headers() -> bool:
+        value = os.getenv("MARKETING_BOT_TRUST_PROXY_HEADERS", "false").lower()
+        return value in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_ip(value: str) -> Optional[str]:
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
 
 
 def configure_rate_limits():

@@ -1168,7 +1168,7 @@ async def get_naver_leads(
                 pass
 
 
-@router.patch("/{lead_id}")
+@router.patch("/{lead_id:int}")
 async def update_lead(lead_id: int, update_data: LeadUpdate) -> Dict[str, str]:
     """
     리드 상태 업데이트

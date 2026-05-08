@@ -10,6 +10,7 @@
  *   <p>{text}{isStreaming && '...'}</p>
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { withApiKeyQuery } from '@/services/api/base'
 
 export interface AIStreamOptions {
   prompt: string
@@ -35,7 +36,7 @@ function buildUrl(opts: AIStreamOptions): string {
   if (opts.systemPrompt) params.set('system_prompt', opts.systemPrompt)
   if (opts.temperature !== undefined) params.set('temperature', String(opts.temperature))
   if (opts.maxTokens !== undefined) params.set('max_tokens', String(opts.maxTokens))
-  return `${API_BASE}?${params.toString()}`
+  return withApiKeyQuery(`${API_BASE}?${params.toString()}`)
 }
 
 export function useAIStream(): AIStreamState {

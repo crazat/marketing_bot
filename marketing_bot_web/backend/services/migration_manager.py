@@ -13,12 +13,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, List, Dict, Any, Optional
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 # 프로젝트 루트 경로
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-DB_PATH = PROJECT_ROOT / 'db' / 'marketing_data.db'
+DB_PATH = Path(
+    os.getenv('MARKETING_BOT_DB_PATH')
+    or os.getenv('APP_DB_PATH')
+    or PROJECT_ROOT / 'db' / 'marketing_data.db'
+)
 
 
 class Migration:

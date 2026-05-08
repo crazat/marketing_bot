@@ -16,6 +16,7 @@ import subprocess
 import json
 import sqlite3
 import logging
+from datetime import datetime
 
 # 로거 설정
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ from core_services.sql_builder import validate_table_name, get_table_columns, se
 from backend_utils.error_handlers import handle_exceptions
 from backend_utils.cache import cached, invalidate_cache
 from schemas.response import success_response, error_response
+from config.app_settings import get_settings
+from services.process_jobs import ProcessAlreadyRunning, process_job_manager
 
 router = APIRouter()
 
@@ -680,7 +683,7 @@ async def export_all_keywords(
 async def run_pathfinder(
     request: PathfinderRequest,
     background_tasks: BackgroundTasks
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Pathfinder 실행 (백그라운드)
 
@@ -689,8 +692,6 @@ async def run_pathfinder(
     ⚠️ 주의: 이 엔드포인트는 실험적입니다.
     안정적인 실행을 위해서는 터미널에서 직접 실행하는 것을 권장합니다.
     """
-    import asyncio
-
     try:
         script_name = "pathfinder_v3_complete.py" if request.mode == PathfinderMode.TOTAL_WAR else "pathfinder_v3_legion.py"
         script_path = os.path.join(parent_dir, script_name)
@@ -702,61 +703,38 @@ async def run_pathfinder(
                 detail=f"스크립트를 찾을 수 없습니다: {script_path}\n\n터미널에서 직접 실행하세요:\npython {script_name} --save-db"
             )
 
-        cmd = ["python", script_path]
+        cmd = [sys.executable, script_path]
         if request.mode == PathfinderMode.LEGION:
             cmd.extend(["--target", str(request.target)])
         if request.save_db:
             cmd.append("--save-db")
 
         # 로그 파일 경로
-        log_path = os.path.join(parent_dir, "pathfinder_run.log")
-
-        # [안정성 개선] 비동기 백그라운드 실행
-        async def run_pathfinder_async():
-            from datetime import datetime
-            try:
-                with open(log_path, 'w', encoding='utf-8') as log_file:
-                    log_file.write(f"=== Pathfinder 실행 시작 ===\n")
-                    log_file.write(f"명령어: {' '.join(cmd)}\n")
-                    log_file.write(f"시작 시간: {datetime.now().isoformat()}\n\n")
-
-                # 비동기 subprocess 생성
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=parent_dir,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-
-                # 출력을 실시간으로 로그 파일에 기록
-                with open(log_path, 'a', encoding='utf-8') as log_file:
-                    while True:
-                        line = await process.stdout.readline()
-                        if not line:
-                            break
-                        log_file.write(line.decode('utf-8', errors='replace'))
-                        log_file.flush()
-
-                    # 프로세스 완료 대기
-                    return_code = await process.wait()
-                    log_file.write(f"\n\n=== 실행 완료 (exit code: {return_code}) ===\n")
-                    log_file.write(f"종료 시간: {datetime.now().isoformat()}\n")
-
-            except Exception as e:
-                with open(log_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write(f"\n\n=== 에러 발생 ===\n{str(e)}\n")
-
-        # 백그라운드 태스크로 비동기 함수 실행
-        asyncio.create_task(run_pathfinder_async())
+        log_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(parent_dir, "logs", f"pathfinder_{request.mode.value}_{log_stamp}.log")
+        job = process_job_manager.start(
+            key="pathfinder:run",
+            cmd=cmd,
+            cwd=parent_dir,
+            timeout_seconds=get_settings().subprocess_timeout,
+            log_file=log_path,
+        )
 
         return {
             "status": "started",
-            "message": f"⚠️ 백그라운드 실행 시작됨\n\n안정적인 실행을 위해 터미널 사용을 권장합니다:\npython {script_name} --save-db\n\n로그: {log_path}",
+            "message": "Pathfinder 백그라운드 실행이 시작되었습니다",
             "mode": request.mode.value,
             "log_file": log_path,
-            "recommended_command": f"python {script_name} --save-db"
+            "job_id": job["job_id"],
+            "job": job,
         }
 
+    except ProcessAlreadyRunning as e:
+        return {
+            "status": "already_running",
+            "message": "Pathfinder 작업이 이미 실행 중입니다",
+            "job": e.job.snapshot(),
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1701,7 +1679,7 @@ async def start_incremental_scan(
 
         # 증분 스캔 명령어 구성
         cmd = [
-            "python", script_path,
+            sys.executable, script_path,
             "--save-db",
             "--max-per-category", str(request.max_per_category),
             "--incremental"  # 증분 모드 플래그
@@ -1710,16 +1688,29 @@ async def start_incremental_scan(
         if request.categories:
             cmd.extend(["--categories", ",".join(request.categories)])
 
-        background_tasks.add_task(subprocess.run, cmd, cwd=parent_dir)
+        job = process_job_manager.start(
+            key="pathfinder:run",
+            cmd=cmd,
+            cwd=parent_dir,
+            timeout_seconds=get_settings().subprocess_timeout,
+        )
 
         return {
             'status': 'started',
             'message': f'증분 스캔 시작 ({len(categories_to_scan)}개 카테고리)',
             'categories_to_scan': categories_to_scan[:10],  # 상위 10개만 표시
             'total_categories': len(categories_to_scan),
-            'max_per_category': request.max_per_category
+            'max_per_category': request.max_per_category,
+            'job_id': job["job_id"],
+            'job': job,
         }
 
+    except ProcessAlreadyRunning as e:
+        return {
+            'status': 'already_running',
+            'message': '증분 스캔이 이미 실행 중입니다',
+            'job': e.job.snapshot(),
+        }
     except HTTPException:
         raise
     except Exception as e:

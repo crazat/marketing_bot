@@ -161,10 +161,16 @@ marketing_bot_web/
 백엔드에서 `.env` 파일 또는 환경 변수로 설정:
 
 ```env
+MARKETING_BOT_API_KEY=your_shared_admin_key
 GEMINI_API_KEY=your_api_key
 NAVER_CLIENT_ID=your_client_id
 NAVER_CLIENT_SECRET=your_client_secret
 ```
+
+The backend loads `../.env` in Docker and local runs. The frontend asks for
+`MARKETING_BOT_API_KEY` on the first protected API response and stores it in
+browser localStorage as `marketing_bot_api_key`; do not bake admin keys into the
+production JavaScript bundle unless you intentionally accept that exposure.
 
 ### 코드 스타일
 

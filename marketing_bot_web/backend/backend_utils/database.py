@@ -25,12 +25,12 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
     [Phase 1 - 성능/안정성] 연결에 WAL 모드 및 동시성 설정 적용
 
     - WAL 모드: 동시 읽기/쓰기 가능
-    - busy_timeout: 락 대기 시간 (5초)
+    - busy_timeout: 락 대기 시간 (10초)
     - synchronous=NORMAL: 성능과 안정성 균형
     """
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=5000")  # 5초 대기
+    conn.execute("PRAGMA busy_timeout=10000")  # 10초 대기
     conn.execute("PRAGMA cache_size=-8000")   # 8MB 캐시
 
 

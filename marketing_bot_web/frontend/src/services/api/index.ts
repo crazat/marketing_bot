@@ -1,14 +1,14 @@
 /**
- * API 모듈 통합 내보내기
+ * API 紐⑤뱢 ?듯빀 ?대낫?닿린
  *
- * 하위 호환성을 위해 모든 API와 타입을 여기서 재내보내기합니다.
- * 새 코드에서는 개별 모듈에서 직접 import하는 것을 권장합니다.
+ * ?섏쐞 ?명솚?깆쓣 ?꾪빐 紐⑤뱺 API? ??낆쓣 ?ш린???щ궡蹂대궡湲고빀?덈떎.
+ * ??肄붾뱶?먯꽌??媛쒕퀎 紐⑤뱢?먯꽌 吏곸젒 import?섎뒗 寃껋쓣 沅뚯옣?⑸땲??
  *
  * @example
- * // 레거시 방식 (하위 호환)
+ * // ?덇굅??諛⑹떇 (?섏쐞 ?명솚)
  * import { hudApi, viralApi, LeadStats } from '@/services/api'
  *
- * // 권장 방식
+ * // 沅뚯옣 諛⑹떇
  * import { hudApi } from '@/services/api/hud'
  * import { viralApi } from '@/services/api/viral'
  * import type { LeadStats } from '@/services/api/base'
@@ -17,6 +17,10 @@
 // Base - axios instance, types, helpers
 export {
   api,
+  getApiAuthHeaders,
+  getConfiguredApiKey,
+  setConfiguredApiKey,
+  withApiKeyQuery,
   extractResponseData,
   devLog,
   devError,
@@ -50,6 +54,8 @@ export {
   type QAListResponse,
   type ApiError,
 } from './base'
+
+import { withApiKeyQuery } from './base'
 
 // HUD API
 export { hudApi } from './hud'
@@ -115,7 +121,7 @@ export {
   type TikTokScanOptions,
 } from './tiktok'
 
-// Intelligence API (Phase B - AI 지능화)
+// Intelligence API (Phase B - AI 吏?ν솕)
 export {
   intelligenceApi,
   type DashboardInsights,
@@ -128,7 +134,7 @@ export {
   type AnalysisSummary,
 } from './intelligence'
 
-// Automation API (Phase C - 자동화 확장)
+// Automation API (Phase C - ?먮룞???뺤옣)
 export {
   automationApi,
   type LeadClassificationResult,
@@ -141,7 +147,7 @@ export {
   type DailyAutomationResult,
 } from './automation'
 
-// Feedback API (Phase D - 피드백 루프)
+// Feedback API (Phase D - ?쇰뱶諛?猷⑦봽)
 export {
   feedbackApi,
   type ConversionAnalysis,
@@ -164,17 +170,17 @@ export {
   type MigrationHistory,
 } from './migration'
 
-// WebSocket 연결
+// WebSocket connection
 export const createWebSocket = (onMessage: (data: unknown) => void) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
+  const ws = new WebSocket(withApiKeyQuery(`${protocol}//${window.location.host}/ws`))
 
   const isDev = import.meta.env.DEV
   const devLog = (...args: unknown[]) => isDev && console.log(...args)
   const devError = (...args: unknown[]) => isDev && console.error(...args)
 
   ws.onopen = () => {
-    devLog('WebSocket 연결됨')
+    devLog('WebSocket connected')
     const pingInterval = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send('ping')
@@ -188,21 +194,22 @@ export const createWebSocket = (onMessage: (data: unknown) => void) => {
 
   ws.onmessage = (event) => {
     try {
+      if (event.data === 'pong') return
       const data = JSON.parse(event.data)
       onMessage(data)
     } catch (error) {
-      devError('WebSocket 메시지 파싱 오류:', error)
+      devError('WebSocket message parse error:', error)
     }
   }
 
   ws.onerror = (error) => {
-    devError('WebSocket 오류:', error)
+    devError('WebSocket error:', error)
   }
 
   return ws
 }
 
-// Query Config (React Query 설정 프리셋)
+// Query Config (React Query ?ㅼ젙 ?꾨━??
 export {
   QUERY_CONFIGS,
   DOMAIN_CONFIGS,
@@ -212,7 +219,7 @@ export {
   useVisibilityBasedRefetch,
 } from './queryConfig'
 
-// Data Intelligence API (Phase 9 - 정보 수집 고도화)
+// Data Intelligence API (Phase 9 - ?뺣낫 ?섏쭛 怨좊룄??
 export {
   dataIntelligenceApi,
   type SmartPlaceStat,
@@ -233,5 +240,5 @@ export {
   type IntelligenceDashboard,
 } from './dataIntelligence'
 
-// 기본 export
+// 湲곕낯 export
 export { api as default } from './base'

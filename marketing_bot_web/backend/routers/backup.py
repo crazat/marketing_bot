@@ -7,6 +7,8 @@ import re
 import shutil
 import sqlite3
 import sys
+import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -22,6 +24,7 @@ from db.database import DatabaseManager
 from db_backup import DatabaseBackup
 
 router = APIRouter()
+_BACKUP_OPERATION_LOCK = threading.RLock()
 
 
 def _safe_backup_path(backup: DatabaseBackup, filename: str) -> Path:
@@ -43,6 +46,90 @@ def _safe_backup_path(backup: DatabaseBackup, filename: str) -> Path:
     if not backup_path.exists():
         raise HTTPException(status_code=404, detail="Backup file not found")
     return backup_path
+
+
+def _create_backup_sync() -> Dict[str, Any]:
+    with _BACKUP_OPERATION_LOCK:
+        backup = DatabaseBackup()
+        return backup.run_daily_maintenance()
+
+
+def _check_integrity_sync() -> bool:
+    with _BACKUP_OPERATION_LOCK:
+        backup = DatabaseBackup()
+        return backup.check_integrity()
+
+
+def _vacuum_database_sync() -> Dict[str, Any]:
+    with _BACKUP_OPERATION_LOCK:
+        backup = DatabaseBackup()
+        before_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
+        success = backup.vacuum_database()
+        after_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
+        return {
+            "success": success,
+            "message": "VACUUM completed" if success else "VACUUM failed",
+            "before_size_mb": round(before_size / (1024 * 1024), 2),
+            "after_size_mb": round(after_size / (1024 * 1024), 2),
+            "saved_kb": round((before_size - after_size) / 1024, 1),
+        }
+
+
+def _restore_backup_sync(filename: str) -> Dict[str, Any]:
+    with _BACKUP_OPERATION_LOCK:
+        backup = DatabaseBackup()
+        backup_path = _safe_backup_path(backup, filename)
+
+        if not backup.check_file_integrity(str(backup_path)):
+            raise HTTPException(status_code=400, detail="Backup file integrity check failed")
+
+        try:
+            pre_restore_path = backup.create_backup(prefix="pre_restore")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {exc}") from exc
+
+        source = None
+        target = None
+        try:
+            source = sqlite3.connect(str(backup_path), timeout=30.0)
+            target = sqlite3.connect(backup.db_path, timeout=30.0)
+            source.backup(target)
+            target.commit()
+        except Exception as exc:
+            shutil.copy2(pre_restore_path, backup.db_path)
+            raise HTTPException(status_code=500, detail=f"Restore failed and was rolled back: {exc}") from exc
+        finally:
+            if target is not None:
+                target.close()
+            if source is not None:
+                source.close()
+
+        if not backup.check_integrity():
+            shutil.copy2(pre_restore_path, backup.db_path)
+            raise HTTPException(status_code=500, detail="Restored database failed integrity check and was rolled back")
+
+        return {
+            "success": True,
+            "message": f'Restored from backup "{filename}"',
+            "pre_restore_backup": Path(pre_restore_path).name,
+            "restored_at": datetime.now().isoformat(),
+        }
+
+
+def _preview_retention_cleanup_sync() -> Dict[str, Any]:
+    from services.data_retention import get_table_sizes, run_retention_cleanup
+
+    db = DatabaseManager()
+    preview = run_retention_cleanup(db.db_path, dry_run=True)
+    preview["table_sizes"] = get_table_sizes(db.db_path)[:15]
+    return preview
+
+
+def _execute_retention_cleanup_sync() -> Dict[str, Any]:
+    from services.data_retention import run_full_maintenance
+
+    db = DatabaseManager()
+    return run_full_maintenance(db.db_path)
 
 
 @router.get("/status")
@@ -78,8 +165,7 @@ async def get_backup_status() -> Dict[str, Any]:
 @handle_exceptions
 async def create_backup(background_tasks: BackgroundTasks) -> Dict[str, Any]:
     del background_tasks
-    backup = DatabaseBackup()
-    result = backup.run_daily_maintenance()
+    result = await asyncio.to_thread(_create_backup_sync)
 
     return {
         "status": "success",
@@ -114,8 +200,7 @@ async def list_backups() -> List[Dict[str, Any]]:
 @router.post("/integrity-check")
 @handle_exceptions
 async def check_integrity() -> Dict[str, Any]:
-    backup = DatabaseBackup()
-    is_ok = backup.check_integrity()
+    is_ok = await asyncio.to_thread(_check_integrity_sync)
     return {
         "integrity_ok": is_ok,
         "message": "Database integrity check passed" if is_ok else "Database integrity check failed",
@@ -126,68 +211,19 @@ async def check_integrity() -> Dict[str, Any]:
 @router.post("/vacuum")
 @handle_exceptions
 async def vacuum_database() -> Dict[str, Any]:
-    backup = DatabaseBackup()
-    before_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
-    success = backup.vacuum_database()
-    after_size = os.path.getsize(backup.db_path) if os.path.exists(backup.db_path) else 0
-
-    return {
-        "success": success,
-        "message": "VACUUM completed" if success else "VACUUM failed",
-        "before_size_mb": round(before_size / (1024 * 1024), 2),
-        "after_size_mb": round(after_size / (1024 * 1024), 2),
-        "saved_kb": round((before_size - after_size) / 1024, 1),
-    }
+    return await asyncio.to_thread(_vacuum_database_sync)
 
 
 @router.post("/restore/{filename}")
 @handle_exceptions
 async def restore_backup(filename: str) -> Dict[str, Any]:
-    backup = DatabaseBackup()
-    backup_path = _safe_backup_path(backup, filename)
-
-    if not backup.check_file_integrity(str(backup_path)):
-        raise HTTPException(status_code=400, detail="Backup file integrity check failed")
-
-    try:
-        pre_restore_path = backup.create_backup(prefix="pre_restore")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {exc}") from exc
-
-    try:
-        source = sqlite3.connect(str(backup_path), timeout=30.0)
-        target = sqlite3.connect(backup.db_path, timeout=30.0)
-        try:
-            source.backup(target)
-            target.commit()
-        finally:
-            target.close()
-            source.close()
-    except Exception as exc:
-        shutil.copy2(pre_restore_path, backup.db_path)
-        raise HTTPException(status_code=500, detail=f"Restore failed and was rolled back: {exc}") from exc
-
-    if not backup.check_integrity():
-        shutil.copy2(pre_restore_path, backup.db_path)
-        raise HTTPException(status_code=500, detail="Restored database failed integrity check and was rolled back")
-
-    return {
-        "success": True,
-        "message": f'Restored from backup "{filename}"',
-        "pre_restore_backup": Path(pre_restore_path).name,
-        "restored_at": datetime.now().isoformat(),
-    }
+    return await asyncio.to_thread(_restore_backup_sync, filename)
 
 
 @router.get("/retention/preview")
 async def preview_retention_cleanup():
     try:
-        from services.data_retention import get_table_sizes, run_retention_cleanup
-
-        db = DatabaseManager()
-        preview = run_retention_cleanup(db.db_path, dry_run=True)
-        preview["table_sizes"] = get_table_sizes(db.db_path)[:15]
-        return preview
+        return await asyncio.to_thread(_preview_retention_cleanup_sync)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -195,10 +231,7 @@ async def preview_retention_cleanup():
 @router.post("/retention/execute")
 async def execute_retention_cleanup():
     try:
-        from services.data_retention import run_full_maintenance
-
-        db = DatabaseManager()
-        return run_full_maintenance(db.db_path)
+        return await asyncio.to_thread(_execute_retention_cleanup_sync)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

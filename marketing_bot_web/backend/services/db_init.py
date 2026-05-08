@@ -15,6 +15,7 @@ import os
 import sqlite3
 from pathlib import Path
 import logging
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,32 @@ DB_PATH = Path(
     or os.getenv('APP_DB_PATH')
     or PROJECT_ROOT / 'db' / 'marketing_data.db'
 )
+SCHEMA_LOCK_FILE = DB_PATH.parent / ".schema_init.lock"
+
+
+@contextmanager
+def _schema_init_lock():
+    """프로세스 여러 개가 동시에 앱을 띄울 때 스키마 변경을 직렬화한다."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(SCHEMA_LOCK_FILE, "w", encoding="utf-8")
+    try:
+        try:
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        except ImportError:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            try:
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            except ImportError:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
 
 
 def ensure_all_tables():
@@ -36,6 +63,11 @@ def ensure_all_tables():
     1. 테이블 생성 (CREATE TABLE IF NOT EXISTS)
     2. 마이그레이션 실행 (ALTER TABLE 등 스키마 변경)
     """
+    with _schema_init_lock():
+        _ensure_all_tables_locked()
+
+
+def _ensure_all_tables_locked():
     logger.info("📦 DB 스키마 초기화 시작...")
 
     # 마이그레이션 시스템 실행
@@ -51,7 +83,10 @@ def ensure_all_tables():
     except Exception as e:
         logger.warning(f"마이그레이션 실행 중 오류 (계속 진행): {e}")
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     cursor = conn.cursor()
 
     try:

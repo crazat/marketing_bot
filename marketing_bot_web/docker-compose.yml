@@ -1,16 +1,20 @@
-version: '3.8'
-
 services:
   backend:
-    build: ./backend
+    build:
+      context: ..
+      dockerfile: marketing_bot_web/backend/Dockerfile
     container_name: marketing-bot-backend
+    env_file:
+      - ../.env
     ports:
       - "8000:8000"
     volumes:
       - ../db:/app/db
+      - ../logs:/app/logs
       - ../.env:/app/.env
     environment:
       - PYTHONUNBUFFERED=1
+      - MARKETING_BOT_TRUST_PROXY_HEADERS=true
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:

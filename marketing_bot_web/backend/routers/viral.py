@@ -71,6 +71,8 @@ from db.database import DatabaseManager
 from viral_hunter import ViralHunter, ViralTarget
 from backend_utils.error_handlers import handle_exceptions
 from schemas.response import success_response, error_response
+from config.app_settings import get_settings
+from services.process_jobs import ProcessAlreadyRunning, process_job_manager
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 router = APIRouter()
@@ -2825,39 +2827,63 @@ async def scan_viral_targets(
         if naver_platforms:
             script_path = os.path.join(parent_dir, "viral_hunter.py")
             if os.path.exists(script_path):
-                cmd = ["python", script_path, "--scan"]
+                cmd = [sys.executable, script_path, "--scan"]
                 if config.fresh:
                     cmd.append("--fresh")
                 if not config.use_latest_legion:
                     cmd.append("--legacy-keywords")
                 if config.max_results > 0:
                     cmd.extend(["--limit-keywords", str(min(config.max_results, 5000))])
-                commands.append(cmd)
+                commands.append(("viral_scan:naver", cmd))
 
         # 2. 멀티 플랫폼 (viral_hunter_multi_platform.py)
         if multi_platforms:
             multi_script = os.path.join(parent_dir, "viral_hunter_multi_platform.py")
             if os.path.exists(multi_script):
-                cmd = ["python", multi_script, "--platforms", ",".join(multi_platforms)]
+                cmd = [sys.executable, multi_script, "--platforms", ",".join(multi_platforms)]
                 if config.max_results > 0:
                     cmd.extend(["--max-results", str(config.max_results)])
-                commands.append(cmd)
+                commands.append(("viral_scan:multi", cmd))
 
         if not commands:
             raise HTTPException(status_code=400, detail="실행할 스캔 스크립트가 없습니다")
 
-        # 백그라운드에서 모든 스크립트 실행
-        for cmd in commands:
-            background_tasks.add_task(subprocess.run, cmd, cwd=parent_dir)
+        running = []
+        for key, _cmd in commands:
+            active = process_job_manager.get_active(key)
+            if active:
+                running.append(active)
+        if running:
+            return {
+                'status': 'already_running',
+                'message': 'Viral Hunter 스캔이 이미 실행 중입니다',
+                'jobs': running,
+            }
+
+        jobs = []
+        for key, cmd in commands:
+            jobs.append(process_job_manager.start(
+                key=key,
+                cmd=cmd,
+                cwd=parent_dir,
+                timeout_seconds=get_settings().subprocess_timeout,
+            ))
 
         return {
             'status': 'started',
             'message': f'Viral Hunter 스캔 시작 (플랫폼: {len(config.platforms)}개, 최대: {config.max_results if config.max_results > 0 else "무제한"})',
             'platforms': config.platforms,
             'max_results': config.max_results,
-            'scripts': len(commands)
+            'scripts': len(commands),
+            'jobs': jobs,
         }
 
+    except ProcessAlreadyRunning as e:
+        return {
+            'status': 'already_running',
+            'message': 'Viral Hunter 스캔이 이미 실행 중입니다',
+            'job': e.job.snapshot(),
+        }
     except HTTPException:
         raise
     except Exception as e:

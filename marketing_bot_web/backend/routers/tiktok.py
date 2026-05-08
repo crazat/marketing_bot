@@ -8,7 +8,7 @@ TikTok Analysis API
 - 경쟁사 틱톡 모니터링
 """
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 import sys
@@ -27,6 +27,8 @@ sys.path.insert(0, backend_dir)
 from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
 from schemas.response import success_response, error_response
+from config.app_settings import get_settings
+from services.process_jobs import ProcessAlreadyRunning, process_job_manager
 
 router = APIRouter()
 
@@ -369,8 +371,7 @@ class ScanRequest(BaseModel):
 @router.post("/scan")
 @handle_exceptions
 async def start_tiktok_scan(
-    request: ScanRequest,
-    background_tasks: BackgroundTasks
+    request: ScanRequest
 ) -> Dict[str, Any]:
     """
     틱톡 스캔 시작
@@ -381,29 +382,31 @@ async def start_tiktok_scan(
     Returns:
         스캔 시작 결과
     """
-    def run_scan():
-        """백그라운드 스캔 작업"""
-        try:
-            # 스크래퍼 모듈 임포트 시도
-            scraper_path = Path(parent_dir) / 'scrapers'
-            sys.path.insert(0, str(scraper_path))
+    scraper_path = Path(parent_dir) / 'scrapers'
+    tiktok_scraper_path = scraper_path / 'scraper_tiktok_monitor.py'
+    if not tiktok_scraper_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="TikTok scraper not found: scraper_tiktok_monitor.py",
+        )
 
-            # scraper_tiktok_monitor.py가 있으면 실행
-            tiktok_scraper_path = scraper_path / 'scraper_tiktok_monitor.py'
-            if tiktok_scraper_path.exists():
-                import subprocess
-                cmd = ['python', str(tiktok_scraper_path)]
-                subprocess.Popen(cmd, cwd=parent_dir)
-            else:
-                print("[TikTok] 스크래퍼가 없습니다: scraper_tiktok_monitor.py")
-
-        except Exception as e:
-            print(f"[TikTok] 스캔 오류: {e}")
-
-    background_tasks.add_task(run_scan)
+    try:
+        job = process_job_manager.start(
+            key="tiktok:scan",
+            cmd=[sys.executable, str(tiktok_scraper_path)],
+            cwd=parent_dir,
+            timeout_seconds=get_settings().subprocess_timeout,
+        )
+        status = "started"
+    except ProcessAlreadyRunning as exc:
+        job = exc.job_snapshot
+        status = "already_running"
 
     return success_response({
-        'message': '틱톡 스캔이 시작되었습니다',
+        'message': 'TikTok scan started' if status == 'started' else 'TikTok scan is already running',
+        'status': status,
+        'job_id': job['job_id'],
+        'job': job,
         'scan_config': {
             'accounts': len(request.accounts),
             'hashtags': len(request.hashtags),

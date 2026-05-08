@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
+import { getApiAuthHeaders } from '@/services/api/base'
 
 type SchedulerSummary = {
   total_jobs?: number
@@ -26,8 +27,12 @@ type ApplyRecommendationsResponse = {
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...getApiAuthHeaders(),
+      ...(init?.headers ?? {}),
+    },
   })
 
   if (!response.ok) {

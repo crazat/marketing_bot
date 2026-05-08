@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target, Clock } from 'lucide-react'
-import { pathfinderApi, battleApi, viralApi, leadsApi } from '@/services/api'
+import { pathfinderApi, battleApi, viralApi, leadsApi, hudApi } from '@/services/api'
 import { useRecentItems, type RecentItem } from '@/hooks/useRecentItems'
 
 interface CommandItem {
@@ -189,7 +189,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       action: async () => {
         setIsLoading(true)
         try {
-          await fetch('/api/battle/scan', { method: 'POST' })
+          await hudApi.executeMission('place_sniper')
           alert('순위 스캔이 시작되었습니다.')
         } catch {
           alert('스캔 실행에 실패했습니다.')
@@ -208,7 +208,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       action: async () => {
         setIsLoading(true)
         try {
-          await fetch('/api/pathfinder/scan', { method: 'POST' })
+          await pathfinderApi.runPathfinder('legion', 500, true)
           alert('키워드 발굴이 시작되었습니다.')
         } catch {
           alert('발굴 실행에 실패했습니다.')
