@@ -211,6 +211,63 @@ def test_legion_expansion_keyword_selection_caps_category_bias():
     assert selected == ["diet 0", "diet 1", "skin 0", "skin 1"]
 
 
+def test_legion_quality_guard_caps_low_confidence_kei_outlier():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+
+    grade, kei_grade, flags = legion._apply_quality_grade_guard(
+        grade="S",
+        kei_grade="S",
+        search_volume=30,
+        document_count=1,
+        verification_score=45.0,
+        source_signal_count=1,
+        has_real_volume=True,
+    )
+
+    assert grade == "B"
+    assert kei_grade == "B"
+    assert "low_document_count" in flags
+
+
+def test_legion_diversity_rerank_promotes_underrepresented_aspect():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    results = [
+        KeywordResult(
+            keyword=f"diet keyword {i}",
+            search_volume=100,
+            difficulty=20,
+            opportunity=80,
+            grade="B",
+            category="diet",
+            priority_score=100 - i,
+            source="round4_intent",
+            search_intent="commercial",
+            verification_score=70,
+        )
+        for i in range(6)
+    ]
+    results.append(
+        KeywordResult(
+            keyword="scar keyword",
+            search_volume=80,
+            difficulty=25,
+            opportunity=75,
+            grade="B",
+            category="skin",
+            priority_score=92,
+            source="round8_ai",
+            search_intent="informational",
+            verification_score=70,
+        )
+    )
+
+    reranked = legion._rerank_for_diversity(results)
+    top_four_categories = [result.category for result in reranked[:4]]
+
+    assert "skin" in top_four_categories
+    assert reranked[0].diversity_rank == 1
+
+
 def test_ai_target_split_reserves_minority_category_floor():
     skin = "\ud53c\ubd80"
     asymmetry = "\ube44\ub300\uce6d/\uad50\uc815"
@@ -255,6 +312,68 @@ def test_ai_target_split_reserves_minority_category_floor():
     assert selected_urls.isdisjoint(rest_urls)
 
 
+def test_naver_multi_sort_collect_tracks_exposure_metadata():
+    searcher = viral_hunter.NaverUnifiedSearch(delay=0, use_cache=False)
+
+    def fake_fetch(platform, keyword, display=100, start=1, sort="date"):
+        if start > 1:
+            return []
+        if sort == "sim":
+            return [
+                {
+                    "link": "https://example.com/shared",
+                    "title": "Shared top result",
+                    "description": "청주 상담 질문 본문",
+                    "postdate": "20260511",
+                    "cafename": "test cafe",
+                },
+                {
+                    "link": "https://example.com/sim-only",
+                    "title": "Similarity only result",
+                    "description": "청주 추천 질문 본문",
+                    "postdate": "20260510",
+                    "cafename": "test cafe",
+                },
+            ]
+        if sort == "date":
+            return [
+                {
+                    "link": "https://example.com/shared",
+                    "title": "Shared recent result",
+                    "description": "청주 상담 질문 최신 본문",
+                    "postdate": "20260511",
+                    "cafename": "test cafe",
+                }
+            ]
+        return []
+
+    searcher._api_fetch = fake_fetch
+    targets = searcher._api_collect_multi_sort("cafe", "청주 상담", 10)
+    by_url = {target.url: target for target in targets}
+
+    assert set(by_url) == {"https://example.com/shared", "https://example.com/sim-only"}
+    shared = by_url["https://example.com/shared"]
+    assert shared.search_rank == 1
+    assert shared.search_sort == "sim"
+    assert shared.exposure_score > 0
+    assert shared.sort_appearances == ["sim", "date"]
+
+
+def test_zero_result_streak_does_not_sleep_without_api_errors(monkeypatch):
+    searcher = viral_hunter.NaverUnifiedSearch(delay=0, use_cache=False)
+
+    def fail_if_called(seconds):
+        raise AssertionError(f"unexpected sleep: {seconds}")
+
+    monkeypatch.setattr(viral_hunter.time, "sleep", fail_if_called)
+
+    for _ in range(10):
+        searcher._check_blocking_status(0)
+
+    assert searcher._consecutive_empty_results == 0
+    assert searcher._is_blocked is False
+
+
 def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral.db"))
 
@@ -280,6 +399,48 @@ def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_pat
 
     assert row == (2, 2, "pending")
     assert db.get_existing_viral_urls([target["url"], "https://example.com/new"]) == {target["url"]}
+
+
+def test_viral_target_insert_persists_exposure_and_ai_metadata(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_quality.db"))
+
+    target = {
+        "id": "quality",
+        "platform": "cafe",
+        "url": "https://example.com/quality",
+        "title": "quality target",
+        "matched_keywords": ["청주 상담"],
+        "comment_status": "pending",
+        "priority_score": 101,
+        "exposure_score": 120,
+        "workability_score": 95,
+        "conversion_fit_score": 88,
+        "score_breakdown": {"exposure": 120, "workability": 95},
+        "search_sort": "sim",
+        "search_rank": 3,
+        "search_start": 1,
+        "sort_appearances": ["sim", "date"],
+        "ai_reviewed": True,
+        "ai_infiltration_score": 91,
+        "ai_post_type": "consultation",
+        "ai_competitor": True,
+        "ai_competitor_name": "competitor clinic",
+    }
+    assert db.insert_viral_target(target)
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT exposure_score, workability_score, conversion_fit_score,
+                   search_sort, search_rank, ai_reviewed, ai_infiltration_score,
+                   ai_post_type, ai_competitor, ai_competitor_name
+            FROM viral_targets
+            WHERE url = ?
+            """,
+            (target["url"],),
+        ).fetchone()
+
+    assert row == (120.0, 95.0, 88.0, "sim", 3, 1, 91.0, "consultation", 1, "competitor clinic")
 
 
 def test_duplicate_upsert_handles_legacy_null_scan_count_and_preserves_scores(tmp_path):

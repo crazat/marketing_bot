@@ -364,7 +364,21 @@ class MigrationManager:
             ("attribution_last", "TEXT"),
             ("conversion_score", "REAL DEFAULT 0"),
             ("days_to_convert", "INTEGER"),
-            ("touchpoints_count", "INTEGER DEFAULT 0")
+            ("touchpoints_count", "INTEGER DEFAULT 0"),
+            ("exposure_score", "REAL DEFAULT 0"),
+            ("workability_score", "REAL DEFAULT 0"),
+            ("conversion_fit_score", "REAL DEFAULT 0"),
+            ("score_breakdown", "TEXT DEFAULT '{}'"),
+            ("search_sort", "TEXT"),
+            ("search_rank", "INTEGER DEFAULT 0"),
+            ("search_start", "INTEGER DEFAULT 0"),
+            ("search_total", "INTEGER DEFAULT 0"),
+            ("sort_appearances", "TEXT DEFAULT '[]'"),
+            ("ai_reviewed", "INTEGER DEFAULT 0"),
+            ("ai_infiltration_score", "REAL DEFAULT 0"),
+            ("ai_post_type", "TEXT"),
+            ("ai_competitor", "INTEGER DEFAULT 0"),
+            ("ai_competitor_name", "TEXT"),
         ]
 
         for col_name, col_type in columns_to_add:

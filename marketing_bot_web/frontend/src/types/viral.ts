@@ -27,6 +27,20 @@ export interface ViralTargetData {
   matched_keyword_kei?: number | null
   matched_keyword_priority?: number | null
   matched_keyword_category?: string | null
+  exposure_score?: number | null
+  workability_score?: number | null
+  conversion_fit_score?: number | null
+  score_breakdown?: Record<string, number> | string | null
+  search_sort?: string | null
+  search_rank?: number | null
+  search_start?: number | null
+  search_total?: number | null
+  sort_appearances?: string[] | string | null
+  ai_reviewed?: number | boolean | null
+  ai_infiltration_score?: number | null
+  ai_post_type?: string | null
+  ai_competitor?: number | boolean | null
+  ai_competitor_name?: string | null
   // [2026-04-27] AI 분류 결과
   ai_ad_label?: string | null  // '자연_질문' | '광고' | '광고성_후기톤' | '기타_노이즈'
   ai_ad_confidence?: number | null  // 0.0 ~ 1.0
@@ -74,6 +88,7 @@ export interface ViralFilterState {
   comment_status?: string
   min_scan_count?: number
   min_score?: number
+  min_exposure?: number
   commentable_only?: boolean
   search?: string
   sort?: string

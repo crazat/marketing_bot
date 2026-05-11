@@ -445,6 +445,8 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
             className="px-3 py-1.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
           >
             <option value="priority">우선순위</option>
+            <option value="exposure">노출점수</option>
+            <option value="workability">작업적합</option>
             <option value="date">최신순</option>
             <option value="scan_count">재발견순</option>
           </select>

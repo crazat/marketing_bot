@@ -1088,6 +1088,7 @@ async def get_viral_targets(
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
+    min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
@@ -1134,6 +1135,7 @@ async def get_viral_targets(
             "post_region": post_region,
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
+            "min_exposure": min_exposure,
             "commentable_only": commentable_only,
         }.items() if v is not None}
 
@@ -1479,6 +1481,7 @@ async def count_viral_targets(
     work_scope: Optional[str] = Query(default="latest_legion", description="latest_legion|core|all_backlog"),
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
+    min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
@@ -1503,6 +1506,7 @@ async def count_viral_targets(
             "post_region": post_region,
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
+            "min_exposure": min_exposure,
             "commentable_only": commentable_only,
         }
         filters = {k: v for k, v in filters.items() if v is not None}

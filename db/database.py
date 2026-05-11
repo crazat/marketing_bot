@@ -504,7 +504,21 @@ class DatabaseManager:
                 matched_keyword_grade TEXT,
                 matched_keyword_kei REAL DEFAULT 0,
                 matched_keyword_priority REAL DEFAULT 0,
-                matched_keyword_category TEXT
+                matched_keyword_category TEXT,
+                exposure_score REAL DEFAULT 0,
+                workability_score REAL DEFAULT 0,
+                conversion_fit_score REAL DEFAULT 0,
+                score_breakdown TEXT DEFAULT '{}',
+                search_sort TEXT,
+                search_rank INTEGER DEFAULT 0,
+                search_start INTEGER DEFAULT 0,
+                search_total INTEGER DEFAULT 0,
+                sort_appearances TEXT DEFAULT '[]',
+                ai_reviewed INTEGER DEFAULT 0,
+                ai_infiltration_score REAL DEFAULT 0,
+                ai_post_type TEXT,
+                ai_competitor INTEGER DEFAULT 0,
+                ai_competitor_name TEXT
             )
         ''')
 
@@ -590,9 +604,33 @@ class DatabaseManager:
             ("matched_keyword_kei", "REAL DEFAULT 0"),
             ("matched_keyword_priority", "REAL DEFAULT 0"),
             ("matched_keyword_category", "TEXT"),
+            ("exposure_score", "REAL DEFAULT 0"),
+            ("workability_score", "REAL DEFAULT 0"),
+            ("conversion_fit_score", "REAL DEFAULT 0"),
+            ("score_breakdown", "TEXT DEFAULT '{}'"),
+            ("search_sort", "TEXT"),
+            ("search_rank", "INTEGER DEFAULT 0"),
+            ("search_start", "INTEGER DEFAULT 0"),
+            ("search_total", "INTEGER DEFAULT 0"),
+            ("sort_appearances", "TEXT DEFAULT '[]'"),
+            ("ai_reviewed", "INTEGER DEFAULT 0"),
+            ("ai_infiltration_score", "REAL DEFAULT 0"),
+            ("ai_post_type", "TEXT"),
+            ("ai_competitor", "INTEGER DEFAULT 0"),
+            ("ai_competitor_name", "TEXT"),
         ]:
             try:
                 self.cursor.execute(f"ALTER TABLE viral_targets ADD COLUMN {col} {ctype}")
+            except sqlite3.OperationalError:
+                pass
+
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_viral_exposure_score ON viral_targets(exposure_score DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_viral_search_rank ON viral_targets(search_sort, search_rank)",
+            "CREATE INDEX IF NOT EXISTS idx_viral_ai_reviewed ON viral_targets(ai_reviewed, comment_status)",
+        ]:
+            try:
+                self.cursor.execute(idx_sql)
             except sqlite3.OperationalError:
                 pass
 
@@ -3173,6 +3211,8 @@ class DatabaseManager:
             # 첫 매칭 키워드를 단일 컬럼에도 저장 (UI/필터 편의용)
             kws_list = target_data.get('matched_keywords') or []
             matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
+            score_breakdown_json = json.dumps(target_data.get('score_breakdown') or {}, ensure_ascii=False)
+            sort_appearances_json = json.dumps(target_data.get('sort_appearances') or [], ensure_ascii=False)
 
             self.cursor.execute('''
                 INSERT INTO viral_targets
@@ -3180,8 +3220,12 @@ class DatabaseManager:
                  category, is_commentable, comment_status, generated_comment,
                  priority_score, discovered_at, first_seen_at, last_scanned_at, scan_count, content_hash,
                  author, posted_at, source_scan_run_id, matched_keyword_grade,
-                 matched_keyword_kei, matched_keyword_priority, matched_keyword_category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 matched_keyword_kei, matched_keyword_priority, matched_keyword_category,
+                 like_count, comment_count, view_count, exposure_score, workability_score,
+                 conversion_fit_score, score_breakdown, search_sort, search_rank, search_start,
+                 search_total, sort_appearances, ai_reviewed, ai_infiltration_score,
+                 ai_post_type, ai_competitor, ai_competitor_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title = excluded.title,
                     content_preview = COALESCE(NULLIF(excluded.content_preview, ''), viral_targets.content_preview),
@@ -3207,7 +3251,29 @@ class DatabaseManager:
                     matched_keyword_grade = COALESCE(excluded.matched_keyword_grade, viral_targets.matched_keyword_grade),
                     matched_keyword_kei = COALESCE(NULLIF(excluded.matched_keyword_kei, 0), viral_targets.matched_keyword_kei),
                     matched_keyword_priority = COALESCE(NULLIF(excluded.matched_keyword_priority, 0), viral_targets.matched_keyword_priority),
-                    matched_keyword_category = COALESCE(excluded.matched_keyword_category, viral_targets.matched_keyword_category)
+                    matched_keyword_category = COALESCE(excluded.matched_keyword_category, viral_targets.matched_keyword_category),
+                    like_count = MAX(COALESCE(viral_targets.like_count, 0), COALESCE(excluded.like_count, 0)),
+                    comment_count = MAX(COALESCE(viral_targets.comment_count, 0), COALESCE(excluded.comment_count, 0)),
+                    view_count = MAX(COALESCE(viral_targets.view_count, 0), COALESCE(excluded.view_count, 0)),
+                    exposure_score = MAX(COALESCE(viral_targets.exposure_score, 0), COALESCE(excluded.exposure_score, 0)),
+                    workability_score = COALESCE(NULLIF(excluded.workability_score, 0), viral_targets.workability_score),
+                    conversion_fit_score = COALESCE(NULLIF(excluded.conversion_fit_score, 0), viral_targets.conversion_fit_score),
+                    score_breakdown = COALESCE(NULLIF(excluded.score_breakdown, '{}'), viral_targets.score_breakdown),
+                    search_sort = COALESCE(NULLIF(excluded.search_sort, ''), viral_targets.search_sort),
+                    search_rank = CASE
+                        WHEN COALESCE(excluded.search_rank, 0) > 0
+                         AND (COALESCE(viral_targets.search_rank, 0) = 0 OR excluded.search_rank < viral_targets.search_rank)
+                            THEN excluded.search_rank
+                        ELSE viral_targets.search_rank
+                    END,
+                    search_start = COALESCE(NULLIF(excluded.search_start, 0), viral_targets.search_start),
+                    search_total = MAX(COALESCE(viral_targets.search_total, 0), COALESCE(excluded.search_total, 0)),
+                    sort_appearances = COALESCE(NULLIF(excluded.sort_appearances, '[]'), viral_targets.sort_appearances),
+                    ai_reviewed = MAX(COALESCE(viral_targets.ai_reviewed, 0), COALESCE(excluded.ai_reviewed, 0)),
+                    ai_infiltration_score = MAX(COALESCE(viral_targets.ai_infiltration_score, 0), COALESCE(excluded.ai_infiltration_score, 0)),
+                    ai_post_type = COALESCE(NULLIF(excluded.ai_post_type, ''), viral_targets.ai_post_type),
+                    ai_competitor = MAX(COALESCE(viral_targets.ai_competitor, 0), COALESCE(excluded.ai_competitor, 0)),
+                    ai_competitor_name = COALESCE(NULLIF(excluded.ai_competitor_name, ''), viral_targets.ai_competitor_name)
             ''', (
                 target_data.get('id'),
                 target_data.get('platform'),
@@ -3233,6 +3299,23 @@ class DatabaseManager:
                 target_data.get('matched_keyword_kei', 0),
                 target_data.get('matched_keyword_priority', 0),
                 target_data.get('matched_keyword_category') or None,
+                target_data.get('like_count', 0) or 0,
+                target_data.get('comment_count', 0) or 0,
+                target_data.get('view_count', 0) or 0,
+                target_data.get('exposure_score', 0) or 0,
+                target_data.get('workability_score', 0) or 0,
+                target_data.get('conversion_fit_score', 0) or 0,
+                score_breakdown_json,
+                target_data.get('search_sort') or None,
+                target_data.get('search_rank', 0) or 0,
+                target_data.get('search_start', 0) or 0,
+                target_data.get('search_total', 0) or 0,
+                sort_appearances_json,
+                1 if target_data.get('ai_reviewed') else 0,
+                target_data.get('ai_infiltration_score', 0) or 0,
+                target_data.get('ai_post_type') or None,
+                1 if target_data.get('ai_competitor') else 0,
+                target_data.get('ai_competitor_name') or None,
             ))
             # [Phase 11 D1] matched_keywords 정규화 저장 (viral_target_keywords)
             try:
@@ -3318,6 +3401,8 @@ class DatabaseManager:
                 matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
                 author = target_data.get('author') or None
                 posted_at = target_data.get('date_str') or target_data.get('posted_at') or None
+                score_breakdown_json = json.dumps(target_data.get('score_breakdown') or {}, ensure_ascii=False)
+                sort_appearances_json = json.dumps(target_data.get('sort_appearances') or [], ensure_ascii=False)
                 content_hash = self.calculate_content_hash(
                     url=url,
                     title=target_data.get('title', ''),
@@ -3342,7 +3427,29 @@ class DatabaseManager:
                         matched_keyword_grade = COALESCE(?, matched_keyword_grade),
                         matched_keyword_kei = COALESCE(NULLIF(?, 0), matched_keyword_kei),
                         matched_keyword_priority = COALESCE(NULLIF(?, 0), matched_keyword_priority),
-                        matched_keyword_category = COALESCE(?, matched_keyword_category)
+                        matched_keyword_category = COALESCE(?, matched_keyword_category),
+                        like_count = MAX(COALESCE(like_count, 0), COALESCE(?, 0)),
+                        comment_count = MAX(COALESCE(comment_count, 0), COALESCE(?, 0)),
+                        view_count = MAX(COALESCE(view_count, 0), COALESCE(?, 0)),
+                        exposure_score = MAX(COALESCE(exposure_score, 0), COALESCE(?, 0)),
+                        workability_score = COALESCE(NULLIF(?, 0), workability_score),
+                        conversion_fit_score = COALESCE(NULLIF(?, 0), conversion_fit_score),
+                        score_breakdown = COALESCE(NULLIF(?, '{}'), score_breakdown),
+                        search_sort = COALESCE(NULLIF(?, ''), search_sort),
+                        search_rank = CASE
+                            WHEN COALESCE(?, 0) > 0
+                             AND (COALESCE(search_rank, 0) = 0 OR ? < search_rank)
+                                THEN ?
+                            ELSE search_rank
+                        END,
+                        search_start = COALESCE(NULLIF(?, 0), search_start),
+                        search_total = MAX(COALESCE(search_total, 0), COALESCE(?, 0)),
+                        sort_appearances = COALESCE(NULLIF(?, '[]'), sort_appearances),
+                        ai_reviewed = MAX(COALESCE(ai_reviewed, 0), COALESCE(?, 0)),
+                        ai_infiltration_score = MAX(COALESCE(ai_infiltration_score, 0), COALESCE(?, 0)),
+                        ai_post_type = COALESCE(NULLIF(?, ''), ai_post_type),
+                        ai_competitor = MAX(COALESCE(ai_competitor, 0), COALESCE(?, 0)),
+                        ai_competitor_name = COALESCE(NULLIF(?, ''), ai_competitor_name)
                     WHERE url = ?
                     ''',
                     (
@@ -3361,6 +3468,25 @@ class DatabaseManager:
                         target_data.get('matched_keyword_kei'),
                         target_data.get('matched_keyword_priority'),
                         target_data.get('matched_keyword_category') or None,
+                        target_data.get('like_count', 0) or 0,
+                        target_data.get('comment_count', 0) or 0,
+                        target_data.get('view_count', 0) or 0,
+                        target_data.get('exposure_score', 0) or 0,
+                        target_data.get('workability_score', 0) or 0,
+                        target_data.get('conversion_fit_score', 0) or 0,
+                        score_breakdown_json,
+                        target_data.get('search_sort') or '',
+                        target_data.get('search_rank', 0) or 0,
+                        target_data.get('search_rank', 0) or 0,
+                        target_data.get('search_rank', 0) or 0,
+                        target_data.get('search_start', 0) or 0,
+                        target_data.get('search_total', 0) or 0,
+                        sort_appearances_json,
+                        1 if target_data.get('ai_reviewed') else 0,
+                        target_data.get('ai_infiltration_score', 0) or 0,
+                        target_data.get('ai_post_type') or '',
+                        1 if target_data.get('ai_competitor') else 0,
+                        target_data.get('ai_competitor_name') or '',
                         url,
                     ),
                 )
@@ -3451,6 +3577,10 @@ class DatabaseManager:
                 query += ' ORDER BY discovered_at DESC'
             elif sort == 'scan_count':
                 query += ' ORDER BY scan_count DESC, discovered_at DESC'
+            elif sort == 'exposure':
+                query += ' ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC'
+            elif sort == 'workability':
+                query += ' ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC'
             else:  # 기본: priority
                 query += ' ORDER BY priority_score DESC, discovered_at DESC'
 

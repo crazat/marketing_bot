@@ -150,6 +150,11 @@ class ViralTargetRepository:
             "category", "is_commentable", "comment_status", "generated_comment",
             "priority_score", "last_scanned_at", "scan_count",
             "first_response_at", "response_time_hours", "posted_at",
+            "exposure_score", "workability_score", "conversion_fit_score",
+            "score_breakdown", "search_sort", "search_rank", "search_start",
+            "search_total", "sort_appearances", "ai_reviewed",
+            "ai_infiltration_score", "ai_post_type", "ai_competitor",
+            "ai_competitor_name",
         }
         safe_changes = {k: v for k, v in changes.items() if k in ALLOWED}
         if not safe_changes:
@@ -211,6 +216,13 @@ class ViralTargetRepository:
                 d["matched_keywords"] = json.loads(mk)
             except Exception:
                 d["matched_keywords"] = []
+        for json_field, fallback in (("score_breakdown", {}), ("sort_appearances", [])):
+            value = d.get(json_field)
+            if isinstance(value, str):
+                try:
+                    d[json_field] = json.loads(value)
+                except Exception:
+                    d[json_field] = fallback
         return d
 
     @staticmethod
@@ -279,6 +291,14 @@ class ViralTargetRepository:
             try:
                 clauses.append("COALESCE(priority_score, 0) >= ?")
                 params.append(float(min_score))
+            except (TypeError, ValueError):
+                pass
+
+        min_exposure = filters.get("min_exposure")
+        if min_exposure is not None and not hasattr(min_exposure, "default"):
+            try:
+                clauses.append("COALESCE(exposure_score, 0) >= ?")
+                params.append(float(min_exposure))
             except (TypeError, ValueError):
                 pass
 
@@ -368,6 +388,10 @@ class ViralTargetRepository:
             return "ORDER BY discovered_at DESC"
         if sort == "scan_count":
             return "ORDER BY scan_count DESC, discovered_at DESC"
+        if sort == "exposure":
+            return "ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC"
+        if sort == "workability":
+            return "ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC"
         if sort == "specialty":
             # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
             return ("ORDER BY CASE specialty_match "

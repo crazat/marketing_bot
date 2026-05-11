@@ -23,6 +23,7 @@ except Exception:
 import json
 import time
 import re
+import math
 import hashlib
 import logging
 import argparse
@@ -144,12 +145,29 @@ class ViralTarget:
     priority_score: float = 0.0
     author: str = ""
     date_str: str = ""
+    like_count: int = 0
+    comment_count: int = 0
+    view_count: int = 0
     comment_status: str = "pending"
     source_scan_run_id: int = 0
     matched_keyword_grade: str = ""
     matched_keyword_kei: float = 0.0
     matched_keyword_priority: float = 0.0
     matched_keyword_category: str = ""
+    exposure_score: float = 0.0
+    workability_score: float = 0.0
+    conversion_fit_score: float = 0.0
+    score_breakdown: Dict[str, float] = field(default_factory=dict)
+    search_sort: str = ""
+    search_rank: int = 0
+    search_start: int = 0
+    search_total: int = 0
+    sort_appearances: List[str] = field(default_factory=list)
+    ai_reviewed: bool = False
+    ai_infiltration_score: float = 0.0
+    ai_post_type: str = ""
+    ai_competitor: bool = False
+    ai_competitor_name: str = ""
 
     def __post_init__(self):
         # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
@@ -202,12 +220,29 @@ class ViralTarget:
             'priority_score': self.priority_score,
             'author': self.author,
             'date_str': self.date_str,
+            'like_count': self.like_count,
+            'comment_count': self.comment_count,
+            'view_count': self.view_count,
             'comment_status': self.comment_status,
             'source_scan_run_id': self.source_scan_run_id,
             'matched_keyword_grade': self.matched_keyword_grade,
             'matched_keyword_kei': self.matched_keyword_kei,
             'matched_keyword_priority': self.matched_keyword_priority,
             'matched_keyword_category': self.matched_keyword_category,
+            'exposure_score': self.exposure_score,
+            'workability_score': self.workability_score,
+            'conversion_fit_score': self.conversion_fit_score,
+            'score_breakdown': self.score_breakdown,
+            'search_sort': self.search_sort,
+            'search_rank': self.search_rank,
+            'search_start': self.search_start,
+            'search_total': self.search_total,
+            'sort_appearances': self.sort_appearances,
+            'ai_reviewed': self.ai_reviewed,
+            'ai_infiltration_score': self.ai_infiltration_score,
+            'ai_post_type': self.ai_post_type,
+            'ai_competitor': self.ai_competitor,
+            'ai_competitor_name': self.ai_competitor_name,
         }
 
 
@@ -315,6 +350,16 @@ class NaverUnifiedSearch:
         'blog': 'https://openapi.naver.com/v1/search/blog.json',
         'kin':  'https://openapi.naver.com/v1/search/kin.json',
     }
+    SORT_OPTIONS = {
+        'cafe': ('sim', 'date'),
+        'blog': ('sim', 'date'),
+        'kin': ('sim', 'point', 'date'),
+    }
+    SORT_WEIGHTS = {
+        'sim': 28,
+        'point': 24,
+        'date': 12,
+    }
 
     def __init__(self, delay: float = 0.3, max_retries: int = 3, use_cache: bool = True):
         self.delay = delay
@@ -373,7 +418,7 @@ class NaverUnifiedSearch:
         return _html.unescape(text).strip()
 
     def _api_fetch(self, platform: str, keyword: str, display: int = 100,
-                   start: int = 1) -> List[dict]:
+                   start: int = 1, sort: str = "date") -> List[dict]:
         """공식 API 호출. 실패 시 키 로테이션 + 재시도."""
         if not self.api_keys:
             return []
@@ -381,7 +426,7 @@ class NaverUnifiedSearch:
         if not endpoint:
             return []
 
-        params = {"query": keyword, "display": display, "start": start, "sort": "date"}
+        params = {"query": keyword, "display": display, "start": start, "sort": sort}
         max_attempts = min(len(self.api_keys) + 1, 6)
 
         for attempt in range(max_attempts):
@@ -545,20 +590,29 @@ class NaverUnifiedSearch:
         else:
             self._consecutive_empty_results += 1
 
-            # 🚨 연속 5개 0개 결과: 경고
-            if self._consecutive_empty_results == 5:
-                logger.warning(f"⚠️ 연속 5개 키워드에서 0개 결과 - delay를 {self._adaptive_delay:.1f}초 → {self._adaptive_delay * 2:.1f}초로 증가")
-                self._adaptive_delay *= 2
+            error_rate = self._error_count / max(1, self._request_count)
 
-            # 🚨 연속 10개 0개 결과: 차단 의심
+            if self._consecutive_empty_results == 5:
+                logger.info(
+                    "Naver API returned zero results for 5 consecutive keyword/platform checks; "
+                    "treating this as sparse long-tail demand unless API errors rise."
+                )
+
             elif self._consecutive_empty_results >= 10:
-                self._is_blocked = True
-                logger.error(f"❌ 연속 {self._consecutive_empty_results}개 키워드에서 0개 결과")
-                logger.error(f"   → 네이버 차단 의심! 5분 대기 후 재시도합니다.")
-                time.sleep(300)  # 5분 대기
-                self._is_blocked = False
-                self._consecutive_empty_results = 0
-                self._adaptive_delay = self.delay * 3  # delay 3배 증가
+                if error_rate >= 0.20:
+                    self._is_blocked = True
+                    logger.warning(
+                        "Naver block suspected from zero-result streak plus API errors "
+                        f"(empty={self._consecutive_empty_results}, error_rate={error_rate:.1%})."
+                    )
+                    self._adaptive_delay = max(self._adaptive_delay, self.delay * 3)
+                    self._is_blocked = False
+                else:
+                    logger.info(
+                        "Zero-result streak reached 10 with low API error rate; "
+                        "continuing without long sleep."
+                    )
+                    self._consecutive_empty_results = 0
 
     def _request_with_retry(self, url: str, params: dict) -> Optional[requests.Response]:
         """
@@ -653,7 +707,116 @@ class NaverUnifiedSearch:
             "current_delay": f"{self._adaptive_delay:.1f}초"
         }
 
-    def _api_collect(self, platform: str, keyword: str, max_results: int) -> List[ViralTarget]:
+    def _cache_namespace(self, platform: str) -> str:
+        return f"{platform}:sortmix_v2"
+
+    def _sorts_for_platform(self, platform: str) -> Tuple[str, ...]:
+        return self.SORT_OPTIONS.get(platform, ("date",))
+
+    def _estimate_exposure_score(
+        self,
+        platform: str,
+        rank: int,
+        sort_type: str,
+        appearances: int = 1,
+        view_count: int = 0,
+        like_count: int = 0,
+        comment_count: int = 0,
+    ) -> float:
+        rank = max(1, int(rank or 999))
+        if rank <= 100:
+            rank_score = max(0.0, 82.0 - ((rank - 1) * 0.75))
+        else:
+            rank_score = max(0.0, 15.0 - ((rank - 100) * 0.08))
+
+        sort_bonus = self.SORT_WEIGHTS.get(sort_type, 10)
+        cross_sort_bonus = min(26.0, max(0, appearances - 1) * 13.0)
+        platform_bonus = {
+            'cafe': 8.0,
+            'kin': 6.0,
+            'blog': 4.0,
+            'instagram': 8.0,
+            'tiktok': 8.0,
+            'youtube': 7.0,
+        }.get(platform, 4.0)
+
+        engagement_bonus = (
+            math.log10(max(0, view_count) + 1) * 7.0
+            + math.log10(max(0, like_count) + 1) * 6.0
+            + math.log10(max(0, comment_count) + 1) * 10.0
+        )
+        return round(min(150.0, rank_score + sort_bonus + cross_sort_bonus + platform_bonus + engagement_bonus), 2)
+
+    def _merge_sort_results(self, targets: List[ViralTarget], max_results: int) -> List[ViralTarget]:
+        merged: Dict[str, ViralTarget] = {}
+
+        for target in targets:
+            if not target.url:
+                continue
+            if not target.sort_appearances:
+                target.sort_appearances = [target.search_sort] if target.search_sort else []
+
+            current = merged.get(target.url)
+            if current is None:
+                merged[target.url] = target
+                continue
+
+            for keyword in target.matched_keywords:
+                if keyword not in current.matched_keywords:
+                    current.matched_keywords.append(keyword)
+
+            appearances = list(dict.fromkeys((current.sort_appearances or []) + (target.sort_appearances or [])))
+            current.sort_appearances = appearances
+
+            if target.exposure_score > (current.exposure_score or 0):
+                current.title = target.title or current.title
+                current.content_preview = target.content_preview or current.content_preview
+                current.search_sort = target.search_sort or current.search_sort
+                current.search_rank = target.search_rank or current.search_rank
+                current.search_start = target.search_start or current.search_start
+                current.author = target.author or current.author
+                current.date_str = target.date_str or current.date_str
+
+            best_rank = min(
+                [r for r in [current.search_rank or 0, target.search_rank or 0] if r > 0],
+                default=current.search_rank or target.search_rank or 0,
+            )
+            current.search_rank = best_rank
+            current.exposure_score = max(
+                current.exposure_score or 0,
+                target.exposure_score or 0,
+                self._estimate_exposure_score(
+                    current.platform,
+                    best_rank or 999,
+                    current.search_sort or target.search_sort or "date",
+                    appearances=len(appearances),
+                ),
+            )
+            current.score_breakdown = {
+                **(current.score_breakdown or {}),
+                "exposure": current.exposure_score,
+                "sort_appearances": float(len(appearances)),
+            }
+
+        merged_targets = list(merged.values())
+        merged_targets.sort(
+            key=lambda t: (
+                t.exposure_score or 0,
+                -(t.search_rank or 9999),
+                t.priority_score or 0,
+            ),
+            reverse=True,
+        )
+        return merged_targets[:max_results]
+
+    def _api_collect_multi_sort(self, platform: str, keyword: str, max_results: int) -> List[ViralTarget]:
+        all_targets: List[ViralTarget] = []
+        for sort_type in self._sorts_for_platform(platform):
+            all_targets.extend(self._api_collect(platform, keyword, max_results, sort_type=sort_type))
+        return self._merge_sort_results(all_targets, max_results)
+
+    def _api_collect(self, platform: str, keyword: str, max_results: int,
+                     sort_type: str = "date") -> List[ViralTarget]:
         """공식 API로 N개까지 수집. 페이지당 display=100, start는 1/101/201…"""
         targets: List[ViralTarget] = []
         seen = set()
@@ -666,11 +829,11 @@ class NaverUnifiedSearch:
             fetch_n = min(display, max_results - len(targets), 1001 - start)
             if fetch_n <= 0:
                 break
-            items = self._api_fetch(platform, keyword, display=fetch_n, start=start)
+            items = self._api_fetch(platform, keyword, display=fetch_n, start=start, sort=sort_type)
             if not items:
                 break
 
-            for item in items:
+            for idx, item in enumerate(items):
                 link = item.get('link', '') or ''
                 if not link or link in seen:
                     continue
@@ -687,6 +850,8 @@ class NaverUnifiedSearch:
                     author = ''
 
                 seen.add(link)
+                rank = start + idx
+                exposure_score = self._estimate_exposure_score(platform, rank, sort_type)
                 targets.append(ViralTarget(
                     platform=platform,
                     url=link,
@@ -695,6 +860,12 @@ class NaverUnifiedSearch:
                     matched_keywords=[keyword],
                     author=author,
                     date_str=item.get('postdate', '') or '',
+                    exposure_score=exposure_score,
+                    search_sort=sort_type,
+                    search_rank=rank,
+                    search_start=start,
+                    sort_appearances=[sort_type],
+                    score_breakdown={"exposure": exposure_score},
                 ))
                 if len(targets) >= max_results:
                     break
@@ -716,18 +887,18 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get("cafe", keyword)
+            cached = self.cache.get(self._cache_namespace("cafe"), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Cafe] '{keyword}' 캐시 히트")
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = self._api_collect("cafe", keyword, max_results)
+        targets = self._api_collect_multi_sort("cafe", keyword, max_results)
 
         # 캐시 저장
         if self.use_cache and self.cache and targets:
-            self.cache.set("cafe", keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("cafe"), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Cafe] '{keyword}' -> {len(targets)}개 발견")
@@ -744,17 +915,17 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get("blog", keyword)
+            cached = self.cache.get(self._cache_namespace("blog"), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Blog] '{keyword}' 캐시 히트")
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = self._api_collect("blog", keyword, max_results)
+        targets = self._api_collect_multi_sort("blog", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set("blog", keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("blog"), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Blog] '{keyword}' -> {len(targets)}개 발견")
@@ -771,17 +942,17 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get("kin", keyword)
+            cached = self.cache.get(self._cache_namespace("kin"), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Kin] '{keyword}' 캐시 히트")
                 # id는 property이므로 제거 후 복원
                 return [ViralTarget(**{k: v for k, v in item.items() if k != 'id'}) for item in cached]
 
-        targets = self._api_collect("kin", keyword, max_results)
+        targets = self._api_collect_multi_sort("kin", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set("kin", keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("kin"), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Kin] '{keyword}' -> {len(targets)}개 발견")
@@ -791,12 +962,12 @@ class NaverUnifiedSearch:
         self,
         keyword: str,
         max_per_platform: int = 100,
-        include_blog: bool = False,
+        include_blog: bool = True,
     ) -> List[ViralTarget]:
-        """카페·지식인 통합 검색.
+        """카페·블로그·지식인 통합 검색.
 
         [Q10] blog는 본인 광고 글 비율이 높고 게시 전환율 0.02%로 효율 낮음.
-        명시적으로 include_blog=True 줄 때만 수집. 정보 수집 목적이면 search_blog() 직접 호출.
+        다만 검색 노출 커버리지를 위해 기본 수집하되 플랫폼 가중치는 낮게 둔다.
         """
         all_targets = []
 
@@ -1173,6 +1344,36 @@ class CommentableFilter:
             return True
         return False
 
+    @staticmethod
+    def _fallback_exposure_score(target: ViralTarget) -> float:
+        engagement = (
+            math.log10(max(0, getattr(target, "view_count", 0)) + 1) * 7.0
+            + math.log10(max(0, getattr(target, "like_count", 0)) + 1) * 6.0
+            + math.log10(max(0, getattr(target, "comment_count", 0)) + 1) * 10.0
+        )
+        platform_base = {
+            'cafe': 54.0,
+            'kin': 48.0,
+            'blog': 38.0,
+            'youtube': 55.0,
+            'instagram': 52.0,
+            'tiktok': 52.0,
+            'karrot': 35.0,
+        }.get(target.platform, 35.0)
+        return round(min(150.0, platform_base + engagement), 2)
+
+    @staticmethod
+    def _compose_priority_score(exposure_score: float, workability_score: float, conversion_fit_score: float) -> float:
+        return round(
+            max(0.0, min(
+                150.0,
+                (exposure_score * 0.45)
+                + (workability_score * 0.35)
+                + (conversion_fit_score * 0.20),
+            )),
+            2,
+        )
+
     def filter(self, targets: List[ViralTarget]) -> List[ViralTarget]:
         """
         타겟 필터링 및 우선순위 점수 계산
@@ -1278,7 +1479,8 @@ class CommentableFilter:
                 "예약", "전화", "상담", "문의", "가격", "비용",
                 "방문", "예정", "결정", "선택", "비교"
             ]
-            if any(kw in text for kw in ready_to_act_keywords):
+            ready_to_act_matched = any(kw in text for kw in ready_to_act_keywords)
+            if ready_to_act_matched:
                 score += 15  # 즉시 행동 가능성
                 if "⚡즉시" not in str(tags):
                     tags.append("⚡즉시")
@@ -1312,8 +1514,38 @@ class CommentableFilter:
                 tag_str = " ".join(tags)
                 target.content_preview = f"[{tag_str}] {target.content_preview}"
 
-            # 점수 캡 상향 (100→150, Hot Lead도 구분 가능), 최소 0점
-            target.priority_score = max(0, min(score, 150))
+            # Workability is the operational "can we comment here?" score.
+            target.workability_score = max(0, min(score, 150))
+            if not target.exposure_score:
+                target.exposure_score = self._fallback_exposure_score(target)
+
+            conversion_fit = 0
+            if is_inquiry:
+                conversion_fit += 25
+            if is_health:
+                conversion_fit += 15
+            if hot_lead_matched:
+                conversion_fit += 35
+            if ready_to_act_matched:
+                conversion_fit += 25
+            conversion_fit += min(50, keyword_bonus * 1.25)
+            if target.matched_keyword_grade in {"S", "A"}:
+                conversion_fit += 20
+            target.conversion_fit_score = max(0, min(conversion_fit, 150))
+
+            target.score_breakdown = {
+                **(target.score_breakdown or {}),
+                "exposure": target.exposure_score,
+                "workability": target.workability_score,
+                "conversion_fit": target.conversion_fit_score,
+                "keyword_bonus": float(keyword_bonus),
+                "soft_ad_penalty": float(soft_ad_penalty),
+            }
+            target.priority_score = self._compose_priority_score(
+                target.exposure_score,
+                target.workability_score,
+                target.conversion_fit_score,
+            )
             target.is_commentable = True
             filtered.append(target)
 
@@ -1945,9 +2177,20 @@ POST_ID: {i}
             counter_score = int(counter_match.group(1)) if counter_match else 0
 
             if is_suitable:
+                target.ai_reviewed = True
+                target.ai_infiltration_score = infiltration_score
+                target.ai_post_type = post_type
+                target.ai_competitor = has_competitor
+                target.ai_competitor_name = comp_name if has_competitor else ""
+
                 # 적합한 글: 점수 반영 및 태그 추가
                 bonus = min(infiltration_score // 5, 20)  # 최대 20점 가산
                 target.priority_score = min((target.priority_score or 0) + bonus, 150)
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_infiltration_bonus": float(bonus),
+                    "ai_infiltration_score": float(infiltration_score),
+                }
 
                 # 타입별 태그 추가
                 type_tags = {
@@ -1969,6 +2212,11 @@ POST_ID: {i}
                     # 역공략 점수 가산
                     counter_bonus = min(counter_score // 4, 25)
                     target.priority_score = min((target.priority_score or 0) + counter_bonus, 150)
+                    target.score_breakdown = {
+                        **(target.score_breakdown or {}),
+                        "ai_counter_bonus": float(counter_bonus),
+                        "ai_counter_score": float(counter_score),
+                    }
 
                     if comp_name and comp_name != "N/A" and "⚔️" not in target.content_preview:
                         target.content_preview = f"[⚔️{comp_name}] {target.content_preview}"
@@ -2042,9 +2290,18 @@ POST_ID: {i}
             post_type = type_match.group(1) if type_match else "unknown"
 
             if is_suitable:
+                target.ai_reviewed = True
+                target.ai_infiltration_score = infiltration_score
+                target.ai_post_type = post_type
+
                 # 적합한 글: 점수 반영 및 태그 추가
                 bonus = min(infiltration_score // 5, 20)  # 최대 20점 가산
                 target.priority_score = min((target.priority_score or 0) + bonus, 150)
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_infiltration_bonus": float(bonus),
+                    "ai_infiltration_score": float(infiltration_score),
+                }
 
                 # 타입별 태그 추가
                 type_tags = {
@@ -2357,6 +2614,23 @@ class ViralHunter:
             matched_keyword_kei=d.get('matched_keyword_kei', 0.0) or 0.0,
             matched_keyword_priority=d.get('matched_keyword_priority', 0.0) or 0.0,
             matched_keyword_category=d.get('matched_keyword_category', '') or '',
+            like_count=d.get('like_count', 0) or 0,
+            comment_count=d.get('comment_count', 0) or 0,
+            view_count=d.get('view_count', 0) or 0,
+            exposure_score=d.get('exposure_score', 0.0) or 0.0,
+            workability_score=d.get('workability_score', 0.0) or 0.0,
+            conversion_fit_score=d.get('conversion_fit_score', 0.0) or 0.0,
+            score_breakdown=d.get('score_breakdown') or {},
+            search_sort=d.get('search_sort', '') or '',
+            search_rank=d.get('search_rank', 0) or 0,
+            search_start=d.get('search_start', 0) or 0,
+            search_total=d.get('search_total', 0) or 0,
+            sort_appearances=d.get('sort_appearances') or [],
+            ai_reviewed=bool(d.get('ai_reviewed', False)),
+            ai_infiltration_score=d.get('ai_infiltration_score', 0.0) or 0.0,
+            ai_post_type=d.get('ai_post_type', '') or '',
+            ai_competitor=bool(d.get('ai_competitor', False)),
+            ai_competitor_name=d.get('ai_competitor_name', '') or '',
         )
 
     @staticmethod
@@ -2368,6 +2642,20 @@ class ViralHunter:
                 matched_keywords = json.loads(matched_keywords)
             except Exception:
                 matched_keywords = []
+
+        row_keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+        def row_value(key: str, default=None):
+            return row[key] if key in row_keys else default
+
+        def row_json(key: str, default):
+            value = row_value(key, default)
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except Exception:
+                    return default
+            return value if value is not None else default
 
         return ViralTarget(
             platform=row["platform"] or "",
@@ -2387,6 +2675,23 @@ class ViralHunter:
             matched_keyword_kei=row["matched_keyword_kei"] or 0.0,
             matched_keyword_priority=row["matched_keyword_priority"] or 0.0,
             matched_keyword_category=row["matched_keyword_category"] or "",
+            like_count=row_value("like_count", 0) or 0,
+            comment_count=row_value("comment_count", 0) or 0,
+            view_count=row_value("view_count", 0) or 0,
+            exposure_score=row_value("exposure_score", 0.0) or 0.0,
+            workability_score=row_value("workability_score", 0.0) or 0.0,
+            conversion_fit_score=row_value("conversion_fit_score", 0.0) or 0.0,
+            score_breakdown=row_json("score_breakdown", {}),
+            search_sort=row_value("search_sort", "") or "",
+            search_rank=row_value("search_rank", 0) or 0,
+            search_start=row_value("search_start", 0) or 0,
+            search_total=row_value("search_total", 0) or 0,
+            sort_appearances=row_json("sort_appearances", []),
+            ai_reviewed=bool(row_value("ai_reviewed", 0)),
+            ai_infiltration_score=row_value("ai_infiltration_score", 0.0) or 0.0,
+            ai_post_type=row_value("ai_post_type", "") or "",
+            ai_competitor=bool(row_value("ai_competitor", 0)),
+            ai_competitor_name=row_value("ai_competitor_name", "") or "",
         )
 
     def _load_existing_targets_by_urls(self, urls: List[str]) -> List[ViralTarget]:
@@ -2407,11 +2712,7 @@ class ViralHunter:
                 placeholders = ",".join("?" for _ in chunk)
                 rows = cur.execute(
                     f"""
-                    SELECT platform, url, title, content_preview, matched_keywords,
-                           category, is_commentable, generated_comment, priority_score,
-                           author, posted_at, comment_status, source_scan_run_id,
-                           matched_keyword_grade, matched_keyword_kei,
-                           matched_keyword_priority, matched_keyword_category
+                    SELECT *
                     FROM viral_targets
                     WHERE url IN ({placeholders})
                       AND COALESCE(comment_status, 'pending') != 'needs_ai_retry'
@@ -2426,6 +2727,58 @@ class ViralHunter:
             return []
 
         return [loaded_by_url[u] for u in compact_urls if u in loaded_by_url]
+
+    @staticmethod
+    def _noise_key(text: str) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+        normalized = re.sub(r"[\[\]{}()|:;,.!?~`'\"<>]", "", normalized)
+        return normalized
+
+    def _apply_batch_quality_gate(self, targets: List[ViralTarget]) -> List[ViralTarget]:
+        if not targets:
+            return targets
+
+        title_counts: Dict[str, int] = {}
+        preview_counts: Dict[str, int] = {}
+        for target in targets:
+            title_key = self._noise_key(target.title)
+            if len(title_key) >= 12:
+                title_counts[title_key] = title_counts.get(title_key, 0) + 1
+
+            preview_key = self._noise_key(target.content_preview)[:180]
+            if len(preview_key) >= 80:
+                digest = hashlib.md5(preview_key.encode("utf-8")).hexdigest()
+                preview_counts[digest] = preview_counts.get(digest, 0) + 1
+
+        kept: List[ViralTarget] = []
+        removed = {"title_duplicate": 0, "preview_duplicate": 0}
+        for target in targets:
+            title_key = self._noise_key(target.title)
+            if title_key and title_counts.get(title_key, 0) >= 3:
+                removed["title_duplicate"] += 1
+                continue
+
+            preview_key = self._noise_key(target.content_preview)[:180]
+            if len(preview_key) >= 80:
+                digest = hashlib.md5(preview_key.encode("utf-8")).hexdigest()
+                if preview_counts.get(digest, 0) >= 3:
+                    removed["preview_duplicate"] += 1
+                    continue
+
+            kept.append(target)
+
+        removed_total = len(targets) - len(kept)
+        if removed_total:
+            logger.info(
+                "Batch quality gate removed repeated content: "
+                f"{removed_total} targets "
+                f"(title={removed['title_duplicate']}, preview={removed['preview_duplicate']})"
+            )
+            print(
+                f"   🧹 반복 콘텐츠 게이트: {len(targets)}개 -> {len(kept)}개 "
+                f"(제목중복 {removed['title_duplicate']}, 본문중복 {removed['preview_duplicate']})"
+            )
+        return kept
 
     @staticmethod
     def _urls_for_batch_indices(
@@ -2605,6 +2958,7 @@ class ViralHunter:
         if progress_callback:
             progress_callback("필터링중", len(keywords), len(keywords), f"{len(all_targets)}개 타겟 필터링 중...")
         filtered = self.filter.filter(all_targets)
+        filtered = self._apply_batch_quality_gate(filtered)
 
         # 기존 URL은 scan_count/source_scan_run_id만 갱신하고 AI 판별 전 제외한다.
         if filtered:
@@ -2771,7 +3125,8 @@ class ViralHunter:
                     for i, lead in enumerate(top, 1):
                         platform_icon = {"cafe": "☕", "blog": "📝", "kin": "❓"}.get(lead.platform, "📌")
                         badge = "⚔️" if getattr(lead, 'category', '') == '경쟁사_역공략' else ""
-                        message += f"{i}. {platform_icon}{badge} [{lead.platform.upper()}] 점수 {lead.priority_score:.0f}\n"
+                        reason = "score>=120" if (lead.priority_score or 0) >= 120 else "competitor"
+                        message += f"{i}. {platform_icon}{badge} [{lead.platform.upper()}] 점수 {lead.priority_score:.0f} | {reason}\n"
                         message += f"   {lead.title[:60]}\n"
                         message += f"   {lead.url}\n\n"
 
@@ -2807,13 +3162,22 @@ class ViralHunter:
 
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(['rank', 'platform', 'title', 'score', 'keyword', 'url'])
+                writer.writerow([
+                    'rank', 'platform', 'title', 'score', 'exposure_score',
+                    'workability_score', 'conversion_fit_score', 'search_sort',
+                    'search_rank', 'keyword', 'url'
+                ])
                 for i, t in enumerate(filtered, 1):
                     writer.writerow([
                         i,
                         t.platform,
                         t.title,
                         t.priority_score,
+                        t.exposure_score,
+                        t.workability_score,
+                        t.conversion_fit_score,
+                        t.search_sort,
+                        t.search_rank,
                         ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '',
                         t.url
                     ])
@@ -3032,7 +3396,11 @@ def main():
 
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(['rank', 'platform', 'title', 'url', 'score', 'keywords', 'is_competitor', 'counter_score'])
+                writer.writerow([
+                    'rank', 'platform', 'title', 'url', 'score', 'exposure_score',
+                    'workability_score', 'conversion_fit_score', 'search_sort',
+                    'search_rank', 'keywords', 'is_competitor', 'counter_score'
+                ])
                 for i, t in enumerate(filtered, 1):
                     writer.writerow([
                         i,
@@ -3040,6 +3408,11 @@ def main():
                         t.title,
                         t.url,
                         t.priority_score,
+                        t.exposure_score,
+                        t.workability_score,
+                        t.conversion_fit_score,
+                        t.search_sort,
+                        t.search_rank,
                         ', '.join(t.matched_keywords) if t.matched_keywords else '',
                         getattr(t, 'is_competitor', False),
                         getattr(t, 'counter_score', 0)

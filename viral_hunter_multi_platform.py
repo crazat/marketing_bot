@@ -362,7 +362,15 @@ class InstagramAdapter(PlatformAdapter):
                             content_preview=caption[:200] if caption else "",
                             matched_keywords=[keyword],
                             is_commentable=True,
-                            priority_score=priority
+                            priority_score=priority,
+                            like_count=like_count,
+                            comment_count=comments_count,
+                            exposure_score=min(150, priority),
+                            score_breakdown={
+                                "engagement_priority": float(priority),
+                                "likes": float(like_count),
+                                "comments": float(comments_count),
+                            },
                         )
                         targets.append(target)
 
@@ -442,7 +450,17 @@ class TikTokAdapter(PlatformAdapter):
                     content_preview=desc[:200] if desc else "",
                     matched_keywords=[keyword],
                     is_commentable=True,
-                    priority_score=priority
+                    priority_score=priority,
+                    view_count=view_count,
+                    like_count=like_count,
+                    comment_count=comment_count,
+                    exposure_score=min(150, priority),
+                    score_breakdown={
+                        "engagement_priority": float(priority),
+                        "views": float(view_count),
+                        "likes": float(like_count),
+                        "comments": float(comment_count),
+                    },
                 )
                 targets.append(target)
 

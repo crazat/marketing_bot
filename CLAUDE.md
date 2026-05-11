@@ -1,5 +1,17 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-11 Memory: Viral Hunter Exposure Scoring Upgrade
+
+- Viral Hunter no longer treats Naver API `sort=date` as enough evidence of public exposure. Naver collection now mixes cafe/blog `sim+date` and kin `sim+point+date`, records `search_sort`, `search_rank`, `search_start`, `sort_appearances`, and calculates `exposure_score` before filtering.
+- Keep the score model split: `exposure_score` = search visibility / engagement proxy, `workability_score` = rule-based commentability, `conversion_fit_score` = action/intent/business fit, and `priority_score` = weighted final score. Do not collapse these back into a single opaque score.
+- `viral_targets` now persists exposure and AI-review metadata: `exposure_score`, `workability_score`, `conversion_fit_score`, `score_breakdown`, search rank/sort fields, `ai_reviewed`, `ai_infiltration_score`, `ai_post_type`, `ai_competitor`, and `ai_competitor_name`. Keep migrations in `db/database.py`, backend `db_init.py`, and `migration_manager.py` aligned.
+- Zero-result streaks from long-tail keywords are not block evidence by themselves. Only treat them as Naver blocking when API errors are also elevated; never reintroduce a fixed 5-minute sleep for clean 0-result API responses.
+- Staff APIs and UI can filter/sort by exposure: `/viral/targets?sort=exposure`, `/viral/targets?min_exposure=...`, and the frontend sort selector includes exposure/workability. Repository rows decode `score_breakdown` and `sort_appearances` JSON for consumers.
+- Latest targeted verification for this change:
+  - `python -m py_compile viral_hunter.py viral_hunter_multi_platform.py db\database.py marketing_bot_web\backend\routers\viral.py marketing_bot_web\backend\services\db_init.py marketing_bot_web\backend\services\migration_manager.py repositories\viral_target_repo.py`
+  - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_target_repo.py tests\test_router_smoke.py -q` -> 35 passed
+  - `npm run typecheck` in `marketing_bot_web/frontend`
+
 ## 2026-05-11 Memory: Legion Diversity and Viral Hunter Scan 11
 
 - Pathfinder Legion now loads a recent keyword/viral diversity profile before expansion. It adds history-aware exploration seeds, penalizes keywords already seen in recent Legion/Viral Hunter history, and caps expansion candidates per category so one high-volume bucket does not dominate later rounds.

@@ -22,6 +22,7 @@ import atexit
 import requests
 import re
 import time
+import math
 import json
 import argparse
 import asyncio
@@ -315,10 +316,19 @@ class KeywordResult:
     kei: float = 0.0  # 실제 KEI = 검색량² / 문서수
     kei_grade: str = "C"  # KEI 기반 등급 (S/A/B/C)
     business_core: bool = False  # 실제 유입 핵심군 여부 (등급과 별도)
+    source_signals: List[str] = None
+    verification_score: float = 0.0
+    novelty_score: float = 0.0
+    diversity_rank: int = 0
+    quality_flags: List[str] = None
 
     def __post_init__(self):
         if self.merged_from is None:
             self.merged_from = []
+        if self.source_signals is None:
+            self.source_signals = []
+        if self.quality_flags is None:
+            self.quality_flags = []
 
 
 # ============================================================
@@ -600,6 +610,17 @@ class KeywordMerger:
             others = [k for k in group if k != best]
             best_result.merged_from = others
             best_result.business_core = any(results[k].business_core for k in group)
+            best_result.source_signals = sorted({
+                signal
+                for k in group
+                for signal in (results[k].source_signals or [results[k].source])
+            })
+            best_result.quality_flags = sorted({
+                flag
+                for k in group
+                for flag in (results[k].quality_flags or [])
+            })
+            best_result.verification_score = max(results[k].verification_score for k in group)
 
             # 검색량 합산 (옵션)
             total_volume = sum(results[k].search_volume for k in group)
@@ -607,7 +628,7 @@ class KeywordMerger:
 
             # KEI 재계산 (검색량 합산 후)
             if best_result.document_count > 0 and total_volume > 0:
-                best_result.kei = round((total_volume ** 2) / best_result.document_count, 2)
+                best_result.kei = calculate_real_kei(total_volume, best_result.document_count)
                 # KEI 등급 재부여
                 if best_result.kei >= 500:
                     best_result.kei_grade = 'S'
@@ -1570,7 +1591,10 @@ def calculate_real_kei(search_volume: int, document_count: int) -> float:
     """
     if document_count <= 0 or search_volume <= 0:
         return 0.0
-    return round((search_volume ** 2) / document_count, 2)
+    # Very small SERP counts can be parser/API artifacts. Use a light floor so
+    # one-document outliers do not dominate S/A selection.
+    effective_document_count = max(document_count, 20)
+    return round((search_volume ** 2) / effective_document_count, 2)
 
 
 def assign_kei_grade(kei: float) -> str:
@@ -1715,6 +1739,17 @@ class PathfinderLegion:
         # 수집된 키워드
         self.collected: Dict[str, KeywordResult] = {}
         self.analyzed_keywords: Set[str] = set()
+        self.candidate_stats = {
+            "input_by_source": Counter(),
+            "valid_by_source": Counter(),
+            "accepted_by_source": Counter(),
+            "sa_by_source": Counter(),
+            "rejected_by_source": defaultdict(Counter),
+        }
+        self.keyword_source_signals: Dict[str, Set[str]] = defaultdict(set)
+        self.keyword_canonical_by_norm: Dict[str, str] = {}
+        self.volume_hints: Dict[str, int] = {}
+        self.diversity_metrics: Dict[str, object] = {}
 
     @staticmethod
     def _normalize_keyword_for_history(keyword: str) -> str:
@@ -1728,6 +1763,140 @@ class PathfinderLegion:
             "intent_counts": Counter(),
             "viral_keyword_stats": {},
         }
+
+    def _ensure_quality_tracking(self) -> None:
+        if not hasattr(self, "candidate_stats"):
+            self.candidate_stats = {
+                "input_by_source": Counter(),
+                "valid_by_source": Counter(),
+                "accepted_by_source": Counter(),
+                "sa_by_source": Counter(),
+                "rejected_by_source": defaultdict(Counter),
+            }
+        if not hasattr(self, "keyword_source_signals"):
+            self.keyword_source_signals = defaultdict(set)
+        if not hasattr(self, "keyword_canonical_by_norm"):
+            self.keyword_canonical_by_norm = {}
+        if not hasattr(self, "volume_hints"):
+            self.volume_hints = {}
+        if not hasattr(self, "diversity_metrics"):
+            self.diversity_metrics = {}
+
+    def _record_rejection(self, source: str, reason: str, count: int = 1) -> None:
+        self._ensure_quality_tracking()
+        self.candidate_stats["rejected_by_source"][source][reason] += count
+
+    def _record_source_signal(self, keyword: str, source: str) -> None:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if not norm:
+            return
+        self.keyword_source_signals[norm].add(source)
+
+        canonical = self.keyword_canonical_by_norm.get(norm)
+        if canonical and hasattr(self, "collected") and canonical in self.collected:
+            self._sync_result_quality_fields(self.collected[canonical])
+
+    def _sync_result_quality_fields(self, result: KeywordResult) -> None:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(result.keyword)
+        signals = sorted(self.keyword_source_signals.get(norm, {result.source}))
+        if result.source not in signals:
+            signals.append(result.source)
+            signals = sorted(set(signals))
+        result.source_signals = signals
+        has_real_volume = result.search_volume > 0 and "missing_real_volume" not in (result.quality_flags or [])
+        result.verification_score = self._calculate_verification_score(
+            result.keyword,
+            result.search_volume,
+            result.document_count,
+            len(signals),
+            has_real_volume,
+            result.business_core,
+        )
+
+    @staticmethod
+    def _calculate_verification_score(
+        keyword: str,
+        search_volume: int,
+        document_count: int,
+        source_signal_count: int,
+        has_real_volume: bool,
+        business_core: bool,
+    ) -> float:
+        score = 0.0
+        if has_real_volume:
+            score += 28.0
+            if search_volume >= 1000:
+                score += 14.0
+            elif search_volume >= 100:
+                score += 9.0
+            elif search_volume >= 20:
+                score += 5.0
+
+        if document_count >= 1000:
+            score += 20.0
+        elif document_count >= 100:
+            score += 15.0
+        elif document_count >= 10:
+            score += 10.0
+        elif document_count > 0:
+            score += 4.0
+
+        score += min(26.0, max(0, source_signal_count) * 8.0)
+
+        if business_core:
+            score += 10.0
+        if len((keyword or "").split()) >= 4:
+            score += 4.0
+
+        return round(min(score, 100.0), 2)
+
+    @staticmethod
+    def _cap_grade(grade: str, cap: str) -> str:
+        order = {"S": 0, "A": 1, "B": 2, "C": 3}
+        reverse = {0: "S", 1: "A", 2: "B", 3: "C"}
+        if grade not in order or cap not in order:
+            return grade
+        return reverse[max(order[grade], order[cap])]
+
+    def _apply_quality_grade_guard(
+        self,
+        grade: str,
+        kei_grade: str,
+        search_volume: int,
+        document_count: int,
+        verification_score: float,
+        source_signal_count: int,
+        has_real_volume: bool,
+    ) -> Tuple[str, str, List[str]]:
+        flags: List[str] = []
+        adjusted_grade = grade
+        adjusted_kei_grade = kei_grade
+
+        if not has_real_volume:
+            flags.append("missing_real_volume")
+            adjusted_grade = "C"
+            adjusted_kei_grade = "C"
+
+        if document_count <= 0:
+            flags.append("missing_document_count")
+            adjusted_grade = self._cap_grade(adjusted_grade, "B")
+            adjusted_kei_grade = self._cap_grade(adjusted_kei_grade, "B")
+        elif document_count < 10:
+            flags.append("low_document_count")
+            if search_volume < 100 or source_signal_count < 2:
+                adjusted_grade = self._cap_grade(adjusted_grade, "B")
+                adjusted_kei_grade = self._cap_grade(adjusted_kei_grade, "B")
+
+        if verification_score < 45 and adjusted_grade in ("S", "A"):
+            flags.append("low_verification_score")
+            adjusted_grade = "B"
+        elif verification_score < 60 and adjusted_grade == "S":
+            flags.append("s_grade_needs_more_verification")
+            adjusted_grade = "A"
+
+        return adjusted_grade, adjusted_kei_grade, flags
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table_name: str) -> Set[str]:
@@ -1967,6 +2136,70 @@ class PathfinderLegion:
 
         return [r.keyword for r in selected[:limit] if r.keyword] if limit else [r.keyword for r in selected if r.keyword]
 
+    def _collect_ad_related_keywords(
+        self,
+        seed_keywords: List[str],
+        source: str = "round1_ad_related",
+        max_seeds: int = 50,
+        max_keywords: int = 300,
+        min_volume: int = 10,
+    ) -> List[str]:
+        """Use Naver SearchAd related-keyword payload as a validated source."""
+        self._ensure_quality_tracking()
+        if not self.has_ad_api or not self.ad_manager or not seed_keywords:
+            return []
+
+        unique_seeds: List[str] = []
+        seen_seed_norms: Set[str] = set()
+        for keyword in seed_keywords:
+            norm = self._normalize_keyword_for_history(keyword)
+            if not norm or norm in seen_seed_norms:
+                continue
+            seen_seed_norms.add(norm)
+            unique_seeds.append(keyword)
+            if len(unique_seeds) >= max_seeds:
+                break
+
+        try:
+            related_volume_map = self.ad_manager.get_keyword_volumes(unique_seeds) or {}
+        except Exception as e:
+            print(f"   ⚠️ 검색광고 연관어 조회 실패: {e}")
+            return []
+
+        if not related_volume_map:
+            return []
+
+        self.volume_hints.update(related_volume_map)
+        seed_norms = {self._normalize_keyword_for_history(seed) for seed in unique_seeds}
+        candidates = sorted(
+            related_volume_map.items(),
+            key=lambda item: int(item[1] or 0),
+            reverse=True,
+        )
+
+        related_keywords: List[str] = []
+        seen_related: Set[str] = set()
+        for keyword, volume in candidates:
+            norm = self._normalize_keyword_for_history(keyword)
+            if not norm or norm in seed_norms or norm in seen_related:
+                continue
+            if int(volume or 0) < min_volume:
+                self._record_rejection(source, "ad_related_low_volume")
+                continue
+            self._record_source_signal(keyword, source)
+            if not self.collector._is_valid_keyword(keyword):
+                self._record_rejection(source, "ad_related_invalid_scope")
+                continue
+            if not self.collector.is_focus_candidate(keyword):
+                self._record_rejection(source, "ad_related_non_focus")
+                continue
+            seen_related.add(norm)
+            related_keywords.append(keyword)
+            if len(related_keywords) >= max_keywords:
+                break
+
+        return related_keywords
+
     def _calculate_seasonality_score(self, keyword: str) -> float:
         """현재 시즌에 맞는 키워드인지 점수화 (0-100)"""
         current_month = datetime.now().month
@@ -2104,13 +2337,18 @@ class PathfinderLegion:
         """키워드 분석 후 추가, 새로 추가된 S/A급 개수 반환"""
         new_sa = 0
         filtered_count = 0
+        self._ensure_quality_tracking()
+        self.candidate_stats["input_by_source"][source] += len(keywords)
 
         # 1단계: 기본 유효성 필터링 + 띄어쓰기 변형 추가
         valid_keywords = []
         for kw in keywords:
+            self._record_source_signal(kw, source)
             if kw in self.analyzed_keywords:
+                self._record_rejection(source, "duplicate_signal")
                 continue
             if not self.collector._is_valid_keyword(kw):
+                self._record_rejection(source, "invalid_scope")
                 continue
             valid_keywords.append(kw)
             self.analyzed_keywords.add(kw)
@@ -2118,9 +2356,12 @@ class PathfinderLegion:
             # 띄어쓰기 변형 추가 (예: "가경동 한의원" → "가경동한의원")
             kw_no_space = kw.replace(" ", "")
             if kw_no_space != kw and kw_no_space not in self.analyzed_keywords:
+                self._record_source_signal(kw_no_space, source)
                 if self.collector._is_valid_keyword(kw_no_space):
                     valid_keywords.append(kw_no_space)
                     self.analyzed_keywords.add(kw_no_space)
+                else:
+                    self._record_rejection(source, "invalid_no_space_variant")
 
         if not valid_keywords:
             return 0
@@ -2131,6 +2372,8 @@ class PathfinderLegion:
             filtered_count = len(rejected)
             if filtered_count > 0:
                 print(f"   🧹 품질 필터: {filtered_count}개 제거")
+            for _, reason in rejected:
+                self._record_rejection(source, f"quality_{reason}")
             valid_keywords = passed
 
         # 기본 Legion은 미용/흉터/비대칭/다이어트/교통사고 입원실에 집중한다.
@@ -2141,6 +2384,7 @@ class PathfinderLegion:
                 focus_keywords.append(kw)
             else:
                 non_focus_count += 1
+                self._record_rejection(source, "non_focus")
 
         if non_focus_count:
             print(f"   🎯 포커스 필터: 비핵심 진료군 {non_focus_count}개 제외")
@@ -2148,6 +2392,7 @@ class PathfinderLegion:
 
         if not valid_keywords:
             return 0
+        self.candidate_stats["valid_by_source"][source] += len(valid_keywords)
 
         # 검색량 일괄 조회 (Naver Ad API)
         volume_map = {}
@@ -2163,6 +2408,8 @@ class PathfinderLegion:
                 volume_map = {}  # 예외 발생 시 빈 딕셔너리로 초기화
 
         # SERP 분석 (샘플링 + 배치 처리)
+        if self.volume_hints:
+            volume_map = {**self.volume_hints, **volume_map}
         use_sampling = len(valid_keywords) > 50  # 50개 이상이면 샘플링
         if use_sampling:
             serp_results = analyze_with_sampling(self.serp, valid_keywords)
@@ -2244,12 +2491,36 @@ class PathfinderLegion:
                     _idx = _order.index(kei_grade)
                     kei_grade = _order[min(_idx + 2, len(_order) - 1)]
 
+            business_core = self.collector.is_business_core_keyword(kw, category)
+            norm = self._normalize_keyword_for_history(kw)
+            source_signals = sorted(self.keyword_source_signals.get(norm, {source}))
+            if source not in source_signals:
+                source_signals = sorted(set(source_signals + [source]))
+            verification_score = self._calculate_verification_score(
+                kw,
+                search_volume,
+                document_count,
+                len(source_signals),
+                has_real_volume,
+                business_core,
+            )
+            grade, kei_grade, quality_flags = self._apply_quality_grade_guard(
+                grade,
+                kei_grade,
+                search_volume,
+                document_count,
+                verification_score,
+                len(source_signals),
+                has_real_volume,
+            )
+
             # 검색 의도 분류
             search_intent = SearchIntentClassifier.classify(kw)
 
             # 우선순위 점수 계산 (KEI 포함) + 히스토리 기반 신규성 보정
             priority = self._calculate_priority(difficulty, opportunity, kw, search_volume, kei)
             priority = self._apply_history_novelty_adjustment(kw, priority, category, search_intent)
+            priority *= 0.75 + (min(verification_score, 100.0) / 400.0)
 
             result = KeywordResult(
                 keyword=kw,
@@ -2264,13 +2535,19 @@ class PathfinderLegion:
                 document_count=document_count,
                 kei=kei,
                 kei_grade=kei_grade,
-                business_core=self.collector.is_business_core_keyword(kw, category)
+                business_core=business_core,
+                source_signals=source_signals,
+                verification_score=verification_score,
+                quality_flags=quality_flags,
             )
 
             self.collected[kw] = result
+            self.keyword_canonical_by_norm[norm] = kw
+            self.candidate_stats["accepted_by_source"][source] += 1
 
             if grade in ['S', 'A']:
                 new_sa += 1
+                self.candidate_stats["sa_by_source"][source] += 1
 
         return new_sa
 
@@ -2322,6 +2599,18 @@ class PathfinderLegion:
         new_sa = self._analyze_and_add(list(round1_keywords), "round1_seed")
         total_sa += new_sa
         print(f"   수집: {len(round1_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
+
+        ad_related_keywords = self._collect_ad_related_keywords(
+            list(round1_keywords) + self.base_seeds,
+            source="round1_ad_related",
+            max_seeds=50,
+            max_keywords=300,
+            min_volume=10,
+        )
+        if ad_related_keywords:
+            new_sa = self._analyze_and_add(ad_related_keywords, "round1_ad_related")
+            total_sa += new_sa
+            print(f"   검색광고 연관어: {len(ad_related_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
         if total_sa >= target_sa:
             return self._finalize()
@@ -2673,6 +2962,159 @@ class PathfinderLegion:
 
         return self._finalize()
 
+    @staticmethod
+    def _tokenize_keyword(keyword: str) -> Set[str]:
+        tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", (keyword or "").lower()))
+        compact = re.sub(r"\s+", "", (keyword or "").lower())
+        if len(compact) >= 4:
+            tokens.update(compact[i:i + 2] for i in range(max(0, len(compact) - 1)))
+        return {token for token in tokens if token}
+
+    @classmethod
+    def _keyword_similarity(cls, left: KeywordResult, right: KeywordResult) -> float:
+        left_tokens = cls._tokenize_keyword(left.keyword)
+        right_tokens = cls._tokenize_keyword(right.keyword)
+        if not left_tokens or not right_tokens:
+            token_similarity = 0.0
+        else:
+            token_similarity = len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+        aspect_bonus = 0.0
+        if left.category and left.category == right.category:
+            aspect_bonus += 0.12
+        if left.search_intent and left.search_intent == right.search_intent:
+            aspect_bonus += 0.08
+        if left.source and left.source == right.source:
+            aspect_bonus += 0.05
+        return min(1.0, token_similarity + aspect_bonus)
+
+    @staticmethod
+    def _entropy_norm(counter: Counter) -> float:
+        total = sum(counter.values())
+        if total <= 0 or len(counter) <= 1:
+            return 0.0
+        entropy = 0.0
+        for count in counter.values():
+            p = count / total
+            if p > 0:
+                entropy -= p * math.log(p)
+        return entropy / math.log(len(counter))
+
+    @staticmethod
+    def _hhi(counter: Counter) -> float:
+        total = sum(counter.values())
+        if total <= 0:
+            return 0.0
+        return sum((count / total) ** 2 for count in counter.values())
+
+    def _calculate_diversity_metrics(self, results: List[KeywordResult]) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        total = len(results)
+        grade_counts = Counter(r.grade for r in results)
+        category_counts = Counter(r.category or "unknown" for r in results)
+        source_counts = Counter(r.source or "unknown" for r in results)
+        intent_counts = Counter(r.search_intent or "unknown" for r in results)
+        longtail_count = sum(1 for r in results if len((r.keyword or "").split()) >= 4)
+        verified_count = sum(1 for r in results if r.verification_score >= 55)
+        multi_source_count = sum(1 for r in results if len(r.source_signals or []) >= 2)
+        risk_flag_count = sum(1 for r in results if r.quality_flags)
+
+        def top_share(counter: Counter) -> float:
+            return (max(counter.values()) / total) if total and counter else 0.0
+
+        rejected = {
+            source: dict(reason_counts)
+            for source, reason_counts in self.candidate_stats["rejected_by_source"].items()
+        }
+
+        return {
+            "total_keywords": total,
+            "grade_counts": dict(grade_counts),
+            "sa_count": grade_counts.get("S", 0) + grade_counts.get("A", 0),
+            "sa_rate": round((grade_counts.get("S", 0) + grade_counts.get("A", 0)) / max(1, total), 4),
+            "category_count": len(category_counts),
+            "source_count": len(source_counts),
+            "intent_count": len(intent_counts),
+            "category_entropy_norm": round(self._entropy_norm(category_counts), 4),
+            "source_entropy_norm": round(self._entropy_norm(source_counts), 4),
+            "intent_entropy_norm": round(self._entropy_norm(intent_counts), 4),
+            "category_hhi": round(self._hhi(category_counts), 4),
+            "source_hhi": round(self._hhi(source_counts), 4),
+            "top_category_share": round(top_share(category_counts), 4),
+            "top_source_share": round(top_share(source_counts), 4),
+            "longtail_4plus_rate": round(longtail_count / max(1, total), 4),
+            "verified_rate": round(verified_count / max(1, total), 4),
+            "multi_source_verified_rate": round(multi_source_count / max(1, total), 4),
+            "quality_flag_rate": round(risk_flag_count / max(1, total), 4),
+            "category_counts": dict(category_counts),
+            "source_counts": dict(source_counts),
+            "intent_counts": dict(intent_counts),
+            "input_by_source": dict(self.candidate_stats["input_by_source"]),
+            "valid_by_source": dict(self.candidate_stats["valid_by_source"]),
+            "accepted_by_source": dict(self.candidate_stats["accepted_by_source"]),
+            "sa_by_source": dict(self.candidate_stats["sa_by_source"]),
+            "rejected_by_source": rejected,
+        }
+
+    def _rerank_for_diversity(self, results: List[KeywordResult], lambda_quality: float = 0.68) -> List[KeywordResult]:
+        if len(results) <= 2:
+            for idx, result in enumerate(results, 1):
+                result.diversity_rank = idx
+                result.novelty_score = 100.0
+            return results
+
+        grade_bonus = {"S": 35.0, "A": 22.0, "B": 7.0, "C": 0.0}
+        quality_values = [
+            max(0.0, float(r.priority_score or 0.0)) + grade_bonus.get(r.grade, 0.0)
+            for r in results
+        ]
+        max_quality = max(quality_values) or 1.0
+        quality_map = {id(r): q / max_quality * 100.0 for r, q in zip(results, quality_values)}
+
+        remaining = list(results)
+        selected: List[KeywordResult] = []
+        category_counts: Counter = Counter()
+        source_counts: Counter = Counter()
+        intent_counts: Counter = Counter()
+
+        while remaining:
+            best = None
+            best_score = -1.0
+            selected_count = max(1, len(selected))
+
+            for candidate in remaining:
+                max_similarity = max(
+                    (self._keyword_similarity(candidate, chosen) for chosen in selected),
+                    default=0.0,
+                )
+                novelty = max(0.0, 100.0 * (1.0 - max_similarity))
+                category_share = category_counts[candidate.category or "unknown"] / selected_count
+                source_share = source_counts[candidate.source or "unknown"] / selected_count
+                intent_share = intent_counts[candidate.search_intent or "unknown"] / selected_count
+                balance_penalty = min(35.0, category_share * 28.0)
+                balance_penalty += min(25.0, source_share * 20.0)
+                balance_penalty += min(15.0, intent_share * 12.0)
+                balance = max(0.0, 100.0 - balance_penalty)
+                score = (
+                    quality_map[id(candidate)] * lambda_quality
+                    + novelty * (1.0 - lambda_quality) * 0.75
+                    + balance * (1.0 - lambda_quality) * 0.25
+                )
+                if score > best_score:
+                    best = candidate
+                    best_score = score
+                    candidate.novelty_score = round(novelty, 2)
+
+            selected.append(best)
+            remaining.remove(best)
+            category_counts[best.category or "unknown"] += 1
+            source_counts[best.source or "unknown"] += 1
+            intent_counts[best.search_intent or "unknown"] += 1
+
+        for idx, result in enumerate(selected, 1):
+            result.diversity_rank = idx
+        return selected
+
     def _finalize(self) -> List[KeywordResult]:
         """최종 결과 정리"""
         original_count = len(self.collected)
@@ -2748,10 +3190,15 @@ class PathfinderLegion:
                 recalculated = 0
                 for r in sa_keywords:
                     if r.trend_slope != 0.0:
-                        r.priority_score = self._calculate_priority(
+                        recalculated_priority = self._calculate_priority(
                             r.difficulty, r.opportunity, r.keyword,
                             r.search_volume, r.kei, r.trend_slope
                         )
+                        recalculated_priority = self._apply_history_novelty_adjustment(
+                            r.keyword, recalculated_priority, r.category, r.search_intent
+                        )
+                        recalculated_priority *= 0.75 + (min(r.verification_score, 100.0) / 400.0)
+                        r.priority_score = recalculated_priority
                         recalculated += 1
 
                 if recalculated > 0:
@@ -2765,6 +3212,11 @@ class PathfinderLegion:
                 falling = sum(1 for r in sa_keywords if r.trend_status == "falling")
                 stable = sum(1 for r in sa_keywords if r.trend_status == "stable")
                 print(f"   📈 상승: {rising}개 | 📉 하락: {falling}개 | ➡️ 안정: {stable}개")
+
+        for result in results:
+            self._sync_result_quality_fields(result)
+        results = self._rerank_for_diversity(results)
+        self.diversity_metrics = self._calculate_diversity_metrics(results)
 
         # 통계
         s_count = sum(1 for r in results if r.grade == 'S')
@@ -2821,6 +3273,16 @@ class PathfinderLegion:
         print(f"   KEI 500+: {kei_500_count}개 ({kei_500_count/max(1,len(results))*100:.1f}%)")
         print(f"   KEI 200+: {kei_200_count}개 ({kei_200_count/max(1,len(results))*100:.1f}%)")
 
+        metrics = getattr(self, "diversity_metrics", {})
+        if metrics:
+            print("\n🧭 다양성/검증 지표:")
+            print(f"   카테고리 엔트로피: {metrics.get('category_entropy_norm', 0):.3f}")
+            print(f"   소스 엔트로피: {metrics.get('source_entropy_norm', 0):.3f}")
+            print(f"   의도 엔트로피: {metrics.get('intent_entropy_norm', 0):.3f}")
+            print(f"   단일 소스 최대 비중: {metrics.get('top_source_share', 0) * 100:.1f}%")
+            print(f"   다중 소스 검증 비율: {metrics.get('multi_source_verified_rate', 0) * 100:.1f}%")
+            print(f"   품질 플래그 비율: {metrics.get('quality_flag_rate', 0) * 100:.1f}%")
+
         return results
 
     def export_csv(self, results: List[KeywordResult], filename: str = "legion_v3_results.csv"):
@@ -2832,15 +3294,28 @@ class PathfinderLegion:
                 'keyword', 'search_volume', 'difficulty', 'opportunity',
                 'grade', 'category', 'priority_score', 'source',
                 'trend_slope', 'trend_status', 'search_intent',
-                'document_count', 'kei', 'kei_grade', 'business_core'
+                'document_count', 'kei', 'kei_grade', 'business_core',
+                'source_signals', 'verification_score', 'novelty_score',
+                'diversity_rank', 'quality_flags'
             ])
             writer.writeheader()
             for r in results:
                 row = asdict(r)
                 row.pop('merged_from', None)  # merged_from은 CSV에서 제외
+                row['source_signals'] = json.dumps(row.get('source_signals') or [], ensure_ascii=False)
+                row['quality_flags'] = json.dumps(row.get('quality_flags') or [], ensure_ascii=False)
                 writer.writerow(row)
 
         print(f"\n📁 결과 저장: {filename}")
+
+    def export_metrics(self, filename: str = "legion_v3_metrics.json"):
+        """Export source yield, diversity, and verification metrics."""
+        metrics = getattr(self, "diversity_metrics", {}) or {}
+        if not metrics:
+            return
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2)
+        print(f"💾 지표 저장: {filename}")
 
     def save_to_db(self, results: List[KeywordResult], db_path: str = None, scan_run_id: int = 0) -> dict:
         """DB 저장 (WSL + Dropbox 환경: 로컬 임시 파일 사용)"""
@@ -2932,7 +3407,12 @@ class PathfinderLegion:
                            # 스캔 히스토리 연동
                            ("scan_run_id", "INTEGER DEFAULT 0"),
                            ("last_scan_run_id", "INTEGER DEFAULT 0"),
-                           ("business_core", "INTEGER DEFAULT 0")]:
+                           ("business_core", "INTEGER DEFAULT 0"),
+                           ("source_signals_json", "TEXT DEFAULT '[]'"),
+                           ("verification_score", "REAL DEFAULT 0"),
+                           ("novelty_score", "REAL DEFAULT 0"),
+                           ("diversity_rank", "INTEGER DEFAULT 0"),
+                           ("quality_flags_json", "TEXT DEFAULT '[]'")]:
             try:
                 cursor.execute(f"ALTER TABLE keyword_insights ADD COLUMN {col} {ctype}")
             except Exception:
@@ -2970,8 +3450,10 @@ class PathfinderLegion:
                         difficulty, opportunity, priority_v3, grade, source,
                         trend_slope, trend_status, search_intent,
                         document_count, kei, kei_grade,
-                        scan_run_id, last_scan_run_id, business_core
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scan_run_id, last_scan_run_id, business_core,
+                        source_signals_json, verification_score, novelty_score,
+                        diversity_rank, quality_flags_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(keyword) DO UPDATE SET
                         difficulty=excluded.difficulty,
                         opportunity=excluded.opportunity,
@@ -2989,7 +3471,12 @@ class PathfinderLegion:
                         business_core=excluded.business_core,
                         category=excluded.category,
                         search_volume=excluded.search_volume,
-                        region=excluded.region
+                        region=excluded.region,
+                        source_signals_json=excluded.source_signals_json,
+                        verification_score=excluded.verification_score,
+                        novelty_score=excluded.novelty_score,
+                        diversity_rank=excluded.diversity_rank,
+                        quality_flags_json=excluded.quality_flags_json
                 ''', (
                     r.keyword, 0, "Low" if r.difficulty < 50 else "High",
                     r.priority_score, tag, now,
@@ -2997,7 +3484,10 @@ class PathfinderLegion:
                     r.difficulty, r.opportunity, r.priority_score, r.grade, r.source,
                     r.trend_slope, r.trend_status, r.search_intent,
                     r.document_count, r.kei, r.kei_grade,
-                    scan_run_id, scan_run_id, 1 if r.business_core else 0
+                    scan_run_id, scan_run_id, 1 if r.business_core else 0,
+                    json.dumps(r.source_signals or [], ensure_ascii=False),
+                    r.verification_score, r.novelty_score, r.diversity_rank,
+                    json.dumps(r.quality_flags or [], ensure_ascii=False)
                 ))
                 saved += 1
                 if existed:
@@ -3099,6 +3589,7 @@ def main():
 
         if not args.no_csv:
             legion.export_csv(results)
+            legion.export_metrics()
 
         # DB 저장 (기본값: True, --no-db로 비활성화)
         if not args.no_db:
@@ -3112,8 +3603,14 @@ def main():
 
             # 상위 키워드 추출
             top_keywords = [
-                {"keyword": r.keyword, "grade": r.grade, "kei": r.kei}
-                for r in sorted(results, key=lambda x: x.priority_score, reverse=True)[:10]
+                {
+                    "keyword": r.keyword,
+                    "grade": r.grade,
+                    "kei": r.kei,
+                    "verification_score": r.verification_score,
+                    "diversity_rank": r.diversity_rank,
+                }
+                for r in results[:10]
             ]
 
             execution_time = int(time.time() - start_time)
@@ -3131,7 +3628,7 @@ def main():
                 c_count=c_count,
                 top_keywords=top_keywords,
                 execution_time=execution_time,
-                notes="keyword_insights.scan_run_id=first_seen, last_scan_run_id=last_seen"
+                notes=json.dumps(getattr(legion, "diversity_metrics", {}) or {}, ensure_ascii=False)[:4000]
             )
 
     except Exception as e:

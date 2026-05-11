@@ -911,6 +911,27 @@ def _ensure_lead_response_tracking(cursor):
             cursor.execute("ALTER TABLE viral_targets ADD COLUMN post_region TEXT")
             logger.info("  - viral_targets: post_region 컬럼 추가됨")
 
+        viral_quality_columns = [
+            ('exposure_score', 'REAL DEFAULT 0'),
+            ('workability_score', 'REAL DEFAULT 0'),
+            ('conversion_fit_score', 'REAL DEFAULT 0'),
+            ('score_breakdown', "TEXT DEFAULT '{}'"),
+            ('search_sort', 'TEXT'),
+            ('search_rank', 'INTEGER DEFAULT 0'),
+            ('search_start', 'INTEGER DEFAULT 0'),
+            ('search_total', 'INTEGER DEFAULT 0'),
+            ('sort_appearances', "TEXT DEFAULT '[]'"),
+            ('ai_reviewed', 'INTEGER DEFAULT 0'),
+            ('ai_infiltration_score', 'REAL DEFAULT 0'),
+            ('ai_post_type', 'TEXT'),
+            ('ai_competitor', 'INTEGER DEFAULT 0'),
+            ('ai_competitor_name', 'TEXT'),
+        ]
+        for col_name, col_type in viral_quality_columns:
+            if col_name not in columns:
+                cursor.execute(f"ALTER TABLE viral_targets ADD COLUMN {col_name} {col_type}")
+                logger.info(f"  - viral_targets: {col_name} 컬럼 추가됨")
+
     # [R8] competitor_star_history — 네이버 별점 부활(2026-4-6) 비공개 전환 추적
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS competitor_star_history (

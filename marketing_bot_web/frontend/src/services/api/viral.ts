@@ -138,6 +138,7 @@ export const viralApi = {
       comment_status?: string
       min_scan_count?: number
       min_score?: number
+      min_exposure?: number
       commentable_only?: boolean
       search?: string
       sort?: string
@@ -162,6 +163,7 @@ export const viralApi = {
     if (filters?.comment_status) params.comment_status = filters.comment_status
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
+    if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.sort) params.sort = filters.sort
@@ -188,6 +190,7 @@ export const viralApi = {
       comment_status?: string
       min_scan_count?: number
       min_score?: number
+      min_exposure?: number
       commentable_only?: boolean
       search?: string
       scan_batch?: string
@@ -210,6 +213,7 @@ export const viralApi = {
     if (filters?.comment_status) params.comment_status = filters.comment_status
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
+    if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
