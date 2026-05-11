@@ -1,5 +1,18 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-11 Memory: Legion Diversity and Viral Hunter Scan 11
+
+- Pathfinder Legion now loads a recent keyword/viral diversity profile before expansion. It adds history-aware exploration seeds, penalizes keywords already seen in recent Legion/Viral Hunter history, and caps expansion candidates per category so one high-volume bucket does not dominate later rounds.
+- `core_services/viral_seed_builder.py` carries seed novelty metadata (`novelty_score`, `historical_target_count`, `historical_revisit_rate`) and penalizes repeatedly rediscovered or high-revisit matched keywords before building Viral Hunter seeds. Keep `max_per_intent_per_category` in place to avoid same-intent seed clusters inside a category.
+- Latest targeted verification for this change:
+  - `python -m py_compile pathfinder_v3_legion.py core_services\viral_seed_builder.py viral_hunter.py tests\test_pathfinder_viral_stability.py`
+  - `python -m pytest tests\test_viral_target_repo.py tests\test_router_smoke.py tests\test_pathfinder_viral_stability.py -q`
+- Latest manual run reference:
+  - Legion `scan_run_id=11`: target 300, 723 total keywords, 437 inserted, 286 updated, S=2/A=1/B=686/C=34, 704 business_core, completed in 562s.
+  - Viral Hunter from scan 11: 42 seeds, 1,882 discovered, 627 after filters, 267 existing URLs refreshed/excluded, 220 saved, report at `reports\viral_targets_20260511_183814.csv`.
+  - Ad-classification batch for scan 11 processed 175 rows and applied 58 additional `filtered_out_ai` rows. Final scan 11 queue snapshot: `pending=125`, `raw_backlog=134`, `filtered_out_ai=115`, `filtered_out=89`, `skipped=20`, `posted=4`.
+- When applying ad-classification batches from a specific run, continue using explicit scope: `python scripts\ai_ad_classify_apply.py <batch_dir> --source-scan-run-id <scan_id>`.
+
 ## 2026-05-11 Memory: Staff WebUI Auth and Port Restart Guard
 
 - If a staff browser repeatedly sends `/ws?api_key=1075` or another old value, clear `localStorage.marketing_bot_api_key` or let the frontend 403 recovery path replace it with the bundled `VITE_MARKETING_BOT_API_KEY` when present. The backend key remains `MARKETING_BOT_API_KEY`.

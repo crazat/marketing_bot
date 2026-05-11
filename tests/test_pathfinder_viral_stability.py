@@ -1,5 +1,7 @@
 import sqlite3
+from collections import Counter
 
+from core_services.viral_seed_builder import ViralSeedBuilder
 from db.database import DatabaseManager
 from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
 from scripts.ai_ad_classify_apply import _execute_scoped_update
@@ -69,6 +71,144 @@ def test_legion_business_core_filter_matches_actual_acquisition_categories():
         category = collector._detect_category(keyword)
         assert not collector.is_business_core_keyword(keyword, category)
         assert not collector.is_focus_candidate(keyword, category)
+
+
+def test_viral_seed_builder_penalizes_revisited_keyword_history(tmp_path):
+    db_path = tmp_path / "seed_builder.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                last_scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                url TEXT UNIQUE,
+                matched_keyword TEXT,
+                comment_status TEXT,
+                generated_comment TEXT,
+                scan_count INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO scan_runs(id, scan_type, status, completed_at) VALUES (1, 'legion', 'completed', '2026-05-01')"
+        )
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, last_scan_run_id, business_core, status
+            ) VALUES (?, 'cat', 'A', 100, 1000, 10, ?, ?, 1, 1, 'active')
+            """,
+            [
+                ("repeat keyword", 200.0, "transactional"),
+                ("fresh transactional", 180.0, "transactional"),
+                ("fresh informational", 170.0, "informational"),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO viral_targets(id, url, matched_keyword, comment_status, generated_comment, scan_count)
+            VALUES (?, ?, 'repeat keyword', 'pending', '', 2)
+            """,
+            [(f"seen-{i}", f"https://example.com/{i}") for i in range(30)],
+        )
+        conn.commit()
+
+    seeds = ViralSeedBuilder(str(db_path)).build(
+        scan_run_id=1,
+        quotas={"cat": 2},
+        max_per_intent_per_category=1,
+    )
+
+    assert [seed.keyword for seed in seeds] == ["fresh transactional", "fresh informational"]
+    assert all(seed.historical_target_count == 0 for seed in seeds)
+
+
+def test_legion_history_adjustment_rewards_fresh_keywords():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    repeated_norm = PathfinderLegion._normalize_keyword_for_history("청주 다이어트")
+    legion.diversity_profile = {
+        "keyword_norms": {repeated_norm},
+        "category_counts": Counter({"다이어트": 40, "피부/여드름": 2}),
+        "intent_counts": Counter({"commercial": 40, "transactional": 2}),
+        "viral_keyword_stats": {
+            repeated_norm: {"total_count": 25, "revisit_rate": 0.8},
+        },
+    }
+
+    repeated = legion._apply_history_novelty_adjustment(
+        "청주 다이어트",
+        100.0,
+        "다이어트",
+        "commercial",
+    )
+    fresh = legion._apply_history_novelty_adjustment(
+        "청주 새살침 상담",
+        100.0,
+        "피부/여드름",
+        "transactional",
+    )
+
+    assert fresh > repeated
+
+
+def test_legion_expansion_keyword_selection_caps_category_bias():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collected = {}
+    for i in range(5):
+        keyword = f"diet {i}"
+        legion.collected[keyword] = KeywordResult(
+            keyword=keyword,
+            search_volume=100,
+            difficulty=20,
+            opportunity=90,
+            grade="A",
+            category="diet",
+            priority_score=100 - i,
+            source="test",
+        )
+    for i in range(3):
+        keyword = f"skin {i}"
+        legion.collected[keyword] = KeywordResult(
+            keyword=keyword,
+            search_volume=100,
+            difficulty=20,
+            opportunity=90,
+            grade="A",
+            category="skin",
+            priority_score=80 - i,
+            source="test",
+        )
+
+    selected = legion._select_expansion_keywords({"A"}, limit=4, max_per_category=2)
+
+    assert selected == ["diet 0", "diet 1", "skin 0", "skin 1"]
 
 
 def test_ai_target_split_reserves_minority_category_floor():

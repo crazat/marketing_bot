@@ -1705,9 +1705,267 @@ class PathfinderLegion:
             print(f"📅 시즌 키워드 추가: {len(focused_seasonal)}/{len(seasonal_seeds)}개 (현재: {datetime.now().month}월)")
             self.base_seeds.extend(focused_seasonal)
 
+        # 이전 Legion/Viral Hunter 이력을 반영해 반복 시드보다 미탐색 조합을 더 많이 시도한다.
+        self.diversity_profile = self._load_diversity_profile()
+        exploration_seeds = self._build_history_aware_exploration_seeds()
+        if exploration_seeds:
+            print(f"🧭 히스토리 기반 탐색 시드 추가: {len(exploration_seeds)}개")
+            self.base_seeds.extend(exploration_seeds)
+
         # 수집된 키워드
         self.collected: Dict[str, KeywordResult] = {}
         self.analyzed_keywords: Set[str] = set()
+
+    @staticmethod
+    def _normalize_keyword_for_history(keyword: str) -> str:
+        return re.sub(r"\s+", "", (keyword or "").strip().lower())
+
+    @staticmethod
+    def _empty_diversity_profile() -> Dict[str, object]:
+        return {
+            "keyword_norms": set(),
+            "category_counts": Counter(),
+            "intent_counts": Counter(),
+            "viral_keyword_stats": {},
+        }
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> Set[str]:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.Error:
+            return set()
+        return {row[1] for row in rows}
+
+    def _load_diversity_profile(self, lookback_scan_runs: int = 5) -> Dict[str, object]:
+        profile = self._empty_diversity_profile()
+        db_path = _get_db_path()
+        if not os.path.exists(db_path):
+            return profile
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                keyword_cols = self._table_columns(conn, "keyword_insights")
+                if keyword_cols:
+                    last_scan_expr = None
+                    if {"last_scan_run_id", "scan_run_id"}.issubset(keyword_cols):
+                        last_scan_expr = "COALESCE(last_scan_run_id, scan_run_id, 0)"
+                    elif "last_scan_run_id" in keyword_cols:
+                        last_scan_expr = "COALESCE(last_scan_run_id, 0)"
+                    elif "scan_run_id" in keyword_cols:
+                        last_scan_expr = "COALESCE(scan_run_id, 0)"
+
+                    category_expr = "category" if "category" in keyword_cols else "''"
+                    intent_expr = "search_intent" if "search_intent" in keyword_cols else "''"
+                    where_clause = ""
+                    params: Tuple[int, ...] = ()
+                    if last_scan_expr:
+                        max_scan = conn.execute(f"SELECT MAX({last_scan_expr}) FROM keyword_insights").fetchone()[0] or 0
+                        min_scan = max(0, int(max_scan) - lookback_scan_runs + 1)
+                        where_clause = f"WHERE {last_scan_expr} >= ?"
+                        params = (min_scan,)
+
+                    rows = conn.execute(
+                        f"""
+                        SELECT keyword, {category_expr} AS category, {intent_expr} AS search_intent
+                        FROM keyword_insights
+                        {where_clause}
+                        ORDER BY id DESC
+                        LIMIT 2000
+                        """,
+                        params,
+                    ).fetchall()
+
+                    for row in rows:
+                        keyword = row["keyword"] or ""
+                        norm = self._normalize_keyword_for_history(keyword)
+                        if norm:
+                            profile["keyword_norms"].add(norm)
+                        category = row["category"] or ""
+                        intent = row["search_intent"] or "unknown"
+                        if category:
+                            profile["category_counts"][category] += 1
+                        if intent:
+                            profile["intent_counts"][intent] += 1
+
+                viral_cols = self._table_columns(conn, "viral_targets")
+                if "matched_keyword" in viral_cols:
+                    scan_count_expr = "COALESCE(scan_count, 1)" if "scan_count" in viral_cols else "1"
+                    if {"matched_keyword_category", "category"}.issubset(viral_cols):
+                        category_expr = "COALESCE(matched_keyword_category, category, '')"
+                    elif "matched_keyword_category" in viral_cols:
+                        category_expr = "matched_keyword_category"
+                    elif "category" in viral_cols:
+                        category_expr = "category"
+                    else:
+                        category_expr = "''"
+                    rows = conn.execute(
+                        f"""
+                        SELECT matched_keyword,
+                               {category_expr} AS category,
+                               COUNT(*) AS total_count,
+                               SUM(CASE WHEN {scan_count_expr} > 1 THEN 1 ELSE 0 END) AS revisited_count
+                        FROM viral_targets
+                        WHERE matched_keyword IS NOT NULL
+                          AND matched_keyword != ''
+                        GROUP BY matched_keyword, category
+                        """
+                    ).fetchall()
+                    for row in rows:
+                        keyword = row["matched_keyword"] or ""
+                        total = int(row["total_count"] or 0)
+                        revisited = int(row["revisited_count"] or 0)
+                        norm = self._normalize_keyword_for_history(keyword)
+                        if not norm:
+                            continue
+                        profile["viral_keyword_stats"][norm] = {
+                            "total_count": total,
+                            "revisit_rate": (revisited / total) if total else 0.0,
+                        }
+                        category = row["category"] or ""
+                        if category:
+                            profile["category_counts"][category] += total
+        except sqlite3.Error as e:
+            print(f"⚠️ 다양성 히스토리 로드 실패: {e}")
+
+        return profile
+
+    def _build_history_aware_exploration_seeds(self, max_seeds: int = 48) -> List[str]:
+        profile = getattr(self, "diversity_profile", self._empty_diversity_profile())
+        keyword_norms: Set[str] = profile.get("keyword_norms", set())
+        category_counts: Counter = profile.get("category_counts", Counter())
+        intent_counts: Counter = profile.get("intent_counts", Counter())
+
+        category_terms = {
+            "다이어트": ["다이어트", "다이어트 한약", "비만 한의원", "식욕억제"],
+            "피부/여드름": ["여드름 흉터", "새살침", "패인흉터", "모공흉터"],
+            "안면비대칭": ["안면비대칭", "얼굴비대칭", "턱비대칭"],
+            "체형교정": ["체형교정", "골반교정", "자세교정"],
+            "교통사고": ["교통사고 입원", "교통사고 후유증", "자동차사고 한의원"],
+            "리프팅/탄력": ["한방리프팅", "매선리프팅", "팔자주름"],
+        }
+        intent_suffixes = [
+            ("transactional", "상담"),
+            ("transactional", "예약"),
+            ("transactional", "가격"),
+            ("commercial", "추천"),
+            ("commercial", "후기"),
+            ("informational", "효과"),
+            ("red_flag", "부작용"),
+            ("validation", "진짜"),
+            ("comparison", "비교"),
+        ]
+        intent_suffixes.sort(key=lambda item: intent_counts.get(item[0], 0))
+        diverse_suffixes = []
+        used_intents = set()
+        for item in intent_suffixes:
+            if item[0] in used_intents:
+                continue
+            diverse_suffixes.append(item)
+            used_intents.add(item[0])
+        for item in intent_suffixes:
+            if item not in diverse_suffixes:
+                diverse_suffixes.append(item)
+        intent_suffixes = diverse_suffixes
+
+        region_pool = ["청주"]
+        for region in self.collector.neighborhoods[:8]:
+            if region not in region_pool:
+                region_pool.append(region)
+
+        category_order = sorted(category_terms, key=lambda category: category_counts.get(category, 0))
+        seeds: List[str] = []
+        seen: Set[str] = set()
+
+        def add_seed(seed: str) -> None:
+            norm = self._normalize_keyword_for_history(seed)
+            if not norm or norm in seen or norm in keyword_norms:
+                return
+            if not self.collector._is_valid_keyword(seed) and not self.collector.is_focus_candidate(seed):
+                return
+            seen.add(norm)
+            seeds.append(seed)
+
+        for category in category_order:
+            terms = category_terms[category]
+            for idx, term in enumerate(terms):
+                region = region_pool[(len(seeds) + idx) % len(region_pool)]
+                add_seed(f"{region} {term}")
+                for _, suffix in intent_suffixes[:3]:
+                    add_seed(f"{region} {term} {suffix}")
+                    if len(seeds) >= max_seeds:
+                        return seeds
+
+        return seeds[:max_seeds]
+
+    def _apply_history_novelty_adjustment(
+        self,
+        keyword: str,
+        priority: float,
+        category: str,
+        search_intent: str,
+    ) -> float:
+        profile = getattr(self, "diversity_profile", self._empty_diversity_profile())
+        norm = self._normalize_keyword_for_history(keyword)
+        keyword_norms: Set[str] = profile.get("keyword_norms", set())
+        category_counts: Counter = profile.get("category_counts", Counter())
+        intent_counts: Counter = profile.get("intent_counts", Counter())
+        viral_stats: Dict[str, dict] = profile.get("viral_keyword_stats", {})
+
+        penalty = 0.0
+        if norm in keyword_norms:
+            penalty += 8.0
+
+        stats = viral_stats.get(norm)
+        if stats:
+            penalty += min(35.0, float(stats.get("total_count", 0)) * 1.2)
+            penalty += min(30.0, float(stats.get("revisit_rate", 0.0)) * 30.0)
+
+        category_total = sum(category_counts.values())
+        if category_total and category:
+            category_share = category_counts.get(category, 0) / category_total
+            if category_share > 0.35:
+                penalty += min(8.0, (category_share - 0.35) * 20.0)
+
+        intent_total = sum(intent_counts.values())
+        if intent_total and search_intent:
+            intent_share = intent_counts.get(search_intent, 0) / intent_total
+            if intent_share > 0.45:
+                penalty += min(6.0, (intent_share - 0.45) * 18.0)
+
+        novelty_bonus = 6.0 if norm and norm not in keyword_norms and norm not in viral_stats else 0.0
+        return max(0.0, float(priority or 0.0) - penalty + novelty_bonus)
+
+    def _select_expansion_keywords(
+        self,
+        grades: Set[str],
+        limit: Optional[int] = None,
+        max_per_category: int = 12,
+    ) -> List[str]:
+        candidates = [r for r in self.collected.values() if r.grade in grades]
+        candidates.sort(key=lambda r: r.priority_score, reverse=True)
+
+        selected: List[KeywordResult] = []
+        deferred: List[KeywordResult] = []
+        category_counts: Counter = Counter()
+
+        for result in candidates:
+            category = result.category or "기타"
+            if category_counts[category] < max_per_category:
+                selected.append(result)
+                category_counts[category] += 1
+            else:
+                deferred.append(result)
+            if limit and len(selected) >= limit:
+                return [r.keyword for r in selected[:limit]]
+
+        if limit and len(selected) < limit:
+            selected.extend(deferred[: limit - len(selected)])
+        elif not limit:
+            selected.extend(deferred)
+
+        return [r.keyword for r in selected[:limit] if r.keyword] if limit else [r.keyword for r in selected if r.keyword]
 
     def _calculate_seasonality_score(self, keyword: str) -> float:
         """현재 시즌에 맞는 키워드인지 점수화 (0-100)"""
@@ -1986,11 +2244,12 @@ class PathfinderLegion:
                     _idx = _order.index(kei_grade)
                     kei_grade = _order[min(_idx + 2, len(_order) - 1)]
 
-            # 우선순위 점수 계산 (KEI 포함)
-            priority = self._calculate_priority(difficulty, opportunity, kw, search_volume, kei)
-
             # 검색 의도 분류
             search_intent = SearchIntentClassifier.classify(kw)
+
+            # 우선순위 점수 계산 (KEI 포함) + 히스토리 기반 신규성 보정
+            priority = self._calculate_priority(difficulty, opportunity, kw, search_volume, kei)
+            priority = self._apply_history_novelty_adjustment(kw, priority, category, search_intent)
 
             result = KeywordResult(
                 keyword=kw,
@@ -2073,13 +2332,13 @@ class PathfinderLegion:
         round_num += 1
         print(f"\n[Round {round_num}] S/A급 키워드 재확장 (의도 기반)...")
 
-        sa_keywords = [kw for kw, r in self.collected.items() if r.grade in ['S', 'A']]
+        sa_keywords = self._select_expansion_keywords({'S', 'A'}, limit=50, max_per_category=10)
         round2_keywords = set()
 
         # 의도 suffix - Round 4와 다른 세트로 차별화
         round2_suffixes = ["비용", "효과", "전후", "방법", "기간"]
 
-        for kw in sa_keywords[:50]:  # 상위 50개로 확대
+        for kw in sa_keywords:
             # 1) 기본 자동완성
             suggestions = self.collector.get_autocomplete(kw)
             if suggestions is not None:
@@ -2135,7 +2394,7 @@ class PathfinderLegion:
         print(f"\n[Round {round_num}] 의도 확장 (전환 의도 키워드)...")
 
         # 기존 S/A/B급 키워드에 의도 suffix 추가 - 전체 사용
-        good_keywords = [kw for kw, r in self.collected.items() if r.grade in ['S', 'A', 'B']]
+        good_keywords = self._select_expansion_keywords({'S', 'A', 'B'}, limit=70, max_per_category=12)
         round4_keywords = set()
 
         generic_high_intent = ["가격", "비용", "예약", "후기", "추천"]
@@ -2143,7 +2402,7 @@ class PathfinderLegion:
         high_intent_pool = set(generic_high_intent + accident_high_intent)
         other_intent = [i for i in self.collector.intent_suffixes if i not in high_intent_pool]
 
-        for kw in good_keywords[:70]:  # 50 → 70개로 확대
+        for kw in good_keywords:
             result = self.collected.get(kw)
             category = result.category if result else self.collector._detect_category(kw)
             high_intents = list(generic_high_intent)
@@ -2255,8 +2514,8 @@ class PathfinderLegion:
         print(f"\n[Round {round_num}] 연관검색어 수집 (S/A급 전체 + B급 상위)...")
 
         # S/A급 전체 + B급 상위 30개로 확대
-        sa_keywords = [kw for kw, r in self.collected.items() if r.grade in ['S', 'A']]
-        b_keywords = [kw for kw, r in self.collected.items() if r.grade == 'B'][:30]
+        sa_keywords = self._select_expansion_keywords({'S', 'A'}, limit=None, max_per_category=20)
+        b_keywords = self._select_expansion_keywords({'B'}, limit=30, max_per_category=8)
         target_keywords = sa_keywords + b_keywords
 
         round6_keywords = set()
@@ -2290,7 +2549,7 @@ class PathfinderLegion:
             print(f"\n[Round {round_num}] 블로그 제목 마이닝...")
 
             # S/A급 키워드로 블로그 검색하여 추가 키워드 발굴
-            sa_keywords = [kw for kw, r in self.collected.items() if r.grade in ['S', 'A']][:15]
+            sa_keywords = self._select_expansion_keywords({'S', 'A'}, limit=15, max_per_category=5)
 
             blog_keywords = set()
             for kw in sa_keywords:
@@ -2391,10 +2650,10 @@ class PathfinderLegion:
             print(f"\n[Round {round_num}] 추가 확장...")
 
             # B급 키워드 재확장
-            b_keywords = [kw for kw, r in self.collected.items() if r.grade == 'B']
+            b_keywords = self._select_expansion_keywords({'B'}, limit=20, max_per_category=6)
             extra_keywords = set()
 
-            for kw in b_keywords[:20]:
+            for kw in b_keywords:
                 suggestions = self.collector.get_autocomplete(kw)
                 if suggestions is not None:  # None 방어
                     extra_keywords.update(suggestions)
