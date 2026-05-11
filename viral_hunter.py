@@ -48,6 +48,85 @@ if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 
+AI_CATEGORY_MIN_QUOTAS: Dict[str, int] = {
+    "피부": 50,
+    "교통사고": 50,
+    "다이어트": 40,
+    "비대칭/교정": 25,
+    "통증/디스크": 20,
+    "경쟁사_역공략": 20,
+    "리프팅/탄력": 10,
+}
+
+AI_CATEGORY_ALIASES: Dict[str, str] = {
+    "피부/여드름": "피부",
+    "안면비대칭": "비대칭/교정",
+    "체형교정": "비대칭/교정",
+}
+
+
+def _ai_quota_category(target: "ViralTarget") -> str:
+    """Return the category bucket used for balanced AI target selection."""
+    raw_category = (
+        getattr(target, "category", None)
+        or getattr(target, "matched_keyword_category", None)
+        or "기타"
+    )
+    return AI_CATEGORY_ALIASES.get(raw_category, raw_category)
+
+
+def split_ai_targets_with_category_floor(
+    targets: List["ViralTarget"],
+    top_n: int,
+    category_min_quotas: Optional[Dict[str, int]] = None,
+) -> Tuple[List["ViralTarget"], List["ViralTarget"]]:
+    """Split AI candidates while keeping minority core categories represented.
+
+    `targets` is already score-sorted. A pure global top-N can starve categories
+    like asymmetry/body correction when skin or traffic-accident results flood
+    the scan. Reserve a small floor per core category, then fill the rest by the
+    original priority order.
+    """
+    if top_n <= 0:
+        return [], list(targets)
+    if len(targets) <= top_n:
+        return list(targets), []
+
+    quotas = category_min_quotas or AI_CATEGORY_MIN_QUOTAS
+    selected: List[ViralTarget] = []
+    selected_urls: set[str] = set()
+
+    for category, quota in quotas.items():
+        if len(selected) >= top_n:
+            break
+        remaining_quota = min(quota, top_n - len(selected))
+        picked = 0
+        for target in targets:
+            url = target.url or target.id
+            if url in selected_urls:
+                continue
+            if _ai_quota_category(target) != category:
+                continue
+            selected.append(target)
+            selected_urls.add(url)
+            picked += 1
+            if picked >= remaining_quota or len(selected) >= top_n:
+                break
+
+    for target in targets:
+        if len(selected) >= top_n:
+            break
+        url = target.url or target.id
+        if url in selected_urls:
+            continue
+        selected.append(target)
+        selected_urls.add(url)
+
+    selected.sort(key=lambda x: x.priority_score or 0, reverse=True)
+    rest = [target for target in targets if (target.url or target.id) not in selected_urls]
+    return selected, rest
+
+
 # ============================================
 # 데이터 클래스
 # ============================================
@@ -2563,9 +2642,23 @@ class ViralHunter:
             except Exception as e:
                 logger.debug(f"adaptive penalty skip: {e}")
 
-        # 상위 N개만 AI 분석 대상, 나머지는 raw 저장
-        ai_targets = filtered[:top_n_for_ai]
-        rest_targets = filtered[top_n_for_ai:]
+        # 상위 N개만 AI 분석 대상, 나머지는 raw 저장.
+        # 단, 전역 점수순만 쓰면 피부/교통사고 물량이 많은 날 비대칭/교정 같은
+        # 핵심 소수 카테고리가 전부 raw_backlog로 밀린다.
+        ai_targets, rest_targets = split_ai_targets_with_category_floor(
+            filtered,
+            top_n_for_ai,
+        )
+        if ai_targets:
+            ai_category_counts: Dict[str, int] = {}
+            for target in ai_targets:
+                category = _ai_quota_category(target)
+                ai_category_counts[category] = ai_category_counts.get(category, 0) + 1
+            quota_summary = ", ".join(
+                f"{category} {count}"
+                for category, count in sorted(ai_category_counts.items())
+            )
+            print(f"   🎛️ AI 분석 카테고리 배분: {quota_summary}")
 
         # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
         raw_saved = 0

@@ -71,6 +71,50 @@ def test_legion_business_core_filter_matches_actual_acquisition_categories():
         assert not collector.is_focus_candidate(keyword, category)
 
 
+def test_ai_target_split_reserves_minority_category_floor():
+    skin = "\ud53c\ubd80"
+    asymmetry = "\ube44\ub300\uce6d/\uad50\uc815"
+
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/skin/{i}",
+            title=f"skin {i}",
+            category=skin,
+            priority_score=1000 - i,
+        )
+        for i in range(12)
+    ]
+    targets += [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/asymmetry/{i}",
+            title=f"asymmetry {i}",
+            category=asymmetry,
+            priority_score=100 - i,
+        )
+        for i in range(5)
+    ]
+    targets.sort(key=lambda target: target.priority_score, reverse=True)
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=10,
+        category_min_quotas={asymmetry: 3},
+    )
+
+    selected_categories = [
+        viral_hunter._ai_quota_category(target)
+        for target in selected
+    ]
+    selected_urls = {target.url for target in selected}
+    rest_urls = {target.url for target in rest}
+
+    assert len(selected) == 10
+    assert selected_categories.count(asymmetry) == 3
+    assert selected_urls.isdisjoint(rest_urls)
+
+
 def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral.db"))
 

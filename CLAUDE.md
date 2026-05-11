@@ -1,5 +1,17 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-11 Memory: Viral Hunter WebUI Auth and Asymmetry Quota Fix
+
+- If Viral Hunter data exists in SQLite but the WebUI shows an empty/error state, check API auth first. The local backend expects `MARKETING_BOT_API_KEY`; the frontend must send the same value through an ignored local env such as `marketing_bot_web/frontend/.env.local` (`VITE_MARKETING_BOT_API_KEY`). Do not commit real keys.
+- Docker Compose frontend should load `../.env` so local Vite builds can receive the operator-provided API key. This is for local/dev wiring; production should still avoid baking admin secrets into public JS.
+- Latest incident reference: Legion `scan_run_id=10` had `비대칭/교정` candidates, but WebUI default queue showed none because it filters to `comment_status='pending'`. Distribution was `raw_backlog=64`, `skipped=9`, `posted=1`, `pending=0`.
+- Root cause was global top-N AI selection starvation: high-volume skin/traffic/diet results consumed the `--top-n-for-ai 300` budget before minority core categories like `비대칭/교정`.
+- Viral Hunter AI target selection now uses category floors before filling remaining slots by score. Keep `비대칭/교정` represented (`AI_CATEGORY_MIN_QUOTAS`, currently 25) and preserve the original score ordering after selection.
+- Do not promote `raw_backlog` rows directly to `pending` just to make them visible. If an existing scan needs recovery, re-run/rescue AI analysis for the relevant raw_backlog category so ad/natural suitability filters still run.
+- Verification for this fix:
+  - `python -m py_compile viral_hunter.py`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q`
+
 ## 2026-05-08 Memory: Core Keyword/Viral Staff Queue Baseline
 
 - Clinic acquisition core keywords are intentionally narrow: 다이어트, 교통사고, 안면비대칭, 여드름흉터, 여드름, 새살침, 체형교정. Treat adjacent categories as secondary unless the user explicitly broadens scope.
