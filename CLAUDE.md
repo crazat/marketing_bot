@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-11 Memory: Staff WebUI Auth and Port Restart Guard
+
+- If a staff browser repeatedly sends `/ws?api_key=1075` or another old value, clear `localStorage.marketing_bot_api_key` or let the frontend 403 recovery path replace it with the bundled `VITE_MARKETING_BOT_API_KEY` when present. The backend key remains `MARKETING_BOT_API_KEY`.
+- Frontend API auth now prefers the browser-stored operator key, but on 403 it falls back once to the bundled local/dev key before prompting. WebSocket auth failures with close codes 1006/1008 also retry once after that fallback.
+- `build_and_run.bat` is now repeat-run safe for the common local case: if port 8000 is held by a Python `main.py` backend, it stops that process before starting the freshly built server. If another app owns 8000, it fails and prints the PID instead of killing it.
+- Latest incident verification:
+  - `npm run build` in `marketing_bot_web/frontend`
+  - `GET /api/health` -> 200
+  - `GET /api/viral/home-stats` with the configured key -> 200
+  - The stale literal key `1075` correctly returns 403.
+
 ## 2026-05-11 Memory: Viral Hunter WebUI Auth and Asymmetry Quota Fix
 
 - If Viral Hunter data exists in SQLite but the WebUI shows an empty/error state, check API auth first. The local backend expects `MARKETING_BOT_API_KEY`; the frontend must send the same value through an ignored local env such as `marketing_bot_web/frontend/.env.local` (`VITE_MARKETING_BOT_API_KEY`). Do not commit real keys.

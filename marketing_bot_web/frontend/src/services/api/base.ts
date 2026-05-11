@@ -453,13 +453,22 @@ type ApiRequestConfigWithRetry = InternalAxiosRequestConfig & {
   _apiKeyRetry?: boolean
 }
 
-export function getConfiguredApiKey(): string | null {
+function getBundledApiKey(): string | null {
+  const envKey = import.meta.env.VITE_MARKETING_BOT_API_KEY as string | undefined
+  const trimmedKey = envKey?.trim()
+  return trimmedKey || null
+}
+
+function getStoredApiKey(): string | null {
   if (typeof window !== 'undefined') {
-    const storedKey = window.localStorage.getItem(API_KEY_STORAGE_KEY)
+    const storedKey = window.localStorage.getItem(API_KEY_STORAGE_KEY)?.trim()
     if (storedKey) return storedKey
   }
-  const envKey = import.meta.env.VITE_MARKETING_BOT_API_KEY as string | undefined
-  return envKey || null
+  return null
+}
+
+export function getConfiguredApiKey(): string | null {
+  return getStoredApiKey() || getBundledApiKey()
 }
 
 export function setConfiguredApiKey(apiKey: string | null): void {
@@ -469,6 +478,15 @@ export function setConfiguredApiKey(apiKey: string | null): void {
   } else {
     window.localStorage.removeItem(API_KEY_STORAGE_KEY)
   }
+}
+
+export function resetApiKeyToBundledDefault(): boolean {
+  if (typeof window === 'undefined') return false
+  const bundledKey = getBundledApiKey()
+  const storedKey = getStoredApiKey()
+  if (!bundledKey || !storedKey || storedKey === bundledKey) return false
+  setConfiguredApiKey(bundledKey)
+  return true
 }
 
 export function getApiAuthHeaders(): Record<string, string> {
@@ -519,6 +537,16 @@ async function retryWithApiKeyPrompt(
     (status !== 401 && status !== 403)
   ) {
     return null
+  }
+
+  if (status === 403 && resetApiKeyToBundledDefault()) {
+    const bundledKey = getConfiguredApiKey()
+    if (bundledKey) {
+      originalRequest._apiKeyRetry = true
+      originalRequest.headers = originalRequest.headers ?? {}
+      ;(originalRequest.headers as Record<string, string>)['X-API-Key'] = bundledKey
+      return client.request(originalRequest)
+    }
   }
 
   const apiKey = promptForApiKey(status)

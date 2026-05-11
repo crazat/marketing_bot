@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { withApiKeyQuery } from '@/services/api/base'
+import { resetApiKeyToBundledDefault, withApiKeyQuery } from '@/services/api/base'
 
 const isDev = import.meta.env.DEV
 const devLog = (...args: unknown[]) => isDev && console.log(...args)
@@ -105,6 +105,18 @@ export function useWebSocket() {
       if (pingInterval) {
         clearInterval(pingInterval)
         pingInterval = null
+      }
+
+      if ((event.code === 1006 || event.code === 1008) && resetApiKeyToBundledDefault()) {
+        if (shouldReconnectRef.current && isMountedRef.current) {
+          setIsReconnecting(true)
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (shouldReconnectRef.current && isMountedRef.current) {
+              connect()
+            }
+          }, 250)
+        }
+        return
       }
 
       if (!shouldReconnectRef.current || !isMountedRef.current || event.code === 1008) {
