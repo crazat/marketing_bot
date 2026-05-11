@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-12 Memory: Viral Hunter Canonical URL Deduplication
+
+- Viral Hunter duplicate prevention must compare `canonical_url`, not only the raw `url`. KIN URLs are keyed by `docId`; Naver blog/cafe URLs are keyed by stable post identity/path so search parameters such as `qb`, `from`, `trackingCode`, and iframe wrappers do not create duplicate targets.
+- Shared canonicalization lives in `core_services/viral_url_canonicalizer.py`. Keep DB writes, repository writes, checkpoint restore, in-run batch dedupe, and existing-target refresh on this shared helper instead of reimplementing URL parsing in each caller.
+- `viral_targets.canonical_url` is nullable and indexed, not unique. Existing production data already contains historical duplicate canonical groups, so future inserts/refreshes should select an existing row by `url OR canonical_url` and avoid creating more duplicates without forcing a destructive merge.
+- `ViralTarget.id` is canonical-URL based. If changing canonical rules, expect target IDs for newly discovered Naver posts to follow the canonical identity.
+- Latest targeted verification for this change:
+  - `python -m py_compile core_services\viral_url_canonicalizer.py db\database.py repositories\viral_target_repo.py viral_hunter.py`
+  - `$env:PYTHONPATH='.'; pytest -q tests\test_viral_target_repo.py tests\test_pathfinder_viral_stability.py` -> 32 passed
+- Latest DB migration check: default DB had 61,895 viral targets, 61,895 with `canonical_url`, and 6,724 pre-existing duplicate canonical groups after backfill. Do not treat those historical groups as a failed migration.
+
 ## 2026-05-11 Memory: Viral Hunter Exposure Scoring Upgrade
 
 - Viral Hunter no longer treats Naver API `sort=date` as enough evidence of public exposure. Naver collection now mixes cafe/blog `sim+date` and kin `sim+point+date`, records `search_sort`, `search_rank`, `search_start`, `sort_appearances`, and calculates `exposure_score` before filtering.

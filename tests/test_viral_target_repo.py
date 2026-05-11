@@ -28,6 +28,7 @@ def tmp_db():
             id TEXT PRIMARY KEY,
             platform TEXT,
             url TEXT UNIQUE,
+            canonical_url TEXT,
             title TEXT,
             content_preview TEXT,
             matched_keywords TEXT,
@@ -191,6 +192,37 @@ def test_exclude_revisited_hides_duplicate_scan_targets(tmp_db):
         limit=10,
     )
     assert [row["url"] for row in rediscovered] == ["https://x/duplicate"]
+
+
+def test_insert_uses_canonical_url_for_naver_duplicates(tmp_db):
+    repo = ViralTargetRepository(tmp_db)
+    first_url = "https://kin.naver.com/qna/detail.naver?docId=123&qb=old"
+    second_url = "https://kin.naver.com/qna/detail.naver?docId=123&qb=new"
+
+    assert repo.insert({
+        "id": "kin-old",
+        "platform": "kin",
+        "url": first_url,
+        "title": "old",
+        "comment_status": "pending",
+        "priority_score": 50,
+        "matched_keywords": [],
+    })
+    assert repo.insert({
+        "id": "kin-new",
+        "platform": "kin",
+        "url": second_url,
+        "title": "new",
+        "comment_status": "pending",
+        "priority_score": 55,
+        "matched_keywords": [],
+    })
+
+    assert repo.count() == 1
+    row = repo.get("kin-old")
+    assert row is not None
+    assert row["scan_count"] == 2
+    assert row["canonical_url"] == "https://kin.naver.com/qna/detail.naver?docId=123"
 
 
 def test_insert_conflict_recovers_null_scan_count(tmp_db):

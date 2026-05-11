@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional
 
+from core_services.viral_url_canonicalizer import canonicalize_viral_url
+
 
 class ViralTargetRepository:
     """viral_targets 테이블 접근 전담 Repository."""
@@ -90,21 +92,41 @@ class ViralTargetRepository:
         returns: 성공 여부.
         """
         keywords_json = json.dumps(data.get("matched_keywords", []), ensure_ascii=False)
+        url = data.get("url", "")
+        canonical_url = data.get("canonical_url") or canonicalize_viral_url(url)
         content_hash = self._content_hash(
-            data.get("url", ""), data.get("title", ""), data.get("content_preview", "")
+            canonical_url or url, data.get("title", ""), data.get("content_preview", "")
         )
         now = datetime.now().isoformat()
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
+                existing_id = None
+                storage_url = url
+                if canonical_url:
+                    cur.execute(
+                        f"""
+                        SELECT id, url
+                        FROM {self.TABLE}
+                        WHERE url = ? OR canonical_url = ?
+                        ORDER BY CASE WHEN url = ? THEN 0 ELSE 1 END, discovered_at ASC
+                        LIMIT 1
+                        """,
+                        (url, canonical_url, url),
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        existing_id = row["id"]
+                        storage_url = row["url"] or url
                 cur.execute(
                     f"""
                     INSERT INTO {self.TABLE}
-                    (id, platform, url, title, content_preview, matched_keywords,
+                    (id, platform, url, canonical_url, title, content_preview, matched_keywords,
                      category, is_commentable, comment_status, generated_comment,
                      priority_score, discovered_at, last_scanned_at, scan_count, content_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(url) DO UPDATE SET
+                        canonical_url = COALESCE(NULLIF(excluded.canonical_url, ''), {self.TABLE}.canonical_url),
                         title = excluded.title,
                         matched_keywords = excluded.matched_keywords,
                         priority_score = excluded.priority_score,
@@ -115,7 +137,8 @@ class ViralTargetRepository:
                     (
                         data.get("id"),
                         data.get("platform"),
-                        data.get("url"),
+                        storage_url,
+                        canonical_url,
                         data.get("title"),
                         data.get("content_preview", ""),
                         keywords_json,
@@ -131,7 +154,7 @@ class ViralTargetRepository:
                     ),
                 )
                 # matched_keywords 정규화 테이블에도 반영
-                target_id = data.get("id")
+                target_id = existing_id or data.get("id")
                 kws = data.get("matched_keywords") or []
                 if target_id and isinstance(kws, list) and kws:
                     cur.executemany(
@@ -146,7 +169,7 @@ class ViralTargetRepository:
     def update(self, target_id: str, changes: Dict[str, Any]) -> bool:
         """부분 업데이트 (화이트리스트된 컬럼만)."""
         ALLOWED = {
-            "platform", "url", "title", "content_preview", "matched_keywords",
+            "platform", "url", "canonical_url", "title", "content_preview", "matched_keywords",
             "category", "is_commentable", "comment_status", "generated_comment",
             "priority_score", "last_scanned_at", "scan_count",
             "first_response_at", "response_time_hours", "posted_at",

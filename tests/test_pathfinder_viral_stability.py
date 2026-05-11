@@ -6,6 +6,7 @@ from db.database import DatabaseManager
 from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
 from scripts.ai_ad_classify_apply import _execute_scoped_update
 import viral_hunter
+from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from viral_hunter import AICommentGenerator, ViralTarget
 
 
@@ -399,6 +400,138 @@ def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_pat
 
     assert row == (2, 2, "pending")
     assert db.get_existing_viral_urls([target["url"], "https://example.com/new"]) == {target["url"]}
+
+
+def test_viral_url_canonicalizer_uses_naver_post_identity():
+    assert (
+        canonicalize_viral_url(
+            "https://kin.naver.com/qna/detail.naver?d1id=7&docId=346459027&qb=old"
+        )
+        == "https://kin.naver.com/qna/detail.naver?docId=346459027"
+    )
+    assert (
+        canonicalize_viral_url(
+            "https://blog.naver.com/PostView.naver?blogId=ClinicA&logNo=223456&from=search"
+        )
+        == "https://blog.naver.com/clinica/223456"
+    )
+    assert (
+        canonicalize_viral_url("https://m.blog.naver.com/ClinicA/223456?trackingCode=rss")
+        == "https://blog.naver.com/clinica/223456"
+    )
+    assert (
+        canonicalize_viral_url("https://cafe.naver.com/ClinicCafe/98765?boardtype=L")
+        == "https://cafe.naver.com/cliniccafe/98765"
+    )
+
+
+def test_viral_canonical_upsert_prevents_kin_query_param_duplicates(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_canonical.db"))
+    first_url = "https://kin.naver.com/qna/detail.naver?d1id=7&docId=346459027&qb=old"
+    second_url = "https://kin.naver.com/qna/detail.naver?d1id=7&docId=346459027&qb=new"
+
+    assert db.insert_viral_target({
+        "id": "first",
+        "platform": "kin",
+        "url": first_url,
+        "title": "same doc",
+        "matched_keywords": ["keyword"],
+        "comment_status": "pending",
+        "source_scan_run_id": 1,
+    })
+    assert db.insert_viral_target({
+        "id": "second",
+        "platform": "kin",
+        "url": second_url,
+        "title": "same doc refreshed",
+        "matched_keywords": ["keyword"],
+        "comment_status": "pending",
+        "source_scan_run_id": 2,
+    })
+
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT url, canonical_url, scan_count, source_scan_run_id
+            FROM viral_targets
+            """
+        ).fetchall()
+
+    assert rows == [(
+        first_url,
+        "https://kin.naver.com/qna/detail.naver?docId=346459027",
+        2,
+        2,
+    )]
+    assert db.get_existing_viral_urls([second_url]) == {second_url}
+
+
+def test_existing_url_refresh_uses_blog_cafe_canonical_paths(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_canonical_refresh.db"))
+    blog_postview = (
+        "https://blog.naver.com/PostView.naver?blogId=ClinicA&logNo=223456&from=search"
+    )
+    blog_path = "https://m.blog.naver.com/ClinicA/223456?trackingCode=rss"
+    cafe_url = "https://cafe.naver.com/ClinicCafe/98765?boardtype=L"
+    cafe_url_with_query = "https://cafe.naver.com/ClinicCafe/98765?iframe_url=/ArticleRead.nhn"
+
+    assert db.insert_viral_target({
+        "id": "blog-old",
+        "platform": "blog",
+        "url": blog_postview,
+        "title": "old blog",
+        "matched_keywords": ["keyword"],
+        "comment_status": "posted",
+        "source_scan_run_id": 1,
+    })
+    assert db.insert_viral_target({
+        "id": "cafe-old",
+        "platform": "cafe",
+        "url": cafe_url,
+        "title": "old cafe",
+        "matched_keywords": ["keyword"],
+        "comment_status": "posted",
+        "source_scan_run_id": 1,
+    })
+
+    assert db.get_existing_viral_urls([blog_path, cafe_url_with_query]) == {
+        blog_path,
+        cafe_url_with_query,
+    }
+
+    refreshed = db.refresh_existing_viral_targets([
+        {
+            "id": "blog-new",
+            "platform": "blog",
+            "url": blog_path,
+            "title": "new blog",
+            "matched_keywords": ["keyword"],
+            "source_scan_run_id": 10,
+        },
+        {
+            "id": "cafe-new",
+            "platform": "cafe",
+            "url": cafe_url_with_query,
+            "title": "new cafe",
+            "matched_keywords": ["keyword"],
+            "source_scan_run_id": 10,
+        },
+    ])
+
+    assert refreshed == 2
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT platform, scan_count, source_scan_run_id, comment_status
+            FROM viral_targets
+            ORDER BY platform
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("blog", 2, 10, "posted"),
+        ("cafe", 2, 10, "posted"),
+    ]
 
 
 def test_viral_target_insert_persists_exposure_and_ai_metadata(tmp_path):

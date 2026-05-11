@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mar
 from db.database import DatabaseManager
 from utils import ConfigManager, logger
 from services.ai_client import ai_generate, ai_generate_korean
+from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import ViralSeedBuilder
 
 # Windows encoding fix
@@ -203,7 +204,8 @@ class ViralTarget:
     @property
     def id(self) -> str:
         """URL 기반 고유 ID 생성"""
-        return hashlib.md5(self.url.encode()).hexdigest()[:16]
+        identity_url = canonicalize_viral_url(self.url) or self.url
+        return hashlib.md5(identity_url.encode()).hexdigest()[:16]
 
     def to_dict(self) -> dict:
         """DB 저장용 딕셔너리 변환"""
@@ -211,6 +213,7 @@ class ViralTarget:
             'id': self.id,
             'platform': self.platform,
             'url': self.url,
+            'canonical_url': canonicalize_viral_url(self.url),
             'title': self.title,
             'content_preview': self.content_preview,
             'matched_keywords': self.matched_keywords,
@@ -2700,6 +2703,10 @@ class ViralHunter:
         if not compact_urls:
             return []
 
+        url_to_canonical = {
+            url: canonicalize_viral_url(url)
+            for url in compact_urls
+        }
         loaded_by_url: Dict[str, ViralTarget] = {}
         import sqlite3 as _sql
 
@@ -2708,25 +2715,53 @@ class ViralHunter:
             conn.row_factory = _sql.Row
             cur = conn.cursor()
             for start in range(0, len(compact_urls), 500):
-                chunk = compact_urls[start:start + 500]
-                placeholders = ",".join("?" for _ in chunk)
+                raw_chunk = compact_urls[start:start + 500]
+                canonical_chunk = [
+                    u for u in dict.fromkeys(url_to_canonical.get(url) for url in raw_chunk) if u
+                ]
+                raw_placeholders = ",".join("?" for _ in raw_chunk)
+                canonical_placeholders = ",".join("?" for _ in canonical_chunk)
+                where_parts = []
+                params = []
+                if raw_chunk:
+                    where_parts.append(f"url IN ({raw_placeholders})")
+                    params.extend(raw_chunk)
+                if canonical_chunk:
+                    where_parts.append(f"canonical_url IN ({canonical_placeholders})")
+                    params.extend(canonical_chunk)
                 rows = cur.execute(
                     f"""
                     SELECT *
                     FROM viral_targets
-                    WHERE url IN ({placeholders})
+                    WHERE ({' OR '.join(where_parts)})
                       AND COALESCE(comment_status, 'pending') != 'needs_ai_retry'
                     """,
-                    chunk,
+                    params,
                 ).fetchall()
                 for row in rows:
-                    loaded_by_url[row["url"]] = self._viral_target_from_db_row(row)
+                    target = self._viral_target_from_db_row(row)
+                    if row["url"]:
+                        loaded_by_url[row["url"]] = target
+                    if "canonical_url" in row.keys() and row["canonical_url"]:
+                        loaded_by_url[row["canonical_url"]] = target
             conn.close()
         except Exception as e:
             logger.warning(f"AI 체크포인트 DB 결과 복원 실패: {e}")
             return []
 
-        return [loaded_by_url[u] for u in compact_urls if u in loaded_by_url]
+        loaded: List[ViralTarget] = []
+        seen_loaded_ids: set[str] = set()
+        for url in compact_urls:
+            for key in (url, url_to_canonical.get(url)):
+                if key not in loaded_by_url:
+                    continue
+                target = loaded_by_url[key]
+                if target.id in seen_loaded_ids:
+                    break
+                loaded.append(target)
+                seen_loaded_ids.add(target.id)
+                break
+        return loaded
 
     @staticmethod
     def _noise_key(text: str) -> str:
@@ -2814,10 +2849,11 @@ class ViralHunter:
         for target in targets:
             if not target.url:
                 continue
-            if target.url in seen_urls:
+            canonical_key = canonicalize_viral_url(target.url) or target.url
+            if canonical_key in seen_urls:
                 in_batch_duplicates += 1
                 continue
-            seen_urls.add(target.url)
+            seen_urls.add(canonical_key)
             unique_targets.append(target)
 
         if in_batch_duplicates:
@@ -2890,7 +2926,10 @@ class ViralHunter:
             cp = self._load_checkpoint(kw_hash)
             if cp:
                 processed_set = set(cp.get('processed_keywords') or [])
-                seen_urls = set(cp.get('seen_urls') or [])
+                seen_urls = {
+                    canonicalize_viral_url(u) or u
+                    for u in (cp.get('seen_urls') or [])
+                }
                 all_targets = [
                     self._viral_target_from_dict(d)
                     for d in (cp.get('all_targets') or [])
@@ -2928,8 +2967,9 @@ class ViralHunter:
 
             # 중복 제거
             for target in results:
-                if target.url not in seen_urls:
-                    seen_urls.add(target.url)
+                canonical_key = canonicalize_viral_url(target.url) or target.url
+                if canonical_key not in seen_urls:
+                    seen_urls.add(canonical_key)
                     self._apply_keyword_context(target)
                     all_targets.append(target)
 
@@ -3361,8 +3401,9 @@ def main():
             results = searcher.search_all(kw, max_per_platform=15)
 
             for target in results:
-                if target.url not in seen_urls:
-                    seen_urls.add(target.url)
+                canonical_key = canonicalize_viral_url(target.url) or target.url
+                if canonical_key not in seen_urls:
+                    seen_urls.add(canonical_key)
                     all_targets.append(target)
 
             if i % 5 == 0:

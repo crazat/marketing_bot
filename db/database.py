@@ -6,6 +6,8 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
+from core_services.viral_url_canonicalizer import canonicalize_viral_url
+
 logger = logging.getLogger("DatabaseManager")
 
 
@@ -487,6 +489,7 @@ class DatabaseManager:
                 id TEXT PRIMARY KEY,
                 platform TEXT NOT NULL,
                 url TEXT UNIQUE,
+                canonical_url TEXT,
                 title TEXT,
                 content_preview TEXT,
                 matched_keywords TEXT DEFAULT '[]',
@@ -539,6 +542,11 @@ class DatabaseManager:
             pass  # 컬럼이 이미 있으면 무시
 
         try:
+            self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN canonical_url TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
             self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword TEXT")
         except sqlite3.OperationalError:
             pass  # 컬럼이 이미 있으면 무시
@@ -559,6 +567,14 @@ class DatabaseManager:
             self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_content_hash ON viral_targets(content_hash)")
         except sqlite3.OperationalError:
             pass  # 인덱스가 이미 있거나 생성 실패
+
+        try:
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_viral_canonical_url ON viral_targets(canonical_url)")
+            self._backfill_viral_canonical_urls()
+        except sqlite3.OperationalError:
+            pass
+        except Exception as e:
+            logger.debug(f"viral canonical URL backfill skipped: {e}")
 
         try:
             self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_content_hash ON competitor_reviews(content_hash)")
@@ -1101,6 +1117,75 @@ class DatabaseManager:
     # ============================================
     # [Phase 1.2] 중복 제거 헬퍼 메서드
     # ============================================
+    def _backfill_viral_canonical_urls(self, batch_size: int = 500) -> int:
+        """Populate canonical_url for existing viral target rows."""
+        updated = 0
+        while True:
+            self.cursor.execute(
+                """
+                SELECT id, url
+                FROM viral_targets
+                WHERE (canonical_url IS NULL OR canonical_url = '')
+                  AND url IS NOT NULL
+                  AND url != ''
+                LIMIT ?
+                """,
+                (batch_size,),
+            )
+            rows = self.cursor.fetchall()
+            if not rows:
+                break
+
+            updates = []
+            for target_id, url in rows:
+                canonical_url = canonicalize_viral_url(url)
+                if canonical_url:
+                    updates.append((canonical_url, target_id))
+
+            if not updates:
+                break
+
+            self.cursor.executemany(
+                "UPDATE viral_targets SET canonical_url = ? WHERE id = ?",
+                updates,
+            )
+            updated += self.cursor.rowcount if self.cursor.rowcount > 0 else len(updates)
+
+        return updated
+
+    def _find_existing_viral_target_identity(
+        self,
+        url: str,
+        canonical_url: str = "",
+    ):
+        """Find an existing viral target by raw URL first, then canonical URL."""
+        if not url and not canonical_url:
+            return None
+
+        if canonical_url:
+            self.cursor.execute(
+                """
+                SELECT id, url
+                FROM viral_targets
+                WHERE url = ? OR canonical_url = ?
+                ORDER BY
+                    CASE WHEN url = ? THEN 0 ELSE 1 END,
+                    discovered_at ASC
+                LIMIT 1
+                """,
+                (url, canonical_url, url),
+            )
+        else:
+            self.cursor.execute(
+                "SELECT id, url FROM viral_targets WHERE url = ? LIMIT 1",
+                (url,),
+            )
+
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        return row[0], row[1]
+
     @staticmethod
     def calculate_content_hash(url: str, title: str, content: str = "") -> str:
         """
@@ -3197,10 +3282,14 @@ class DatabaseManager:
             import json
             keywords_json = json.dumps(target_data.get('matched_keywords', []), ensure_ascii=False)
             now = datetime.now().isoformat()
+            url = target_data.get('url', '')
+            canonical_url = target_data.get('canonical_url') or canonicalize_viral_url(url)
+            existing_identity = self._find_existing_viral_target_identity(url, canonical_url)
+            storage_url = existing_identity[1] if existing_identity and existing_identity[1] else url
 
             # [Phase 1.2] content_hash 계산
             content_hash = self.calculate_content_hash(
-                url=target_data.get('url', ''),
+                url=canonical_url or storage_url,
                 title=target_data.get('title', ''),
                 content=target_data.get('content_preview', '')
             )
@@ -3216,7 +3305,7 @@ class DatabaseManager:
 
             self.cursor.execute('''
                 INSERT INTO viral_targets
-                (id, platform, url, title, content_preview, matched_keywords, matched_keyword,
+                (id, platform, url, canonical_url, title, content_preview, matched_keywords, matched_keyword,
                  category, is_commentable, comment_status, generated_comment,
                  priority_score, discovered_at, first_seen_at, last_scanned_at, scan_count, content_hash,
                  author, posted_at, source_scan_run_id, matched_keyword_grade,
@@ -3225,9 +3314,10 @@ class DatabaseManager:
                  conversion_fit_score, score_breakdown, search_sort, search_rank, search_start,
                  search_total, sort_appearances, ai_reviewed, ai_infiltration_score,
                  ai_post_type, ai_competitor, ai_competitor_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title = excluded.title,
+                    canonical_url = COALESCE(NULLIF(excluded.canonical_url, ''), viral_targets.canonical_url),
                     content_preview = COALESCE(NULLIF(excluded.content_preview, ''), viral_targets.content_preview),
                     matched_keywords = excluded.matched_keywords,
                     matched_keyword = COALESCE(excluded.matched_keyword, viral_targets.matched_keyword),
@@ -3277,7 +3367,8 @@ class DatabaseManager:
             ''', (
                 target_data.get('id'),
                 target_data.get('platform'),
-                target_data.get('url'),
+                storage_url,
+                canonical_url,
                 target_data.get('title'),
                 target_data.get('content_preview', ''),
                 keywords_json,
@@ -3319,7 +3410,7 @@ class DatabaseManager:
             ))
             # [Phase 11 D1] matched_keywords 정규화 저장 (viral_target_keywords)
             try:
-                target_id = target_data.get('id')
+                target_id = existing_identity[0] if existing_identity else target_data.get('id')
                 kws = target_data.get('matched_keywords') or []
                 if target_id and isinstance(kws, list) and kws:
                     self.cursor.executemany(
@@ -3336,12 +3427,18 @@ class DatabaseManager:
             return False
 
     def get_existing_viral_urls(self, urls: list[str], chunk_size: int = 500) -> set[str]:
-        """Return URLs already present in viral_targets without loading the whole table."""
+        """Return input URLs already present by raw URL or canonical URL."""
         if not urls:
             return set()
 
-        existing: set[str] = set()
         compact_urls = [u for u in dict.fromkeys(urls) if u]
+        url_to_canonical = {
+            url: canonicalize_viral_url(url)
+            for url in compact_urls
+        }
+        canonical_urls = [u for u in dict.fromkeys(url_to_canonical.values()) if u]
+        existing_urls: set[str] = set()
+        existing_canonicals: set[str] = set()
 
         try:
             for start in range(0, len(compact_urls), chunk_size):
@@ -3351,8 +3448,22 @@ class DatabaseManager:
                     f"SELECT url FROM viral_targets WHERE url IN ({placeholders})",
                     chunk,
                 )
-                existing.update(row[0] for row in self.cursor.fetchall() if row[0])
-            return existing
+                existing_urls.update(row[0] for row in self.cursor.fetchall() if row[0])
+
+            for start in range(0, len(canonical_urls), chunk_size):
+                chunk = canonical_urls[start:start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                self.cursor.execute(
+                    f"SELECT canonical_url FROM viral_targets WHERE canonical_url IN ({placeholders})",
+                    chunk,
+                )
+                existing_canonicals.update(row[0] for row in self.cursor.fetchall() if row[0])
+
+            return {
+                url
+                for url in compact_urls
+                if url in existing_urls or url_to_canonical.get(url) in existing_canonicals
+            }
         except Exception as e:
             logger.error(f"get_existing_viral_urls error: {e}")
             return set()
@@ -3375,12 +3486,14 @@ class DatabaseManager:
                 url = target_data.get('url')
                 if not url:
                     continue
-                current = deduped.get(url)
+                canonical_url = target_data.get('canonical_url') or canonicalize_viral_url(url)
+                dedupe_key = canonical_url or url
+                current = deduped.get(dedupe_key)
                 if current is None:
-                    deduped[url] = target_data
+                    deduped[dedupe_key] = target_data
                     continue
                 if (target_data.get('priority_score') or 0) > (current.get('priority_score') or 0):
-                    deduped[url] = target_data
+                    deduped[dedupe_key] = target_data
 
             now = datetime.now().isoformat()
             refreshed = 0
@@ -3389,6 +3502,11 @@ class DatabaseManager:
                 url = target_data.get('url')
                 if not url:
                     continue
+                canonical_url = target_data.get('canonical_url') or canonicalize_viral_url(url)
+                existing_identity = self._find_existing_viral_target_identity(url, canonical_url)
+                if not existing_identity:
+                    continue
+                target_id, _stored_url = existing_identity
 
                 kws_list = target_data.get('matched_keywords') or []
                 if isinstance(kws_list, str):
@@ -3404,7 +3522,7 @@ class DatabaseManager:
                 score_breakdown_json = json.dumps(target_data.get('score_breakdown') or {}, ensure_ascii=False)
                 sort_appearances_json = json.dumps(target_data.get('sort_appearances') or [], ensure_ascii=False)
                 content_hash = self.calculate_content_hash(
-                    url=url,
+                    url=canonical_url or url,
                     title=target_data.get('title', ''),
                     content=target_data.get('content_preview', ''),
                 )
@@ -3412,7 +3530,8 @@ class DatabaseManager:
                 self.cursor.execute(
                     '''
                     UPDATE viral_targets
-                    SET title = COALESCE(NULLIF(?, ''), title),
+                    SET canonical_url = COALESCE(NULLIF(?, ''), canonical_url),
+                        title = COALESCE(NULLIF(?, ''), title),
                         content_preview = COALESCE(NULLIF(?, ''), content_preview),
                         matched_keywords = COALESCE(NULLIF(?, '[]'), matched_keywords),
                         matched_keyword = COALESCE(?, matched_keyword),
@@ -3450,9 +3569,10 @@ class DatabaseManager:
                         ai_post_type = COALESCE(NULLIF(?, ''), ai_post_type),
                         ai_competitor = MAX(COALESCE(ai_competitor, 0), COALESCE(?, 0)),
                         ai_competitor_name = COALESCE(NULLIF(?, ''), ai_competitor_name)
-                    WHERE url = ?
+                    WHERE id = ?
                     ''',
                     (
+                        canonical_url,
                         target_data.get('title') or '',
                         target_data.get('content_preview') or '',
                         keywords_json,
@@ -3487,7 +3607,7 @@ class DatabaseManager:
                         target_data.get('ai_post_type') or '',
                         1 if target_data.get('ai_competitor') else 0,
                         target_data.get('ai_competitor_name') or '',
-                        url,
+                        target_id,
                     ),
                 )
                 if self.cursor.rowcount > 0:
