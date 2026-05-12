@@ -1,5 +1,14 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-12 Memory: Naver Place Rank Scan Run Baseline
+
+- Latest Place rank scan was run directly with `python scrapers\scraper_naver_place.py` on Windows. The default command performs mobile + desktop rank collection, then competitor review collection and `place_scan_enrichment` unless `--skip-reviews` is passed.
+- Latest manual run reference: started 2026-05-12 09:36:50 KST, completed enrichment at 10:17:09 KST. `rank_history` received 560 rows: 10 targets x 28 keywords x 2 devices. `rank_history.checked_at` is stored UTC-like, so convert carefully when reporting Korean local scan times.
+- Current 규림한의원 baseline from that run: mobile found 18/28, desktop found 15/28. Strong ranks held at `청주 성안길 한의원` 2위, `청주 안면비대칭*` 3위, `청주 여드름 한약` 3위, `청주 여드름흉터 한의원` 4위, `청주 여드름 한의원` 5위.
+- Watchlist from the same run: `청주 상당구 한의원` 7→21위, `청주 교통사고 한의원`/`청주 교통사고한의원` 43→55위, `청주 교통사고 병원` 54→67위, desktop `청주 다이어트 한약` and `청주 한의원` moved to `not_in_results`.
+- Competitor review collection added 56 new reviews. Enrichment completed with reviews 9 collected/0 failed and SERP 30 analyzed/0 failed. Notable SERP signals: `청주 안면비대칭 병원` had AI Briefing, and `청주 교통사고` had 1 Place clip.
+- Logs for this flow are primarily in `logs\marketing_bot.log`. Redirected stderr may contain the known Python 3.14 Langfuse/Pydantic v1 warning; treat that warning as non-blocking unless accompanied by scraper failure logs.
+
 ## 2026-05-12 Memory: Viral Hunter Canonical URL Deduplication
 
 - Viral Hunter duplicate prevention must compare `canonical_url`, not only the raw `url`. KIN URLs are keyed by `docId`; Naver blog/cafe URLs are keyed by stable post identity/path so search parameters such as `qb`, `from`, `trackingCode`, and iframe wrappers do not create duplicate targets.
