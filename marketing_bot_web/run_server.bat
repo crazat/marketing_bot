@@ -1,5 +1,7 @@
 @echo off
 chcp 65001 > nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo 🚀 Marketing Bot Web 서버 시작
 echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

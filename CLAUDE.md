@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-12 Memory: Web Build Fix and Legion/Viral Scan 13
+
+- Marketing Bot Web production build now uses a local Vite `staticCompression()` plugin instead of `vite-plugin-compression`. The old plugin shared module-level cache across gzip/brotli instances on Windows, causing noisy `dist/C:/Projects/...` log paths and skipped brotli output. The local plugin writes both `.gz` and `.br` for static JS/CSS/HTML/JSON assets and logs a single summary.
+- `vite-plugin-compression` was removed from frontend dependencies. Latest verification after the change: `npm run build` in `marketing_bot_web/frontend` passed and wrote gzip+brotli for 33 files, with no `dist\C:` directory created.
+- `marketing_bot_web/build_and_run.bat` and `marketing_bot_web/run_server.bat` set `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` after `chcp 65001` so Korean/Unicode startup logs do not hit Windows `cp949` output errors.
+- Direct `python main.py` backend launches now run Uvicorn with `access_log=False` and `log_level="warning"` to avoid logging full WebSocket query strings/API keys. Do not re-enable access logs unless sensitive query parameters are redacted first.
+- Latest local web verification after restart: backend PID 47812 listening on port 8000, `GET http://127.0.0.1:8000/health` healthy, root HTML and built JS asset returned 200. The remaining Langfuse/Pydantic Python 3.14 warning is non-blocking.
+- Latest manual Legion run reference: `scan_run_id=13`, target 500, 696 total keywords, 283 inserted, 413 updated, S=2/A=1/B=679/C=14, completed in 1292s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=13`.
+- Viral Hunter immediately after scan 13 loaded 42 curated seeds from the latest Legion run: 교통사고 10, 피부/여드름 12, 다이어트 10, 안면비대칭 6, 체형교정 4. It discovered 6,777 candidates, filtered/commentable set 3,147, excluded/refreshed 1,338 existing URLs, saved 1,433 raw backlog rows, AI-analyzed top 300, and reported 156 AI-suitable targets. CSV report: `reports\viral_targets_20260512_172352.csv`.
+- Final scan 13 viral queue snapshot by `source_scan_run_id=13`: total=2927, pending=313, raw_backlog=1756, filtered_out_ai=269, filtered_out=337, skipped=234, posted=18. Category counts were led by 다이어트 1063, 교통사고 994, 피부 442, 비대칭/교정 257, 통증/디스크 114, 경쟁사_역공략 45.
+
 ## 2026-05-12 Memory: Face Asymmetry Competitive Recovery Baseline
 
 - User-facing priority is recovering visibility for `청주 안면비대칭`, especially against `로랑한의원` and `데이릴한의원`. Current Place spot check after the latest update: `청주 안면비대칭` = 로랑 1 / 데이릴 2 / 규림 3 on mobile and desktop; `청주 안면비대칭 교정` = 데이릴 1 only, 규림 not in results.

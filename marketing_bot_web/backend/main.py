@@ -769,5 +769,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=False  # 프로덕션에서는 reload 비활성화
+        reload=False,  # 프로덕션에서는 reload 비활성화
+        access_log=False,
+        log_level="warning",
     )
