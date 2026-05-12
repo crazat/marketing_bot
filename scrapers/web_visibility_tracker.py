@@ -49,6 +49,13 @@ WEBKR_API_URL = "https://openapi.naver.com/v1/search/webkr.json"
 RATE_LIMIT_DELAY = 0.3  # seconds between requests
 DISPLAY_COUNT = 100  # max results per request
 DEFAULT_OUR_DOMAIN = "kyurim.com"
+SHARED_DOMAINS = {
+    "blog.naver.com",
+    "m.blog.naver.com",
+    "m.place.naver.com",
+    "place.naver.com",
+    "map.naver.com",
+}
 
 
 def strip_html_tags(text: str) -> str:
@@ -71,6 +78,27 @@ def extract_domain(url: str) -> str:
         parsed = urlparse(url)
         domain = parsed.netloc.replace("www.", "")
         return domain.lower()
+    except Exception:
+        return ""
+
+
+def extract_url_pattern(url: str) -> str:
+    """공유 도메인 URL은 경로 식별자까지 포함한 매칭 패턴을 만듭니다."""
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace("www.", "").lower()
+        path_parts = [p for p in parsed.path.split("/") if p]
+
+        if domain in ("blog.naver.com", "m.blog.naver.com") and path_parts:
+            return f"{domain}/{path_parts[0].lower()}"
+
+        if domain in ("m.place.naver.com", "place.naver.com") and len(path_parts) >= 2:
+            return f"{domain}/{path_parts[0].lower()}/{path_parts[1].lower()}"
+
+        if domain == "map.naver.com" and path_parts:
+            return f"{domain}/{'/'.join(path_parts[:3]).lower()}"
+
+        return domain
     except Exception:
         return ""
 
@@ -162,6 +190,8 @@ class WebVisibilityTracker:
     def _load_business_profile(self):
         """config/business_profile.json에서 업체 정보를 로드합니다."""
         self.our_domain = DEFAULT_OUR_DOMAIN
+        self.our_domains = [DEFAULT_OUR_DOMAIN]
+        self.our_url_patterns = []
         self.our_identifiers = []
         self.business_name = "규림한의원"
 
@@ -174,9 +204,31 @@ class WebVisibilityTracker:
                 self.business_name = business.get('name', '규림한의원')
 
                 # Website domain
-                website = business.get('website', '')
-                if website:
-                    self.our_domain = extract_domain(website) or DEFAULT_OUR_DOMAIN
+                domains = []
+                url_patterns = []
+                for field in ['website', 'official_website', 'canonical_local_landing', 'blog_url']:
+                    url = business.get(field, '')
+                    domain = extract_domain(url)
+                    if domain:
+                        url_patterns.append(extract_url_pattern(url))
+                        if domain not in SHARED_DOMAINS:
+                            domains.append(domain)
+
+                for site in data.get('sites_to_monitor', []):
+                    url = site.get('url', '')
+                    domain = extract_domain(url)
+                    if domain:
+                        url_patterns.append(extract_url_pattern(url))
+                        if domain not in SHARED_DOMAINS:
+                            domains.append(domain)
+
+                for pattern in (data.get('self_exclusion', {}) or {}).get('url_patterns', []):
+                    url_patterns.append(extract_url_pattern(f"https://{pattern}" if pattern.startswith("blog.") else pattern))
+
+                if domains:
+                    self.our_domains = list(dict.fromkeys(domains))
+                    self.our_domain = self.our_domains[0]
+                self.our_url_patterns = [p for p in dict.fromkeys(url_patterns) if p]
 
                 # Identifiers for matching
                 for key in ['name', 'short_name', 'english_name']:
@@ -195,7 +247,7 @@ class WebVisibilityTracker:
         if not self.our_identifiers:
             self.our_identifiers = ["규림한의원", "규림", "kyurim"]
 
-        logger.info(f"자사 도메인: {self.our_domain}, 식별자: {self.our_identifiers}")
+        logger.info(f"자사 도메인: {self.our_domains}, URL 패턴: {self.our_url_patterns}, 식별자: {self.our_identifiers}")
 
     def _load_competitors(self):
         """config/targets.json에서 경쟁사 정보를 로드합니다."""
@@ -214,6 +266,7 @@ class WebVisibilityTracker:
                 comp = {
                     "name": name,
                     "domains": [],
+                    "url_patterns": [],
                     "keywords": target.get('keywords', []),
                 }
 
@@ -222,7 +275,10 @@ class WebVisibilityTracker:
                 for url_key, url_val in monitor_urls.items():
                     if url_val and isinstance(url_val, str):
                         domain = extract_domain(url_val)
-                        if domain and domain not in comp['domains']:
+                        pattern = extract_url_pattern(url_val)
+                        if pattern and pattern not in comp['url_patterns']:
+                            comp['url_patterns'].append(pattern)
+                        if domain and domain not in SHARED_DOMAINS and domain not in comp['domains']:
                             comp['domains'].append(domain)
 
                 self.competitors.append(comp)
@@ -333,11 +389,18 @@ class WebVisibilityTracker:
     def _is_our_result(self, url: str, title: str) -> bool:
         """검색 결과가 자사인지 확인합니다."""
         domain = extract_domain(url)
+        normalized_url = url.lower()
         title_lower = title.lower()
 
+        # Exact/prefix URL pattern match, important for shared domains like blog.naver.com.
+        for pattern in self.our_url_patterns:
+            if pattern and pattern in normalized_url:
+                return True
+
         # Domain match
-        if self.our_domain and self.our_domain in domain:
-            return True
+        for our_domain in self.our_domains:
+            if our_domain and our_domain in domain:
+                return True
 
         # Name match in title
         for ident in self.our_identifiers:
@@ -349,11 +412,17 @@ class WebVisibilityTracker:
     def _find_competitor(self, url: str, title: str) -> Optional[str]:
         """검색 결과에서 경쟁사를 식별합니다."""
         domain = extract_domain(url)
+        normalized_url = url.lower()
         title_lower = title.lower()
 
         for comp in self.competitors:
             comp_name = comp['name']
             comp_name_lower = comp_name.lower()
+
+            # URL pattern match, important for shared domains like blog.naver.com.
+            for pattern in comp.get('url_patterns', []):
+                if pattern and pattern in normalized_url:
+                    return comp_name
 
             # Domain match
             for comp_domain in comp.get('domains', []):
@@ -395,7 +464,7 @@ class WebVisibilityTracker:
         print(f"\n{'='*60}")
         print(f" Web Visibility Tracker")
         print(f" 키워드: {len(self.keywords)}개")
-        print(f" 자사 도메인: {self.our_domain}")
+        print(f" 자사 도메인: {', '.join(self.our_domains)}")
         print(f" 경쟁사: {len(self.competitors)}개")
         print(f" API 키: {len(self.api_keys)}개")
         print(f"{'='*60}\n")

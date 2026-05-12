@@ -1,5 +1,21 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-12 Memory: Face Asymmetry Competitive Recovery Baseline
+
+- User-facing priority is recovering visibility for `청주 안면비대칭`, especially against `로랑한의원` and `데이릴한의원`. Current Place spot check after the latest update: `청주 안면비대칭` = 로랑 1 / 데이릴 2 / 규림 3 on mobile and desktop; `청주 안면비대칭 교정` = 데이릴 1 only, 규림 not in results.
+- `config/targets.json` and `config/competitors.json` now track 로랑's official site/asymmetry page/blogs and 데이릴's official site/procedure pages/blog accounts. Do not remove these competitors from asymmetry monitoring; earlier config had 데이릴 missing and one stale competitor in the asymmetry group.
+- Asymmetry keyword coverage is intentionally broad now: core terms plus face asymmetry, jaw/TMJ, body/posture/pelvis correction, price/review intent, and local modifiers such as 복대동, 가경동, 오창, and 율량동. Keep `config/keywords.json`, `config/keywords_master.json`, and `config/keyword_targets.json` aligned when editing this area.
+- The body/asymmetry landing canonical is `https://kyurim-webpage.vercel.app/events/body`; official site monitoring also includes `https://www.kyurim.com`. Business blog identity is `blog.naver.com/sangshan1`.
+- `scrapers/blog_rank_tracker.py` now falls back to the official Naver Blog API when VIEW HTML scraping is blocked. Self matches must be based on blog URL/author identity, not arbitrary mentions of 규림 in third-party posts, or false positives return.
+- `scrapers/web_visibility_tracker.py` must treat shared domains carefully. For `blog.naver.com`, match URL patterns such as `/sangshan1`, not only the domain, otherwise competitor/self visibility is misclassified.
+- AEO checks now include asymmetry-specific prompts around face asymmetry clinic recommendation, TMJ correction, recurrence reasons, and combined body correction. `load_self_aliases()` supports nested `business` fields in `business_profile.json`.
+- Latest focused verification for this work:
+  - `python -m json.tool` on the modified config JSON files
+  - `python -m py_compile scrapers\blog_rank_tracker.py scrapers\web_visibility_tracker.py scripts\aeo_visibility.py`
+  - `python scrapers\blog_rank_tracker.py`
+  - `python scrapers\web_visibility_tracker.py`
+  - `python scrapers\competitor_blog_tracker.py`
+
 ## 2026-05-12 Memory: Naver Place Rank Scan Run Baseline
 
 - Latest Place rank scan was run directly with `python scrapers\scraper_naver_place.py` on Windows. The default command performs mobile + desktop rank collection, then competitor review collection and `place_scan_enrichment` unless `--skip-reviews` is passed.

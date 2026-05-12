@@ -8,6 +8,10 @@
     "address": "청주시 흥덕구",
     "phone": "",
     "website": "https://kyurim-webpage.vercel.app",
+    "official_website": "https://www.kyurim.com",
+    "canonical_local_landing": "https://kyurim-webpage.vercel.app/events/body",
+    "blog_url": "https://blog.naver.com/sangshan1",
+    "blog_id": "sangshan1",
     "naver_place_id": ""
   },
 
@@ -15,7 +19,8 @@
     {"url": "https://kyurim-webpage.vercel.app/", "label": "메인", "category": null},
     {"url": "https://kyurim-webpage.vercel.app/events/diet", "label": "LP-다이어트", "category": "다이어트"},
     {"url": "https://kyurim-webpage.vercel.app/events/skin", "label": "LP-피부", "category": "피부"},
-    {"url": "https://kyurim-webpage.vercel.app/events/body", "label": "LP-체형", "category": "비대칭/교정"},
+    {"url": "https://kyurim-webpage.vercel.app/events/body", "label": "LP-안면비대칭/체형교정", "category": "비대칭/교정"},
+    {"url": "https://www.kyurim.com/introduce/face/faceCorrect", "label": "공식-안면비대칭", "category": "비대칭/교정"},
     {"url": "https://kyurim-webpage.vercel.app/events/pain", "label": "LP-통증", "category": "통증/디스크"},
     {"url": "https://kyurim-webpage.vercel.app/events/wedding", "label": "LP-웨딩", "category": "다이어트"}
   ],
@@ -44,7 +49,7 @@
     ],
     "category_keywords": {
       "다이어트": ["다이어트", "살빼", "체중", "비만", "감량", "산후다이어트", "살빼기", "다이어트한약"],
-      "비대칭/교정": ["비대칭", "안면비대칭", "얼굴비대칭", "체형교정", "골반", "교정", "추나"],
+      "비대칭/교정": ["비대칭", "안면비대칭", "얼굴비대칭", "턱비대칭", "턱관절", "턱관절교정", "체형교정", "골반", "골반교정", "자세교정", "교정", "추나"],
       "피부": ["피부", "여드름", "아토피", "습진", "트러블", "탈모"],
       "교통사고": ["교통사고", "자동차사고", "교통사고한의원", "사고후유증"],
       "통증/디스크": ["통증", "디스크", "허리", "목", "어깨", "관절", "척추"],
@@ -75,7 +80,7 @@
   "priority_keywords": {
     "tier1": {
       "description": "최우선 키워드 (15점)",
-      "keywords": ["다이어트한약", "산후다이어트", "안면비대칭", "체형교정", "교통사고한의원"]
+      "keywords": ["다이어트한약", "산후다이어트", "안면비대칭", "얼굴비대칭", "턱관절교정", "체형교정", "교통사고한의원"]
     },
     "tier2": {
       "description": "우선 키워드 (10점)",

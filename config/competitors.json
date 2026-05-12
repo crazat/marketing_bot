@@ -1,6 +1,6 @@
 {
     "description": "경쟁사 인텔리전스 설정 - Pathfinder ULTRA 자동 업데이트",
-    "last_updated": "2026-02-02",
+    "last_updated": "2026-05-12",
     "auto_discovery_enabled": true,
     "category_competitors": {
         "다이어트": {
@@ -26,15 +26,27 @@
         "안면비대칭_교정": {
             "main_competitors": [
                 {
-                    "name": "미올한의원 청주점",
+                    "name": "로랑한의원",
                     "naver_place_id": "36855147",
-                    "priority": "high"
+                    "website": "https://lorang.kr/",
+                    "blog_url": "https://blog.naver.com/cogkfrkqkdy",
+                    "priority": "critical"
+                },
+                {
+                    "name": "데이릴한의원",
+                    "website": "https://www.daylil.com/",
+                    "blog_url": "https://blog.naver.com/everydaylil",
+                    "secondary_blog_url": "https://blog.naver.com/ell_ee2",
+                    "priority": "critical"
                 }
             ],
             "keywords_to_monitor": [
                 "청주 안면비대칭", "청주 체형교정", "청주 골반교정",
                 "청주 안면비대칭 교정", "청주 얼굴비대칭", "청주 턱비대칭",
-                "청주 안면교정", "청주 비대칭교정", "청주 안면비대칭 한의원"
+                "청주 턱관절 교정", "청주 턱관절 통증", "청주 안면교정",
+                "청주 비대칭교정", "청주 안면비대칭 한의원", "청주 얼굴비대칭 한의원",
+                "청주 안면비대칭 후기", "청주 안면비대칭 가격",
+                "복대동 안면비대칭", "가경동 안면비대칭", "오창 안면비대칭", "율량동 안면비대칭"
             ]
         },
         "여드름_피부": {

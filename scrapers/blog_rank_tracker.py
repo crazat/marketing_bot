@@ -33,12 +33,27 @@ sys.path.insert(0, project_root)
 
 from db.database import DatabaseManager
 from utils import ConfigManager
+from naver_api_client import NaverApiClient
 
 logger = logging.getLogger(__name__)
 
 # Windows console encoding fix
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
+
+
+def strip_html_tags(text: str) -> str:
+    """네이버 API 응답의 HTML 태그와 엔티티를 제거합니다."""
+    if not text:
+        return ""
+    clean = re.sub(r'<[^>]+>', '', text)
+    clean = clean.replace('&amp;', '&')
+    clean = clean.replace('&lt;', '<')
+    clean = clean.replace('&gt;', '>')
+    clean = clean.replace('&quot;', '"')
+    clean = clean.replace('&#39;', "'")
+    clean = clean.replace('&nbsp;', ' ')
+    return re.sub(r'\s+', ' ', clean).strip()
 
 
 # ============================================================================
@@ -62,6 +77,7 @@ class BlogRankTracker:
     def __init__(self):
         self.db = DatabaseManager()
         self.config = ConfigManager()
+        self.api_client = NaverApiClient()
         self._ensure_table()
         self._load_blog_identifier()
         self._load_keywords()
@@ -96,6 +112,7 @@ class BlogRankTracker:
     def _load_blog_identifier(self):
         """config/business_profile.json에서 블로그 식별자를 로드합니다."""
         self.blog_identifiers = []
+        self.blog_author_identifiers = []
 
         profile_path = os.path.join(project_root, 'config', 'business_profile.json')
         try:
@@ -118,12 +135,24 @@ class BlogRankTracker:
                     match = re.search(r'blog\.naver\.com/(\w+)', business['blog_url'])
                     if match:
                         self.blog_identifiers.append(match.group(1))
+                        self.blog_author_identifiers.append(match.group(1))
                 if business.get('blog_id'):
                     self.blog_identifiers.append(business['blog_id'])
+                    self.blog_author_identifiers.append(business['blog_id'])
 
                 # competitors.exclude_names 도 식별자로 활용
                 exclude_names = profile.get('competitors', {}).get('exclude_names', [])
                 self.blog_identifiers.extend(exclude_names)
+
+                # 실제 자사 블로그 작성자/URL 패턴도 식별자로 활용
+                self_exclusion = profile.get('self_exclusion', {})
+                self.blog_identifiers.extend(self_exclusion.get('blog_authors', []))
+                self.blog_author_identifiers.extend(self_exclusion.get('blog_authors', []))
+                for pattern in self_exclusion.get('url_patterns', []):
+                    match = re.search(r'blog\.naver\.com/([A-Za-z0-9_-]+)', pattern)
+                    if match:
+                        self.blog_identifiers.append(match.group(1))
+                        self.blog_author_identifiers.append(match.group(1))
         except Exception as e:
             logger.warning(f"business_profile.json 로드 실패: {e}")
 
@@ -136,6 +165,14 @@ class BlogRankTracker:
                 seen.add(low)
                 unique.append(ident)
         self.blog_identifiers = unique
+        seen_authors = set()
+        author_unique = []
+        for ident in self.blog_author_identifiers:
+            low = ident.lower()
+            if low and low not in seen_authors:
+                seen_authors.add(low)
+                author_unique.append(ident)
+        self.blog_author_identifiers = author_unique
 
         if not self.blog_identifiers:
             # Fallback
@@ -143,6 +180,62 @@ class BlogRankTracker:
             logger.warning("블로그 식별자를 찾지 못해 기본값 사용: %s", self.blog_identifiers)
         else:
             logger.info("블로그 식별자 로드: %s", self.blog_identifiers)
+
+    def _is_our_blog_item(self, text: str, link: str = "", source_name: str = "") -> Optional[str]:
+        """검색 결과 항목이 자사 블로그인지 확인하고 매칭 식별자를 반환합니다."""
+        link_lower = link.lower()
+        source_lower = source_name.lower()
+        text_lower = text.lower()
+
+        for identifier in self.blog_author_identifiers:
+            ident_lower = identifier.lower()
+            if ident_lower and ident_lower in link_lower:
+                return identifier
+
+        for identifier in self.blog_identifiers:
+            ident_lower = identifier.lower()
+            if ident_lower and ident_lower in source_lower:
+                return identifier
+
+        # HTML parser fallback: source_name이 비어 있는 경우에만 항목 텍스트에서 블로그 ID를 확인합니다.
+        if not source_name:
+            for identifier in self.blog_author_identifiers:
+                ident_lower = identifier.lower()
+                if ident_lower and ident_lower in text_lower:
+                    return identifier
+
+        return None
+
+    def _search_blog_api_rank(
+        self,
+        keyword: str,
+        sort: str = "sim",
+        display: int = 30
+    ) -> Tuple[int, bool, Optional[str], Optional[str], Optional[str], int]:
+        """네이버 공식 Blog API 기반 fallback 순위 추적."""
+        try:
+            result = self.api_client.search('blog', keyword, display=display, sort=sort)
+        except Exception as e:
+            logger.warning(f"[{keyword}] Blog API fallback 실패: {e}")
+            return (0, False, None, None, None, 0)
+
+        items = result.get('items', []) if isinstance(result, dict) else []
+        total_checked = len(items)
+        if not items:
+            return (0, False, None, None, None, 0)
+
+        for rank, item in enumerate(items, 1):
+            title = strip_html_tags(item.get('title', ''))
+            description = strip_html_tags(item.get('description', ''))
+            link = item.get('link', '')
+            source_name = strip_html_tags(item.get('bloggername', ''))
+            matched = self._is_our_blog_item(f"{title} {description}", link, source_name)
+            if matched:
+                logger.info(f"[{keyword}] Blog API {sort} {rank}위 발견! (매칭: '{matched}')")
+                return (rank, True, title, link, source_name, total_checked)
+
+        logger.info(f"[{keyword}] Blog API {sort} 상위 {total_checked}위 내 미발견")
+        return (0, False, None, None, None, total_checked)
 
     def _load_keywords(self):
         """config/keywords.json에서 blog_seo 카테고리 키워드를 로드합니다."""
@@ -206,16 +299,16 @@ class BlogRankTracker:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error(f"HTTP 오류 [{keyword}]: {e}")
-            return (0, False, None, None, None, 0)
+            return self._search_blog_api_rank(keyword, sort="sim")
         except requests.exceptions.ConnectionError as e:
             logger.error(f"연결 오류 [{keyword}]: {e}")
-            return (0, False, None, None, None, 0)
+            return self._search_blog_api_rank(keyword, sort="sim")
         except requests.exceptions.Timeout:
             logger.error(f"타임아웃 [{keyword}]")
-            return (0, False, None, None, None, 0)
+            return self._search_blog_api_rank(keyword, sort="sim")
         except requests.exceptions.RequestException as e:
             logger.error(f"요청 오류 [{keyword}]: {e}")
-            return (0, False, None, None, None, 0)
+            return self._search_blog_api_rank(keyword, sort="sim")
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -243,7 +336,7 @@ class BlogRankTracker:
                 logger.warning(f"[{keyword}] 캡차/차단 감지됨!")
             else:
                 logger.warning(f"[{keyword}] 결과 항목을 파싱할 수 없음 (셀렉터 변경 가능성)")
-            return (0, False, None, None, None, 0)
+            return self._search_blog_api_rank(keyword, sort="sim")
 
         # 상위 30개 내에서 우리 블로그 검색
         for rank, item in enumerate(items[:30], 1):
@@ -262,17 +355,18 @@ class BlogRankTracker:
                 source_name = name_el.get_text(strip=True) if name_el else ""
 
                 # 우리 블로그인지 확인
-                for identifier in self.blog_identifiers:
-                    ident_lower = identifier.lower()
-                    if (ident_lower in item_text or
-                        ident_lower in link.lower() or
-                        ident_lower in source_name.lower()):
-                        logger.info(f"[{keyword}] {rank}위 발견! (매칭: '{identifier}')")
-                        return (rank, True, title, link, source_name, total_checked)
+                matched = self._is_our_blog_item(item_text, link, source_name)
+                if matched:
+                    logger.info(f"[{keyword}] {rank}위 발견! (매칭: '{matched}')")
+                    return (rank, True, title, link, source_name, total_checked)
 
             except Exception as e:
                 logger.debug(f"항목 파싱 오류 (rank {rank}): {e}")
                 continue
+
+        api_rank = self._search_blog_api_rank(keyword, sort="sim")
+        if api_rank[1] or api_rank[5] > total_checked:
+            return api_rank
 
         logger.info(f"[{keyword}] 상위 {min(30, total_checked)}위 내 미발견")
         return (0, False, None, None, None, total_checked)

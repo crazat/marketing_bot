@@ -121,12 +121,40 @@
       "category": "Diet/Face",
       "priority": "Medium",
       "monitor_urls": {
-        "naver_place": "https://m.place.naver.com/hospital/36855147/home"
+        "naver_place": "https://m.place.naver.com/hospital/36855147/home",
+        "website": "https://lorang.kr/",
+        "asymmetry_page": "https://lorang.kr/pages/asymmetry/",
+        "blog_primary": "https://blog.naver.com/pinky764",
+        "blog_asymmetry": "https://blog.naver.com/cogkfrkqkdy"
       },
       "keywords": [
         "핑크환",
         "턱관절",
-        "안면비대칭"
+        "안면비대칭",
+        "청주안면비대칭",
+        "청주턱관절"
+      ]
+    },
+    {
+      "name": "데이릴한의원",
+      "category": "Face/Body",
+      "priority": "High",
+      "monitor_urls": {
+        "website": "https://www.daylil.com/",
+        "program": "https://www.daylil.com/program.html",
+        "procedure": "https://www.daylil.com/procedure.html",
+        "blog_primary": "https://blog.naver.com/everydaylil",
+        "blog_secondary": "https://blog.naver.com/ell_ee2",
+        "blog_legacy": "https://blog.naver.com/daylil"
+      },
+      "keywords": [
+        "안면비대칭",
+        "얼굴비대칭",
+        "체형교정",
+        "척추정렬",
+        "턱관절",
+        "가경동한의원",
+        "복대동안면비대칭"
       ]
     },
     {

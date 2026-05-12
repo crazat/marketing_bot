@@ -44,6 +44,10 @@ DEFAULT_QUERIES = [
     "청주 다이어트 한약 잘하는 곳",
     "청주 교통사고 한의원 어디가 좋아",
     "청주 안면비대칭 교정 한의원",
+    "청주 얼굴비대칭 한의원 추천",
+    "청주 턱관절 교정 잘하는 한의원",
+    "청주 안면비대칭 다시 틀어지는 이유",
+    "청주 체형교정 안면비대칭 같이 보는 곳",
     "청주 새살침 잘하는 곳",
     "청주 야간진료 한의원",
     "청주 추나 잘하는 한의원",
@@ -88,8 +92,16 @@ def load_self_aliases() -> list[str]:
         with open(BUSINESS_PATH, 'r', encoding='utf-8') as f:
             bp = json.load(f)
         names = set()
+        business = bp.get('business', {}) or {}
         for k in ('clinic_name', 'name', 'business_name'):
             v = bp.get(k)
+            if v:
+                names.add(v)
+            v = business.get(k)
+            if v:
+                names.add(v)
+        for k in ('short_name', 'english_name', 'blog_id'):
+            v = business.get(k)
             if v:
                 names.add(v)
         for v in bp.get('aliases', []) or []:
