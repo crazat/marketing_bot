@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-13 Memory: Legion/Viral Scan 17 Latest Sequential Run
+
+- Latest completed sequential command set: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
+- User priority remains source diversity, not only raw volume. Always verify Legion category/source/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
+- Latest completed sequential run: Legion `scan_run_id=17`, target 500, 671 total keywords, 236 inserted, 435 updated, S=2/A=0/B=617/C=52, completed 2026-05-13 18:25:21 KST. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=17`.
+- Legion scan 17 diversity metrics: category entropy 0.8965, source entropy 0.6803, intent entropy 0.7359, top source share 49.33%, multi-source verified rate 4.92%, quality flag rate 7.15%.
+- Legion scan 17 source distribution: `round4_intent` 331, `round1_seed` 130, `round3_region` 89, `round8_ai` 85, `round2_expand` 19, `round7_problem` 10, `round1_ad_related` 4, `round5_competitor` 3. Category distribution: traffic accident 212, skin/acne 143, diet 143, face asymmetry 82, body correction 78, lifting/elasticity 13.
+- Viral Hunter after scan 17 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 2,890 candidates, filtered to 290 saved targets, AI-analyzed top 300, and found 43 AI-suitable targets with 15 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260513_183224.csv`.
+- Final scan 17 viral queue snapshot by `source_scan_run_id=17`: total=625, raw_backlog=437, pending=68, skipped=51, filtered_out_ai=33, filtered_out=31, posted=5. Platform distribution was blog=421, cafe=165, kin/naver_kin=39. Category distribution was traffic accident=307, diet=123, skin=96, asymmetry/correction=75, competitor counterattack=15, pain/disc=8, headache/dizziness=1.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter again logged `ViralTarget.__init__() got an unexpected keyword argument 'canonical_url'` on some seed paths; the scan continued and completed successfully, but this compatibility issue remains worth fixing.
+
 ## 2026-05-13 Memory: Legion/Viral Scan 15 Source Diversity Baseline
 
 - User priority for Legion/Viral Hunter work is source diversity, not only raw volume. When running the sequence, verify diversity using Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
