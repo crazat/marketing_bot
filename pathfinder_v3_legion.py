@@ -3076,6 +3076,25 @@ class PathfinderLegion:
         category_counts: Counter = Counter()
         source_counts: Counter = Counter()
         intent_counts: Counter = Counter()
+        token_map = {id(result): self._tokenize_keyword(result.keyword) for result in remaining}
+        max_similarity_by_id = {id(result): 0.0 for result in remaining}
+
+        def similarity(left: KeywordResult, right: KeywordResult) -> float:
+            left_tokens = token_map.get(id(left), set())
+            right_tokens = token_map.get(id(right), set())
+            if not left_tokens or not right_tokens:
+                token_similarity = 0.0
+            else:
+                token_similarity = len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+            aspect_bonus = 0.0
+            if left.category and left.category == right.category:
+                aspect_bonus += 0.12
+            if left.search_intent and left.search_intent == right.search_intent:
+                aspect_bonus += 0.08
+            if left.source and left.source == right.source:
+                aspect_bonus += 0.05
+            return min(1.0, token_similarity + aspect_bonus)
 
         while remaining:
             best = None
@@ -3083,10 +3102,7 @@ class PathfinderLegion:
             selected_count = max(1, len(selected))
 
             for candidate in remaining:
-                max_similarity = max(
-                    (self._keyword_similarity(candidate, chosen) for chosen in selected),
-                    default=0.0,
-                )
+                max_similarity = max_similarity_by_id.get(id(candidate), 0.0)
                 novelty = max(0.0, 100.0 * (1.0 - max_similarity))
                 category_share = category_counts[candidate.category or "unknown"] / selected_count
                 source_share = source_counts[candidate.source or "unknown"] / selected_count
@@ -3110,6 +3126,13 @@ class PathfinderLegion:
             category_counts[best.category or "unknown"] += 1
             source_counts[best.source or "unknown"] += 1
             intent_counts[best.search_intent or "unknown"] += 1
+
+            for candidate in remaining:
+                candidate_id = id(candidate)
+                max_similarity_by_id[candidate_id] = max(
+                    max_similarity_by_id.get(candidate_id, 0.0),
+                    similarity(candidate, best),
+                )
 
         for idx, result in enumerate(selected, 1):
             result.diversity_rank = idx

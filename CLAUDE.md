@@ -1,5 +1,17 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-15 Memory: Legion/Viral Scan 19 and Pathfinder Rerank Fix
+
+- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
+- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
+- Latest completed sequential run: Legion `scan_run_id=19`, target 500, 703 total keywords, 172 inserted, 531 updated, S=2/A=0/B=637/C=64. Console run started 2026-05-15 20:59:23 KST and completed 2026-05-15 21:22:22 KST. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=19`.
+- Legion scan 19 diversity metrics: category entropy 0.8862, source entropy 0.6938, intent entropy 0.7707, top source share 50.36%, multi-source verified rate 5.97%, quality flag rate 6.4%.
+- Legion scan 19 source distribution: `round4_intent` 354, `round1_seed` 130, `round3_region` 89, `round8_ai` 79, `round2_expand` 23, `round1_ad_related` 15, `round7_problem` 10, `round5_competitor` 3. Category distribution: traffic accident 199, diet 173, skin/acne 154, body correction 89, face asymmetry 82, lifting/elasticity 6.
+- Pathfinder diversity reranking was a visible post-processing bottleneck during scan 19. `_rerank_for_diversity()` now caches tokenized keywords and each candidate's current max similarity to selected results, preserving the same greedy scoring logic while avoiding recomputing all prior pair similarities on every selection.
+- Viral Hunter after scan 19 loaded 42 curated seeds from the latest Legion run, scanned cafe/blog/KIN, discovered 3,252 candidates, filtered to 1,237, removed 43 repeated-content targets, refreshed/excluded 488 existing URLs before AI, saved 406 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 66 AI-suitable targets with 22 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260515_212753.csv`.
+- Final scan 19 viral queue snapshot by `source_scan_run_id=19`: total=960, raw_backlog=634, pending=105, skipped=87, filtered_out=73, filtered_out_ai=43, posted=18. Platform distribution was blog=570, cafe=282, kin=107, naver_kin=1. Category distribution was diet=460, asymmetry/correction=175, skin=142, pain/disc=85, traffic accident=74, competitor counterattack=22, headache/dizziness=2.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter still logged `ViralTarget.__init__() got an unexpected keyword argument 'canonical_url'` for some seed paths; the scan continued and completed successfully, but this compatibility issue remains worth fixing.
+
 ## 2026-05-15 Memory: Legion/Viral Scan 18 and Web Server Verification
 
 - Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
