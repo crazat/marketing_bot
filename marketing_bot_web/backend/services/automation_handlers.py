@@ -16,6 +16,7 @@ from typing import Dict, Any
 
 from .event_bus import event_bus, Event, EventType, on_event
 from db.database import DatabaseManager
+from utils.json_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,7 @@ async def handle_keyword_approved(event: Event):
             naver_place.append(keyword)
             keywords_data["naver_place"] = naver_place
 
-            with open(keywords_path, 'w', encoding='utf-8') as f:
-                json.dump(keywords_data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(keywords_path, keywords_data)
 
             logger.info(f"[자동 연동] {grade}급 키워드 '{keyword}' 순위 추적 등록 완료")
 

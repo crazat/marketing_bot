@@ -14,6 +14,12 @@ from pathlib import Path
 from collections import Counter
 from typing import Dict
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.json_io import atomic_write_json
+
 # 모듈 import
 from kin_crawler import KinCrawler
 from blog_gap_analyzer import BlogGapAnalyzer
@@ -285,8 +291,7 @@ class KeywordDiscoverySystem:
 
         # 전체 결과
         output_path = f"{output_dir}/discovery_results.json"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(self.results, f, ensure_ascii=False, indent=2)
+        atomic_write_json(output_path, self.results)
 
         # CSV 형식 (상위 키워드) - 검색량 포함
         csv_path = f"{output_dir}/top_keywords.csv"

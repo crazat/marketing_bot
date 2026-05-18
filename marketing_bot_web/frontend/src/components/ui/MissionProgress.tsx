@@ -3,6 +3,7 @@ import { hudApi } from '@/services/api'
 import { withApiKeyQuery } from '@/services/api/base'
 import { Square, ChevronDown, ChevronRight, Clock, FileText, Wifi, WifiOff } from 'lucide-react'
 import { useNotification, createScanCompleteNotification } from '@/hooks/useNotification'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 interface MissionStatus {
   status: 'running' | 'completed' | 'not_found'
@@ -113,7 +114,8 @@ export default function MissionProgress({
 
       eventSource.onmessage = (event) => {
         try {
-          const data: SSEProgress = JSON.parse(event.data)
+          const data = safeJsonParse<SSEProgress | null>(event.data, null)
+          if (!data || typeof data.status !== 'string') return
           setSseProgress(data)
 
           // 완료 시 알림 및 정리

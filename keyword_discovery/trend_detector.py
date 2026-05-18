@@ -18,6 +18,13 @@ import base64
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 from collections import defaultdict
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.json_io import atomic_write_json
 
 
 class TrendDetector:
@@ -343,8 +350,7 @@ def main():
 
     # 결과 저장
     output_path = "keyword_discovery/trend_detection_results.json"
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    atomic_write_json(output_path, results)
 
     print()
     print(f"💾 결과 저장: {output_path}")

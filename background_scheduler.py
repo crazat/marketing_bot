@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 from alert_bot import AlertSystem
 
 # [Phase Z] 잡 실행 추적 + 의존성 게이트
@@ -143,8 +144,7 @@ class SchedulerService:
         data[time_str] = today
         
         try:
-            with open(state_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(state_file, data)
         except Exception as e:
             logger.warning(f"Failed to save scheduler state: {e}")
 

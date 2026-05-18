@@ -26,6 +26,7 @@ from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
 from backend_utils.cache import cached, invalidate_cache
 from schemas.response import success_response, error_response
+from utils.json_io import atomic_write_json
 
 router = APIRouter()
 
@@ -132,8 +133,7 @@ async def add_competitor(competitor: CompetitorAdd) -> Dict[str, str]:
         data['targets'].append(new_competitor)
 
         # 파일 저장
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return {
             'status': 'success',
@@ -189,8 +189,7 @@ async def update_competitor(competitor_id: int, update: CompetitorUpdate) -> Dic
             targets[idx]['keywords'] = update.keywords
 
         # 파일 저장
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return {
             'status': 'success',
@@ -233,8 +232,7 @@ async def delete_competitor(competitor_id: int) -> Dict[str, str]:
         del targets[idx]
 
         # 파일 저장
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return {
             'status': 'success',
@@ -1203,8 +1201,7 @@ async def add_discovered_competitor(competitor: CompetitorAdd) -> Dict[str, str]
         data['targets'].append(new_competitor)
 
         # 저장
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return {
             'status': 'success',

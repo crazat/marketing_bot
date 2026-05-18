@@ -18,6 +18,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from .json_io import atomic_write_json
+
 # Try to load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
@@ -162,8 +164,7 @@ class ConfigManager:
                  target_path = fallback
 
         try:
-            with open(target_path, 'w', encoding='utf-8') as f:
-                json.dump(targets_data, f, indent=4, ensure_ascii=False)
+            atomic_write_json(target_path, targets_data, indent=4)
             logger.info("✅ Targets updated successfully.")
             return True
         except Exception as e:
@@ -188,8 +189,7 @@ class ConfigManager:
         kw_path = os.path.join(self.root_dir, 'config', 'keywords.json')
         try:
             data = {"naver_place": keywords}
-            with open(kw_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(kw_path, data)
             logger.info("✅ Ranking keywords updated successfully.")
             return True
         except Exception as e:

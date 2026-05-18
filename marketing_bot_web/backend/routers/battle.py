@@ -25,6 +25,7 @@ from core_services.sql_builder import validate_table_name, get_table_columns
 from backend_utils.logger import get_router_logger
 from backend_utils.error_handlers import handle_exceptions
 from backend_utils.cache import TTLCache, get_api_cache
+from utils.json_io import atomic_write_json
 
 router = APIRouter()
 logger = get_router_logger('battle')
@@ -55,8 +56,7 @@ def save_keyword_targets(targets: Dict[str, int]) -> bool:
             "_description": "키워드별 목표 순위 설정",
             "targets": targets
         }
-        with open(KEYWORD_TARGETS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(KEYWORD_TARGETS_FILE, data)
         return True
     except Exception as e:
         logger.error(f"목표 순위 저장 실패: {e}")
@@ -735,8 +735,7 @@ async def add_ranking_keyword(keyword: RankingKeyword) -> Dict[str, str]:
 
             if keyword.keyword not in keywords_data.get('naver_place', []):
                 keywords_data.setdefault('naver_place', []).append(keyword.keyword)
-                with open(keywords_path, 'w', encoding='utf-8') as f:
-                    json.dump(keywords_data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(keywords_path, keywords_data)
         except Exception as e:
             logger.warning(f"keywords.json 업데이트 실패: {e}")
 
@@ -777,8 +776,7 @@ async def remove_ranking_keyword(keyword: str) -> Dict[str, str]:
 
             if keyword in keywords_data.get('naver_place', []):
                 keywords_data['naver_place'].remove(keyword)
-                with open(keywords_path, 'w', encoding='utf-8') as f:
-                    json.dump(keywords_data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(keywords_path, keywords_data)
         except Exception as e:
             logger.warning(f"keywords.json 업데이트 실패: {e}")
 
@@ -894,15 +892,13 @@ async def update_ranking_keyword(old_keyword: str, request: UpdateKeywordRequest
             if old_keyword in keywords_data.get('naver_place', []):
                 idx = keywords_data['naver_place'].index(old_keyword)
                 keywords_data['naver_place'][idx] = new_keyword
-                with open(keywords_path, 'w', encoding='utf-8') as f:
-                    json.dump(keywords_data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(keywords_path, keywords_data)
 
             # blog_seo에서 교체
             elif old_keyword in keywords_data.get('blog_seo', []):
                 idx = keywords_data['blog_seo'].index(old_keyword)
                 keywords_data['blog_seo'][idx] = new_keyword
-                with open(keywords_path, 'w', encoding='utf-8') as f:
-                    json.dump(keywords_data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(keywords_path, keywords_data)
 
         except Exception as e:
             logger.warning(f"keywords.json 업데이트 실패: {e}")

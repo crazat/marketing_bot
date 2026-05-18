@@ -11,6 +11,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 from utils import ConfigManager
+from utils.json_io import atomic_write_json
 from db.database import DatabaseManager
 from alert_bot import TelegramBot
 
@@ -188,8 +189,7 @@ class SentinelScout:
     def _save_cache_to_file(self):
         """Persist cache to file."""
         try:
-            with open(self.cache_path, 'w', encoding='utf-8') as f:
-                json.dump(self._analysis_cache, f, ensure_ascii=False)
+            atomic_write_json(self.cache_path, self._analysis_cache, indent=None)
         except Exception as e:
             logger.warning(f"[Cache] Failed to save cache file: {e}")
 
@@ -261,8 +261,7 @@ class SentinelScout:
             "unknown_threats": unknown_threats or [],
             "status": "ACTIVE"
         }
-        with open(self.state_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self.state_path, state)
 
     def patrol(self):
         from db.status_manager import status_manager  # 수정안 3: 상태 관리

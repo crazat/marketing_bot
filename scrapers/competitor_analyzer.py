@@ -19,6 +19,12 @@ from typing import List, Dict, Set, Optional, Tuple
 from collections import Counter
 from pathlib import Path
 
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from utils.json_io import atomic_write_json
+
 
 @dataclass
 class BlogPost:
@@ -415,8 +421,7 @@ def load_competitors(config_path: str = "config/competitors.json") -> List[Dict]
         }
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(default_config, f, ensure_ascii=False, indent=2)
+        atomic_write_json(path, default_config)
 
         print(f"기본 설정 파일 생성: {config_path}")
         print("경쟁사 블로그 URL을 추가해주세요.")

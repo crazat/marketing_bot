@@ -26,6 +26,7 @@ sys.path.insert(0, parent_dir)
 
 from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
+from utils.json_io import atomic_write_json
 from schemas.response import success_response, error_response
 
 router = APIRouter()
@@ -273,8 +274,7 @@ async def add_instagram_account(account: InstagramAccount) -> Dict[str, str]:
         data['instagram_competitors'].append(new_account)
 
         # 파일 저장
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return {
             'status': 'success',

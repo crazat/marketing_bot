@@ -55,6 +55,7 @@ load_environment_files()
 
 # 루트 모듈 먼저 import (utils 충돌 방지)
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 from history_manager import HistoryManager
 from insight_manager import InsightManager
 
@@ -179,6 +180,7 @@ async def lifespan(app: FastAPI):
             await scheduler_task
     except asyncio.CancelledError:
         pass
+    shutdown_db_executor()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # FastAPI 앱 설정
@@ -363,7 +365,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # [성능 최적화] ThreadPoolExecutor for DB operations
 from concurrent.futures import ThreadPoolExecutor
-executor = ThreadPoolExecutor(max_workers=app_settings.thread_pool_workers)
+_db_executor: Optional[ThreadPoolExecutor] = None
+_db_executor_lock = threading.Lock()
+
+
+def get_db_executor() -> ThreadPoolExecutor:
+    """Create the DB executor lazily so lifespan shutdown can restart cleanly."""
+    global _db_executor
+    with _db_executor_lock:
+        if _db_executor is None or getattr(_db_executor, "_shutdown", False):
+            _db_executor = ThreadPoolExecutor(max_workers=app_settings.thread_pool_workers)
+        return _db_executor
+
+
+def shutdown_db_executor() -> None:
+    """Release DB worker threads on app shutdown and test client teardown."""
+    global _db_executor
+    with _db_executor_lock:
+        executor = _db_executor
+        _db_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _fetch_hud_metrics_sync():
@@ -412,8 +434,8 @@ async def periodic_hud_update():
 
             # [성능 최적화] run_in_executor로 DB 작업 오프로드
             # 동기 sqlite 호출이 이벤트 루프를 블로킹하지 않음
-            loop = asyncio.get_event_loop()
-            metrics = await loop.run_in_executor(executor, _fetch_hud_metrics_sync)
+            loop = asyncio.get_running_loop()
+            metrics = await loop.run_in_executor(get_db_executor(), _fetch_hud_metrics_sync)
 
             # WebSocket으로 전송
             await ws_manager.send_hud_update(metrics)
@@ -449,19 +471,21 @@ CHRONOS_SCHEDULE = [
     {"time": "03:00", "cmd": "pathfinder"},
 ]
 
+PYTHON_EXECUTABLE = sys.executable or "python"
+
 CMD_MAP = {
-    "sentinel": ["python", "sentinel_agent.py"],
-    "place_sniper": ["python", "scrapers/scraper_naver_place.py"],
-    "briefing": ["python", "insight_manager.py", "--mode", "briefing"],
-    "ambassador": ["python", "ambassador.py"],
-    "cafe_swarm": ["python", "run_cafe_swarm.py"],
-    "viral_hunter": ["python", "viral_hunter.py", "--scan", "--fresh"],
-    "carrot_farm": ["python", "carrot_farmer.py"],
-    "instagram": ["python", "scrapers/scraper_instagram.py"],
-    "youtube": ["python", "scrapers/scraper_youtube.py"],
-    "place_watch": ["python", "scrapers/scraper_live_naver.py"],
-    "tiktok": ["python", "scrapers/scraper_tiktok_monitor.py"],
-    "pathfinder": ["python", "pathfinder_v3_legion.py", "--target", "500", "--save-db"],
+    "sentinel": [PYTHON_EXECUTABLE, "sentinel_agent.py"],
+    "place_sniper": [PYTHON_EXECUTABLE, "scrapers/scraper_naver_place.py"],
+    "briefing": [PYTHON_EXECUTABLE, "insight_manager.py", "--mode", "briefing"],
+    "ambassador": [PYTHON_EXECUTABLE, "ambassador.py"],
+    "cafe_swarm": [PYTHON_EXECUTABLE, "run_cafe_swarm.py"],
+    "viral_hunter": [PYTHON_EXECUTABLE, "viral_hunter.py", "--scan", "--fresh"],
+    "carrot_farm": [PYTHON_EXECUTABLE, "carrot_farmer.py"],
+    "instagram": [PYTHON_EXECUTABLE, "scrapers/scraper_instagram.py"],
+    "youtube": [PYTHON_EXECUTABLE, "scrapers/scraper_youtube.py"],
+    "place_watch": [PYTHON_EXECUTABLE, "scrapers/scraper_live_naver.py"],
+    "tiktok": [PYTHON_EXECUTABLE, "scrapers/scraper_tiktok_monitor.py"],
+    "pathfinder": [PYTHON_EXECUTABLE, "pathfinder_v3_legion.py", "--target", "500", "--save-db"],
 }
 
 SCHEDULER_STATE_FILE = os.path.join(project_root, 'db', 'scheduler_state.json')
@@ -480,51 +504,52 @@ def scheduler_state_lock():
     - 스레드 간 동기화: threading.Lock
     - 프로세스 간 동기화: 파일 기반 락 (Windows 호환)
     """
-    lock_acquired = False
     lock_file = None
+    unlock_file = None
 
+    _scheduler_lock.acquire()
     try:
-        # 1. 스레드 락 획득
-        _scheduler_lock.acquire()
+        lock_path = Path(SCHEDULER_LOCK_FILE)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(exist_ok=True)
+        lock_file = open(lock_path, "r+", encoding="utf-8")
+        if lock_path.stat().st_size == 0:
+            lock_file.write("0")
+            lock_file.flush()
+        lock_file.seek(0)
 
-        # 2. 파일 락 획득 (프로세스 간 동기화)
-        os.makedirs(os.path.dirname(SCHEDULER_LOCK_FILE), exist_ok=True)
-        lock_file = open(SCHEDULER_LOCK_FILE, 'w')
-
-        # Windows/Linux 호환 파일 락
-        try:
+        if os.name == "nt":
             import msvcrt
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        except (ImportError, OSError):
-            # Linux/Mac: fcntl 사용 시도, 없으면 스킵
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+
+            def unlock_file() -> None:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
             try:
                 import fcntl
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (ImportError, OSError):
-                pass  # 파일 락 불가 시 스레드 락만 사용
+            except ImportError:
+                logger.warning("File locking is unavailable; using in-process scheduler lock only")
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
 
-        lock_acquired = True
+                def unlock_file() -> None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
         yield
 
     finally:
-        # 락 해제
-        if lock_file:
+        if lock_file is not None:
             try:
-                try:
-                    import msvcrt
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                except (ImportError, OSError):
-                    try:
-                        import fcntl
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    except (ImportError, OSError):
-                        pass
+                if unlock_file is not None:
+                    unlock_file()
             except Exception:
-                pass
-            lock_file.close()
+                logger.debug("Failed to unlock scheduler state file", exc_info=True)
+            finally:
+                lock_file.close()
 
-        if _scheduler_lock.locked():
-            _scheduler_lock.release()
+        _scheduler_lock.release()
 
 
 def load_scheduler_state() -> dict:
@@ -540,9 +565,8 @@ def load_scheduler_state() -> dict:
 
 def save_scheduler_state(state: dict):
     """스케줄러 상태 파일 저장 (락 없이 - 호출자가 락 관리)"""
-    os.makedirs(os.path.dirname(SCHEDULER_STATE_FILE), exist_ok=True)
-    with open(SCHEDULER_STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2)
+    state_path = Path(SCHEDULER_STATE_FILE)
+    atomic_write_json(state_path, state, ensure_ascii=True)
 
 
 def run_scheduled_module(cmd_key: str):

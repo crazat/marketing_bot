@@ -7,6 +7,7 @@ import requests
 import os
 import sys
 import logging
+from contextlib import closing
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -142,7 +143,7 @@ class NaverAdManager:
         """Initialize SQLite cache table for keyword volumes"""
         try:
             import sqlite3
-            with sqlite3.connect(self.config.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.config.db_path, timeout=10)) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''CREATE TABLE IF NOT EXISTS keyword_volume_cache (
                     keyword TEXT PRIMARY KEY,
@@ -182,7 +183,7 @@ class NaverAdManager:
         # 2. Check DB cache for remaining
         still_uncached = []
         try:
-            with sqlite3.connect(self.config.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.config.db_path, timeout=10)) as conn:
                 cursor = conn.cursor()
                 placeholders = ','.join(['?'] * len(uncached))
                 cursor.execute(f'''
@@ -226,7 +227,7 @@ class NaverAdManager:
         
         # 2. Update DB cache
         try:
-            with sqlite3.connect(self.config.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.config.db_path, timeout=10)) as conn:
                 cursor = conn.cursor()
                 cursor.executemany('''
                     INSERT OR REPLACE INTO keyword_volume_cache (keyword, volume, cached_at)

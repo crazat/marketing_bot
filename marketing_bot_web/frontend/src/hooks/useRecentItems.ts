@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-recent-items-v1'
 const MAX_ITEMS = 12
@@ -14,26 +15,19 @@ export interface RecentItem {
 }
 
 function loadItems(): RecentItem[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (x) =>
-        x && typeof x.id === 'string' && typeof x.path === 'string' && typeof x.timestamp === 'number',
-    )
-  } catch {
-    return []
-  }
+  const parsed = readStorageJson<unknown[]>(STORAGE_KEY, [], Array.isArray)
+  return parsed.filter(
+    (x): x is RecentItem =>
+      Boolean(x) &&
+      typeof x === 'object' &&
+      typeof (x as RecentItem).id === 'string' &&
+      typeof (x as RecentItem).path === 'string' &&
+      typeof (x as RecentItem).timestamp === 'number',
+  )
 }
 
 function saveItems(items: RecentItem[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
-  } catch {
-    // ignore quota errors
-  }
+  writeStorageJson(STORAGE_KEY, items)
 }
 
 /**

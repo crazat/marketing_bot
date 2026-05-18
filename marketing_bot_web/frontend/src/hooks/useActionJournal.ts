@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-journal-v1'
 const MAX_ENTRIES = 500
@@ -13,22 +14,11 @@ export interface JournalEntry {
 }
 
 function load(): JournalEntry[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
+  return readStorageJson<JournalEntry[]>(STORAGE_KEY, [], Array.isArray)
 }
 
 function save(entries: JournalEntry[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(-MAX_ENTRIES)))
-  } catch {
-    // ignore
-  }
+  writeStorageJson(STORAGE_KEY, entries.slice(-MAX_ENTRIES))
 }
 
 /**

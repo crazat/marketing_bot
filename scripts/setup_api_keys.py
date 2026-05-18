@@ -11,7 +11,10 @@ from pathlib import Path
 
 # 프로젝트 루트 경로
 PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 SECRETS_FILE = PROJECT_ROOT / "config" / "secrets.json"
+
+from utils.json_io import atomic_write_json
 
 
 def print_header(title):
@@ -53,8 +56,7 @@ def save_secrets(secrets):
             print(f"✅ 백업 생성: {backup_file.name}")
 
         # 저장
-        with open(SECRETS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(secrets, f, indent=4, ensure_ascii=False)
+        atomic_write_json(SECRETS_FILE, secrets, indent=4)
 
         print(f"✅ secrets.json 저장 완료!")
         return True

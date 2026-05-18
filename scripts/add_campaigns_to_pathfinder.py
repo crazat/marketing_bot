@@ -11,6 +11,7 @@ import os
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.json_io import atomic_write_json
 
 def extract_unverified_keywords():
     """Pathfinder에 없는 키워드 추출"""
@@ -53,8 +54,7 @@ def create_pathfinder_input_file(keywords):
     }
 
     output_path = 'config/campaigns_unverified.json'
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    atomic_write_json(output_path, output)
 
     return output_path
 

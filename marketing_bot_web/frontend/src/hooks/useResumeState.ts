@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-resume-v1'
 const RESUME_TTL_MS = 8 * 60 * 60 * 1000 // 8시간
@@ -13,32 +14,24 @@ export interface ResumeState {
 }
 
 function load(scope: string): ResumeState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    const all = JSON.parse(raw)
-    const entry = all?.[scope]
-    if (!entry || typeof entry.timestamp !== 'number') return null
-    if (Date.now() - entry.timestamp > RESUME_TTL_MS) return null
-    return entry as ResumeState
-  } catch {
-    return null
-  }
+  const all = readStorageJson<Record<string, unknown>>(STORAGE_KEY, {})
+  const entry = all[scope]
+  if (!entry || typeof entry !== 'object') return null
+
+  const resume = entry as Partial<ResumeState>
+  if (typeof resume.timestamp !== 'number') return null
+  if (Date.now() - resume.timestamp > RESUME_TTL_MS) return null
+  return resume as ResumeState
 }
 
 function save(scope: string, state: ResumeState | null) {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const all = raw ? JSON.parse(raw) : {}
-    if (state === null) {
-      delete all[scope]
-    } else {
-      all[scope] = state
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
-  } catch {
-    // ignore
+  const all = readStorageJson<Record<string, ResumeState>>(STORAGE_KEY, {})
+  if (state === null) {
+    delete all[scope]
+  } else {
+    all[scope] = state
   }
+  writeStorageJson(STORAGE_KEY, all)
 }
 
 /**

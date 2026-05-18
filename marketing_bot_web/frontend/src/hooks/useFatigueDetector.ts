@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useToast } from '@/components/ui/Toast'
+import { readStorageJson, removeStorageItem, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-fatigue-v1'
 const SESSION_TTL_MS = 30 * 60_000 // 30분 유휴 시 세션 종료
@@ -13,21 +14,12 @@ interface FatigueState {
 }
 
 function load(): FatigueState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as FatigueState) : null
-  } catch {
-    return null
-  }
+  return readStorageJson<FatigueState | null>(STORAGE_KEY, null)
 }
 
 function save(state: FatigueState | null) {
-  try {
-    if (state === null) localStorage.removeItem(STORAGE_KEY)
-    else localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch {
-    // ignore
-  }
+  if (state === null) removeStorageItem(STORAGE_KEY)
+  else writeStorageJson(STORAGE_KEY, state)
 }
 
 /**

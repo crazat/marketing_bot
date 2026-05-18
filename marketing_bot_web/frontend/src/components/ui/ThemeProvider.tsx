@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { readStorageItem, writeStorageItem } from '@/utils/safeStorage'
 
 type Theme = 'dark' | 'light' | 'system'
 
@@ -11,14 +12,12 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined)
 
 const STORAGE_KEY = 'marketing-bot-theme'
+const THEMES: Theme[] = ['dark', 'light', 'system']
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem(STORAGE_KEY) as Theme | null
-      return stored || 'system'
-    }
-    return 'system'
+    const stored = readStorageItem(STORAGE_KEY)
+    return THEMES.includes(stored as Theme) ? (stored as Theme) : 'system'
   })
 
   const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>('dark')
@@ -58,7 +57,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = (newTheme: Theme) => {
     setThemeState(newTheme)
-    localStorage.setItem(STORAGE_KEY, newTheme)
+    writeStorageItem(STORAGE_KEY, newTheme)
   }
 
   return (

@@ -8,6 +8,8 @@ FileWatcher Service
 import os
 import json
 import asyncio
+import logging
+from collections import deque
 from pathlib import Path
 from typing import Optional, Callable
 from datetime import datetime
@@ -20,6 +22,9 @@ try:
 except ImportError:
     HAS_WATCHDOG = False
     print("⚠️ watchdog 미설치 - 폴링 모드로 동작")
+
+
+logger = logging.getLogger(__name__)
 
 
 class LogFileHandler(FileSystemEventHandler):
@@ -45,6 +50,10 @@ class LogFileHandler(FileSystemEventHandler):
     def _read_new_lines(self):
         """새로 추가된 줄 읽기"""
         try:
+            current_size = os.path.getsize(self.log_file)
+            if current_size < self.last_position:
+                self.last_position = 0
+
             with open(self.log_file, 'r', encoding='utf-8', errors='ignore') as f:
                 f.seek(self.last_position)
                 new_content = f.read()
@@ -79,9 +88,13 @@ class FileWatcher:
         # 마지막 읽은 위치
         self._last_position = 0
         self._last_status = None
+        self._status_read_error_logged = False
 
     async def start(self):
         """파일 감시 시작"""
+        if self.running:
+            return
+
         self.running = True
         self._loop = asyncio.get_running_loop()
 
@@ -101,9 +114,10 @@ class FileWatcher:
         self.running = False
 
         if self.observer:
-            self.observer.stop()
-            self.observer.join(timeout=2)
+            observer = self.observer
             self.observer = None
+            observer.stop()
+            await asyncio.to_thread(observer.join, 2)
 
         if self._polling_task:
             self._polling_task.cancel()
@@ -122,7 +136,8 @@ class FileWatcher:
         def on_new_line(line: str):
             loop = self._loop
             if loop and loop.is_running():
-                asyncio.run_coroutine_threadsafe(self._broadcast_log(line), loop)
+                future = asyncio.run_coroutine_threadsafe(self._broadcast_log(line), loop)
+                future.add_done_callback(self._log_threadsafe_broadcast_error)
 
         handler = LogFileHandler(str(self.log_file), on_new_line)
         self.observer = Observer()
@@ -131,6 +146,13 @@ class FileWatcher:
 
         # 상태 파일 폴링 (별도 태스크)
         self._polling_task = asyncio.create_task(self._status_polling_loop())
+
+    @staticmethod
+    def _log_threadsafe_broadcast_error(future) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.debug("Threadsafe file watcher broadcast failed: %s", exc)
 
     async def _polling_loop(self):
         """폴링 기반 파일 감시 (watchdog 없을 때)"""
@@ -204,10 +226,23 @@ class FileWatcher:
             # 상태가 변경되었으면 브로드캐스트
             if status_data != self._last_status:
                 self._last_status = status_data
+                self._status_read_error_logged = False
                 await self._broadcast_status(status_data)
 
+        except FileNotFoundError:
+            return
+        except json.JSONDecodeError as e:
+            if not self._status_read_error_logged:
+                logger.warning("Ignoring malformed status file %s: %s", self.status_file, e)
+                self._status_read_error_logged = True
+        except OSError as e:
+            if not self._status_read_error_logged:
+                logger.warning("Unable to read status file %s: %s", self.status_file, e)
+                self._status_read_error_logged = True
         except Exception as e:
-            pass  # 상태 파일 읽기 실패는 무시
+            if not self._status_read_error_logged:
+                logger.warning("Unexpected status file read error %s: %s", self.status_file, e)
+                self._status_read_error_logged = True
 
     async def _broadcast_log(self, line: str):
         """로그 라인 브로드캐스트"""
@@ -229,9 +264,10 @@ class FileWatcher:
             return []
 
         try:
+            max_lines = max(1, min(lines, 1000))
             with open(self.log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                all_lines = f.readlines()
-                return [line.strip() for line in all_lines[-lines:] if line.strip()]
+                recent = deque(f, maxlen=max_lines)
+                return [line.strip() for line in recent if line.strip()]
         except (IOError, OSError):
             return []
 

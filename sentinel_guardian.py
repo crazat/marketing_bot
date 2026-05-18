@@ -19,6 +19,7 @@ import psutil
 
 # Add project root
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils.json_io import atomic_write_json
 
 class SentinelGuardian:
     """
@@ -68,8 +69,7 @@ class SentinelGuardian:
     def _save_stats(self):
         """Save guardian statistics"""
         try:
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stats, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.stats_file, self.stats)
         except Exception as e:
             self.log(f"Failed to save stats: {e}")
     

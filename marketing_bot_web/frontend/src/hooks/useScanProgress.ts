@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getApiAuthHeaders, withApiKeyQuery } from '@/services/api/base'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 export interface ScanProgressData {
   status: 'idle' | 'running' | 'completed' | 'error' | 'timeout'
@@ -70,11 +71,13 @@ export function useScanProgress(
 
     eventSource.onmessage = (event) => {
       try {
-        const progressData: ScanProgressData = JSON.parse(event.data)
+        const progressData = safeJsonParse<Partial<ScanProgressData> | null>(event.data, null)
+        if (!progressData || typeof progressData.status !== 'string') return
+
         setData({
-          status: progressData.status,
-          progress: progressData.progress,
-          message: progressData.message,
+          status: progressData.status as ScanProgressData['status'],
+          progress: typeof progressData.progress === 'number' ? progressData.progress : 0,
+          message: typeof progressData.message === 'string' ? progressData.message : '',
           isRunning: progressData.isRunning ?? progressData.status === 'running',
         })
 
@@ -90,7 +93,7 @@ export function useScanProgress(
 
         // 에러 시 콜백 실행
         if (progressData.status === 'error') {
-          onError?.(progressData.message)
+          onError?.(typeof progressData.message === 'string' ? progressData.message : '')
         }
       } catch (e) {
         console.error('SSE 데이터 파싱 오류:', e)

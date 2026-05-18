@@ -10,6 +10,7 @@ _ORIGINAL_CONNECT = sqlite3.connect
 _INSTALLED = False
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_BUSY_TIMEOUT_MS = 10_000
+DEFAULT_CACHE_SIZE_KB = -8_000
 
 
 def _configure_connection(conn: sqlite3.Connection) -> None:
@@ -17,6 +18,7 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS}")
+        conn.execute(f"PRAGMA cache_size={DEFAULT_CACHE_SIZE_KB}")
     except sqlite3.Error:
         # Some special connections, such as in-memory databases, may not support every pragma.
         pass

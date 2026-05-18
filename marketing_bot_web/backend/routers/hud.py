@@ -35,6 +35,7 @@ from backend_utils.error_handlers import handle_exceptions
 from backend_utils.logger import get_router_logger
 from services.process_jobs import popen_process_group_kwargs, terminate_process_tree
 from schemas.response import success_response, error_response
+from utils.json_io import atomic_write_json
 
 logger = get_router_logger('hud')
 
@@ -932,8 +933,7 @@ def run_module_in_background(module_name: str):
 
         # 상태 파일 저장
         os.makedirs(os.path.dirname(SCHEDULER_STATE_FILE), exist_ok=True)
-        with open(SCHEDULER_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(scheduler_state, f, indent=2)
+        atomic_write_json(SCHEDULER_STATE_FILE, scheduler_state, ensure_ascii=True)
 
     except Exception as e:
         with running_processes_lock:

@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { pathfinderApi } from '@/services/api'
 import type { Keyword, PathfinderStats, ScanRun, DateStat } from '@/types'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 // ScanRun에 파싱된 topKeywords를 추가한 타입
 interface ParsedScanRun extends ScanRun {
@@ -113,7 +114,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
     if (!scanHistory?.runs) return []
     return scanHistory.runs.map((scan: ScanRun): ParsedScanRun => ({
       ...scan,
-      topKeywords: scan.top_keywords_json ? JSON.parse(scan.top_keywords_json) : []
+      topKeywords: safeJsonParse<Keyword[]>(scan.top_keywords_json, [], Array.isArray),
     }))
   }, [scanHistory])
 

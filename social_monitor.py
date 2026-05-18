@@ -6,6 +6,7 @@ import sys
 import time
 from datetime import datetime
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 from alert_bot import AlertSystem
 
 # Add backend to path for ai_client import
@@ -47,8 +48,7 @@ class SocialMonitor:
         return {}
 
     def _save_seen(self):
-        with open(self.db_path, 'w', encoding='utf-8') as f:
-            json.dump(self.seen_posts, f, indent=2)
+        atomic_write_json(self.db_path, self.seen_posts, ensure_ascii=True)
 
     def search_naver_blog(self, keyword):
         """Uses Naver API to find posts (Blog + Cafe)."""

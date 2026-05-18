@@ -7,9 +7,12 @@ Run: python scripts/ai_ad_classify_submit.py [--limit N] [--chunk 5000] [--dry-r
 """
 import sys, os, json, sqlite3, argparse
 from datetime import datetime
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'marketing_bot_web', 'backend'))
 sys.stdout.reconfigure(encoding='utf-8')
 
+from utils.json_io import atomic_write_json  # noqa: E402
 from services.ai_client import ai_generate_batch  # noqa: E402
 
 SYSTEM_PROMPT = """당신은 한국 한의원 마케팅 데이터에서 "사용자 자연 글" vs "광고/마케팅 글"을 정확히 분류하는 전문가입니다.
@@ -227,26 +230,24 @@ def main():
         if not job_name:
             print(f'  ❌ 제출 실패 (chunk {cidx+1})')
             # 부분 성공 기록
-            with open(os.path.join(out_dir, f'batch_{cidx+1:03d}_FAILED.json'), 'w', encoding='utf-8') as f:
-                json.dump({
-                    'chunk_idx': cidx + 1,
-                    'error': 'submit failed',
-                    'target_ids': [r[0] for r in chunk],
-                }, f, ensure_ascii=False, indent=2)
+            atomic_write_json(os.path.join(out_dir, f'batch_{cidx+1:03d}_FAILED.json'), {
+                'chunk_idx': cidx + 1,
+                'error': 'submit failed',
+                'target_ids': [r[0] for r in chunk],
+            })
             continue
 
         # 매핑 저장
         target_ids = [r[0] for r in chunk]
         path = os.path.join(out_dir, f'batch_{cidx+1:03d}.json')
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump({
-                'job_name': job_name,
-                'display_name': display_name,
-                'target_ids': target_ids,
-                'source_scan_run_id': args.source_scan_run_id,
-                'count': len(target_ids),
-                'submitted_at': datetime.now().isoformat(),
-            }, f, ensure_ascii=False, indent=2)
+        atomic_write_json(path, {
+            'job_name': job_name,
+            'display_name': display_name,
+            'target_ids': target_ids,
+            'source_scan_run_id': args.source_scan_run_id,
+            'count': len(target_ids),
+            'submitted_at': datetime.now().isoformat(),
+        })
         submitted.append((cidx + 1, job_name, len(target_ids), path))
         print(f'  ✅ {job_name}  ({len(target_ids):,}건) → {path}')
 

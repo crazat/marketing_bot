@@ -11,10 +11,12 @@ if sys.platform.startswith('win'):
 # ConfigManager 사용으로 통일
 try:
     from utils import ConfigManager
+    from utils.json_io import atomic_write_json
 except ImportError:
     # 직접 실행 시 경로 추가
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils import ConfigManager
+    from utils.json_io import atomic_write_json
 
 
 class KakaoAuth:
@@ -74,8 +76,7 @@ class KakaoAuth:
             print(f"❌ [인증 실패] {tokens}")
 
     def _save_tokens(self, tokens):
-        with open(self.tokens_path, 'w', encoding='utf-8') as f:
-            json.dump(tokens, f, indent=4)
+        atomic_write_json(self.tokens_path, tokens, indent=4, ensure_ascii=True)
             
 if __name__ == "__main__":
     auth = KakaoAuth()

@@ -16,10 +16,13 @@ Run: python scripts/ai_ad_classify_auto_continue.py db/batch_jobs/ad_classify_<T
 import sys, os, json, glob, time, re, sqlite3, subprocess
 from datetime import datetime
 from collections import Counter
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'marketing_bot_web', 'backend'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding='utf-8')
 
+from utils.json_io import atomic_write_json  # noqa
 from services.ai_client import ai_batch_status, ai_batch_results, ai_generate_batch  # noqa
 from ai_ad_classify_submit import SYSTEM_PROMPT, build_prompt  # noqa
 
@@ -53,8 +56,7 @@ def update_status(status_path, **kwargs):
             cur = {}
     cur.update(kwargs)
     cur['updated_at'] = datetime.now().isoformat()
-    with open(status_path, 'w', encoding='utf-8') as f:
-        json.dump(cur, f, ensure_ascii=False, indent=2)
+    atomic_write_json(status_path, cur)
 
 
 def parse_response(text):
@@ -209,15 +211,14 @@ def submit_chunk(job_dir, chunk_idx, log_path, status_path):
         job_name = ai_generate_batch(requests, display_name=f'ad_classify_auto_chunk{chunk_idx:03d}')
         if job_name:
             ok_path = os.path.join(job_dir, f'batch_{chunk_idx:03d}.json')
-            with open(ok_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'job_name': job_name,
-                    'display_name': f'ad_classify_auto_chunk{chunk_idx:03d}',
-                    'target_ids': target_ids,
-                    'count': len(target_ids),
-                    'submitted_at': datetime.now().isoformat(),
-                    'auto_resubmitted': True,
-                }, f, ensure_ascii=False, indent=2)
+            atomic_write_json(ok_path, {
+                'job_name': job_name,
+                'display_name': f'ad_classify_auto_chunk{chunk_idx:03d}',
+                'target_ids': target_ids,
+                'count': len(target_ids),
+                'submitted_at': datetime.now().isoformat(),
+                'auto_resubmitted': True,
+            })
             os.remove(failed_path)
             cur.execute(f'UPDATE viral_targets SET ai_batch_job=? WHERE id IN ({placeholders})',
                         [job_name] + target_ids)

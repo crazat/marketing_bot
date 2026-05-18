@@ -8,9 +8,16 @@ Pathfinder V3 키워드 품질 필터
 
 import re
 import json
+import sys
 from typing import List, Tuple, Dict, Set, Optional
 from dataclasses import dataclass
 from pathlib import Path
+
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from utils.json_io import atomic_write_json
 
 
 @dataclass
@@ -201,8 +208,7 @@ class KeywordBlacklist:
     def save(self):
         """블랙리스트 저장"""
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self.config_path, self.data)
 
     def add_keyword(self, keyword: str):
         """키워드 추가"""

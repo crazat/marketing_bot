@@ -20,6 +20,8 @@ from enum import Enum
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils.json_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,8 +118,7 @@ class KeywordPriorityScheduler:
                     'priority_score': info.priority_score
                 }
 
-            with open(self.schedule_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.schedule_file, data)
 
         except Exception as e:
             logger.error(f"Failed to save keyword schedules: {e}")

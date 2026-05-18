@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from dataclasses import dataclass, asdict
 from typing import Dict, Iterable, List, Optional
 
@@ -70,7 +71,7 @@ class ViralSeedBuilder:
         self.db_path = db_path
 
     def latest_completed_legion_scan_id(self) -> Optional[int]:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             row = conn.execute(
                 """
                 SELECT id
@@ -99,7 +100,7 @@ class ViralSeedBuilder:
         excludes = list(exclude_patterns or DEFAULT_EXCLUDE_PATTERNS)
         grades = tuple(include_grades)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             placeholders = ",".join("?" for _ in grades)
             status_clause = ""
@@ -241,7 +242,7 @@ class ViralSeedBuilder:
     def _load_keyword_feedback(self) -> Dict[str, dict]:
         """Summarize Viral Hunter outcomes by matched keyword for seed ranking."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 scan_count_expr = "COALESCE(scan_count, 1)"
                 if not self._table_has_column(conn, "viral_targets", "scan_count"):

@@ -20,6 +20,7 @@ if sys.platform.startswith('win'):
 # Add parent directory to path to import db
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.database import DatabaseManager
+from utils.json_io import atomic_write_json
 
 class NaverLiveScraper:
     """
@@ -213,8 +214,7 @@ class NaverLiveScraper:
             filename = f"{timestamp}_raw.json"
             filepath = os.path.join(self.data_dir, filename)
             try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(all_data, f, ensure_ascii=False, indent=4)
+                atomic_write_json(filepath, all_data, indent=4)
                 print(f"💾 Saved raw data to {filepath}")
             except Exception as e:
                 print(f"⚠️ Save Error: {e}")

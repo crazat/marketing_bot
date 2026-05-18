@@ -32,6 +32,7 @@ sys.path.insert(0, project_root)
 
 from db.database import DatabaseManager
 from utils import ConfigManager
+from utils.json_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +177,7 @@ class CompetitorChangeDetector:
     def _save_hashes(self):
         """해시 파일을 저장합니다."""
         try:
-            with open(HASH_FILE_PATH, 'w', encoding='utf-8') as f:
-                json.dump(self.hashes, f, ensure_ascii=False, indent=2)
+            atomic_write_json(HASH_FILE_PATH, self.hashes)
         except Exception as e:
             logger.error(f"해시 파일 저장 실패: {e}")
 

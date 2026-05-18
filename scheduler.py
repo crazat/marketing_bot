@@ -5,6 +5,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from utils.json_io import atomic_write_json
 
 # Windows console encoding fix
 if sys.platform.startswith('win'):
@@ -62,8 +63,7 @@ class ChronosScheduler:
 
     def _save_state(self):
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-        with open(self.state_file, 'w') as f:
-            json.dump(self.last_run, f, indent=2)
+        atomic_write_json(self.state_file, self.last_run, ensure_ascii=True)
 
     def run_task(self, task):
         label = task['label']

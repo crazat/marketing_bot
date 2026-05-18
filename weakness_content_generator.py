@@ -24,6 +24,7 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 from db.database import DatabaseManager
 from agent_crew import AgentCrew
 
@@ -191,8 +192,7 @@ status: draft
         # 최근 100개만 유지
         history = history[-100:]
 
-        with open(record_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        atomic_write_json(record_file, history)
 
     def run(self, limit: int = 3) -> dict:
         """

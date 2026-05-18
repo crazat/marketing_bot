@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { resetApiKeyToBundledDefault, withApiKeyQuery } from '@/services/api/base'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 const isDev = import.meta.env.DEV
 const devLog = (...args: unknown[]) => isDev && console.log(...args)
@@ -83,7 +84,11 @@ export function useWebSocket() {
       try {
         if (event.data === 'pong') return
 
-        const message: WebSocketMessage = JSON.parse(event.data)
+        const message = safeJsonParse<WebSocketMessage | null>(event.data, null)
+        if (!message || typeof message.type !== 'string') {
+          devError('WebSocket message shape error:', event.data)
+          return
+        }
         setLastMessage(message)
         handleMessage(message)
       } catch (error) {

@@ -23,6 +23,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import PageTransition from '@/components/PageTransition'
 import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 import Button, { IconButton } from '@/components/ui/Button'
 import { Download, Save, RotateCcw } from 'lucide-react'
 
@@ -38,19 +39,21 @@ interface FilterPreset {
 }
 
 const PRESETS_STORAGE_KEY = 'pathfinder-filter-presets'
+const CALENDAR_PROGRESS_KEY = 'pathfinder-calendar-progress'
 
 // 프리셋 저장/불러오기 헬퍼
 const loadPresets = (): FilterPreset[] => {
-  try {
-    const saved = localStorage.getItem(PRESETS_STORAGE_KEY)
-    return saved ? JSON.parse(saved) : []
-  } catch {
-    return []
-  }
+  return readStorageJson<FilterPreset[]>(PRESETS_STORAGE_KEY, [], Array.isArray)
 }
 
 const savePresets = (presets: FilterPreset[]) => {
-  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets))
+  writeStorageJson(PRESETS_STORAGE_KEY, presets)
+}
+
+const loadCompletedWeeks = (): Set<number> => {
+  const saved = readStorageJson<unknown[]>(CALENDAR_PROGRESS_KEY, [], Array.isArray)
+  const weeks = saved.filter((week): week is number => Number.isInteger(week))
+  return new Set(weeks)
 }
 
 export default function Pathfinder() {
@@ -80,15 +83,7 @@ export default function Pathfinder() {
   const [generatedOutlines, setGeneratedOutlines] = useState<Record<number, any>>({})
 
   // [P2-2] 캘린더 진행 트래킹 (localStorage)
-  const CALENDAR_PROGRESS_KEY = 'pathfinder-calendar-progress'
-  const [completedWeeks, setCompletedWeeks] = useState<Set<number>>(() => {
-    try {
-      const saved = localStorage.getItem(CALENDAR_PROGRESS_KEY)
-      return saved ? new Set(JSON.parse(saved)) : new Set()
-    } catch {
-      return new Set()
-    }
-  })
+  const [completedWeeks, setCompletedWeeks] = useState<Set<number>>(() => loadCompletedWeeks())
 
   const toggleWeekComplete = useCallback((week: number) => {
     setCompletedWeeks(prev => {
@@ -98,7 +93,7 @@ export default function Pathfinder() {
       } else {
         next.add(week)
       }
-      localStorage.setItem(CALENDAR_PROGRESS_KEY, JSON.stringify([...next]))
+      writeStorageJson(CALENDAR_PROGRESS_KEY, [...next])
       return next
     })
   }, [])

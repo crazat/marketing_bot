@@ -23,6 +23,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'marketing_bot_web', 'backend'))
 
 from services.ai_client import ai_generate, ai_generate_json
+from utils.json_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -578,8 +579,7 @@ class MarketingAgent:
             if keyword not in data.get("naver_place", []):
                 data["naver_place"].append(keyword)
 
-                with open(config_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(config_path, data)
 
                 logger.info(f"Added keyword to tracking: {keyword}")
 

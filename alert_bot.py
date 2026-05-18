@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from enum import Enum
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 
 # Windows console encoding fix
 if sys.platform.startswith('win'):
@@ -311,8 +312,7 @@ class AlertAggregator:
         """알림 이력 저장"""
         try:
             os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.recent_alerts, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.history_file, self.recent_alerts)
         except Exception as e:
             logger.error(f"Failed to save alert history: {e}")
 

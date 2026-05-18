@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { AlertRule, AlertLog } from '@/types/marketing'
 import Button, { IconButton } from '@/components/ui/Button'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 interface SmartAlertsProps {
   compact?: boolean
@@ -32,12 +33,8 @@ const ACTION_TYPES = [
 
 // condition_json에서 threshold 추출
 function parseThreshold(conditionJson: string): number | null {
-  try {
-    const parsed = JSON.parse(conditionJson)
-    return parsed.threshold ?? null
-  } catch {
-    return null
-  }
+  const parsed = safeJsonParse<Record<string, unknown>>(conditionJson, {})
+  return typeof parsed.threshold === 'number' ? parsed.threshold : null
 }
 
 export function SmartAlerts({ compact = false }: SmartAlertsProps) {

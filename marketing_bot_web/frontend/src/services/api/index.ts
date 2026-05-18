@@ -56,6 +56,7 @@ export {
 } from './base'
 
 import { withApiKeyQuery } from './base'
+import { safeJsonParse } from '@/utils/safeStorage'
 
 // HUD API
 export { hudApi } from './hud'
@@ -195,7 +196,11 @@ export const createWebSocket = (onMessage: (data: unknown) => void) => {
   ws.onmessage = (event) => {
     try {
       if (event.data === 'pong') return
-      const data = JSON.parse(event.data)
+      const data = safeJsonParse<unknown | null>(event.data, null)
+      if (data === null) {
+        devError('WebSocket message parse error:', event.data)
+        return
+      }
       onMessage(data)
     } catch (error) {
       devError('WebSocket message parse error:', error)

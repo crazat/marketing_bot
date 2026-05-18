@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-offline-queue-v1'
 const MAX_RETRY = 3
@@ -20,22 +21,11 @@ export interface QueuedAction {
 }
 
 function loadQueue(): QueuedAction[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
+  return readStorageJson<QueuedAction[]>(STORAGE_KEY, [], Array.isArray)
 }
 
 function saveQueue(queue: QueuedAction[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(queue))
-  } catch {
-    // ignore
-  }
+  writeStorageJson(STORAGE_KEY, queue)
 }
 
 /**

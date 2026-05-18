@@ -24,6 +24,7 @@ if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.json_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -372,8 +373,7 @@ class InstagramGraphAPI:
             secrets['INSTAGRAM_ACCESS_TOKEN'] = new_token
             secrets['INSTAGRAM_TOKEN_EXPIRY'] = expiry.isoformat()
 
-            with open(secrets_path, 'w', encoding='utf-8') as f:
-                json.dump(secrets, f, indent=4, ensure_ascii=False)
+            atomic_write_json(secrets_path, secrets, indent=4)
 
             logger.info("secrets.json에 새 토큰 저장 완료")
             return True

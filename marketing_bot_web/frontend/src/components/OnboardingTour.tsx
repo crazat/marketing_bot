@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { X, ChevronRight, Keyboard } from 'lucide-react'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { useModalStack, isTopModal } from '@/hooks/useModalStack'
+import { readStorageItem, writeStorageItem } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-onboarding-v1'
 
@@ -42,7 +43,7 @@ export default function OnboardingTour() {
 
   useEffect(() => {
     try {
-      const seen = localStorage.getItem(STORAGE_KEY)
+      const seen = readStorageItem(STORAGE_KEY)
       if (!seen) setVisible(true)
     } catch {
       // localStorage 접근 실패 시 조용히 무시
@@ -51,7 +52,7 @@ export default function OnboardingTour() {
 
   const dismiss = useCallback(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, String(Date.now()))
+      writeStorageItem(STORAGE_KEY, String(Date.now()))
     } catch {
       // ignore
     }

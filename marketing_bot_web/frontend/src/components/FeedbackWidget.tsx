@@ -4,6 +4,7 @@ import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { useModalStack, isTopModal } from '@/hooks/useModalStack'
 import { useToast } from '@/components/ui/Toast'
 import { logger } from '@/utils/logger'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-feedback-queue-v1'
 const MAX_QUEUE = 30
@@ -26,12 +27,10 @@ const KIND_CONFIG: Record<FeedbackKind, { Icon: typeof Bug; label: string; tone:
 }
 
 function enqueueFeedback(entry: FeedbackEntry) {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const arr: FeedbackEntry[] = raw ? JSON.parse(raw) : []
-    arr.push(entry)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr.slice(-MAX_QUEUE)))
-  } catch (err) {
+  const arr = readStorageJson<FeedbackEntry[]>(STORAGE_KEY, [], Array.isArray)
+  arr.push(entry)
+  if (!writeStorageJson(STORAGE_KEY, arr.slice(-MAX_QUEUE))) {
+    const err = 'storage write failed'
     logger.warn('feedback enqueue 실패', err)
   }
 }

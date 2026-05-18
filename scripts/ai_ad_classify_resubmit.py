@@ -4,11 +4,14 @@ Run: python scripts/ai_ad_classify_resubmit.py <job_dir> [--max N] [--delay 30]
 """
 import sys, os, json, glob, time, argparse, sqlite3
 from datetime import datetime
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'marketing_bot_web', 'backend'))
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ai_ad_classify_submit에서 SYSTEM_PROMPT, build_prompt import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils.json_io import atomic_write_json  # noqa: E402
 from ai_ad_classify_submit import SYSTEM_PROMPT, build_prompt  # noqa: E402
 from services.ai_client import ai_generate_batch  # noqa: E402
 
@@ -64,15 +67,14 @@ def main():
             if job_name:
                 # 성공 → FAILED 파일을 정상 이름으로 재저장
                 ok_path = os.path.join(args.job_dir, f'batch_{chunk_idx:03d}.json')
-                with open(ok_path, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        'job_name': job_name,
-                        'display_name': display_name,
-                        'target_ids': target_ids,
-                        'count': len(target_ids),
-                        'submitted_at': datetime.now().isoformat(),
-                        'resubmitted_from': os.path.basename(fp),
-                    }, f, ensure_ascii=False, indent=2)
+                atomic_write_json(ok_path, {
+                    'job_name': job_name,
+                    'display_name': display_name,
+                    'target_ids': target_ids,
+                    'count': len(target_ids),
+                    'submitted_at': datetime.now().isoformat(),
+                    'resubmitted_from': os.path.basename(fp),
+                })
                 os.remove(fp)
 
                 # ai_batch_job 마킹

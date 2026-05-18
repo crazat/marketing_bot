@@ -25,7 +25,7 @@ Unified API Response Schemas
 """
 
 from typing import TypeVar, Generic, Optional, List, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from datetime import datetime
 from enum import Enum
 
@@ -39,7 +39,13 @@ class ResponseStatus(str, Enum):
 T = TypeVar('T')
 
 
-class ApiResponse(BaseModel, Generic[T]):
+class TimestampedModel(BaseModel):
+    @field_serializer("timestamp", check_fields=False)
+    def _serialize_timestamp(self, timestamp: datetime) -> str:
+        return timestamp.isoformat()
+
+
+class ApiResponse(TimestampedModel, Generic[T]):
     """
     통일된 API 응답 스키마
 
@@ -66,11 +72,6 @@ class ApiResponse(BaseModel, Generic[T]):
     data: Optional[T] = None
     error: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.now)
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
 
     @classmethod
     def success(cls, data: T) -> 'ApiResponse[T]':
@@ -106,7 +107,7 @@ class PaginationMeta(BaseModel):
         )
 
 
-class PaginatedResponse(BaseModel, Generic[T]):
+class PaginatedResponse(TimestampedModel, Generic[T]):
     """
     페이지네이션이 포함된 응답 스키마
 
@@ -130,11 +131,6 @@ class PaginatedResponse(BaseModel, Generic[T]):
     error: Optional[str] = None
     meta: Optional[PaginationMeta] = None
     timestamp: datetime = Field(default_factory=datetime.now)
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
 
     @classmethod
     def success(
@@ -165,7 +161,7 @@ class ErrorDetail(BaseModel):
     details: Optional[Dict[str, Any]] = Field(None, description="추가 상세 정보")
 
 
-class ErrorResponse(BaseModel):
+class ErrorResponse(TimestampedModel):
     """
     에러 응답 스키마 (상세 에러 정보 포함)
 
@@ -187,11 +183,6 @@ class ErrorResponse(BaseModel):
     error: str = Field(description="주요 에러 메시지")
     errors: Optional[List[ErrorDetail]] = Field(None, description="상세 에러 목록")
     timestamp: datetime = Field(default_factory=datetime.now)
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
 
     @classmethod
     def create(

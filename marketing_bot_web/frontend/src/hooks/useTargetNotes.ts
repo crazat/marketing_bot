@@ -1,24 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-target-notes-v1'
 
 type NotesMap = Record<string, { text: string; updatedAt: number }>
 
 function loadAll(): NotesMap {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return {}
-  }
+  return readStorageJson<NotesMap>(STORAGE_KEY, {})
 }
 
 function saveAll(all: NotesMap) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
-  } catch {
-    // ignore
-  }
+  writeStorageJson(STORAGE_KEY, all)
 }
 
 /**

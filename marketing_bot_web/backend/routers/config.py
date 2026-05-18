@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from utils.json_io import atomic_write_json, json_file_lock
 
 parent_dir = str(Path(__file__).parent.parent.parent.parent)
 if parent_dir not in sys.path:
@@ -113,41 +114,22 @@ def _safe_keywords_backup_path(filename: str) -> Path:
     return backup_path
 
 
-def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, target)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-
-
 def save_keywords(data: Dict[str, List[str]], create_backup: bool = True) -> bool:
     with KEYWORDS_FILE_LOCK:
         try:
-            normalized = _normalize_keywords_payload(data)
+            with json_file_lock(KEYWORDS_FILE):
+                normalized = _normalize_keywords_payload(data)
 
-            if create_backup and os.path.exists(KEYWORDS_FILE):
-                os.makedirs(KEYWORDS_BACKUP_DIR, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                backup_path = os.path.join(KEYWORDS_BACKUP_DIR, f"keywords_{timestamp}.json")
-                with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
-                    backup_data = f.read()
-                with open(backup_path, "w", encoding="utf-8") as f:
-                    f.write(backup_data)
+                if create_backup and os.path.exists(KEYWORDS_FILE):
+                    os.makedirs(KEYWORDS_BACKUP_DIR, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    backup_path = os.path.join(KEYWORDS_BACKUP_DIR, f"keywords_{timestamp}.json")
+                    with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
+                        backup_data = f.read()
+                    with open(backup_path, "w", encoding="utf-8") as f:
+                        f.write(backup_data)
 
-            _atomic_write_json(KEYWORDS_FILE, normalized)
+                atomic_write_json(KEYWORDS_FILE, normalized, acquire_lock=False)
             return True
         except Exception as exc:
             print(f"[Config] failed to save keywords.json: {exc}")

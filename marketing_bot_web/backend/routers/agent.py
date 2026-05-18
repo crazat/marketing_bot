@@ -23,6 +23,7 @@ sys.path.insert(0, parent_dir)
 from db.database import DatabaseManager
 from core_services.sql_builder import validate_table_name, get_table_columns
 from backend_utils.error_handlers import handle_exceptions
+from utils.json_io import atomic_write_json, json_file_lock
 
 router = APIRouter()
 
@@ -67,8 +68,7 @@ def load_agent_usage() -> Dict[str, Any]:
 def save_agent_usage(usage: Dict[str, Any]):
     """AI Agent 사용량 데이터 저장"""
     os.makedirs(os.path.dirname(AGENT_USAGE_FILE), exist_ok=True)
-    with open(AGENT_USAGE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(usage, f, indent=2, ensure_ascii=False)
+    atomic_write_json(AGENT_USAGE_FILE, usage)
 
 
 def get_agent_config() -> Dict[str, Any]:
@@ -409,25 +409,25 @@ async def set_auto_approve(config: AutoApproveConfig) -> Dict[str, Any]:
         - config: 적용된 설정
     """
     try:
-        # 설정 파일 로드
-        config_data = {}
-        if os.path.exists(AGENT_CONFIG_FILE):
-            with open(AGENT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
+        with json_file_lock(AGENT_CONFIG_FILE):
+            # 설정 파일 로드
+            config_data = {}
+            if os.path.exists(AGENT_CONFIG_FILE):
+                with open(AGENT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
 
-        # AI Agent 설정 업데이트
-        if 'ai_agent' not in config_data:
-            config_data['ai_agent'] = {}
+            # AI Agent 설정 업데이트
+            if 'ai_agent' not in config_data:
+                config_data['ai_agent'] = {}
 
-        config_data['ai_agent']['auto_approve'] = {
-            'enabled': config.enabled,
-            'action_types': config.action_types
-        }
+            config_data['ai_agent']['auto_approve'] = {
+                'enabled': config.enabled,
+                'action_types': config.action_types
+            }
 
-        # 설정 저장
-        os.makedirs(os.path.dirname(AGENT_CONFIG_FILE), exist_ok=True)
-        with open(AGENT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config_data, f, indent=2, ensure_ascii=False)
+            # 설정 저장
+            os.makedirs(os.path.dirname(AGENT_CONFIG_FILE), exist_ok=True)
+            atomic_write_json(AGENT_CONFIG_FILE, config_data, acquire_lock=False)
 
         return {
             'success': True,

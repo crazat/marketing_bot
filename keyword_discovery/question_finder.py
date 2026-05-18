@@ -16,6 +16,13 @@ from bs4 import BeautifulSoup
 from typing import List, Dict, Set
 from datetime import datetime
 from collections import defaultdict
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.json_io import atomic_write_json
 
 
 class QuestionFinder:
@@ -348,8 +355,7 @@ def main():
 
     # 결과 저장
     output_path = "keyword_discovery/question_keywords_results.json"
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    atomic_write_json(output_path, results)
 
     print()
     print(f"💾 결과 저장: {output_path}")

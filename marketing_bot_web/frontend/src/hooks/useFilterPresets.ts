@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const STORAGE_KEY = 'marketing-bot-filter-presets-v1'
 const MAX_PRESETS = 8
@@ -12,34 +13,16 @@ export interface FilterPreset<T = unknown> {
 }
 
 function load<T>(scope: string): FilterPreset<T>[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((p) => p?.scope === scope) as FilterPreset<T>[]
-  } catch {
-    return []
-  }
+  const parsed = readStorageJson<FilterPreset<T>[]>(STORAGE_KEY, [], Array.isArray)
+  return parsed.filter((p) => p?.scope === scope)
 }
 
 function save<T>(all: FilterPreset<T>[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
-  } catch {
-    // ignore quota
-  }
+  writeStorageJson(STORAGE_KEY, all)
 }
 
 function loadAll(): FilterPreset[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
+  return readStorageJson<FilterPreset[]>(STORAGE_KEY, [], Array.isArray)
 }
 
 /**

@@ -28,6 +28,7 @@ from db.database import DatabaseManager
 from backend_utils.error_handlers import handle_exceptions
 from schemas.response import success_response, error_response
 from config.app_settings import get_settings
+from utils.json_io import atomic_write_json
 from services.process_jobs import ProcessAlreadyRunning, process_job_manager
 
 router = APIRouter()
@@ -461,8 +462,7 @@ async def add_tiktok_account(request: AddAccountRequest) -> Dict[str, Any]:
         }
         data['tiktok_accounts'].append(new_account)
 
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return success_response({
             'message': f'계정 @{request.username}이 추가되었습니다',
@@ -534,8 +534,7 @@ async def remove_tiktok_account(username: str) -> Dict[str, Any]:
         if len(data['tiktok_accounts']) == original_count:
             return error_response(f'계정 @{username}을 찾을 수 없습니다')
 
-        with open(targets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(targets_path, data)
 
         return success_response({
             'message': f'계정 @{username}이 삭제되었습니다'

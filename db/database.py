@@ -150,6 +150,7 @@ class DatabaseManager:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=10000")  # 10초 대기
+        conn.execute("PRAGMA cache_size=-8000")    # 8MB cache
         try:
             yield conn
         finally:
@@ -3944,6 +3945,7 @@ class DatabaseManager:
             bool: 성공 여부
         """
         import json as json_module
+        from utils.json_io import atomic_write_json
         try:
             today = datetime.now().strftime('%Y-%m-%d')
             # 1. rank_history에 초기 레코드 삽입 (모바일 & 데스크톱 둘 다)
@@ -3967,8 +3969,7 @@ class DatabaseManager:
                     naver_place_keywords.append(keyword)
                     kw_data['naver_place'] = naver_place_keywords
 
-                    with open(keywords_path, 'w', encoding='utf-8') as f:
-                        json_module.dump(kw_data, f, ensure_ascii=False, indent=2)
+                    atomic_write_json(keywords_path, kw_data)
                     logger.info(f"[KeywordSuggestion] keywords.json에 추가됨: {keyword}")
 
             logger.info(f"[KeywordSuggestion] 키워드 추적 시작: {keyword}")

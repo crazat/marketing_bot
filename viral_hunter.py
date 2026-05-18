@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mar
 
 from db.database import DatabaseManager
 from utils import ConfigManager, logger
+from utils.json_io import atomic_write_json
 from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import ViralSeedBuilder
@@ -2565,10 +2566,7 @@ class ViralHunter:
                 'all_targets': [t.to_dict() for t in all_targets],
                 'saved_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             }
-            tmp = self._checkpoint_path() + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, self._checkpoint_path())
+            atomic_write_json(self._checkpoint_path(), data, indent=None)
         except Exception as e:
             logger.warning(f"체크포인트 저장 실패: {e}")
 
@@ -3122,10 +3120,7 @@ class ViralHunter:
                             cp_data = json.load(f)
                     cp_data['ai_processed_batches'] = sorted(done_batch_indices)
                     cp_data['ai_saved_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
-                    tmp = cp_path + '.tmp'
-                    with open(tmp, 'w', encoding='utf-8') as f:
-                        json.dump(cp_data, f, ensure_ascii=False)
-                    os.replace(tmp, cp_path)
+                    atomic_write_json(cp_path, cp_data, indent=None)
                 except Exception as e:
                     logger.warning(f"AI 체크포인트 저장 실패: {e}")
 

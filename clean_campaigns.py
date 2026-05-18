@@ -3,6 +3,7 @@
 campaigns.json에서 불필요한 지역 및 경쟁사 키워드 제거
 """
 import json
+from utils.json_io import atomic_write_json
 
 # 제거할 지역명 (오창, 오송은 청주시 청원구에 속하므로 유지)
 REMOVE_REGIONS = ["세종", "진천", "증평", "괴산", "보은"]
@@ -52,13 +53,11 @@ def clean_campaigns():
         print(f"✅ [{category}] {len(original_seeds)} → {len(cleaned_seeds)} ({len(original_seeds) - len(cleaned_seeds)} 제거)")
 
     # 백업 생성
-    with open('config/campaigns.json.backup', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    atomic_write_json('config/campaigns.json.backup', data, indent=4)
     print(f"\n💾 백업 저장: config/campaigns.json.backup")
 
     # 클리닝된 파일 저장
-    with open('config/campaigns.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    atomic_write_json('config/campaigns.json', data, indent=4)
 
     print(f"\n📊 클리닝 완료:")
     print(f"  - 원래 시드: {original_count}개")

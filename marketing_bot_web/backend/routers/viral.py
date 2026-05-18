@@ -23,6 +23,7 @@ import sqlite3
 import logging
 import threading
 from datetime import datetime, timedelta
+from contextlib import closing
 from functools import lru_cache
 import time
 
@@ -1139,7 +1140,7 @@ async def get_viral_targets(
             "commentable_only": commentable_only,
         }.items() if v is not None}
 
-        with sqlite3.connect(get_db_path()) as scope_conn:
+        with closing(sqlite3.connect(get_db_path())) as scope_conn:
             _apply_work_scope_filters(scope_conn.cursor(), filters, work_scope)
 
         targets = repo.list(
@@ -1510,7 +1511,7 @@ async def count_viral_targets(
             "commentable_only": commentable_only,
         }
         filters = {k: v for k, v in filters.items() if v is not None}
-        with sqlite3.connect(get_db_path()) as scope_conn:
+        with closing(sqlite3.connect(get_db_path())) as scope_conn:
             _apply_work_scope_filters(scope_conn.cursor(), filters, work_scope)
         total = repo.count(filters)
         return {"total": total}
@@ -1660,7 +1661,7 @@ async def generate_comment(request: CommentGenerateRequest) -> Dict[str, Any]:
         )
 
         # [D3] 댓글 생성을 threadpool로 offload하여 이벤트 루프 비블로킹
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         comment = await loop.run_in_executor(
             None, lambda: hunter.generator.generate(target, style=request.style)
         )

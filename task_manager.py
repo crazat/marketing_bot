@@ -2,6 +2,7 @@ import json
 import os
 import threading
 from datetime import datetime
+from utils.json_io import atomic_write_json
 
 class TaskManager:
     _instance = None
@@ -64,16 +65,7 @@ class TaskManager:
     def _save_tasks(self):
         try:
             with self._lock:
-                # [Robustness] Atomic Write Pattern
-                # 1. Write to tmp file
-                tmp_path = f"{self.db_path}.tmp"
-                with open(tmp_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.tasks, f, indent=2, default=str)
-                    f.flush()
-                    os.fsync(f.fileno()) # Force write to disk
-                
-                # 2. Rename tmp to real (Atomic on POSIX and modern Windows)
-                os.replace(tmp_path, self.db_path)
+                atomic_write_json(self.db_path, self.tasks, ensure_ascii=True, default=str)
         except Exception as e:
             # logger might be risky here if recursive, print is safer for core IO failure
             print(f"Failed to save tasks (Atomic Write Failed): {e}")

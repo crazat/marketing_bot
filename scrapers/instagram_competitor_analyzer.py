@@ -26,6 +26,7 @@ if sys.platform.startswith('win'):
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.database import DatabaseManager
+from utils.json_io import atomic_write_json
 
 
 @dataclass
@@ -461,8 +462,7 @@ def add_instagram_competitor(name: str, username: str, priority: str = "Medium")
         'priority': priority
     })
 
-    with open(targets_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    atomic_write_json(targets_path, data, indent=4)
 
     print(f"✅ 경쟁사 추가됨: {name} (@{username}) - {priority}")
     return True

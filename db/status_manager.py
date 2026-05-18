@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import json
+from contextlib import closing
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -23,7 +24,7 @@ class StatusManager:
     def _init_db(self):
         """Initialize the status database schema."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS bot_activities (
                         bot_name TEXT PRIMARY KEY,
@@ -57,7 +58,7 @@ class StatusManager:
             task_desc: Short description of current action
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute("""
                     INSERT INTO bot_activities (bot_name, status, current_task, last_update)
                     VALUES (?, ?, ?, ?)
@@ -77,7 +78,7 @@ class StatusManager:
         """
         results = {}
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM bot_activities")
                 rows = cursor.fetchall()
@@ -90,7 +91,7 @@ class StatusManager:
     def get_status(self, bot_name: str) -> Dict[str, Any]:
         """Get status for a single bot."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM bot_activities WHERE bot_name = ?", (bot_name,))
                 row = cursor.fetchone()

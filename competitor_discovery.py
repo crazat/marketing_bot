@@ -16,6 +16,7 @@ from typing import List, Dict, Set
 from collections import Counter
 from pathlib import Path
 from datetime import datetime
+from utils.json_io import atomic_write_json
 
 
 class CompetitorDiscovery:
@@ -223,8 +224,7 @@ class CompetitorDiscovery:
 
         # 저장
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
+        atomic_write_json(config_file, config, indent=4)
 
         print(f"\n✅ {config_path} 업데이트 완료")
 

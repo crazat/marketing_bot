@@ -1,24 +1,16 @@
 import { useState } from 'react'
 import { Zap, X } from 'lucide-react'
 import { usePatternDetector } from '@/hooks/usePatternDetector'
+import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 
 const DISMISS_KEY = 'marketing-bot-pattern-dismissed-v1'
 
 function loadDismissed(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(DISMISS_KEY)
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return {}
-  }
+  return readStorageJson<Record<string, number>>(DISMISS_KEY, {})
 }
 
 function saveDismissed(obj: Record<string, number>) {
-  try {
-    localStorage.setItem(DISMISS_KEY, JSON.stringify(obj))
-  } catch {
-    // ignore
-  }
+  writeStorageJson(DISMISS_KEY, obj)
 }
 
 /**

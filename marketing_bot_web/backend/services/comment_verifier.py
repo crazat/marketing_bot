@@ -571,7 +571,7 @@ async def verify_url_async(url: str, platform: str) -> Dict[str, Any]:
     """
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     pool = _get_verifier_pool()
 
     def _run_verification():
@@ -597,7 +597,7 @@ async def verify_batch_async(targets: List[Dict], max_concurrent: int = 3) -> Li
     """
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     pool = _get_verifier_pool()
 
     # Semaphore로 동시 실행 제한

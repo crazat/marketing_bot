@@ -4,6 +4,7 @@
 
 import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { parseApiError } from '@/utils/errorMessages'
+import { readStorageItem, removeStorageItem, writeStorageItem } from '@/utils/safeStorage'
 
 // 개발 환경에서만 로그 출력
 const isDev = import.meta.env.DEV
@@ -460,11 +461,8 @@ function getBundledApiKey(): string | null {
 }
 
 function getStoredApiKey(): string | null {
-  if (typeof window !== 'undefined') {
-    const storedKey = window.localStorage.getItem(API_KEY_STORAGE_KEY)?.trim()
-    if (storedKey) return storedKey
-  }
-  return null
+  const storedKey = readStorageItem(API_KEY_STORAGE_KEY)?.trim()
+  return storedKey || null
 }
 
 export function getConfiguredApiKey(): string | null {
@@ -472,11 +470,10 @@ export function getConfiguredApiKey(): string | null {
 }
 
 export function setConfiguredApiKey(apiKey: string | null): void {
-  if (typeof window === 'undefined') return
   if (apiKey && apiKey.trim()) {
-    window.localStorage.setItem(API_KEY_STORAGE_KEY, apiKey.trim())
+    writeStorageItem(API_KEY_STORAGE_KEY, apiKey.trim())
   } else {
-    window.localStorage.removeItem(API_KEY_STORAGE_KEY)
+    removeStorageItem(API_KEY_STORAGE_KEY)
   }
 }
 

@@ -35,6 +35,7 @@ from typing import List, Dict, Set, Tuple, Optional
 from collections import Counter, defaultdict
 from pathlib import Path
 from functools import lru_cache
+from utils.json_io import atomic_write_json
 
 # 품질 필터 (노이즈 제거)
 try:
@@ -266,8 +267,7 @@ class TeeWriter:
                 'updated_at': datetime.now().isoformat(),
                 'mode': self.mode
             }
-            with open(self.status_file_path, 'w', encoding='utf-8') as f:
-                json.dump(status_data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.status_file_path, status_data)
         except Exception:
             pass  # 상태 파일 업데이트 실패는 무시
 
@@ -3336,8 +3336,7 @@ class PathfinderLegion:
         metrics = getattr(self, "diversity_metrics", {}) or {}
         if not metrics:
             return
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(metrics, f, ensure_ascii=False, indent=2)
+        atomic_write_json(filename, metrics)
         print(f"💾 지표 저장: {filename}")
 
     def save_to_db(self, results: List[KeywordResult], db_path: str = None, scan_run_id: int = 0) -> dict:

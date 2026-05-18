@@ -4,6 +4,9 @@ import os
 import sys
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.json_io import atomic_write_json
+
 class KakaoSender:
     def __init__(self):
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,8 +26,7 @@ class KakaoSender:
             return json.load(f)
 
     def _save_tokens(self, tokens):
-        with open(self.tokens_path, 'w', encoding='utf-8') as f:
-            json.dump(tokens, f, indent=4)
+        atomic_write_json(self.tokens_path, tokens, indent=4, ensure_ascii=True)
 
     def _refresh_token(self, tokens):
         url = "https://kauth.kakao.com/oauth/token"

@@ -1,5 +1,20 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-18 Memory: Stability Hardening Sweep
+
+- Completed a multi-pass stability review focused on crash recovery, resource cleanup, frontend storage resilience, long-running watcher behavior, and durable JSON writes.
+- Backend scheduler state now uses a real file lock plus atomic temp-file replacement. The DB executor is lazy and shut down during app lifespan cleanup.
+- SQLite connection defaults now include a longer busy timeout and bounded cache sizing, and several connection sites were changed to close connections reliably.
+- Pydantic response timestamp serialization was fixed for JSON output on current Pydantic versions.
+- File watcher behavior was hardened for log rotation/truncation, malformed status JSON, idempotent startup, bounded recent-log reads, and async broadcast error logging.
+- Frontend local storage and event parsing now go through safe helpers so malformed local/session payloads or invalid SSE/WebSocket JSON do not crash the UI.
+- JSON config/state/result writes now go through `utils.json_io.atomic_write_json()` with same-directory temp files, fsync, cleanup on failure, and optional file locking. Active Python code should not call `json.dump()` directly for file writes outside that helper.
+- Latest verification after the stability sweep:
+  - `python -m pytest -q --no-cov` in `marketing_bot_web/backend`: 64 passed.
+  - `python -m pytest -q --maxfail=20` at repo root: 180 passed, 1 skipped.
+  - Frontend `npm run typecheck`, `npm run lint`, and `npm run build` all passed.
+  - Remaining warning is the external Langfuse/Pydantic Python 3.14 compatibility warning; it is non-blocking.
+
 ## 2026-05-15 Memory: Legion/Viral Scan 19 and Pathfinder Rerank Fix
 
 - Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.

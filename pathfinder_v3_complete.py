@@ -31,6 +31,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Set, Tuple, Optional
 from collections import Counter
 from pathlib import Path
+from utils.json_io import atomic_write_json
 
 # 서비스 모듈 import
 try:
@@ -111,8 +112,7 @@ class TeeWriter:
                 'updated_at': datetime.now().isoformat(),
                 'mode': 'total_war'
             }
-            with open(self.status_file_path, 'w', encoding='utf-8') as f:
-                json.dump(status_data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.status_file_path, status_data)
         except (IOError, OSError, TypeError):
             pass  # 상태 파일 업데이트 실패는 무시
 

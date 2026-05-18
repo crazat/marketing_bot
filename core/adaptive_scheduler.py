@@ -19,6 +19,8 @@ from enum import Enum
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils.json_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,11 +87,10 @@ class AdaptiveScheduler:
         """메트릭 저장"""
         try:
             os.makedirs(os.path.dirname(self.metrics_file), exist_ok=True)
-            with open(self.metrics_file, 'w', encoding='utf-8') as f:
-                json.dump(
-                    {name: asdict(m) for name, m in self.metrics.items()},
-                    f, indent=2, ensure_ascii=False
-                )
+            atomic_write_json(
+                self.metrics_file,
+                {name: asdict(m) for name, m in self.metrics.items()},
+            )
         except Exception as e:
             logger.error(f"Failed to save metrics: {e}")
 
@@ -490,8 +491,7 @@ class AdaptiveSchedulerExtended(AdaptiveScheduler):
 
             # 설정 저장
             os.makedirs(os.path.dirname(self.schedule_config), exist_ok=True)
-            with open(self.schedule_config, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.schedule_config, config)
 
             return True
 
@@ -515,8 +515,7 @@ class AdaptiveSchedulerExtended(AdaptiveScheduler):
             history = history[-100:]
 
             os.makedirs(os.path.dirname(history_file), exist_ok=True)
-            with open(history_file, 'w', encoding='utf-8') as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
+            atomic_write_json(history_file, history)
 
         except Exception as e:
             logger.error(f"Failed to save adjustment history: {e}")
