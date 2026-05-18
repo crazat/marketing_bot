@@ -10,6 +10,7 @@ import hashlib
 import json
 import threading
 import logging
+import inspect
 from typing import Any, Optional, Callable, TypeVar
 from functools import wraps
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ class TTLCache:
         self._cache: dict[str, CacheEntry] = {}
         self._lock = threading.Lock()
         self.default_ttl = default_ttl
-        self.max_size = max_size
+        self.max_size = max(1, max_size)
         self._hits = 0
         self._misses = 0
 
@@ -63,7 +64,10 @@ class TTLCache:
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         """캐시에 값 저장"""
-        ttl = ttl or self.default_ttl
+        ttl = self.default_ttl if ttl is None else ttl
+        if ttl <= 0:
+            self.delete(key)
+            return
         expires_at = time.time() + ttl
 
         with self._lock:
@@ -188,8 +192,7 @@ def cached(ttl: int = 60, cache_instance: Optional[TTLCache] = None):
             return result
 
         # async 함수인지 확인
-        import asyncio
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
 

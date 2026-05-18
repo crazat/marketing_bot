@@ -35,12 +35,16 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _db_path() -> str:
@@ -103,7 +107,7 @@ def _record_start(job_name: str, metadata: Optional[Dict[str, Any]] = None) -> O
             VALUES (?, ?, 'running', ?)
         """, (
             job_name,
-            datetime.utcnow().isoformat(timespec="seconds"),
+            _utc_now_naive().isoformat(timespec="seconds"),
             _json.dumps(metadata or {}, ensure_ascii=False),
         ))
         conn.commit()
@@ -136,7 +140,7 @@ def _record_end(
                 metadata_json = COALESCE(?, metadata_json)
             WHERE id = ?
         """, (
-            datetime.utcnow().isoformat(timespec="seconds"),
+            _utc_now_naive().isoformat(timespec="seconds"),
             status,
             (error_msg or "")[:1000] if error_msg else None,
             duration,
@@ -211,7 +215,7 @@ def requires_recent(upstream_job: str, hours: int = 24) -> bool:
         ensure_table()
         conn = _connect()
         cur = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat(timespec="seconds")
+        cutoff = (_utc_now_naive() - timedelta(hours=hours)).isoformat(timespec="seconds")
         cur.execute("""
             SELECT COUNT(*) FROM job_runs
             WHERE job_name = ? AND status = 'success' AND started_at >= ?

@@ -41,6 +41,7 @@ class WebSocketManager:
         self._send_timeout = 5.0
         self._zombie_timeout = 300
         self._subscriptions: Dict[WebSocket, Set[str]] = {}
+        self._send_locks: Dict[WebSocket, asyncio.Lock] = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -48,6 +49,7 @@ class WebSocketManager:
             self.active_connections.append(websocket)
         self._last_activity[websocket] = time.time()
         self._subscriptions[websocket] = set(EVENT_TYPES)
+        self._send_locks[websocket] = asyncio.Lock()
         logger.info("WebSocket connected (%s active)", len(self.active_connections))
 
         if self._cleanup_task is None or self._cleanup_task.done():
@@ -58,6 +60,7 @@ class WebSocketManager:
             self.active_connections.remove(websocket)
         self._last_activity.pop(websocket, None)
         self._subscriptions.pop(websocket, None)
+        self._send_locks.pop(websocket, None)
 
         if not self.active_connections and self._cleanup_task and not self._cleanup_task.done():
             try:
@@ -70,18 +73,33 @@ class WebSocketManager:
 
         logger.info("WebSocket disconnected (%s active)", len(self.active_connections))
 
+    async def _send_json(self, websocket: WebSocket, message: Dict[str, Any]):
+        lock = self._send_locks.get(websocket)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[websocket] = lock
+
+        async with lock:
+            await asyncio.wait_for(websocket.send_json(message), timeout=self._send_timeout)
+
+    @staticmethod
+    def _normalize_event_types(event_types: Any) -> Set[str]:
+        if not isinstance(event_types, list):
+            return set()
+        return {event_type for event_type in event_types if isinstance(event_type, str) and event_type in EVENT_TYPES}
+
     def subscribe(self, websocket: WebSocket, event_types: List[str]):
-        valid_types = set(event_types) & EVENT_TYPES
+        valid_types = self._normalize_event_types(event_types)
         if websocket in self._subscriptions:
             self._subscriptions[websocket] = valid_types
 
     def unsubscribe(self, websocket: WebSocket, event_types: List[str]):
         if websocket in self._subscriptions:
-            self._subscriptions[websocket] -= set(event_types)
+            self._subscriptions[websocket] -= self._normalize_event_types(event_types)
 
     async def send_message(self, websocket: WebSocket, message: Dict[str, Any]):
         try:
-            await asyncio.wait_for(websocket.send_json(message), timeout=self._send_timeout)
+            await self._send_json(websocket, message)
         except Exception as exc:
             logger.debug("WebSocket send failed: %s", exc)
             self.disconnect(websocket)
@@ -96,7 +114,7 @@ class WebSocketManager:
                     continue
 
             try:
-                await asyncio.wait_for(connection.send_json(message), timeout=self._send_timeout)
+                await self._send_json(connection, message)
                 self._last_activity[connection] = time.time()
             except Exception as exc:
                 logger.debug("WebSocket broadcast failed: %s", exc)
@@ -316,7 +334,7 @@ class WebSocketManager:
         elif action == "ping":
             self.update_activity(websocket)
             try:
-                await websocket.send_json({"type": "pong", "data": {}})
+                await self._send_json(websocket, {"type": "pong", "data": {}})
             except Exception:
                 self.disconnect(websocket)
 

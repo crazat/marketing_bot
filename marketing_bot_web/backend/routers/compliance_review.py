@@ -14,9 +14,13 @@ from pydantic import BaseModel, Field
 import sqlite3
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/api/compliance-review", tags=["compliance"])
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _db_path() -> str:
@@ -39,7 +43,7 @@ def get_review_queue(
     conn.row_factory = sqlite3.Row
     try:
         cur = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat(timespec="seconds")
+        cutoff = (_utc_now_naive() - timedelta(days=days)).isoformat(timespec="seconds")
         # 이미 라벨된 ID 제외
         cur.execute("SELECT screen_log_id FROM screen_review")
         labeled = {r["screen_log_id"] for r in cur.fetchall()}
@@ -107,7 +111,7 @@ def get_metrics(days: int = Query(default=30, ge=1, le=180)) -> Dict[str, Any]:
     conn.row_factory = sqlite3.Row
     try:
         cur = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat(timespec="seconds")
+        cutoff = (_utc_now_naive() - timedelta(days=days)).isoformat(timespec="seconds")
         cur.execute(f"""
             SELECT sr.label, akl.passed
             FROM screen_review sr

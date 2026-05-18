@@ -13,6 +13,7 @@ import sys
 import json
 import logging
 import asyncio
+import inspect
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
@@ -491,7 +492,7 @@ class MarketingAgent:
             try:
                 handler = self.action_handlers.get(action.action_name)
                 if handler:
-                    await handler(action.parameters) if asyncio.iscoroutinefunction(handler) else handler(action.parameters)
+                    await handler(action.parameters) if inspect.iscoroutinefunction(handler) else handler(action.parameters)
                     results["executed"].append(action.action_name)
                     logger.info(f"Executed action: {action.action_name}")
                 else:

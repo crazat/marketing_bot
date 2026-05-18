@@ -1,5 +1,24 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-18 Memory: Stability Hardening Sweep V2
+
+- Additional deep stability pass completed from concurrency, malformed input, timeout cleanup, timezone, cache edge-case, and optional dependency perspectives.
+- Replaced deprecated `asyncio.iscoroutinefunction()` checks with `inspect.iscoroutinefunction()` in workflow/cache/performance paths for Python 3.14 compatibility.
+- Replaced remaining direct `datetime.utcnow()` usage in touched backend runtime/logging/compliance/job-run paths with timezone-aware UTC helpers while preserving existing naive DB string compatibility where needed.
+- `TTLCache` now clamps zero/negative capacity to at least one entry and treats `ttl <= 0` as non-persistent cache behavior instead of silently falling back to the default TTL.
+- Langfuse is now imported lazily only when both public and secret keys are configured, avoiding the Python 3.14/Pydantic v1 warning in normal local runs.
+- WebSocket sends are serialized per connection, including broadcast, direct send, and ping/pong paths, so concurrent broadcasts cannot overlap writes to the same socket.
+- WebSocket subscribe/unsubscribe now ignore malformed or non-string event values instead of raising during set conversion.
+- `FileWatcher.start()` rolls back `running` and loop state if watchdog/polling startup fails, keeping retry behavior clean.
+- `ProcessJobManager` timeout handling now records `timed_out` even if process-tree termination fails; Windows forced termination has a timeout/fallback. Default concurrent job log names include the job id prefix to avoid same-second log file collisions.
+- Latest verification after V2 sweep:
+  - `python -m compileall -q marketing_bot_web\backend\services\process_jobs.py marketing_bot_web\backend\services\websocket_manager.py marketing_bot_web\backend\tests\test_stability_regressions.py`
+  - `python -m pytest -c pytest.ini marketing_bot_web\backend\tests\test_stability_regressions.py -q` -> 18 passed.
+  - `python -m pytest tests -q` -> 180 passed, 1 skipped.
+  - `python -m pytest marketing_bot_web\backend\tests -q` -> 71 passed, coverage 21.29%.
+  - `npm run typecheck` and `npm run lint` passed in `marketing_bot_web/frontend`.
+  - `git diff --check` passed with CRLF normalization warnings only.
+
 ## 2026-05-18 Memory: Stability Hardening Sweep
 
 - Completed a multi-pass stability review focused on crash recovery, resource cleanup, frontend storage resilience, long-running watcher behavior, and durable JSON writes.

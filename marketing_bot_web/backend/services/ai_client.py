@@ -35,14 +35,20 @@ except Exception:
     _HAS_LOGFIRE = False
 
 # Langfuse observe (선택적 — 환경변수로 켜기. LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY)
-try:
-    from langfuse import observe as _langfuse_observe
-    _HAS_LANGFUSE = bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
-except Exception:
-    _HAS_LANGFUSE = False
-    def _langfuse_observe(*a, **k):
-        def deco(fn): return fn
-        return deco
+def _noop_observe(*a, **k):
+    def deco(fn): return fn
+    return deco
+
+
+_HAS_LANGFUSE = bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
+if _HAS_LANGFUSE:
+    try:
+        from langfuse import observe as _langfuse_observe
+    except Exception:
+        _HAS_LANGFUSE = False
+        _langfuse_observe = _noop_observe
+else:
+    _langfuse_observe = _noop_observe
 
 
 def _observe(name: str = ""):

@@ -8,6 +8,7 @@ API 응답 시간, DB 쿼리 시간 측정 및 로깅
 import time
 import logging
 import threading
+import inspect
 from typing import Any, Callable, Dict, Optional
 from functools import wraps
 from dataclasses import dataclass, field
@@ -189,8 +190,7 @@ def timed(name: Optional[str] = None):
             with _monitor.measure(metric_name):
                 return func(*args, **kwargs)
 
-        import asyncio
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
 

@@ -270,7 +270,7 @@ def _enqueue_approval(
 ) -> Optional[int]:
     """pending_approvals 테이블에 적재 → Telegram HITL이 픽업."""
     import json as _json
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     conn = None
     try:
         conn = sqlite3.connect(_db_path())
@@ -289,7 +289,9 @@ def _enqueue_approval(
                 status TEXT DEFAULT 'pending'
             )
         """)
-        expires = (datetime.utcnow() + timedelta(minutes=30)).isoformat(timespec="seconds")
+        expires = (
+            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)
+        ).isoformat(timespec="seconds")
         cur.execute("""
             INSERT INTO pending_approvals
               (expires_at, lead_id, draft, qa_match_ids, critique_json, url_check_json)

@@ -99,15 +99,19 @@ class FileWatcher:
         self._loop = asyncio.get_running_loop()
 
         # 로그 디렉토리 생성
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        if HAS_WATCHDOG:
-            await self._start_watchdog()
-        else:
-            # watchdog 없으면 폴링 모드
-            self._polling_task = asyncio.create_task(self._polling_loop())
+            if HAS_WATCHDOG:
+                await self._start_watchdog()
+            else:
+                # watchdog 없으면 폴링 모드
+                self._polling_task = asyncio.create_task(self._polling_loop())
 
-        print(f"📁 FileWatcher 시작: {self.log_file}")
+            print(f"📁 FileWatcher 시작: {self.log_file}")
+        except Exception:
+            await self.stop()
+            raise
 
     async def stop(self):
         """파일 감시 중지"""

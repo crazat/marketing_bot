@@ -67,12 +67,19 @@ def terminate_process_tree(process: subprocess.Popen, *, force: bool = False) ->
 
     if os.name == "nt":
         if force:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=10,
+                )
+            except (subprocess.SubprocessError, OSError):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
         else:
             try:
                 process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -99,12 +106,13 @@ class ProcessJobManager:
         self._lock = threading.RLock()
         self._max_retained_jobs = max(10, max_retained_jobs)
 
-    def _default_log_file(self, key: str, cwd: str) -> str:
+    def _default_log_file(self, key: str, cwd: str, job_id: Optional[str] = None) -> str:
         safe_key = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in key)
         log_dir = Path(cwd) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return str(log_dir / f"{safe_key}_{stamp}.log")
+        suffix = f"_{job_id[:8]}" if job_id else ""
+        return str(log_dir / f"{safe_key}_{stamp}{suffix}.log")
 
     @staticmethod
     def _popen_kwargs() -> Dict[str, Any]:
@@ -155,7 +163,7 @@ class ProcessJobManager:
                 self._active_by_key.pop(key, None)
 
             job_id = uuid.uuid4().hex
-            resolved_log_file = log_file or self._default_log_file(key, cwd)
+            resolved_log_file = log_file or self._default_log_file(key, cwd, job_id=job_id)
             Path(resolved_log_file).parent.mkdir(parents=True, exist_ok=True)
 
             log_handle = open(resolved_log_file, "w", encoding="utf-8", errors="replace")
@@ -215,10 +223,14 @@ class ProcessJobManager:
             status = "completed" if return_code == 0 else "failed"
             error = None if return_code == 0 else f"exit code {return_code}"
         except subprocess.TimeoutExpired:
-            self._terminate_process_tree(job.process, force=True)
-            return_code = job.process.wait()
             status = "timed_out"
             error = f"timed out after {job.timeout_seconds}s"
+            try:
+                self._terminate_process_tree(job.process, force=True)
+                return_code = job.process.wait(timeout=10)
+            except Exception as exc:
+                return_code = job.process.poll()
+                error = f"{error}; termination failed: {exc}"
         except Exception as exc:
             return_code = job.process.poll()
             status = "failed"

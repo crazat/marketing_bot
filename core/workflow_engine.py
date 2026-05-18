@@ -10,6 +10,7 @@ Workflow Engine - Event-Driven Workflow Automation
 
 import asyncio
 import logging
+import inspect
 from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 from dataclasses import dataclass
@@ -167,7 +168,7 @@ class WorkflowEngine:
                 # 스텝 실행
                 logger.debug(f"Executing step: {step.name}")
                 try:
-                    if asyncio.iscoroutinefunction(step.action):
+                    if inspect.iscoroutinefunction(step.action):
                         result = await asyncio.wait_for(
                             step.action(context),
                             timeout=step.timeout_seconds
