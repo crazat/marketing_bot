@@ -1,5 +1,17 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-18 Memory: Legion/Viral Scan 20 Latest Sequential Run
+
+- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
+- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
+- Latest completed sequential run: Legion `scan_run_id=20`, target 500, 656 total keywords, 226 inserted, 430 updated, S=2/A=1/B=621/C=32. Console run started 2026-05-18 18:27:05 KST and completed 2026-05-18 18:40:19 KST in 793s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=20`.
+- Legion scan 20 diversity metrics: category entropy 0.8984, source entropy 0.6861, intent entropy 0.7970, top source share 48.17%, multi-source verified rate 5.18%, quality flag rate 4.73%.
+- Legion scan 20 source distribution: `round4_intent` 316, `round1_seed` 128, `round3_region` 90, `round8_ai` 87, `round2_expand` 19, `round7_problem` 10, `round1_ad_related` 3, `round5_competitor` 3. Category distribution: traffic accident 197, skin/acne 146, diet 144, body correction 80, face asymmetry 77, lifting/elasticity 12. Intent distribution: commercial 353, transactional 138, red_flag 61, validation 59, informational 45.
+- Viral Hunter after scan 20 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 5,557 candidates, filtered to 1,769, removed 44 repeated-content targets, refreshed/excluded 1,118 existing URLs before AI, saved 307 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 68 AI-suitable targets with 16 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260518_184643.csv`.
+- Final current-run saved target snapshot for scan 20 (`source_scan_run_id=20` and `discovered_at >= 2026-05-18T18:41:00`): total=375, raw_backlog=307, pending=68. Platform distribution was blog=276, cafe=68, kin=31. Category distribution was diet=94, traffic accident=86, asymmetry/correction=84, skin=78, competitor counterattack=16, pain/disc=9, other=7, headache/dizziness=1.
+- Broader `source_scan_run_id=20` association after refresh contains 1,493 rows because existing URLs were refreshed/reassigned during the run; use the current-run `discovered_at` window when reporting newly saved scan output.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning.
+
 ## 2026-05-18 Memory: Stability Hardening Sweep V2
 
 - Additional deep stability pass completed from concurrency, malformed input, timeout cleanup, timezone, cache edge-case, and optional dependency perspectives.
