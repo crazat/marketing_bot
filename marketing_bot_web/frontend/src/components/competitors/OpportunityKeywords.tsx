@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { competitorsApi } from '@/services/api'
-import { Sparkles, Copy, X } from 'lucide-react'
+import { Sparkles, Copy } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import Button, { IconButton } from '@/components/ui/Button'
+import Modal from '@/components/ui/Modal'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface OpportunityKeywordsProps {
   keywords: any[]
@@ -67,9 +69,13 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
     setSelectedKeyword(kw)
   }
 
-  const handleCopyIdea = (idea: string) => {
-    navigator.clipboard.writeText(idea)
-    toast.success('클립보드에 복사되었습니다')
+  const handleCopyIdea = async (idea: string) => {
+    try {
+      await copyTextToClipboard(idea)
+      toast.success('클립보드에 복사되었습니다')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
   }
 
   if (!keywords || keywords.length === 0) {
@@ -144,19 +150,17 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
       </div>
 
       {/* [Phase 6.0] 콘텐츠 아이디어 모달 */}
-      {selectedKeyword && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-card rounded-lg border border-border p-6 max-w-lg w-full mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-purple-500" />
-                콘텐츠 아이디어
-              </h3>
-              <IconButton
-                icon={<X className="w-5 h-5" />}
-                onClick={() => setSelectedKeyword(null)}
-                title="닫기"
-              />
+      <Modal
+        isOpen={selectedKeyword !== null}
+        onClose={() => setSelectedKeyword(null)}
+        title="콘텐츠 아이디어"
+        size="lg"
+      >
+        {selectedKeyword && (
+          <div>
+            <div className="mb-4 flex items-center gap-2 text-purple-500">
+              <Sparkles className="w-5 h-5" />
+              <span className="text-sm font-medium">기회 키워드 기반 콘텐츠 제안</span>
             </div>
 
             <div className="mb-4 p-3 bg-muted rounded-lg">
@@ -173,7 +177,9 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
                   <span className="text-sm flex-1">{idea}</span>
                   <IconButton
                     icon={<Copy className="w-4 h-4" />}
-                    onClick={() => handleCopyIdea(idea)}
+                    onClick={() => {
+                      void handleCopyIdea(idea)
+                    }}
                     title="복사"
                     className="ml-2"
                   />
@@ -187,8 +193,8 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
               </p>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   )
 }

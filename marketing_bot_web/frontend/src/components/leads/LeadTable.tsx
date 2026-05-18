@@ -15,6 +15,7 @@ import { ResultsAnnouncer } from '@/components/ui/LiveRegion'
 import { exportToCSV, LEAD_EXPORT_COLUMNS } from '@/utils/export'
 import Button, { IconButton } from '@/components/ui/Button'
 import { Download, Phone, MessageCircle, CheckCircle, XCircle, Shield, Contact, Ban, Copy } from 'lucide-react'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 type LeadPlatform = 'youtube' | 'tiktok' | 'naver' | 'instagram' | 'carrot' | 'influencer'
 type LeadStatus = 'pending' | 'contacted' | 'replied' | 'converted' | 'rejected'
@@ -855,12 +856,16 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                                       <Button
                                         variant="primary"
                                         size="xs"
-                                        onClick={(e) => {
+                                        onClick={async (e) => {
                                           e.stopPropagation()
-                                          navigator.clipboard.writeText(tpl.content)
-                                          toast.success('템플릿이 클립보드에 복사되었습니다')
-                                          if (tpl.id) {
-                                            leadsApi.useResponseTemplate(tpl.id)
+                                          try {
+                                            await copyTextToClipboard(tpl.content)
+                                            toast.success('템플릿이 클립보드에 복사되었습니다')
+                                            if (tpl.id) {
+                                              leadsApi.useResponseTemplate(tpl.id)
+                                            }
+                                          } catch {
+                                            toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
                                           }
                                         }}
                                         icon={<Copy className="w-3 h-3" />}

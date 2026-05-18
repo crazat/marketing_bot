@@ -95,13 +95,13 @@ export default function Pagination({
 
   return (
     <nav
-      className={`flex flex-col sm:flex-row items-center justify-between gap-4 ${className}`}
+      className={`flex w-full flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center ${className}`}
       aria-label="페이지 네비게이션"
       role="navigation"
     >
       {/* 항목 정보 */}
       {totalItems !== undefined && !compact && (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-sm text-muted-foreground" aria-live="polite">
           {totalItems > 0 ? (
             <>
               <span className="font-medium">{startItem.toLocaleString()}</span>
@@ -125,6 +125,8 @@ export default function Pagination({
             icon={<ChevronsLeft className="w-4 h-4" />}
             onClick={() => onPageChange(1)}
             disabled={currentPage === 1}
+            type="button"
+            className="hidden sm:inline-flex"
             title="첫 페이지로 이동"
             aria-label="첫 페이지로 이동"
           />
@@ -135,13 +137,14 @@ export default function Pagination({
           icon={<ChevronLeft className="w-4 h-4" />}
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage === 1}
+          type="button"
           title="이전 페이지로 이동"
           aria-label="이전 페이지로 이동"
         />
 
         {/* 페이지 번호 */}
         {!compact && (
-          <div className="flex items-center gap-1 mx-1">
+          <div className="hidden sm:flex items-center gap-1 mx-1">
             {pageRange.map((page, index) => {
               if (page === 'ellipsis') {
                 return (
@@ -158,6 +161,7 @@ export default function Pagination({
               return (
                 <button
                   key={page}
+                  type="button"
                   onClick={() => onPageChange(page)}
                   className={`
                     min-w-[36px] px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
@@ -177,18 +181,17 @@ export default function Pagination({
           </div>
         )}
 
-        {/* 간소화 모드에서 페이지 표시 */}
-        {compact && (
-          <span className="px-3 py-1.5 text-sm text-muted-foreground">
-            {currentPage} / {totalPages}
-          </span>
-        )}
+        {/* 모바일/간소화 모드에서 페이지 표시 */}
+        <span className={`px-3 py-1.5 text-sm text-muted-foreground ${compact ? '' : 'sm:hidden'}`}>
+          {currentPage} / {totalPages}
+        </span>
 
         {/* 다음 페이지 */}
         <IconButton
           icon={<ChevronRight className="w-4 h-4" />}
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage === totalPages}
+          type="button"
           title="다음 페이지로 이동"
           aria-label="다음 페이지로 이동"
         />
@@ -199,6 +202,8 @@ export default function Pagination({
             icon={<ChevronsRight className="w-4 h-4" />}
             onClick={() => onPageChange(totalPages)}
             disabled={currentPage === totalPages}
+            type="button"
+            className="hidden sm:inline-flex"
             title="마지막 페이지로 이동"
             aria-label="마지막 페이지로 이동"
           />

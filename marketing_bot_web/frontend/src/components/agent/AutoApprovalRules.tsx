@@ -9,6 +9,7 @@ import { agentApi } from '@/services/api'
 import { Settings, Zap, Shield, Clock, Tag, Plus, Trash2, Edit2, Play, X, AlertCircle } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import Button, { IconButton } from '@/components/ui/Button'
+import { ConfirmModal } from '@/components/ui/Modal'
 
 interface AutoApprovalRule {
   id: number
@@ -67,6 +68,7 @@ export default function AutoApprovalRules() {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingRule, setEditingRule] = useState<AutoApprovalRule | null>(null)
+  const [ruleToDelete, setRuleToDelete] = useState<AutoApprovalRule | null>(null)
   const [formData, setFormData] = useState<RuleFormData>({
     name: '',
     description: '',
@@ -111,6 +113,7 @@ export default function AutoApprovalRules() {
   const deleteMutation = useMutation({
     mutationFn: agentApi.deleteRule,
     onSuccess: () => {
+      setRuleToDelete(null)
       toast.success('규칙이 삭제되었습니다')
       queryClient.invalidateQueries({ queryKey: ['agent-rules'] })
     },
@@ -181,6 +184,7 @@ export default function AutoApprovalRules() {
     <div className="bg-card rounded-lg border border-border">
       {/* 헤더 */}
       <button
+        type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors"
       >
@@ -259,6 +263,7 @@ export default function AutoApprovalRules() {
                   icon={<X className="w-4 h-4" />}
                   onClick={resetForm}
                   size="sm"
+                  type="button"
                   title="닫기"
                 />
               </div>
@@ -403,16 +408,13 @@ export default function AutoApprovalRules() {
                     />
                     <IconButton
                       icon={<Trash2 className="w-4 h-4" />}
-                      onClick={() => {
-                        if (confirm('이 규칙을 삭제하시겠습니까?')) {
-                          deleteMutation.mutate(rule.id)
-                        }
-                      }}
+                      onClick={() => setRuleToDelete(rule)}
                       size="sm"
                       title="삭제"
                       className="hover:bg-red-500/20 text-red-500"
                     />
                     <button
+                      type="button"
                       onClick={() => toggleMutation.mutate({ id: rule.id, is_active: !rule.is_active })}
                       className={`relative w-10 h-5 rounded-full transition-colors ${
                         rule.is_active ? 'bg-green-500' : 'bg-muted'
@@ -454,6 +456,21 @@ export default function AutoApprovalRules() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        isOpen={!!ruleToDelete}
+        onClose={() => setRuleToDelete(null)}
+        onConfirm={() => ruleToDelete && deleteMutation.mutate(ruleToDelete.id)}
+        title="자동 승인 규칙 삭제"
+        message={
+          ruleToDelete
+            ? `"${ruleToDelete.name}" 규칙을 삭제할까요? 삭제하면 자동 처리 기준에서 즉시 제외됩니다.`
+            : ''
+        }
+        confirmText="삭제"
+        cancelText="취소"
+        variant="danger"
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }

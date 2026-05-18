@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Clipboard, Check } from 'lucide-react';
 import { IconButton } from '@/components/ui/Button';
+import { copyTextToClipboard } from '@/utils/clipboard';
 
 interface CodeBlockProps {
   code: string | string[];
@@ -31,20 +32,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 
   const handleCopy = async () => {
     try {
-      // 클립보드 API 사용 (HTTPS 환경)
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(codeString);
-      } else {
-        // Fallback: execCommand 사용
-        const textArea = document.createElement('textarea');
-        textArea.value = codeString;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+      await copyTextToClipboard(codeString);
 
       setCopied(true);
       // 이전 타이머가 있으면 취소

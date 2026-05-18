@@ -59,7 +59,7 @@ export default function TodayFocus() {
       headline: `오늘 발견된 HOT LEAD ${hotCount.toLocaleString()}건`,
       body: '점수 80+ 고우선순위 타겟이 대기 중입니다. 바이럴 헌터 홈의 "오늘의 작업 큐"에서 바로 처리하세요.',
       cta: '작업 큐 열기',
-      action: () => navigate('/viral-hunter'),
+      action: () => navigate('/viral'),
     }
   } else if (pendingTotal >= 10) {
     focus = {
@@ -69,7 +69,7 @@ export default function TodayFocus() {
       headline: `대기 중 ${pendingTotal.toLocaleString()}건 리뷰 필요`,
       body: '오늘 새로 발견된 건은 없지만 누적 대기분을 정리할 좋은 시간입니다.',
       cta: '전체 목록 열기',
-      action: () => navigate('/viral-hunter'),
+      action: () => navigate('/viral'),
     }
   } else {
     focus = {
@@ -79,7 +79,7 @@ export default function TodayFocus() {
       headline: '모든 대기 건 정리 완료',
       body: '새로운 스캔을 실행해 오늘의 기회를 찾아보세요.',
       cta: '스캔 실행',
-      action: () => navigate('/viral-hunter'),
+      action: () => navigate('/viral'),
     }
   }
 

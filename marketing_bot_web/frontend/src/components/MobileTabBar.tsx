@@ -10,9 +10,9 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { to: '/', label: '홈', Icon: BarChart3, exact: true },
-  { to: '/viral', label: 'Viral', Icon: Flame },
-  { to: '/leads', label: 'Leads', Icon: ClipboardList },
-  { to: '/pathfinder', label: 'Paths', Icon: Target },
+  { to: '/viral', label: '바이럴', Icon: Flame },
+  { to: '/leads', label: '리드', Icon: ClipboardList },
+  { to: '/pathfinder', label: '키워드', Icon: Target },
   { to: '/settings', label: '설정', Icon: Settings },
 ]
 

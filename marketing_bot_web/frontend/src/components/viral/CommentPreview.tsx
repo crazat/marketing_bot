@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Sparkles, Copy, Check } from 'lucide-react'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface CommentPreviewProps {
   comment: string
@@ -21,7 +22,7 @@ export function CommentPreview({
   const [copied, setCopied] = useState(false)
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(comment)
+      await copyTextToClipboard(comment)
       setCopied(true)
       setTimeout(() => setCopied(false), 1600)
     } catch {

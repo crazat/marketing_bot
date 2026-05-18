@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { reviewsApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import Button, { IconButton } from '@/components/ui/Button'
+import Modal from '@/components/ui/Modal'
+import { copyTextToClipboard } from '@/utils/clipboard'
 import {
   MessageSquare,
   Sparkles,
@@ -130,9 +132,13 @@ export default function ReviewResponseAssistant() {
     })
   }
 
-  const handleCopyResponse = (text: string) => {
-    navigator.clipboard.writeText(text)
-    toast.success('클립보드에 복사되었습니다')
+  const handleCopyResponse = async (text: string) => {
+    try {
+      await copyTextToClipboard(text)
+      toast.success('클립보드에 복사되었습니다')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
   }
 
   const handleUseTemplate = (template: Template) => {
@@ -490,67 +496,70 @@ export default function ReviewResponseAssistant() {
       )}
 
       {/* 새 템플릿 모달 */}
-      {newTemplateModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-card rounded-lg border border-border p-6 w-full max-w-md">
-            <h3 className="font-bold text-lg mb-4">새 템플릿 추가</h3>
+      <Modal
+        isOpen={newTemplateModal}
+        onClose={() => setNewTemplateModal(false)}
+        title="새 템플릿 추가"
+        size="md"
+        closeOnOverlay={!createTemplateMutation.isPending}
+        closeOnEscape={!createTemplateMutation.isPending}
+        showCloseButton={!createTemplateMutation.isPending}
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setNewTemplateModal(false)}
+              disabled={createTemplateMutation.isPending}
+            >
+              취소
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => createTemplateMutation.mutate(newTemplate)}
+              disabled={!newTemplate.template_name || !newTemplate.content}
+              loading={createTemplateMutation.isPending}
+            >
+              추가
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-2">감정 유형</label>
+            <select
+              value={newTemplate.sentiment}
+              onChange={(e) => setNewTemplate({ ...newTemplate, sentiment: e.target.value })}
+              className="w-full px-3 py-2 border border-border rounded-lg bg-background"
+            >
+              <option value="positive">긍정</option>
+              <option value="negative">부정</option>
+              <option value="neutral">중립</option>
+            </select>
+          </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">감정 유형</label>
-                <select
-                  value={newTemplate.sentiment}
-                  onChange={(e) => setNewTemplate({ ...newTemplate, sentiment: e.target.value })}
-                  className="w-full px-3 py-2 border border-border rounded-lg bg-background"
-                >
-                  <option value="positive">긍정</option>
-                  <option value="negative">부정</option>
-                  <option value="neutral">중립</option>
-                </select>
-              </div>
+          <div>
+            <label className="block text-sm font-medium mb-2">템플릿 이름</label>
+            <input
+              type="text"
+              value={newTemplate.template_name}
+              onChange={(e) => setNewTemplate({ ...newTemplate, template_name: e.target.value })}
+              placeholder="예: 감사 인사"
+              className="w-full px-3 py-2 border border-border rounded-lg bg-background"
+            />
+          </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">템플릿 이름</label>
-                <input
-                  type="text"
-                  value={newTemplate.template_name}
-                  onChange={(e) => setNewTemplate({ ...newTemplate, template_name: e.target.value })}
-                  placeholder="예: 감사 인사"
-                  className="w-full px-3 py-2 border border-border rounded-lg bg-background"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">템플릿 내용</label>
-                <textarea
-                  value={newTemplate.content}
-                  onChange={(e) => setNewTemplate({ ...newTemplate, content: e.target.value })}
-                  placeholder="{reviewer_name}을 사용하면 리뷰어 이름으로 치환됩니다"
-                  className="w-full h-32 px-3 py-2 border border-border rounded-lg bg-background resize-none"
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setNewTemplateModal(false)}
-                  fullWidth
-                >
-                  취소
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => createTemplateMutation.mutate(newTemplate)}
-                  disabled={!newTemplate.template_name || !newTemplate.content}
-                  fullWidth
-                >
-                  추가
-                </Button>
-              </div>
-            </div>
+          <div>
+            <label className="block text-sm font-medium mb-2">템플릿 내용</label>
+            <textarea
+              value={newTemplate.content}
+              onChange={(e) => setNewTemplate({ ...newTemplate, content: e.target.value })}
+              placeholder="{reviewer_name}을 사용하면 리뷰어 이름으로 치환됩니다"
+              className="w-full h-32 px-3 py-2 border border-border rounded-lg bg-background resize-none"
+            />
           </div>
         </div>
-      )}
+      </Modal>
     </div>
   )
 }

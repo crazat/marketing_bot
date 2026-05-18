@@ -9,6 +9,7 @@ import { MessageCircle, Copy, ChevronDown, ChevronUp, Loader2, Search } from 'lu
 import { qaApi, configApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import Button from '@/components/ui/Button'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface QAMatch {
   id: number
@@ -74,9 +75,13 @@ export default function QAMatchPanel({
   const matches: QAMatch[] = matchData?.matches || []
 
   // 응답 복사
-  const handleCopyResponse = (response: string) => {
-    navigator.clipboard.writeText(response)
-    toast.success('응답이 클립보드에 복사되었습니다')
+  const handleCopyResponse = async (response: string) => {
+    try {
+      await copyTextToClipboard(response)
+      toast.success('응답이 클립보드에 복사되었습니다')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
 
     // 콜백이 있으면 호출
     if (onSelectResponse) {
@@ -186,9 +191,12 @@ export default function QAMatchPanel({
                     }`}
                   >
                     {/* Q&A 헤더 */}
-                    <div
-                      className="flex items-center justify-between p-3 cursor-pointer"
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                       onClick={() => setSelectedQA(isSelected ? null : qa)}
+                      aria-expanded={isSelected}
+                      aria-label={`${qa.question_pattern} 응답 ${isSelected ? '접기' : '펼치기'}`}
                     >
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         <span className="text-xs font-medium text-primary">
@@ -209,7 +217,7 @@ export default function QAMatchPanel({
                           사용: {qa.use_count}회
                         </span>
                       </div>
-                    </div>
+                    </button>
 
                     {/* 확장된 응답 */}
                     {isSelected && (

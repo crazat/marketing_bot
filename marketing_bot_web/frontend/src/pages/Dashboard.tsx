@@ -550,9 +550,10 @@ export default function Dashboard() {
                 </div>
                 <div className="space-y-2">
                   {briefing.urgent_actions.map((action: any, idx: number) => (
-                    <div
+                    <button
+                      type="button"
                       key={idx}
-                      className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
+                      className={`w-full flex items-center justify-between p-3 rounded-lg text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
                         action.priority === 'critical'
                           ? 'bg-red-500/20 hover:bg-red-500/30'
                           : action.priority === 'high'
@@ -560,6 +561,7 @@ export default function Dashboard() {
                           : 'bg-muted hover:bg-muted/80'
                       }`}
                       onClick={() => navigate(action.action_link)}
+                      aria-label={`${action.title}: ${action.action_label}`}
                     >
                       <div className="flex-1">
                         <div className="font-medium text-sm flex items-center gap-2">
@@ -572,13 +574,10 @@ export default function Dashboard() {
                           {action.description}
                         </div>
                       </div>
-                      <Button
-                        variant="primary"
-                        size="xs"
-                      >
+                      <span className="inline-flex items-center justify-center rounded-lg bg-primary px-2 py-1 text-xs font-medium text-primary-foreground">
                         {action.action_label}
-                      </Button>
-                    </div>
+                      </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -833,10 +832,12 @@ export default function Dashboard() {
                 </h3>
                 <div className="space-y-2">
                   {pendingAlerts.hot_leads.slice(0, 3).map((lead: any) => (
-                    <div
+                    <button
+                      type="button"
                       key={lead.id}
-                      className="flex items-center justify-between p-3 bg-green-500/10 border border-green-500/20 rounded-lg cursor-pointer hover:bg-green-500/20 transition-colors"
+                      className="w-full flex items-center justify-between p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-left hover:bg-green-500/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                       onClick={handleNavigateLeads}
+                      aria-label={`${lead.title} 리드 관리로 이동`}
                     >
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm truncate">{lead.title}</div>
@@ -847,7 +848,7 @@ export default function Dashboard() {
                       <div className="ml-2 px-2 py-1 bg-red-500 text-white text-xs rounded font-bold">
                         HOT
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -861,10 +862,12 @@ export default function Dashboard() {
                 </h3>
                 <div className="space-y-2">
                   {pendingAlerts.overdue_leads.slice(0, 3).map((lead: any) => (
-                    <div
+                    <button
+                      type="button"
                       key={lead.id}
-                      className="flex items-center justify-between p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg cursor-pointer hover:bg-yellow-500/20 transition-colors"
+                      className="w-full flex items-center justify-between p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-left hover:bg-yellow-500/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                       onClick={handleNavigateLeads}
+                      aria-label={`${lead.title} 리드 관리로 이동`}
                     >
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm truncate">{lead.title}</div>
@@ -875,7 +878,7 @@ export default function Dashboard() {
                       <div className="ml-2 text-yellow-500 text-xs font-bold">
                         {Math.floor(lead.hours_pending)}시간 대기
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>

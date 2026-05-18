@@ -4,7 +4,7 @@
  * [성능 개선] @tanstack/react-virtual로 가상화 적용
  */
 
-import { useRef, useMemo, useState } from 'react'
+import { useEffect, useRef, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import Button from '@/components/ui/Button'
@@ -24,6 +24,7 @@ import { EmptyState } from '@/components/viral/EmptyState'
 import { ViralTargetData, autoCategorize } from '@/types/viral'
 import { formatRelativeTime, formatDateTime } from '@/utils/dateFormat'
 import { viralApi, exportApi } from '@/services/api'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface LeadTrackingModalState {
   isOpen: boolean
@@ -148,6 +149,8 @@ export function ListView({
     targetTitle: string
     comment: string
   } | null>(null)
+  const [generatingCommentIds, setGeneratingCommentIds] = useState<Set<string>>(() => new Set())
+  const generatingCommentIdsRef = useRef<Set<string>>(new Set())
 
   // 행 높이 추정치 (실제 콘텐츠에 따라 동적)
   const ROW_HEIGHT = 120
@@ -173,20 +176,91 @@ export function ListView({
     }
   }, [displayTargets])
 
+  const getStatusConfig = (status?: string) => {
+    const statusConfig: Record<string, { label: string; bgClass: string; textClass: string }> = {
+      pending: { label: '대기', bgClass: 'bg-gray-500/20', textClass: 'text-gray-500' },
+      generated: { label: '생성됨', bgClass: 'bg-blue-500/20', textClass: 'text-blue-500' },
+      approved: { label: '승인됨', bgClass: 'bg-yellow-500/20', textClass: 'text-yellow-500' },
+      posted: { label: '게시됨', bgClass: 'bg-green-500/20', textClass: 'text-green-500' },
+      skipped: { label: '건너뜀', bgClass: 'bg-orange-500/20', textClass: 'text-orange-500' },
+      failed: { label: '실패', bgClass: 'bg-red-500/20', textClass: 'text-red-500' },
+    }
+
+    return statusConfig[status || 'pending'] || statusConfig.pending
+  }
+
+  const closeLeadTrackingModal = () => {
+    onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))
+  }
+
+  const setCommentGenerating = (targetId: string, isGenerating: boolean) => {
+    const next = new Set(generatingCommentIdsRef.current)
+    if (isGenerating) {
+      next.add(targetId)
+    } else {
+      next.delete(targetId)
+    }
+    generatingCommentIdsRef.current = next
+    setGeneratingCommentIds(next)
+  }
+
+  useEffect(() => {
+    if (!leadTrackingModal.isOpen) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [leadTrackingModal.isOpen, onSetLeadTrackingModal])
+
+  const handleGenerateComment = async (target: ViralTargetData) => {
+    const targetId = String(target.id || '')
+    if (!targetId) {
+      toast.error('댓글을 생성할 타겟 ID가 없습니다')
+      return
+    }
+    if (generatingCommentIdsRef.current.has(targetId)) return
+
+    setCommentGenerating(targetId, true)
+    try {
+      const result = await viralApi.generateComment(target.id)
+      if (result.comment) {
+        setCommentPreview({
+          targetId,
+          targetTitle: target.title || '제목 없음',
+          comment: result.comment,
+        })
+        toast.success('AI 댓글 생성 완료')
+      } else {
+        toast.warning('댓글이 생성되지 않았습니다')
+      }
+    } catch (error: unknown) {
+      const apiError = error as Error & { response?: { data?: { detail?: string } } }
+      const errorMsg = apiError.response?.data?.detail || apiError.message || '알 수 없는 오류'
+      toast.error(`댓글 생성 실패: ${errorMsg}`)
+    } finally {
+      setCommentGenerating(targetId, false)
+    }
+  }
+
   return (
     <div className="space-y-0">
       {/* 헤더 */}
-      <div className="flex items-center gap-4 p-6 bg-card border-b border-border">
+      <div className="flex flex-col gap-4 p-4 bg-card border-b border-border sm:p-6 lg:flex-row lg:items-center">
         <Button onClick={onGoHome} variant="outline">
           ← 홈으로
         </Button>
-        <div>
-          <h1 className="text-3xl font-bold">📋 일괄 작업 모드</h1>
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold sm:text-3xl">📋 일괄 작업 모드</h1>
           <p className="text-xs text-muted-foreground mt-1">
             여러 카테고리를 가로질러 필터링 · 일괄 승인/스킵/삭제 — 카테고리별 개별 작업은 홈에서 카테고리 선택
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-4">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:ml-auto lg:w-auto lg:justify-end">
           <Button
             onClick={() => {
               exportApi.downloadViralTargets({
@@ -199,7 +273,7 @@ export function ListView({
           >
             📥 Excel 내보내기
           </Button>
-          <div className="text-xs text-muted-foreground">
+          <div className="hidden text-xs text-muted-foreground xl:block">
             단축키:{' '}
             <kbd className="px-1 py-0.5 bg-muted border border-border rounded">Ctrl+A</kbd> 전체 선택,{' '}
             <kbd className="px-1 py-0.5 bg-muted border border-border rounded">A</kbd> 승인,{' '}
@@ -239,7 +313,7 @@ export function ListView({
       />
 
       {/* 일괄 검증 + 대량 액션 바 */}
-      <div className="flex items-center gap-4 p-4 bg-muted/30 border border-border rounded-lg">
+      <div className="flex flex-col gap-3 p-4 bg-muted/30 border border-border rounded-lg lg:flex-row lg:items-center">
         <div className="flex items-center gap-2">
           <select
             value={verifyLimit}
@@ -303,7 +377,7 @@ export function ListView({
             <span className="text-red-500 font-medium">✗ {verifyResults.not_commentable}</span>
           </div>
         )}
-        <div className="flex-1" />
+        <div className="hidden flex-1 lg:block" />
         <BulkActionBar
           selectedCount={selectedTargets.size}
           totalCount={displayTargets.length}
@@ -372,12 +446,118 @@ export function ListView({
             />
           </div>
         ) : (
-          /* [성능 개선] 가상화된 테이블 - 화면에 보이는 행만 렌더링 */
+          <>
+          <div className="space-y-3 p-3 md:hidden">
+            {displayTargets.map((target) => {
+              const category = getCategoryMemo(target)
+              const isSelected = selectedTargets.has(target.id)
+              const keywords = Array.isArray(target.matched_keywords) ? target.matched_keywords : []
+              const status = getStatusConfig(target.comment_status)
+              const isGeneratingComment = generatingCommentIds.has(String(target.id || ''))
+
+              return (
+                <article
+                  key={target.id}
+                  className={`rounded-lg border border-border bg-card p-3 shadow-sm ${isSelected ? 'ring-2 ring-primary/40 bg-primary/5' : ''}`}
+                >
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => onToggleSelect(target.id)}
+                      className="mt-1 h-5 w-5 shrink-0 rounded text-primary focus:ring-2 focus:ring-primary"
+                      aria-label={`${target.title || '제목 없는 타겟'} 선택`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                        <PlatformBadge platform={target.platform} size="sm" />
+                        <CategoryBadge category={category} size="sm" />
+                        <span
+                          className={`inline-block rounded px-2 py-1 text-xs font-medium ${status.bgClass} ${status.textClass}`}
+                          role="status"
+                          aria-label={`게시 상태: ${status.label}`}
+                        >
+                          {status.label}
+                        </span>
+                      </div>
+                      <a
+                        href={safeUrl(target.url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block font-medium leading-snug text-foreground hover:text-primary"
+                      >
+                        {target.title || '제목 없음'}
+                      </a>
+                      {target.content_preview && (
+                        <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                          {target.content_preview}
+                        </p>
+                      )}
+                      {keywords.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {keywords.slice(0, 3).map((kw, index) => (
+                            <span
+                              key={`${target.id}-keyword-${index}`}
+                              className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                            >
+                              {kw}
+                            </span>
+                          ))}
+                          {keywords.length > 3 && (
+                            <span className="text-xs text-muted-foreground">+{keywords.length - 3}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="font-semibold text-foreground">{target.priority_score?.toFixed(0) || 0}</div>
+                      <div className="text-muted-foreground">점수</div>
+                    </div>
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="font-semibold text-foreground">{target.scan_count || 1}</div>
+                      <div className="text-muted-foreground">발견</div>
+                    </div>
+                    <div className="rounded bg-muted/50 p-2">
+                      <div className="font-semibold text-foreground">
+                        {formatRelativeTime(target.discovered_at || '')}
+                      </div>
+                      <div className="text-muted-foreground">시간</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <EngagementMetrics
+                      likes={target.like_count}
+                      comments={target.comment_count}
+                      views={target.view_count}
+                      size="sm"
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      type="button"
+                      loading={isGeneratingComment}
+                      onClick={() => {
+                        void handleGenerateComment(target)
+                      }}
+                    >
+                      댓글 생성
+                    </Button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+
+          {/* [성능 개선] 가상화된 테이블 - 화면에 보이는 행만 렌더링 */}
           <div
             ref={tableContainerRef}
-            className="overflow-auto max-h-[calc(100vh-400px)] min-h-[400px]"
+            className="hidden overflow-auto max-h-[calc(100vh-400px)] min-h-[400px] md:block"
           >
-            <table className="w-full">
+            <table className="w-full min-w-[1100px]">
               <thead className="bg-muted border-b border-border sticky top-0 z-10">
                 <tr>
                   <th className="px-4 py-3 w-12">
@@ -409,6 +589,7 @@ export function ListView({
                   const category = getCategoryMemo(target)
                   const isSelected = selectedTargets.has(target.id)
                   const keywords = Array.isArray(target.matched_keywords) ? target.matched_keywords : []
+                  const isGeneratingComment = generatingCommentIds.has(String(target.id || ''))
 
                   return (
                     <tr
@@ -502,16 +683,7 @@ export function ListView({
                       </td>
                       <td className="px-4 py-3 text-sm text-center">
                         {(() => {
-                          const status = target.comment_status || 'pending'
-                          const statusConfig: Record<string, { label: string; bgClass: string; textClass: string }> = {
-                            pending: { label: '대기', bgClass: 'bg-gray-500/20', textClass: 'text-gray-500' },
-                            generated: { label: '생성됨', bgClass: 'bg-blue-500/20', textClass: 'text-blue-500' },
-                            approved: { label: '승인됨', bgClass: 'bg-yellow-500/20', textClass: 'text-yellow-500' },
-                            posted: { label: '게시됨', bgClass: 'bg-green-500/20', textClass: 'text-green-500' },
-                            skipped: { label: '건너뜀', bgClass: 'bg-orange-500/20', textClass: 'text-orange-500' },
-                            failed: { label: '실패', bgClass: 'bg-red-500/20', textClass: 'text-red-500' },
-                          }
-                          const config = statusConfig[status] || statusConfig['pending']
+                          const config = getStatusConfig(target.comment_status)
                           return (
                             <span
                               className={`inline-block px-2 py-1 rounded text-xs font-medium ${config.bgClass} ${config.textClass}`}
@@ -537,25 +709,11 @@ export function ListView({
                         <Button
                           variant="primary"
                           size="xs"
-                          onClick={async (e) => {
+                          type="button"
+                          loading={isGeneratingComment}
+                          onClick={(e) => {
                             e.preventDefault()
-                            try {
-                              const result = await viralApi.generateComment(target.id)
-                              if (result.comment) {
-                                setCommentPreview({
-                                  targetId: String(target.id),
-                                  targetTitle: target.title || '제목 없음',
-                                  comment: result.comment,
-                                })
-                                toast.success('AI 댓글 생성 완료')
-                              } else {
-                                toast.warning('댓글이 생성되지 않았습니다')
-                              }
-                            } catch (error: unknown) {
-                              const apiError = error as Error & { response?: { data?: { detail?: string } } }
-                              const errorMsg = apiError.response?.data?.detail || apiError.message || '알 수 없는 오류'
-                              toast.error(`댓글 생성 실패: ${errorMsg}`)
-                            }
+                            void handleGenerateComment(target)
                           }}
                         >
                           🤖 댓글 생성
@@ -567,6 +725,7 @@ export function ListView({
               </tbody>
             </table>
           </div>
+          </>
         )}
 
         {/* 페이지네이션 */}
@@ -627,15 +786,20 @@ export function ListView({
 
       {/* 리드 추적 연결 모달 */}
       {leadTrackingModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="lead-tracking-result-title"
+        >
           <div
             className="absolute inset-0 bg-black/50"
-            onClick={() => onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))}
+            onClick={closeLeadTrackingModal}
           />
           <div className="relative bg-card border border-border rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="text-center mb-6">
               <div className="text-5xl mb-4">{leadTrackingModal.leadCreated ? '🎉' : '✅'}</div>
-              <h3 className="text-xl font-bold mb-2">
+              <h3 id="lead-tracking-result-title" className="text-xl font-bold mb-2">
                 {leadTrackingModal.leadCreated ? '리드 자동 생성 완료!' : '댓글 승인 완료!'}
               </h3>
               <p className="text-sm text-muted-foreground">"{leadTrackingModal.targetTitle.slice(0, 30)}..."</p>
@@ -648,7 +812,7 @@ export function ListView({
                 </div>
                 <Button
                   onClick={() => {
-                    onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))
+                    closeLeadTrackingModal()
                     navigate('/leads')
                   }}
                   fullWidth
@@ -657,7 +821,7 @@ export function ListView({
                   📋 Lead Manager에서 확인하기
                 </Button>
                 <Button
-                  onClick={() => onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))}
+                  onClick={closeLeadTrackingModal}
                   variant="secondary"
                   fullWidth
                   size="lg"
@@ -671,7 +835,7 @@ export function ListView({
                   댓글이 승인되었습니다. 이 타겟은 승인 목록에서 관리됩니다.
                 </div>
                 <Button
-                  onClick={() => onSetLeadTrackingModal((prev) => ({ ...prev, isOpen: false }))}
+                  onClick={closeLeadTrackingModal}
                   fullWidth
                   size="lg"
                 >
@@ -697,7 +861,7 @@ export function ListView({
                 variant="secondary"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(commentPreview.comment)
+                    await copyTextToClipboard(commentPreview.comment)
                     toast.success('댓글이 클립보드에 복사되었습니다')
                   } catch {
                     toast.error('클립보드 복사 실패')

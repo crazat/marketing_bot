@@ -4,9 +4,10 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 export default function WebSocketIndicator() {
   const { isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, reconnect } = useWebSocket()
   const [isHovered, setIsHovered] = useState(false)
+  const [isFocused, setIsFocused] = useState(false)
 
-  // 연결됨 + 호버 안함 = 최소화
-  const isMinimized = isConnected && !isHovered
+  // 연결됨 + 상호작용 없음 = 점 형태로 최소화
+  const isExpanded = !isConnected || isReconnecting || isHovered || isFocused
 
   // 상태별 스타일
   const getStatusStyle = () => {
@@ -41,16 +42,24 @@ export default function WebSocketIndicator() {
   return (
     <div
       className={`
-        fixed bottom-4 right-4 z-50 transition-all duration-300
-        ${isMinimized ? 'opacity-40 scale-90' : 'opacity-100 scale-100'}
+        fixed bottom-20 left-4 z-40 transition-all duration-300
+        md:bottom-4 md:left-20 lg:left-72
+        ${isExpanded ? 'opacity-100 scale-100' : 'opacity-50 scale-90 hover:opacity-100'}
         ${!isConnected && !isReconnecting ? 'animate-pulse' : ''}
       `}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      tabIndex={0}
+      role="status"
+      aria-live={isConnected ? 'polite' : 'assertive'}
+      aria-label={getStatusMessage()}
     >
       <div
         className={`
-          flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors
+          flex items-center gap-2 rounded-lg border transition-all
+          ${isExpanded ? 'px-3 py-2 shadow-lg' : 'p-2 shadow-sm'}
           ${getStatusStyle()}
         `}
       >
@@ -60,9 +69,11 @@ export default function WebSocketIndicator() {
             ${getIndicatorStyle()}
           `}
         />
-        <span className="text-xs font-medium whitespace-nowrap">
-          {getStatusMessage()}
-        </span>
+        {isExpanded && (
+          <span className="text-xs font-medium whitespace-nowrap">
+            {getStatusMessage()}
+          </span>
+        )}
         {!isConnected && !isReconnecting && (
           <button
             onClick={(e) => {

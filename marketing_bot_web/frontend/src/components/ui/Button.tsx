@@ -25,6 +25,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       size = 'md',
       loading = false,
       status = 'idle',
+      type = 'button',
       successText = '완료!',
       errorText = '실패',
       icon,
@@ -139,6 +140,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <button
         ref={ref}
+        type={type}
         disabled={disabled || effectiveStatus === 'loading'}
         className={`
           ${baseStyles}

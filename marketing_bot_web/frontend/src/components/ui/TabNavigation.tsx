@@ -31,6 +31,7 @@ export default function TabNavigation({
     >
       {tabs.map((tab) => (
         <button
+          type="button"
           key={tab.id}
           role="tab"
           aria-selected={activeTab === tab.id}

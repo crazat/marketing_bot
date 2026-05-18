@@ -42,6 +42,17 @@ const STATUS_MAP: Record<string, string> = {
   'Closed': 'rejected',
 }
 
+const PLATFORM_QUERY_MAP: Record<string, string> = {
+  cafe: 'naver-leads',
+  naver: 'naver-leads',
+  youtube: 'youtube-leads',
+  tiktok: 'tiktok-leads',
+  instagram: 'instagram-leads',
+  carrot: 'carrot-leads',
+  karrot: 'carrot-leads',
+  influencer: 'influencer-leads',
+}
+
 export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoardProps) {
   const [draggedLead, setDraggedLead] = useState<Lead | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
@@ -73,8 +84,17 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
 
       // [Phase 2 최적화] 해당 플랫폼만 무효화 (7개 → 1개 API 호출)
       if (variables.platform) {
-        const platformKey = `${variables.platform.toLowerCase()}-leads`
-        queryClient.invalidateQueries({ queryKey: [platformKey] })
+        const platformKey = PLATFORM_QUERY_MAP[variables.platform.toLowerCase()]
+        if (platformKey) {
+          queryClient.invalidateQueries({ queryKey: [platformKey] })
+        } else {
+          queryClient.invalidateQueries({ queryKey: ['naver-leads'] })
+          queryClient.invalidateQueries({ queryKey: ['youtube-leads'] })
+          queryClient.invalidateQueries({ queryKey: ['tiktok-leads'] })
+          queryClient.invalidateQueries({ queryKey: ['instagram-leads'] })
+          queryClient.invalidateQueries({ queryKey: ['carrot-leads'] })
+          queryClient.invalidateQueries({ queryKey: ['influencer-leads'] })
+        }
       } else {
         // 플랫폼 정보가 없는 경우에만 전체 무효화 (fallback)
         queryClient.invalidateQueries({ queryKey: ['naver-leads'] })

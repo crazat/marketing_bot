@@ -379,9 +379,10 @@ export default function LeadManager() {
     instagram: { module: 'instagram', name: 'Instagram 스캔' },
   }
 
+  const activeScanModule = scanModules[activeTab]
   const isScanning = scanningModule !== null || runScan.isPending
 
-if (statsLoading) {
+  if (statsLoading) {
     return (
       <div className="space-y-6">
         <div>
@@ -419,7 +420,7 @@ if (statsLoading) {
             여러 플랫폼의 리드를 발굴·관리합니다
           </p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-wrap gap-2 items-center justify-start md:justify-end">
           {/* 뷰 모드 토글 */}
           <div className="flex bg-muted rounded-lg p-1">
             <button
@@ -453,7 +454,7 @@ if (statsLoading) {
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="px-3 py-2 bg-card border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                className="max-w-full px-3 py-2 bg-card border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">전체 상태</option>
                 <option value="pending">대기 중</option>
@@ -466,7 +467,7 @@ if (statsLoading) {
               <select
                 value={trustFilter}
                 onChange={(e) => setTrustFilter(e.target.value)}
-                className="px-3 py-2 bg-card border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                className="max-w-full px-3 py-2 bg-card border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">전체 신뢰도</option>
                 <option value="trusted">🟢 신뢰</option>
@@ -508,15 +509,15 @@ if (statsLoading) {
             >
               ⏹️ 스캔 중지
             </Button>
-          ) : (
+          ) : activeScanModule ? (
             <Button
               variant="primary"
-              onClick={() => handleRunScan(scanModules[activeTab].module)}
+              onClick={() => handleRunScan(activeScanModule.module)}
               icon={<Search size={16} />}
             >
-              {scanModules[activeTab].name}
+              {activeScanModule.name}
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
 

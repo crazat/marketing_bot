@@ -20,6 +20,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import { useLoadingState } from '@/hooks/useLoadingState'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 export default function CompetitorAnalysis() {
   // [Phase 5.0] URL 상태 관리
@@ -212,6 +213,7 @@ export default function CompetitorAnalysis() {
     competitors: { module: 'place_sniper', name: '경쟁사 순위 스캔' },
   }
 
+  const activeScanModule = scanModules[activeTab]
   const isScanning = scanningModule !== null || runScan.isPending || analyzeReviews.isPending
 
   return (
@@ -225,7 +227,7 @@ export default function CompetitorAnalysis() {
             경쟁사 약점 분석 및 Instagram 모니터링
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-start md:justify-end">
           <Button
             variant="outline"
             onClick={handleRefresh}
@@ -234,20 +236,20 @@ export default function CompetitorAnalysis() {
           >
             새로고침
           </Button>
-          {!scanningModule && (
+          {!scanningModule && activeScanModule && (
             <Button
               variant="primary"
               onClick={() => {
                 if (activeTab === 'weaknesses' || activeTab === 'opportunities') {
                   analyzeReviews.mutate()
                 } else {
-                  handleRunScan(scanModules[activeTab].module)
+                  handleRunScan(activeScanModule.module)
                 }
               }}
               disabled={isScanning}
               loading={analyzeReviews.isPending}
             >
-              🔍 {scanModules[activeTab].name}
+              🔍 {activeScanModule.name}
             </Button>
           )}
         </div>
@@ -315,14 +317,18 @@ export default function CompetitorAnalysis() {
                         <Button
                           variant="ghost"
                           size="xs"
-                          onClick={() => {
+                          onClick={async () => {
                             const text = `제목: ${outline.title}\n\n${outline.hook}\n\n${
                               outline.sections?.map((s: any) =>
                                 `## ${s.heading}\n${s.key_points?.map((p: string) => `- ${p}`).join('\n')}`
                               ).join('\n\n') || ''
                             }\n\n${outline.cta}\n\n키워드: ${outline.keywords?.join(', ')}`
-                            navigator.clipboard.writeText(text)
-                            toast.success('아웃라인이 클립보드에 복사되었습니다')
+                            try {
+                              await copyTextToClipboard(text)
+                              toast.success('아웃라인이 클립보드에 복사되었습니다')
+                            } catch {
+                              toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+                            }
                           }}
                           icon={<Copy className="w-3 h-3" />}
                         >

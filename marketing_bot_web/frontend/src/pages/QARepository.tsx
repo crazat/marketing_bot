@@ -3,7 +3,7 @@
  * 자주 묻는 질문 패턴 및 표준 응답 관리
  */
 
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   MessageCircle,
@@ -25,6 +25,7 @@ import MetricCard from '@/components/MetricCard'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { qaApi } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface QAItem {
   id: number
@@ -172,9 +173,13 @@ export default function QARepository() {
   }
 
   // 응답 복사
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text)
-    toast.success('클립보드에 복사되었습니다')
+  const handleCopy = async (text: string) => {
+    try {
+      await copyTextToClipboard(text)
+      toast.success('클립보드에 복사되었습니다')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
   }
 
   // 카테고리 라벨 가져오기
@@ -251,6 +256,7 @@ export default function QARepository() {
           <div className="flex gap-2 mb-4">
             <input
               type="text"
+              aria-label="질문 매칭 테스트 입력"
               value={testQuery}
               onChange={(e) => setTestQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -308,6 +314,7 @@ export default function QARepository() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <input
             type="text"
+            aria-label="Q&A 검색"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="질문 패턴 또는 응답 검색..."
@@ -317,6 +324,7 @@ export default function QARepository() {
         <div className="flex items-center gap-2">
           <Tag className="w-5 h-5 text-muted-foreground" />
           <select
+            aria-label="Q&A 카테고리 필터"
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
             className="px-4 py-2 bg-card border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
@@ -357,11 +365,13 @@ export default function QARepository() {
 
               return (
                 <div key={item.id} className="p-4">
-                  <div
-                    className="flex items-start justify-between cursor-pointer"
-                    onClick={() => toggleExpand(item.id)}
-                  >
-                    <div className="flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      className="flex-1 min-w-0 text-left rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      aria-expanded={isExpanded}
+                      onClick={() => toggleExpand(item.id)}
+                    >
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">
                           {categoryInfo.icon} {categoryInfo.label}
@@ -377,8 +387,8 @@ export default function QARepository() {
                           {item.standard_answer}
                         </p>
                       )}
-                    </div>
-                    <div className="flex items-center gap-2 ml-4">
+                    </button>
+                    <div className="flex items-center gap-2 ml-4 shrink-0">
                       <IconButton
                         icon={<Copy className="w-4 h-4" />}
                         onClick={(e) => {
@@ -407,11 +417,21 @@ export default function QARepository() {
                         size="sm"
                         title="삭제"
                       />
-                      {isExpanded ? (
-                        <ChevronUp className="w-5 h-5 text-muted-foreground" />
-                      ) : (
-                        <ChevronDown className="w-5 h-5 text-muted-foreground" />
-                      )}
+                      <IconButton
+                        icon={
+                          isExpanded ? (
+                            <ChevronUp className="w-5 h-5 text-muted-foreground" />
+                          ) : (
+                            <ChevronDown className="w-5 h-5 text-muted-foreground" />
+                          )
+                        }
+                        onClick={() => toggleExpand(item.id)}
+                        size="sm"
+                        type="button"
+                        title={isExpanded ? '접기' : '펼치기'}
+                        aria-label={isExpanded ? 'Q&A 접기' : 'Q&A 펼치기'}
+                        aria-expanded={isExpanded}
+                      />
                     </div>
                   </div>
 
@@ -472,7 +492,7 @@ export default function QARepository() {
       <ConfirmModal
         isOpen={!!deleteTarget}
         title="Q&A 삭제"
-        message={`"${deleteTarget?.question_pattern}" Q&A를 삭제하시겠습니까?`}
+        message={`"${deleteTarget?.question_pattern}" Q&A를 삭제할까요? 삭제하면 자동 응답 목록에서 제외됩니다.`}
         confirmText="삭제"
         variant="danger"
         loading={deleteMutation.isPending}
@@ -503,6 +523,17 @@ function QAFormModal({
   })
   const [newVariation, setNewVariation] = useState('')
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isLoading) {
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isLoading, onClose])
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!formData.question_pattern.trim() || !formData.standard_answer.trim()) {
@@ -529,17 +560,29 @@ function QAFormModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="qa-form-title"
+    >
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={() => {
+          if (!isLoading) onClose()
+        }}
+      />
       <div className="relative bg-card rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto m-4">
         <div className="sticky top-0 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">
+          <h2 id="qa-form-title" className="text-lg font-semibold">
             {item ? 'Q&A 수정' : '새 Q&A 등록'}
           </h2>
           <IconButton
             icon={<X className="w-5 h-5" />}
             onClick={onClose}
             size="sm"
+            type="button"
+            disabled={isLoading}
             title="닫기"
           />
         </div>
@@ -621,6 +664,7 @@ function QAFormModal({
                 icon={<Plus className="w-5 h-5" />}
                 onClick={addVariation}
                 size="md"
+                type="button"
                 title="변형 패턴 추가"
               />
             </div>
@@ -636,6 +680,7 @@ function QAFormModal({
                       icon={<X className="w-3 h-3" />}
                       onClick={() => removeVariation(idx)}
                       size="xs"
+                      type="button"
                       title="삭제"
                     />
                   </span>
@@ -650,6 +695,7 @@ function QAFormModal({
               type="button"
               variant="secondary"
               onClick={onClose}
+              disabled={isLoading}
             >
               취소
             </Button>

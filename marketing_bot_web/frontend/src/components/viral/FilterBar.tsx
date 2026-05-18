@@ -283,6 +283,7 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
             value={savingName}
             onChange={(e) => setSavingName(e.target.value)}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return
               if (e.key === 'Enter') handleSavePreset()
               if (e.key === 'Escape') setSavingName(null)
             }}

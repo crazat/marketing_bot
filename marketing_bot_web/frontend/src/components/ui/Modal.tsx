@@ -1,7 +1,9 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import Button, { IconButton } from '@/components/ui/Button'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
+import { isTopModal, useModalStack } from '@/hooks/useModalStack'
 
 export interface ModalProps {
   isOpen: boolean
@@ -14,6 +16,25 @@ export interface ModalProps {
   closeOnEscape?: boolean
   showCloseButton?: boolean
   footer?: ReactNode
+}
+
+let scrollLockCount = 0
+let previousBodyOverflow = ''
+
+function lockBodyScroll() {
+  if (scrollLockCount === 0) {
+    previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  }
+  scrollLockCount += 1
+}
+
+function unlockBodyScroll() {
+  scrollLockCount = Math.max(0, scrollLockCount - 1)
+  if (scrollLockCount === 0) {
+    document.body.style.overflow = previousBodyOverflow
+    previousBodyOverflow = ''
+  }
 }
 
 export default function Modal({
@@ -29,64 +50,32 @@ export default function Modal({
   footer,
 }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
-  const previousActiveElement = useRef<HTMLElement | null>(null)
+  const modalId = useId()
+  const titleId = useId()
+  const descriptionId = useId()
+  useModalStack(isOpen, modalId)
+  useFocusTrap(isOpen, modalRef)
 
-  // 키보드 이벤트 처리
   useEffect(() => {
     if (!isOpen) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && closeOnEscape) {
+      if (e.key === 'Escape' && closeOnEscape && isTopModal(modalId)) {
+        e.stopPropagation()
         onClose()
-      }
-
-      // Focus trap
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusableElements = modalRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        )
-        const firstElement = focusableElements[0]
-        const lastElement = focusableElements[focusableElements.length - 1]
-
-        if (e.shiftKey && document.activeElement === firstElement) {
-          e.preventDefault()
-          lastElement?.focus()
-        } else if (!e.shiftKey && document.activeElement === lastElement) {
-          e.preventDefault()
-          firstElement?.focus()
-        }
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, closeOnEscape, onClose])
+  }, [isOpen, closeOnEscape, modalId, onClose])
 
-  // 포커스 관리
   useEffect(() => {
-    let focusTimer: ReturnType<typeof setTimeout> | null = null
+    if (!isOpen) return undefined
 
-    if (isOpen) {
-      previousActiveElement.current = document.activeElement as HTMLElement
-      document.body.style.overflow = 'hidden'
-
-      // 첫 번째 포커스 가능한 요소에 포커스
-      focusTimer = setTimeout(() => {
-        const firstFocusable = modalRef.current?.querySelector<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        )
-        firstFocusable?.focus()
-      }, 100)
-    } else {
-      document.body.style.overflow = ''
-      previousActiveElement.current?.focus()
-    }
-
+    lockBodyScroll()
     return () => {
-      document.body.style.overflow = ''
-      if (focusTimer) {
-        clearTimeout(focusTimer)
-      }
+      unlockBodyScroll()
     }
   }, [isOpen])
 
@@ -106,24 +95,28 @@ export default function Modal({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-labelledby={title ? 'modal-title' : undefined}
-      aria-describedby={description ? 'modal-description' : undefined}
+      aria-labelledby={title ? titleId : undefined}
+      aria-describedby={description ? descriptionId : undefined}
     >
       {/* 오버레이 */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
-        onClick={closeOnOverlay ? onClose : undefined}
+        onClick={() => {
+          if (closeOnOverlay && isTopModal(modalId)) onClose()
+        }}
         aria-hidden="true"
       />
 
       {/* 모달 콘텐츠 */}
       <div
         ref={modalRef}
+        tabIndex={-1}
         className={`
           relative w-full ${sizeClasses[size]}
           bg-card border border-border rounded-xl shadow-2xl
           animate-modal-enter
-          ${size === 'full' ? 'flex flex-col' : ''}
+          max-h-[90vh] overflow-hidden
+          ${size === 'full' ? 'flex flex-col' : 'flex flex-col'}
         `}
       >
         {/* 헤더 */}
@@ -131,12 +124,12 @@ export default function Modal({
           <div className="flex items-start justify-between p-4 border-b border-border">
             <div>
               {title && (
-                <h2 id="modal-title" className="text-lg font-semibold">
+                <h2 id={titleId} className="text-lg font-semibold">
                   {title}
                 </h2>
               )}
               {description && (
-                <p id="modal-description" className="text-sm text-muted-foreground mt-1">
+                <p id={descriptionId} className="text-sm text-muted-foreground mt-1">
                   {description}
                 </p>
               )}
@@ -153,7 +146,7 @@ export default function Modal({
         )}
 
         {/* 본문 */}
-        <div className={`p-4 ${size === 'full' ? 'flex-1 overflow-auto' : ''}`}>
+        <div className="p-4 flex-1 overflow-auto">
           {children}
         </div>
 
@@ -200,6 +193,9 @@ export function ConfirmModal({
       onClose={onClose}
       title={title}
       size="sm"
+      closeOnOverlay={!loading}
+      closeOnEscape={!loading}
+      showCloseButton={!loading}
       footer={
         <>
           <Button

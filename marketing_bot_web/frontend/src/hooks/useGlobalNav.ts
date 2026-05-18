@@ -29,6 +29,11 @@ export function useGlobalNav(options?: {
   const navigate = useNavigate()
   const prefixActiveRef = useRef(false)
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const callbacksRef = useRef(options)
+
+  useEffect(() => {
+    callbacksRef.current = options
+  }, [options])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -53,18 +58,18 @@ export function useGlobalNav(options?: {
         }
         prefixActiveRef.current = false
         if (timeoutRef.current) clearTimeout(timeoutRef.current)
-        options?.onCancel?.()
+        callbacksRef.current?.onCancel?.()
         return
       }
 
       // prefix 시작
       if (key === PREFIX_KEY && !e.shiftKey) {
         prefixActiveRef.current = true
-        options?.onPrefixStart?.()
+        callbacksRef.current?.onPrefixStart?.()
         if (timeoutRef.current) clearTimeout(timeoutRef.current)
         timeoutRef.current = setTimeout(() => {
           prefixActiveRef.current = false
-          options?.onCancel?.()
+          callbacksRef.current?.onCancel?.()
         }, TIMEOUT_MS)
       }
     }
@@ -74,7 +79,7 @@ export function useGlobalNav(options?: {
       window.removeEventListener('keydown', handler)
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
     }
-  }, [navigate, options])
+  }, [navigate])
 }
 
 export { NAV_MAP }

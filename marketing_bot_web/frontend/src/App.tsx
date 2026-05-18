@@ -1,7 +1,6 @@
 import { lazy, Suspense, ReactNode } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
-import WebSocketIndicator from './components/WebSocketIndicator'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import LoadingSpinner from './components/ui/LoadingSpinner'
 
@@ -183,7 +182,6 @@ function App() {
           />
         </Route>
       </Routes>
-      <WebSocketIndicator />
     </ErrorBoundary>
   )
 }

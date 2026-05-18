@@ -9,6 +9,16 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+  ).filter((el) => {
+    if (el.hasAttribute('aria-hidden')) return false
+    if (el.tabIndex < 0) return false
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0
+  })
+}
+
 /**
  * [Y1] Modal focus trap — 모달 내부에서만 Tab 순환.
  * 열릴 때 트리거 복원을 위해 이전 활성 요소 기억.
@@ -33,28 +43,33 @@ export function useFocusTrap(
     const container = containerRef.current
     if (!container) return
 
-    const focusables = Array.from(
-      container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-    ).filter((el) => !el.hasAttribute('aria-hidden'))
+    const focusables = getFocusableElements(container)
 
     if (autoFocusFirst && focusables.length > 0) {
       focusables[0].focus()
+    } else if (autoFocusFirst) {
+      container.focus()
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return
 
-      const currentFocusables = Array.from(
-        container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((el) => !el.hasAttribute('aria-hidden'))
+      const currentFocusables = getFocusableElements(container)
 
       if (currentFocusables.length === 0) {
         e.preventDefault()
+        container.focus()
         return
       }
 
       const first = currentFocusables[0]
       const last = currentFocusables[currentFocusables.length - 1]
+
+      if (!container.contains(document.activeElement)) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+        return
+      }
 
       if (e.shiftKey) {
         if (document.activeElement === first) {
@@ -74,7 +89,7 @@ export function useFocusTrap(
       container.removeEventListener('keydown', handleKeyDown)
       // 트리거로 포커스 복원
       const prev = previouslyFocusedRef.current
-      if (prev && typeof prev.focus === 'function') {
+      if (prev?.isConnected && typeof prev.focus === 'function') {
         prev.focus()
       }
     }

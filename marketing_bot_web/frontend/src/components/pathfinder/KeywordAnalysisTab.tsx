@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { pathfinderApi } from '@/services/api'
 import { VirtualTable } from '@/components/ui/VirtualTable'
 import Button from '@/components/ui/Button'
+import { useToast } from '@/components/ui/Toast'
 import { Download } from 'lucide-react'
 import type { Keyword, PathfinderStats } from '@/types'
 import { GRADE_ICONS, GRADE_COLORS, TREND_ICONS } from '@/types'
@@ -12,6 +13,7 @@ interface KeywordAnalysisTabProps {
 }
 
 export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
+  const toast = useToast()
   const [filters, setFilters] = useState({
     grades: [] as string[],  // 빈 배열 = 전체 표시
     category: '',
@@ -78,7 +80,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
   // CSV 다운로드
   const handleDownloadCsv = () => {
     if (!filteredKeywords || filteredKeywords.length === 0) {
-      alert('다운로드할 키워드가 없습니다.')
+      toast.warning('다운로드할 키워드가 없습니다.')
       return
     }
 
@@ -105,6 +107,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
     link.href = URL.createObjectURL(blob)
     link.download = `keywords_${new Date().toISOString().split('T')[0]}.csv`
     link.click()
+    toast.success(`${filteredKeywords.length.toLocaleString('ko-KR')}개 키워드를 다운로드했습니다.`)
   }
 
   // 등급 필터 토글

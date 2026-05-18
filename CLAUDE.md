@@ -1,5 +1,16 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-18 Memory: Marketing Bot Web Frontend UX Hardening Sweep
+
+- Completed a multi-pass frontend UX review across accessibility, feedback clarity, mobile ergonomics, async duplicate prevention, state persistence, and modal focus behavior.
+- Accessibility cleanup converted key clickable cards/rows into keyboard-operable buttons and added missing labels/expanded states in dashboard, lead, hot-lead, pipeline, and Q&A surfaces.
+- Toast and Modal UX were hardened: toasts now expose clearer roles/actions, base modals restore focus, trap Tab focus, respect stacked modal order, and keep body scroll locked until all open modals close.
+- Mobile/list UX improved with safer pagination, default `button` type behavior, tighter tab/list layouts, and mobile Viral Hunter list cards for better scanning on small screens.
+- Viral Hunter single-comment generation now tracks per-target pending IDs so duplicate clicks do not fire duplicate API requests; copy actions use a shared clipboard fallback helper with failure toasts instead of false success messages.
+- Pathfinder filter/search state is now more consistent: search query is URL-backed, filter chips show and remove active filters individually, presets include search/stale/low-volume options, reset clears all visible filter state, and CSV export uses the currently visible filtered list.
+- Several custom overlays were moved to the shared Modal component, including dashboard settings, opportunity content ideas, review template creation, smart alert rule creation, and referral source recording.
+- Latest verification for the UX sweep in `marketing_bot_web/frontend`: `npm run typecheck`, `npm run lint`, `npm run build:fast`, and `git diff --check` passed; local Vite dev server responded 200 at `http://127.0.0.1:5173`.
+
 ## 2026-05-18 Memory: Legion/Viral Scan 20 Latest Sequential Run
 
 - Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.

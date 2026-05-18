@@ -78,12 +78,18 @@ export function ToastProvider({
   const showToast = useCallback((type: ToastType, message: string, duration?: number, action?: ToastAction) => {
     // 중복 방지 (action 토스트는 예외 — undo는 개별 타겟마다 독립)
     if (preventDuplicates && !action) {
+      const lastToast = toasts[toasts.length - 1]
+      const isLastToast = lastToast?.type === type && lastToast.message === message
       const isDuplicate = toasts.some(t => t.type === type && t.message === message)
-      if (isDuplicate) return
+      // 마지막 토스트와 같은 메시지는 아래 그룹화 로직에서 count만 올린다.
+      if (isDuplicate && !isLastToast) {
+        return
+      }
     }
 
     const id = ++toastId
-    const actualDuration = duration ?? defaultDuration
+    const typeDuration = type === 'error' ? 9000 : type === 'warning' ? 7000 : defaultDuration
+    const actualDuration = duration ?? typeDuration
 
     // [Y7] 토스트 그룹화 — 같은 type의 연속 토스트를 묶어서 표시
     // 예: "⏭️ 건너뜀" 여러 번 → "⏭️ 건너뜀 (3건)"
@@ -114,6 +120,14 @@ export function ToastProvider({
       // 최대 개수 제한
       const newToasts = [...prev, { id, type, message, duration: actualDuration, action, count: 1 }]
       if (newToasts.length > maxToasts) {
+        const droppedToasts = newToasts.slice(0, newToasts.length - maxToasts)
+        droppedToasts.forEach((toast) => {
+          const timer = timerMapRef.current.get(toast.id)
+          if (timer) {
+            clearTimeout(timer)
+            timerMapRef.current.delete(toast.id)
+          }
+        })
         return newToasts.slice(-maxToasts)
       }
       return newToasts
@@ -152,6 +166,7 @@ export function ToastProvider({
       <ToastContainer
         toasts={toasts}
         onDismiss={dismissToast}
+        onDismissAll={dismissAll}
         isMobile={isMobile}
         maxToasts={isMobile ? 3 : maxToasts}
       />
@@ -200,11 +215,13 @@ const toastConfig: Record<ToastType, {
 function ToastContainer({
   toasts,
   onDismiss,
+  onDismissAll,
   isMobile,
   maxToasts,
 }: {
   toasts: Toast[]
   onDismiss: (id: number) => void
+  onDismissAll: () => void
   isMobile: boolean
   maxToasts: number
 }) {
@@ -224,6 +241,17 @@ function ToastContainer({
       role="region"
       aria-label="알림 메시지"
     >
+      {displayToasts.length > 1 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onDismissAll}
+            className="rounded bg-background/95 px-2 py-1 text-xs text-muted-foreground shadow hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+            모두 닫기
+          </button>
+        </div>
+      )}
       {displayToasts.map((toast) => {
         const { bg, Icon, label } = toastConfig[toast.type]
         return (
@@ -234,17 +262,16 @@ function ToastContainer({
             className={`
               ${bg}
               text-white px-4 py-3 rounded-lg shadow-lg
-              flex items-center gap-3
-              ${isMobile ? 'w-full' : 'min-w-[300px] max-w-[400px]'}
+              flex items-start gap-3
+              ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[440px]'}
               animate-in ${isMobile ? 'slide-in-from-top' : 'slide-in-from-right'} duration-300
-              cursor-pointer hover:brightness-110 transition-all
+              transition-all
             `}
-            onClick={() => onDismiss(toast.id)}
           >
-            <Icon className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
+            <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" aria-hidden="true" />
             <div className="flex-1 min-w-0">
               <span className="sr-only">{label}: </span>
-              <span className="block truncate">
+              <span className="block max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-snug pr-1">
                 {toast.message}
                 {toast.count && toast.count > 1 && (
                   <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-white/25 text-[11px] font-bold tabular-nums">

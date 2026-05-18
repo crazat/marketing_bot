@@ -21,6 +21,7 @@ import { safeUrl } from '@/utils/safeUrl'
 import { ViralTargetData } from '@/types/viral'
 import { formatRelativeTime, formatDateTime } from '@/utils/dateFormat'
 import { viralApi } from '@/services/api'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface Template {
   id: number
@@ -143,14 +144,16 @@ export function WorkView({
   return (
     <div className="space-y-6">
       {/* 헤더 */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
           <Button onClick={onGoHome} variant="outline">
             ← 홈으로
           </Button>
-          <h1 className="text-3xl font-bold">🎯 {selectedCategory} ({categoryTargets.length}개)</h1>
+          <h1 className="text-2xl font-bold sm:text-3xl">
+            🎯 {selectedCategory} ({categoryTargets.length}개)
+          </h1>
         </div>
-        <div className="text-xs text-muted-foreground">
+        <div className="hidden text-xs text-muted-foreground md:block">
           단축키:{' '}
           <kbd className="px-1 py-0.5 bg-muted border border-border rounded">A</kbd> 승인,{' '}
           <kbd className="px-1 py-0.5 bg-muted border border-border rounded">S</kbd> 건너뛰기,{' '}
@@ -161,7 +164,7 @@ export function WorkView({
 
       {/* 직원 작업 패널 */}
       {activeTarget && (
-        <div className="sticky top-3 z-20 bg-card/95 backdrop-blur border border-border rounded-lg shadow-sm p-4">
+        <div className="sticky top-20 md:top-3 z-20 bg-card/95 backdrop-blur border border-border rounded-lg shadow-sm p-4">
           <div className="flex flex-col lg:flex-row lg:items-center gap-4">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-2">
@@ -223,8 +226,12 @@ export function WorkView({
                 disabled={!activeComment}
                 onClick={async () => {
                   if (!activeComment) return
-                  await navigator.clipboard.writeText(activeComment)
-                  toast.success('댓글을 복사했습니다')
+                  try {
+                    await copyTextToClipboard(activeComment)
+                    toast.success('댓글을 복사했습니다')
+                  } catch {
+                    toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+                  }
                 }}
               >
                 <Copy className="w-4 h-4" />
@@ -326,10 +333,12 @@ export function WorkView({
                 {/* 헤더 (클릭하면 펼침) */}
                 <div
                   onClick={() => onToggleExpand(target.id)}
-                  className="flex items-center gap-4 p-4 cursor-pointer hover:bg-muted/50"
+                  className="flex flex-col gap-3 p-4 cursor-pointer hover:bg-muted/50 sm:flex-row sm:items-center sm:gap-4"
                 >
-                  <span className="text-xl">{isExpanded ? '▼' : '▶'}</span>
-                  <PlatformBadge platform={target.platform} size="sm" />
+                  <div className="flex w-full items-center gap-3 sm:w-auto">
+                    <span className="text-xl">{isExpanded ? '▼' : '▶'}</span>
+                    <PlatformBadge platform={target.platform} size="sm" />
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="font-semibold truncate">{target.title || '제목 없음'}</span>
@@ -388,7 +397,7 @@ export function WorkView({
                     {target.priority_score?.toFixed(0) || 0}점
                   </div>
                   {/* 퀵 액션 버튼 */}
-                  <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex w-full justify-end gap-1 sm:w-auto" onClick={(e) => e.stopPropagation()}>
                     <Button
                       size="xs"
                       onClick={() => onVerifyTarget(target.id)}
@@ -615,7 +624,7 @@ export function WorkView({
                     </div>
 
                     {/* 액션 버튼 */}
-                    <div className="flex gap-3">
+                    <div className="flex flex-col gap-3 sm:flex-row">
                       <Button
                         onClick={() => onTargetAction(target.id, 'approve')}
                         disabled={!comment}

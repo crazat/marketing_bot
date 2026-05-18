@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { notificationsApi, Notification } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
@@ -42,6 +43,7 @@ function formatRelativeTime(dateString: string): string {
 
 export default function NotificationCenter({ isOpen, onClose }: NotificationCenterProps) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['notifications'],
@@ -71,6 +73,15 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
     },
   })
 
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onClose])
+
   if (!isOpen) return null
 
   const notifications: Notification[] = data?.notifications || []
@@ -81,7 +92,11 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
       markAsReadMutation.mutate(notification.id)
     }
     if (notification.link) {
-      window.location.href = notification.link
+      if (notification.link.startsWith('/')) {
+        navigate(notification.link)
+      } else {
+        window.location.href = notification.link
+      }
     }
     onClose()
   }
@@ -90,7 +105,7 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/20" />
       <div
-        className="absolute right-4 top-16 w-96 max-h-[70vh] bg-card border border-border rounded-lg shadow-xl overflow-hidden"
+        className="absolute right-4 top-16 w-[calc(100vw-2rem)] max-w-sm sm:w-96 max-h-[70vh] bg-card border border-border rounded-lg shadow-xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

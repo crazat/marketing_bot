@@ -90,10 +90,12 @@ export default function HotLeadBanner() {
 
       <div className="space-y-2">
         {hotLeads.slice(0, 3).map((lead) => (
-          <div
+          <button
+            type="button"
             key={lead.id}
-            className="flex items-center justify-between gap-2 p-3 bg-card/50 rounded-lg hover:bg-card transition-colors cursor-pointer"
+            className="flex w-full items-center justify-between gap-2 p-3 bg-card/50 rounded-lg text-left hover:bg-card transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             onClick={() => navigate(`/leads?status=pending`)}
+            aria-label={`${lead.title} 리드 보기`}
           >
             <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1">
               <span className="text-lg md:text-xl flex-shrink-0">{platformIcons[lead.platform] || '📋'}</span>
@@ -110,7 +112,7 @@ export default function HotLeadBanner() {
               <span className="text-base md:text-lg font-bold text-red-500">{lead.score}점</span>
               <ArrowRight className="w-4 h-4 text-muted-foreground hidden sm:block" />
             </div>
-          </div>
+          </button>
         ))}
       </div>
 

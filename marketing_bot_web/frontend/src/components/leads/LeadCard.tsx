@@ -272,6 +272,9 @@ const LeadCard = memo(LeadCardComponent, (prevProps, nextProps) => {
   return (
     prevProps.lead.id === nextProps.lead.id &&
     prevProps.lead.status === nextProps.lead.status &&
+    prevProps.lead.score === nextProps.lead.score &&
+    prevProps.lead.trust_level === nextProps.lead.trust_level &&
+    prevProps.lead.detected_at === nextProps.lead.detected_at &&
     prevProps.isFocused === nextProps.isFocused
   )
 })

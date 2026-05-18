@@ -7,6 +7,7 @@ import { SentimentBar, SentimentSummary } from '@/components/ui/SentimentBadge'
 import { useToast } from '@/components/ui/Toast'
 import { competitorsApi } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 // 약점 유형별 실행 전략
 const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strategies: { text: string; action: string }[] }> = {
@@ -337,11 +338,14 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
             <Button
               variant="secondary"
               fullWidth
-              onClick={() => {
-                // 클립보드에 복사
+              onClick={async () => {
                 const outlineText = JSON.stringify(generatedOutline.outline, null, 2)
-                navigator.clipboard.writeText(outlineText)
-                toast.success('아웃라인이 클립보드에 복사되었습니다')
+                try {
+                  await copyTextToClipboard(outlineText)
+                  toast.success('아웃라인이 클립보드에 복사되었습니다')
+                } catch {
+                  toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+                }
               }}
             >
               📋 복사하기

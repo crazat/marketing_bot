@@ -10,6 +10,7 @@ import { TrendingUp, Users, FileText, Copy, ExternalLink, X, Target } from 'luci
 import { useToast } from './Toast'
 import { battleApi } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface KeywordPopoverProps {
   keyword: string
@@ -96,10 +97,14 @@ export default function KeywordPopover({
     setIsOpen(!isOpen)
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(keyword)
-    toast.success('키워드가 복사되었습니다')
-    setIsOpen(false)
+  const handleCopy = async () => {
+    try {
+      await copyTextToClipboard(keyword)
+      toast.success('키워드가 복사되었습니다')
+      setIsOpen(false)
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
   }
 
   const handleViewRanking = () => {

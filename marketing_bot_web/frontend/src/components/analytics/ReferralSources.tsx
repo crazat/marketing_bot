@@ -16,11 +16,11 @@ import {
   MapPin,
   Megaphone,
   MoreHorizontal,
-  X,
 } from 'lucide-react'
 import { analyticsApi } from '@/services/api'
 import { LoadingState, ErrorState, EmptyState } from './shared'
 import Button, { IconButton } from '@/components/ui/Button'
+import Modal from '@/components/ui/Modal'
 import type { ReferralSourcesData, ReferralSourceItem } from '@/types/analytics'
 
 interface ReferralSourcesProps {
@@ -256,18 +256,31 @@ function AddReferralModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-card rounded-lg border border-border w-full max-w-md mx-4">
-        <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold">유입 경로 기록</h3>
-          <IconButton
-            icon={<X className="w-5 h-5" />}
-            onClick={onClose}
-            title="닫기"
-          />
-        </div>
-
-        <div className="p-4 space-y-4">
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="유입 경로 기록"
+      size="md"
+      closeOnOverlay={!mutation.isPending}
+      closeOnEscape={!mutation.isPending}
+      showCloseButton={!mutation.isPending}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+            취소
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!selectedSource || (selectedSource === '기타' && !customSource)}
+            loading={mutation.isPending}
+          >
+            저장
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
           {/* 유입 경로 선택 */}
           <div>
             <label className="text-sm font-medium mb-2 block">어떻게 오셨어요?</label>
@@ -314,22 +327,7 @@ function AddReferralModal({
               className="w-full px-3 py-2 rounded-lg border border-border bg-background"
             />
           </div>
-        </div>
-
-        <div className="p-4 border-t border-border flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            취소
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!selectedSource || (selectedSource === '기타' && !customSource)}
-            loading={mutation.isPending}
-          >
-            저장
-          </Button>
-        </div>
       </div>
-    </div>
+    </Modal>
   )
 }

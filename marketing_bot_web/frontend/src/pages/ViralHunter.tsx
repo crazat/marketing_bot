@@ -9,6 +9,7 @@ import { HomeView, WorkView, ListView, CompletionView } from '@/components/viral
 import ShortcutsOverlay from '@/components/viral/ShortcutsOverlay'
 import SkipReasonModal from '@/components/viral/SkipReasonModal'
 import BulkConfirmModal, { type BulkAction } from '@/components/ui/BulkConfirmModal'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { ViralTargetData as ViralTarget } from '@/types/viral'
 import { useLoadingState } from '@/hooks/useLoadingState'
 import { getToastErrorMessage } from '@/utils/errorMessages'
@@ -156,6 +157,7 @@ export default function ViralHunter() {
   const { record: recordRecent } = useRecentItems()
   const { initial: resumeInitial, record: recordResume, clear: clearResume } = useResumeState('viral-hunter')
   const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false)
+  const [showClearOfflineConfirm, setShowClearOfflineConfirm] = useState(false)
   const { log: logJournal } = useActionJournal()
   const { markAction: markFatigueAction } = useFatigueDetector()
 
@@ -1162,12 +1164,8 @@ export default function ViralHunter() {
             {/* [EE7] 영구 실패 정리용 수동 비우기 (2건 이상일 때만) */}
             {offlineQueue.length >= 2 && (
               <button
-                onClick={() => {
-                  if (window.confirm(`대기 중인 ${offlineQueue.length}건을 삭제할까요? 서버에 전송되지 않습니다.`)) {
-                    clearOfflineQueue()
-                    toast.info('오프라인 큐를 비웠습니다')
-                  }
-                }}
+                type="button"
+                onClick={() => setShowClearOfflineConfirm(true)}
                 className="text-xs underline hover:opacity-70"
               >
                 큐 비우기
@@ -1244,6 +1242,20 @@ export default function ViralHunter() {
           onHomeScanBatchChange={setHomeScanBatch}
           runScanMutation={runScanMutation}
           stopScan={stopScan}
+        />
+        <ConfirmModal
+          isOpen={showClearOfflineConfirm}
+          onClose={() => setShowClearOfflineConfirm(false)}
+          onConfirm={() => {
+            clearOfflineQueue()
+            setShowClearOfflineConfirm(false)
+            toast.info('오프라인 큐를 비웠습니다')
+          }}
+          title="오프라인 큐 비우기"
+          message={`대기 중인 ${offlineQueue.length}건을 삭제할까요? 서버에 전송되지 않은 작업은 복구할 수 없습니다.`}
+          confirmText="비우기"
+          cancelText="취소"
+          variant="danger"
         />
         <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
         <SkipReasonModal

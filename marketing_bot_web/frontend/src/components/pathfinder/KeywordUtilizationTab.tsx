@@ -2,7 +2,9 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { pathfinderApi } from '@/services/api'
 import Button from '@/components/ui/Button'
+import { useToast } from '@/components/ui/Toast'
 import { Rocket, Copy } from 'lucide-react'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface KeywordUtilizationTabProps {
   stats: any
@@ -49,6 +51,7 @@ export default function KeywordUtilizationTab({ stats }: KeywordUtilizationTabPr
 
 // 블로그 제목 생성기
 function BlogTitleGenerator({ stats }: { stats: any }) {
+  const toast = useToast()
   const [selectedCategory, setSelectedCategory] = useState('')
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([])
   const [titleStyle, setTitleStyle] = useState('정보형')
@@ -92,7 +95,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
       if (selectedKeywords.length < 5) {
         setSelectedKeywords([...selectedKeywords, keyword])
       } else {
-        alert('최대 5개까지만 선택 가능합니다.')
+        toast.warning('키워드는 최대 5개까지 선택할 수 있습니다.')
       }
     }
   }
@@ -100,7 +103,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
   // 제목 생성 (클라이언트 사이드 템플릿 기반)
   const handleGenerateTitles = () => {
     if (selectedKeywords.length === 0) {
-      alert('키워드를 선택해주세요.')
+      toast.warning('제목을 생성할 키워드를 먼저 선택해주세요.')
       return
     }
 
@@ -169,10 +172,14 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
   }
 
   // 전체 복사
-  const handleCopyAll = () => {
+  const handleCopyAll = async () => {
     const text = generatedTitles.join('\n')
-    navigator.clipboard.writeText(text)
-    alert('전체 제목이 클립보드에 복사되었습니다.')
+    try {
+      await copyTextToClipboard(text)
+      toast.success('전체 제목을 클립보드에 복사했습니다.')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+    }
   }
 
   return (
@@ -325,9 +332,13 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
                     <div
                       key={index}
                       className="p-3 bg-muted rounded-lg hover:bg-muted/80 transition-colors cursor-pointer"
-                      onClick={() => {
-                        navigator.clipboard.writeText(title)
-                        alert(`"${title}" 복사됨`)
+                      onClick={async () => {
+                        try {
+                          await copyTextToClipboard(title)
+                          toast.success('제목을 복사했습니다.')
+                        } catch {
+                          toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+                        }
                       }}
                     >
                       <div className="flex items-start gap-2">

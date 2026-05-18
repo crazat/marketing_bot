@@ -25,7 +25,8 @@ import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 import Button, { IconButton } from '@/components/ui/Button'
-import { Download, Save, RotateCcw } from 'lucide-react'
+import { Download, Save, RotateCcw, X } from 'lucide-react'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 // 필터 프리셋 타입
 interface FilterPreset {
@@ -35,6 +36,9 @@ interface FilterPreset {
   category: string
   source: string
   trend: string
+  search?: string
+  showStale?: string
+  showLowVolume?: string
   createdAt: string
 }
 
@@ -66,12 +70,12 @@ export default function Pathfinder() {
   // [Q12] stale/저신뢰 노출 토글 — 디폴트는 신선·고신뢰만 노출
   const [showStale, setShowStale] = useUrlState<string>('show_stale', { defaultValue: '0' })
   const [showLowVolume, setShowLowVolume] = useUrlState<string>('show_low_volume', { defaultValue: '0' })
+  const [searchQuery, setSearchQuery] = useUrlState<string>('q', { defaultValue: '' })
 
   // 로컬 상태
   const [selectedMode, setSelectedMode] = useState<'total_war' | 'legion'>('total_war')
   const [scanningModule, setScanningModule] = useState<string | null>(null)
   const [scanningName, setScanningName] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
 
   // 필터 프리셋 상태
   const [presets, setPresets] = useState<FilterPreset[]>(() => loadPresets())
@@ -115,6 +119,9 @@ export default function Pathfinder() {
       category: categoryFilter,
       source: sourceFilter,
       trend: trendFilter,
+      search: searchQuery,
+      showStale,
+      showLowVolume,
       createdAt: new Date().toISOString()
     }
 
@@ -124,7 +131,7 @@ export default function Pathfinder() {
     setPresetName('')
     setShowPresetInput(false)
     toast.success(`"${newPreset.name}" 프리셋이 저장되었습니다`)
-  }, [presetName, gradeFilter, categoryFilter, sourceFilter, trendFilter, presets, toast])
+  }, [presetName, gradeFilter, categoryFilter, sourceFilter, trendFilter, searchQuery, showStale, showLowVolume, presets, toast])
 
   // 프리셋 적용
   const handleApplyPreset = useCallback((preset: FilterPreset) => {
@@ -132,8 +139,11 @@ export default function Pathfinder() {
     setCategoryFilter(preset.category)
     setSourceFilter(preset.source)
     setTrendFilter(preset.trend)
+    setSearchQuery(preset.search || '')
+    setShowStale(preset.showStale || '0')
+    setShowLowVolume(preset.showLowVolume || '0')
     toast.success(`"${preset.name}" 프리셋이 적용되었습니다`)
-  }, [setGradeFilter, setCategoryFilter, setSourceFilter, setTrendFilter, toast])
+  }, [setGradeFilter, setCategoryFilter, setSourceFilter, setTrendFilter, setSearchQuery, setShowStale, setShowLowVolume, toast])
 
   // 프리셋 삭제
   const handleDeletePreset = useCallback((presetId: string) => {
@@ -289,27 +299,20 @@ export default function Pathfinder() {
     setSourceFilter('')
     setTrendFilter('')
     setSearchQuery('')
+    setShowStale('0')
+    setShowLowVolume('0')
   }
 
-  // 전체 키워드 일괄 내보내기
-  const exportAllKeywords = useMutation({
-    mutationFn: () => pathfinderApi.exportAllKeywords({
-      grade: gradeFilter || undefined,
-      category: categoryFilter || undefined
-    }),
-    onSuccess: (data) => {
-      const timestamp = new Date().toISOString().slice(0, 10)
-      const filterSuffix = gradeFilter ? `_${gradeFilter}` : ''
-      exportToCSV(data, KEYWORD_EXPORT_COLUMNS, `all_keywords${filterSuffix}_${timestamp}.csv`)
-      toast.success(`${data.length}개 키워드를 CSV로 내보냈습니다`)
-    },
-    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(`내보내기 실패: ${error.response?.data?.detail || error.message}`)
+  const handleExportCurrentList = () => {
+    if (!filteredKeywords.length) {
+      toast.warning('내보낼 키워드가 없습니다')
+      return
     }
-  })
 
-  const handleExportAll = () => {
-    exportAllKeywords.mutate()
+    const timestamp = new Date().toISOString().slice(0, 10)
+    const scope = hasActiveFilters ? 'filtered' : 'all'
+    exportToCSV(filteredKeywords, KEYWORD_EXPORT_COLUMNS, `keywords_${scope}_${timestamp}.csv`)
+    toast.success(`${filteredKeywords.length}개 키워드를 CSV로 내보냈습니다`)
   }
 
   // [P1-2] 아웃라인 생성 mutation
@@ -336,7 +339,55 @@ export default function Pathfinder() {
     generateOutline.mutate({ keywords, clusterName, category })
   }
 
-  const hasActiveFilters = gradeFilter || categoryFilter || sourceFilter || trendFilter || searchQuery
+  const activeFilterChips = useMemo(() => {
+    const chips: { key: string; label: string; value: string; onRemove: () => void }[] = []
+
+    if (gradeFilter) {
+      chips.push({ key: 'grade', label: '등급', value: gradeFilter, onRemove: () => setGradeFilter('') })
+    }
+    if (categoryFilter) {
+      chips.push({ key: 'category', label: '카테고리', value: categoryFilter, onRemove: () => setCategoryFilter('') })
+    }
+    if (sourceFilter) {
+      chips.push({ key: 'source', label: '소스', value: sourceFilter, onRemove: () => setSourceFilter('') })
+    }
+    if (trendFilter) {
+      const trendLabels: Record<string, string> = {
+        rising: 'Rising',
+        falling: 'Falling',
+        stable: 'Stable',
+      }
+      chips.push({ key: 'trend', label: '트렌드', value: trendLabels[trendFilter] || trendFilter, onRemove: () => setTrendFilter('') })
+    }
+    if (searchQuery.trim()) {
+      chips.push({ key: 'search', label: '검색', value: searchQuery.trim(), onRemove: () => setSearchQuery('') })
+    }
+    if (showStale === '1') {
+      chips.push({ key: 'showStale', label: '포함', value: '60일 이상 묵은 키워드', onRemove: () => setShowStale('0') })
+    }
+    if (showLowVolume === '1') {
+      chips.push({ key: 'showLowVolume', label: '포함', value: '저신뢰 키워드', onRemove: () => setShowLowVolume('0') })
+    }
+
+    return chips
+  }, [
+    gradeFilter,
+    categoryFilter,
+    sourceFilter,
+    trendFilter,
+    searchQuery,
+    showStale,
+    showLowVolume,
+    setGradeFilter,
+    setCategoryFilter,
+    setSourceFilter,
+    setTrendFilter,
+    setSearchQuery,
+    setShowStale,
+    setShowLowVolume,
+  ])
+
+  const hasActiveFilters = activeFilterChips.length > 0
 
   const isScanning = scanningModule !== null || runPathfinder.isPending
 
@@ -488,7 +539,10 @@ export default function Pathfinder() {
                   onChange={(e) => setPresetName(e.target.value)}
                   placeholder="프리셋 이름 입력..."
                   className="flex-1 px-3 py-2 bg-background border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()}
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return
+                    if (e.key === 'Enter') handleSavePreset()
+                  }}
                   autoFocus
                 />
                 <Button
@@ -523,13 +577,13 @@ export default function Pathfinder() {
                       variant="ghost"
                       size="xs"
                       onClick={() => handleApplyPreset(preset)}
-                      title={`등급: ${preset.grade || '전체'}, 카테고리: ${preset.category || '전체'}, 소스: ${preset.source || '전체'}, 트렌드: ${preset.trend || '전체'}`}
+                      title={`등급: ${preset.grade || '전체'}, 카테고리: ${preset.category || '전체'}, 소스: ${preset.source || '전체'}, 트렌드: ${preset.trend || '전체'}, 검색: ${preset.search || '없음'}, 오래된 키워드: ${preset.showStale === '1' ? '포함' : '제외'}, 저신뢰: ${preset.showLowVolume === '1' ? '포함' : '제외'}`}
                       className="p-0 h-auto hover:text-primary"
                     >
                       {preset.name}
                     </Button>
                     <IconButton
-                      icon={<span>✕</span>}
+                      icon={<X className="w-3 h-3" />}
                       onClick={() => handleDeletePreset(preset.id)}
                       size="xs"
                       title="프리셋 삭제"
@@ -632,9 +686,42 @@ export default function Pathfinder() {
             </label>
           </div>
 
+          {activeFilterChips.length > 0 && (
+            <div
+              className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4"
+              role="status"
+              aria-live="polite"
+              aria-label="현재 적용된 키워드 필터"
+            >
+              <span className="text-xs font-medium text-muted-foreground">적용 중</span>
+              {activeFilterChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={chip.onRemove}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground hover:border-primary/50 hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  title={`${chip.label} 필터 제거`}
+                >
+                  <span className="truncate">
+                    {chip.label}: {chip.value}
+                  </span>
+                  <X className="h-3 w-3 shrink-0" aria-hidden="true" />
+                </button>
+              ))}
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={handleResetFilters}
+                icon={<RotateCcw size={14} />}
+              >
+                모두 초기화
+              </Button>
+            </div>
+          )}
+
           {/* 필터 결과 요약 */}
           {hasActiveFilters && keywords && (
-            <div className="mt-4 text-sm text-muted-foreground">
+            <div className="mt-3 text-sm text-muted-foreground" role="status" aria-live="polite">
               {filteredKeywords.length}개 키워드 (전체 {keywords.length}개 중)
             </div>
           )}
@@ -650,13 +737,12 @@ export default function Pathfinder() {
             <Button
               variant="success"
               size="sm"
-              onClick={handleExportAll}
-              loading={exportAllKeywords.isPending}
-              disabled={keywordsLoading}
+              onClick={handleExportCurrentList}
+              disabled={keywordsLoading || filteredKeywords.length === 0}
               icon={<Download size={14} />}
-              title={hasActiveFilters ? "현재 필터 적용된 전체 키워드 내보내기" : "전체 키워드 내보내기"}
+              title={hasActiveFilters ? "현재 검색·필터가 적용된 목록을 CSV로 내보내기" : "현재 목록을 CSV로 내보내기"}
             >
-              전체 CSV 내보내기
+              현재 목록 CSV
             </Button>
           </div>
           {keywordsLoading ? (
@@ -964,9 +1050,13 @@ export default function Pathfinder() {
                       <Button
                         variant="ghost"
                         size="xs"
-                        onClick={() => {
-                          navigator.clipboard.writeText(JSON.stringify(generatedOutlines[week.week], null, 2))
-                          toast.success('아웃라인이 클립보드에 복사되었습니다')
+                        onClick={async () => {
+                          try {
+                            await copyTextToClipboard(JSON.stringify(generatedOutlines[week.week], null, 2))
+                            toast.success('아웃라인이 클립보드에 복사되었습니다')
+                          } catch {
+                            toast.error('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.')
+                          }
                         }}
                       >
                         📋 복사

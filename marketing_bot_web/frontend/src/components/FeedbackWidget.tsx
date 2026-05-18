@@ -82,9 +82,10 @@ export default function FeedbackWidget() {
     <>
       {/* 플로팅 버튼 — 모바일 탭바 위 */}
       <button
+        type="button"
         onClick={() => setOpen(true)}
         aria-label="피드백 보내기"
-        className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-40 inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-card border border-border shadow-lg hover:border-primary/50 hover:bg-muted/30 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        className="fixed bottom-20 right-4 md:right-6 z-40 inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-card border border-border shadow-lg hover:border-primary/50 hover:bg-muted/30 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         <MessageSquarePlus className="w-3.5 h-3.5" aria-hidden />
         <span>피드백</span>
@@ -96,6 +97,7 @@ export default function FeedbackWidget() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="feedback-title"
+          onClick={() => setOpen(false)}
         >
           <div
             ref={containerRef}
@@ -110,6 +112,7 @@ export default function FeedbackWidget() {
                 </h2>
               </div>
               <button
+                type="button"
                 onClick={() => setOpen(false)}
                 className="p-1 hover:bg-muted rounded"
                 aria-label="닫기"
@@ -126,8 +129,10 @@ export default function FeedbackWidget() {
                 const selected = kind === k
                 return (
                   <button
+                    type="button"
                     key={k}
                     onClick={() => setKind(k)}
+                    aria-pressed={selected}
                     className={`flex flex-col items-center gap-1 px-2 py-3 border transition-all ${
                       selected
                         ? 'border-primary bg-primary/5'
@@ -144,6 +149,7 @@ export default function FeedbackWidget() {
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
+              aria-label="피드백 내용"
               placeholder={
                 kind === 'bug'
                   ? '어떤 버그를 발견하셨나요? 재현 방법도 함께 알려주세요.'
@@ -161,12 +167,14 @@ export default function FeedbackWidget() {
               </span>
               <div className="flex gap-2">
                 <button
+                  type="button"
                   onClick={() => setOpen(false)}
                   className="px-3 py-1.5 text-xs rounded border border-border hover:bg-muted"
                 >
                   취소
                 </button>
                 <button
+                  type="button"
                   onClick={handleSubmit}
                   disabled={!message.trim()}
                   className="px-4 py-1.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"

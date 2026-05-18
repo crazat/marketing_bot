@@ -11,6 +11,8 @@ import {
 } from 'lucide-react'
 import type { AlertRule, AlertLog } from '@/types/marketing'
 import Button, { IconButton } from '@/components/ui/Button'
+import Modal, { ConfirmModal } from '@/components/ui/Modal'
+import { useToast } from '@/components/ui/Toast'
 import { safeJsonParse } from '@/utils/safeStorage'
 
 interface SmartAlertsProps {
@@ -39,7 +41,9 @@ function parseThreshold(conditionJson: string): number | null {
 
 export function SmartAlerts({ compact = false }: SmartAlertsProps) {
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [ruleToDelete, setRuleToDelete] = useState<AlertRule | null>(null)
   const queryClient = useQueryClient()
+  const toast = useToast()
 
   const { data: rules, isLoading: rulesLoading, refetch, isRefetching } = useQuery<AlertRule[]>({
     queryKey: ['alert-rules'],
@@ -59,12 +63,20 @@ export function SmartAlerts({ compact = false }: SmartAlertsProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
     },
+    onError: () => {
+      toast.error('알림 규칙 상태 변경에 실패했습니다.')
+    },
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => marketingApi.deleteAlertRule(id),
     onSuccess: () => {
+      toast.success('알림 규칙을 삭제했습니다.')
       queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
+      setRuleToDelete(null)
+    },
+    onError: () => {
+      toast.error('알림 규칙 삭제에 실패했습니다.')
     },
   })
 
@@ -253,11 +265,7 @@ export function SmartAlerts({ compact = false }: SmartAlertsProps) {
                       />
                       <IconButton
                         icon={<Trash2 className="w-4 h-4" />}
-                        onClick={() => {
-                          if (confirm('이 규칙을 삭제하시겠습니까?')) {
-                            deleteMutation.mutate(rule.id)
-                          }
-                        }}
+                        onClick={() => setRuleToDelete(rule)}
                         className="text-red-500 hover:bg-red-500/10"
                         title="삭제"
                       />
@@ -317,6 +325,21 @@ export function SmartAlerts({ compact = false }: SmartAlertsProps) {
       {showCreateModal && (
         <CreateRuleModal onClose={() => setShowCreateModal(false)} />
       )}
+      <ConfirmModal
+        isOpen={!!ruleToDelete}
+        onClose={() => setRuleToDelete(null)}
+        onConfirm={() => ruleToDelete && deleteMutation.mutate(ruleToDelete.id)}
+        title="알림 규칙 삭제"
+        message={
+          ruleToDelete
+            ? `"${ruleToDelete.name}" 규칙을 삭제할까요? 이 규칙으로 생성되던 알림은 더 이상 발송되지 않습니다.`
+            : ''
+        }
+        confirmText="삭제"
+        cancelText="취소"
+        variant="danger"
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }
@@ -324,6 +347,7 @@ export function SmartAlerts({ compact = false }: SmartAlertsProps) {
 // 규칙 생성 모달
 function CreateRuleModal({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
+  const toast = useToast()
   const [formData, setFormData] = useState({
     name: '',
     rule_type: 'lead_score',
@@ -338,10 +362,14 @@ function CreateRuleModal({ onClose }: { onClose: () => void }) {
         rule_type: data.rule_type,
         condition_json: JSON.stringify({ threshold: data.threshold }),
         action_type: data.action_type,
-      }),
+    }),
     onSuccess: () => {
+      toast.success('알림 규칙을 생성했습니다.')
       queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
       onClose()
+    },
+    onError: () => {
+      toast.error('알림 규칙 생성에 실패했습니다.')
     },
   })
 
@@ -352,83 +380,88 @@ function CreateRuleModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md">
-        <h3 className="text-xl font-bold mb-4">새 알림 규칙</h3>
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="새 알림 규칙"
+      size="md"
+      closeOnOverlay={!createMutation.isPending}
+      closeOnEscape={!createMutation.isPending}
+      showCloseButton={!createMutation.isPending}
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">규칙 이름</label>
+          <input
+            type="text"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
+            placeholder="예: 고품질 리드 알림"
+            required
+          />
+        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">규칙 이름</label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
-              placeholder="예: 고품질 리드 알림"
-              required
-            />
-          </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">규칙 유형</label>
+          <select
+            value={formData.rule_type}
+            onChange={(e) => setFormData({ ...formData, rule_type: e.target.value })}
+            className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
+          >
+            {RULE_TYPES.map((type) => (
+              <option key={type.value} value={type.value}>
+                {type.label}
+              </option>
+            ))}
+          </select>
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">규칙 유형</label>
-            <select
-              value={formData.rule_type}
-              onChange={(e) => setFormData({ ...formData, rule_type: e.target.value })}
-              className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
-            >
-              {RULE_TYPES.map((type) => (
-                <option key={type.value} value={type.value}>
-                  {type.label}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">임계값</label>
+          <input
+            type="number"
+            value={formData.threshold}
+            onChange={(e) => setFormData({ ...formData, threshold: parseInt(e.target.value) })}
+            className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
+          />
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">임계값</label>
-            <input
-              type="number"
-              value={formData.threshold}
-              onChange={(e) => setFormData({ ...formData, threshold: parseInt(e.target.value) })}
-              className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
-            />
-          </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">알림 채널</label>
+          <select
+            value={formData.action_type}
+            onChange={(e) => setFormData({ ...formData, action_type: e.target.value })}
+            className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
+          >
+            {ACTION_TYPES.map((action) => (
+              <option key={action.value} value={action.value}>
+                {action.label}
+              </option>
+            ))}
+          </select>
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">알림 채널</label>
-            <select
-              value={formData.action_type}
-              onChange={(e) => setFormData({ ...formData, action_type: e.target.value })}
-              className="w-full px-3 py-2 bg-muted border border-border rounded-lg"
-            >
-              {ACTION_TYPES.map((action) => (
-                <option key={action.value} value={action.value}>
-                  {action.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex gap-2 pt-4">
-            <Button
-              variant="secondary"
-              fullWidth
-              type="button"
-              onClick={onClose}
-            >
-              취소
-            </Button>
-            <Button
-              variant="primary"
-              fullWidth
-              type="submit"
-              loading={createMutation.isPending}
-            >
-              규칙 생성
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex gap-2 pt-4">
+          <Button
+            variant="secondary"
+            fullWidth
+            type="button"
+            onClick={onClose}
+            disabled={createMutation.isPending}
+          >
+            취소
+          </Button>
+          <Button
+            variant="primary"
+            fullWidth
+            type="submit"
+            loading={createMutation.isPending}
+          >
+            규칙 생성
+          </Button>
+        </div>
+      </form>
+    </Modal>
   )
 }

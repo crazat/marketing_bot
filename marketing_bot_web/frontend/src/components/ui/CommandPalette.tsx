@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target, Clock } from 'lucide-react'
 import { pathfinderApi, battleApi, viralApi, leadsApi, hudApi } from '@/services/api'
 import { useRecentItems, type RecentItem } from '@/hooks/useRecentItems'
+import { useToast } from '@/components/ui/Toast'
 
 interface CommandItem {
   id: string
@@ -32,6 +33,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
+  const toast = useToast()
   const { items: recentItems } = useRecentItems()
 
   // [Phase E-3] 키워드 검색 (3자 이상일 때만)
@@ -190,12 +192,13 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
         setIsLoading(true)
         try {
           await hudApi.executeMission('place_sniper')
-          alert('순위 스캔이 시작되었습니다.')
+          toast.success('순위 스캔이 시작되었습니다.')
         } catch {
-          alert('스캔 실행에 실패했습니다.')
+          toast.error('스캔 실행에 실패했습니다.')
+        } finally {
+          setIsLoading(false)
+          onClose()
         }
-        setIsLoading(false)
-        onClose()
       },
       keywords: ['scan', '스캔', '순위체크'],
       category: 'action'
@@ -209,17 +212,18 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
         setIsLoading(true)
         try {
           await pathfinderApi.runPathfinder('legion', 500, true)
-          alert('키워드 발굴이 시작되었습니다.')
+          toast.success('키워드 발굴이 시작되었습니다.')
         } catch {
-          alert('발굴 실행에 실패했습니다.')
+          toast.error('발굴 실행에 실패했습니다.')
+        } finally {
+          setIsLoading(false)
+          onClose()
         }
-        setIsLoading(false)
-        onClose()
       },
       keywords: ['pathfinder', '발굴', 'discover'],
       category: 'action'
     },
-  ], [navigate, onClose])
+  ], [navigate, onClose, toast])
 
   // [Phase E-3] 동적 키워드 검색 결과를 명령어로 변환
   const keywordCommands: CommandItem[] = useMemo(() => {
@@ -430,10 +434,16 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
         onClick={onClose}
+        aria-hidden="true"
       />
 
       {/* 팔레트 */}
-      <div className="fixed top-[20%] left-1/2 -translate-x-1/2 w-full max-w-xl z-50">
+      <div
+        className="fixed top-[12%] left-1/2 -translate-x-1/2 w-[calc(100vw-2rem)] max-w-xl z-50 sm:top-[20%]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="명령 팔레트"
+      >
         <div className="bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
           {/* 검색 입력 */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -449,6 +459,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
               placeholder="명령 또는 키워드 검색... (3자 이상 입력 시 통합 검색)"
               className="flex-1 bg-transparent outline-none text-foreground placeholder:text-muted-foreground"
               autoFocus
+              aria-label="명령 또는 키워드 검색"
             />
             <kbd className="px-2 py-1 bg-muted rounded text-xs text-muted-foreground">
               ESC
@@ -490,8 +501,10 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
               <div className="py-2">
                 {filteredCommands.map((cmd, idx) => (
                   <button
+                    type="button"
                     key={cmd.id}
                     onClick={cmd.action}
+                    aria-current={idx === selectedIndex ? 'true' : undefined}
                     className={`
                       w-full flex items-center gap-3 px-4 py-3
                       transition-colors text-left

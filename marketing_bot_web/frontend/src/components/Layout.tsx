@@ -114,17 +114,17 @@ function HotLeadBanner({
   const topOverdue = overdue_leads[0]
 
   return (
-    <div className="bg-gradient-to-r from-red-500/90 to-orange-500/90 text-white px-4 py-2 flex items-center justify-between gap-4 shadow-lg">
+    <div className="bg-gradient-to-r from-red-500/90 to-orange-500/90 text-white px-4 py-2 flex flex-col gap-2 shadow-lg sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-3 flex-1 min-w-0">
         <div className="p-1.5 bg-white/20 rounded-full">
           <AlertTriangle className="w-4 h-4" />
         </div>
-        <div className="flex items-center gap-4 flex-1 min-w-0 overflow-hidden">
+        <div className="flex items-center gap-3 flex-1 min-w-0 overflow-hidden">
           {topHotLead && (
             <div className="flex items-center gap-2 text-sm">
               <Users className="w-4 h-4 flex-shrink-0" />
               <span className="truncate">
-                <strong>Hot Lead:</strong> {topHotLead.title.slice(0, 30)}... ({topHotLead.score}점)
+                <strong>Hot Lead:</strong> {topHotLead.title.slice(0, 30)}{topHotLead.title.length > 30 ? '...' : ''} ({topHotLead.score}점)
               </span>
             </div>
           )}
@@ -143,7 +143,7 @@ function HotLeadBanner({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="flex items-center justify-end gap-2 flex-shrink-0">
         <Button
           variant="ghost"
           size="sm"
@@ -261,6 +261,21 @@ export default function Layout() {
     return () => window.removeEventListener('keydown', handleCommandPaletteShortcut)
   }, [handleCommandPaletteShortcut])
 
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSidebarOpen(false)
+    }
+
+    if (!sidebarOpen) return
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', handleEscape)
+
+    return () => {
+      document.body.style.overflow = ''
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [sidebarOpen])
+
   return (
     <div className="min-h-screen bg-background">
       {/* 오프라인 상태 배너 */}
@@ -282,7 +297,9 @@ export default function Layout() {
       {/* 모바일 사이드바 토글 - md에서는 축소 사이드바가 보이므로 숨김 */}
       <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-card border-b border-border p-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Marketing Bot</h1>
+          <Link to="/" className="text-xl font-bold truncate" onClick={() => setSidebarOpen(false)}>
+            Marketing Bot
+          </Link>
           <div className="flex items-center gap-2">
             <NotificationBell />
             <DashboardSettingsButton />
@@ -294,7 +311,7 @@ export default function Layout() {
               aria-expanded={sidebarOpen}
               aria-controls="sidebar"
             >
-              <Menu className="w-6 h-6" />
+              {sidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
           </div>
         </div>
@@ -305,21 +322,36 @@ export default function Layout() {
         <aside
           id="sidebar"
           className={`
-            fixed inset-y-0 left-0 z-40 bg-card border-r border-border
+            fixed inset-y-0 left-0 z-[60] md:z-40 bg-card border-r border-border
             transform transition-all duration-300 ease-in-out
             w-64 md:w-16 lg:w-64
             md:translate-x-0
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
           `}
-          aria-label="사이드바"
+          aria-label="주 메뉴"
         >
           <div className="flex flex-col h-full">
             {/* 로고 - md: 아이콘만, lg: 전체 */}
             <div className="px-3 lg:px-6 py-4 lg:py-6 border-b border-border">
-              <h1 className="text-2xl font-bold">
-                <span className="lg:hidden text-center block">🧠</span>
-                <span className="hidden lg:inline">🧠 Marketing Bot</span>
-              </h1>
+              <div className="flex items-center justify-between gap-2">
+                <Link
+                  to="/"
+                  onClick={() => setSidebarOpen(false)}
+                  className="text-2xl font-bold min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+                  aria-label="대시보드로 이동"
+                >
+                  <span className="md:hidden lg:hidden truncate block">🧠 Marketing Bot</span>
+                  <span className="hidden md:block lg:hidden text-center">🧠</span>
+                  <span className="hidden lg:inline">🧠 Marketing Bot</span>
+                </Link>
+                <IconButton
+                  icon={<X className="w-4 h-4" />}
+                  onClick={() => setSidebarOpen(false)}
+                  size="sm"
+                  title="메뉴 닫기"
+                  className="md:hidden"
+                />
+              </div>
               <p className="hidden lg:block text-sm text-muted-foreground mt-1">
                 {brandTagline}
               </p>
@@ -487,7 +519,7 @@ export default function Layout() {
               onDismiss={() => setBannerDismissed(true)}
             />
           )}
-          <div className="max-w-7xl mx-auto p-6">
+          <div className="max-w-7xl mx-auto p-4 sm:p-6">
             <Breadcrumb />
             <GlobalSearchBar onOpen={() => setCommandPaletteOpen(true)} />
             <Outlet />
@@ -498,7 +530,7 @@ export default function Layout() {
       {/* 모바일 사이드바 오버레이 - md 이상에서는 숨김 (축소 사이드바가 보임) */}
       <div
         className={`
-          fixed inset-0 bg-black/50 z-30 md:hidden
+          fixed inset-0 bg-black/50 z-[55] md:hidden
           transition-opacity duration-300
           ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}
         `}

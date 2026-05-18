@@ -22,7 +22,7 @@ export default function NotFound() {
           대시보드
         </Link>
         <Link
-          to="/viral-hunter"
+          to="/viral"
           className="inline-flex items-center gap-2 px-4 py-2 rounded border border-border hover:bg-muted"
         >
           <Search className="h-4 w-4" />

@@ -254,9 +254,11 @@ export default function PipelineOverview() {
 
       {/* 다음 액션 제안 */}
       {nextAction && (
-        <div
+        <button
+          type="button"
           onClick={() => navigate(nextAction.link)}
-          className="mt-4 p-3 bg-primary/10 border border-primary/30 rounded-lg cursor-pointer hover:bg-primary/20 transition-colors"
+          className="mt-4 w-full p-3 bg-primary/10 border border-primary/30 rounded-lg text-left hover:bg-primary/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          aria-label={`다음 액션: ${nextAction.message}`}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -271,7 +273,7 @@ export default function PipelineOverview() {
             </div>
             <ChevronRight className="w-4 h-4 text-primary" />
           </div>
-        </div>
+        </button>
       )}
     </div>
   )
