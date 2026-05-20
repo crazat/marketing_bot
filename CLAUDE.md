@@ -9,6 +9,7 @@
 - Direct backend import and `uvicorn main:app --reload --port 8000` from `marketing_bot_web/backend` succeeded under system Python `C:\Python314\python.exe`; `/health`, `/docs`, and Vite-proxied `/api/health/live` returned 200 after restart.
 - `marketing_bot_web/start-simple.bat` starts backend with output redirected to `nul`, so backend startup failures are hidden. The repo `.venv` has Linux-style `bin/` entries, not Windows `Scripts/python.exe`, so the batch file uses system `python` on Windows.
 - Backend was restarted manually with `python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000`; logs were redirected to `logs/marketing_bot_backend.out.log` and `logs/marketing_bot_backend.err.log`.
+- Follow-up LAN access issue: `http://192.168.0.197:8000/` failed because backend was bound to `127.0.0.1:8000` only. Restarted backend with `python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000`; `Get-NetTCPConnection` then showed `0.0.0.0:8000`, and `http://192.168.0.197:8000/`, `/health`, and `/docs` all returned 200. If another device still cannot connect, check Windows firewall for `python.exe` or port `8000`.
 
 ## 2026-05-18 Memory: Marketing Bot Web Frontend UX Hardening Sweep
 
