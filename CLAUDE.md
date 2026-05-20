@@ -1,5 +1,15 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-20 Memory: Marketing Bot Web Server Diagnosis
+
+- User reported the server was not working. Actual state: frontend Vite was already listening on `127.0.0.1:5173`, but backend API port `8000` was not listening, so frontend `/api` calls failed through the Vite proxy.
+- Verified `marketing_bot_web/frontend/vite.config.ts` proxies `/api` and `/ws` to `localhost:8000`; when backend is down the app shell can load at `http://localhost:5173` but data/API requests fail.
+- Docker Desktop was not running (`docker ps` could not connect to `dockerDesktopLinuxEngine`), so Docker compose/nginx mode was unavailable.
+- Port `80` was owned by Windows `System` PID 4 and returned 404 for `http://127.0.0.1`; use `http://localhost:5173` for local dev unless Docker/nginx and port 80 are fixed.
+- Direct backend import and `uvicorn main:app --reload --port 8000` from `marketing_bot_web/backend` succeeded under system Python `C:\Python314\python.exe`; `/health`, `/docs`, and Vite-proxied `/api/health/live` returned 200 after restart.
+- `marketing_bot_web/start-simple.bat` starts backend with output redirected to `nul`, so backend startup failures are hidden. The repo `.venv` has Linux-style `bin/` entries, not Windows `Scripts/python.exe`, so the batch file uses system `python` on Windows.
+- Backend was restarted manually with `python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000`; logs were redirected to `logs/marketing_bot_backend.out.log` and `logs/marketing_bot_backend.err.log`.
+
 ## 2026-05-18 Memory: Marketing Bot Web Frontend UX Hardening Sweep
 
 - Completed a multi-pass frontend UX review across accessibility, feedback clarity, mobile ergonomics, async duplicate prevention, state persistence, and modal focus behavior.
@@ -10,6 +20,18 @@
 - Pathfinder filter/search state is now more consistent: search query is URL-backed, filter chips show and remove active filters individually, presets include search/stale/low-volume options, reset clears all visible filter state, and CSV export uses the currently visible filtered list.
 - Several custom overlays were moved to the shared Modal component, including dashboard settings, opportunity content ideas, review template creation, smart alert rule creation, and referral source recording.
 - Latest verification for the UX sweep in `marketing_bot_web/frontend`: `npm run typecheck`, `npm run lint`, `npm run build:fast`, and `git diff --check` passed; local Vite dev server responded 200 at `http://127.0.0.1:5173`.
+
+## 2026-05-18 Memory: Legion/Viral Scan 21 Latest Sequential Run
+
+- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
+- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
+- Latest completed sequential run: Legion `scan_run_id=21`, target 500, 673 total keywords, 79 inserted, 594 updated, S=2/A=1/B=609/C=61. Console run started 2026-05-18 21:43:34 KST and completed 2026-05-18 21:56:20 KST in 765s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=21`.
+- Legion scan 21 diversity metrics: category entropy 0.8909, source entropy 0.7138, intent entropy 0.7689, top source share 47.1%, multi-source verified rate 5.5%, quality flag rate 5.2%.
+- Legion scan 21 source distribution: `round4_intent` 317, `round1_seed` 129, `round3_region` 90, `round8_ai` 89, `round2_expand` 18, `round1_ad_related` 17, `round7_problem` 10, `round5_competitor` 3. Category distribution: traffic accident 199, diet 158, skin/acne 133, body correction 92, face asymmetry 85, lifting/elasticity 6. Intent distribution: commercial 378, transactional 142, red_flag 58, comparison 50, informational 45.
+- Viral Hunter after scan 21 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 6,066 candidates, filtered to 959, removed 6 repeated-content targets, refreshed/excluded 592 existing URLs before AI, saved 61 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 32 AI-suitable targets. CSV report: `reports\viral_targets_20260518_220253.csv`.
+- Final current-run saved target snapshot for scan 21 (`source_scan_run_id=21` and `discovered_at >= 2026-05-18T21:57:00`): total=93, raw_backlog=61, pending=32. Platform distribution was blog=66, kin=16, cafe=11. Category distribution was diet=65, traffic accident=18, competitor counterattack=7, skin=2, pain/disc=1.
+- Broader `source_scan_run_id=21` association after refresh contains 685 rows because existing URLs were refreshed/reassigned during the run; use the current-run `discovered_at` window when reporting newly saved scan output.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning; several Gemini 503 responses during parallel AI analysis caused affected batches to fall back to unsuitable, so pending AI-suitable output was lower than recent scans.
 
 ## 2026-05-18 Memory: Legion/Viral Scan 20 Latest Sequential Run
 
