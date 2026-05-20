@@ -1,5 +1,17 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-05-20 Memory: Legion/Viral Scan 26 Latest Sequential Run
+
+- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
+- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
+- Latest completed sequential run: Legion `scan_run_id=26`, target 500, 665 total keywords, 75 inserted, 590 updated, S=2/A=0/B=649/C=14. Console run started 2026-05-20 18:46:29 KST and completed 2026-05-20 18:56:41 KST in 612s.
+- Legion scan 26 diversity metrics: category entropy 0.8887, source entropy 0.7055, intent entropy 0.7238, top source share 48.12%, multi-source verified rate 6.47%, quality flag rate 4.21%.
+- Legion scan 26 source distribution: `round4_intent` 320, `round1_seed` 129, `round3_region` 88, `round8_ai` 82, `round2_expand` 18, `round1_ad_related` 14, `round7_problem` 11, `round5_competitor` 3. Category distribution: traffic accident 207, diet 156, skin/acne 143, body correction 80, face asymmetry 67, lifting/elasticity 12. Intent distribution: commercial 360, transactional 130, validation 64, red_flag 63, informational 47, comparison 1.
+- Viral Hunter after scan 26 loaded 42 curated seeds from the latest Legion run, scanned cafe/blog/KIN, discovered 5,132 candidates, filtered to 2,156 commentable, removed 77 repeated-content targets, refreshed/excluded 1,317 existing URLs before AI, saved 462 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 67 AI-suitable targets with 30 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260520_190332.csv`.
+- Final current-run saved target snapshot for scan 26 from the CSV/DB URL match: total=529, raw_backlog=462, pending=67. Platform distribution was blog=341, cafe=157, kin=31. Category distribution was traffic accident=155, asymmetry/correction=141, diet=129, skin=64, competitor counterattack=30, pain/disc=7, headache/dizziness=2, respiratory=1.
+- Broader `source_scan_run_id=26` association after refresh contains 1,846 rows because existing URLs were refreshed/reassigned during the run; use the CSV or current-run URL match when reporting newly saved scan output.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning, and API stats reported 311 requests, 0 cache hits, 0 errors.
+
 ## 2026-05-20 Memory: Marketing Bot Web Server Diagnosis
 
 - User reported the server was not working. Actual state: frontend Vite was already listening on `127.0.0.1:5173`, but backend API port `8000` was not listening, so frontend `/api` calls failed through the Vite proxy.
