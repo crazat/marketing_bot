@@ -100,7 +100,7 @@ class TestConfigValidation(unittest.TestCase):
         from utils import ConfigManager
         
         with patch.dict(os.environ, {
-            'GEMINI_API_KEY': 'test_key',
+            'CODEX_CLI_API_KEY': 'test_key',
             'GOOGLE_API_KEY': 'test_key'
         }):
             config = ConfigManager()

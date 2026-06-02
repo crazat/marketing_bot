@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI 기반 키워드 확장 (Gemini)
+AI 기반 키워드 확장 (Codex CLI)
 - 시맨틱 유사 키워드 생성
 - 질문형 키워드 생성
 - 롱테일 변형 생성

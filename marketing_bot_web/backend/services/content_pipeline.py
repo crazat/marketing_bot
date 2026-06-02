@@ -6,8 +6,8 @@
 
 파이프라인 단계:
 1. 키워드 선정 (keyword_insights 기반)
-2. 아웃라인 생성 (Gemini)
-3. 초안 작성 (Gemini)
+2. 아웃라인 생성 (Codex CLI)
+3. 초안 작성 (Codex CLI)
 4. AEO 최적화 점수화
 5. 의료광고 규정 체크 (C-5 content_compliance 연동)
 6. Schema Markup 자동 삽입 (V2-7 schema_markup 연동)

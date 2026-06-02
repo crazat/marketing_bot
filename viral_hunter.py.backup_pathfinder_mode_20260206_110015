@@ -873,26 +873,26 @@ class AICommentGenerator:
     """
     AI 기반 맞춤 댓글 생성
 
-    Gemini API 사용 (기존 agent_crew.py 패턴)
+    Codex CLI API 사용 (기존 agent_crew.py 패턴)
     카테고리별 프롬프트 템플릿
     """
 
     def __init__(self):
         self.cfg = ConfigManager()
-        self.api_key = self.cfg.get_api_key('GEMINI_API_KEY')
+        self.api_key = self.cfg.get_api_key('CODEX_CLI_API_KEY')
         self.model = None
 
         if self.api_key:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel(
+                import codex_cli_bridge as codex_cli
+                codex_cli.configure(api_key=self.api_key)
+                self.model = codex_cli.CodexCliModel(
                     self.cfg.get_model_name('flash'),
                     generation_config={"temperature": 0.6}
                 )
-                logger.info("✅ Gemini API 초기화 완료")
+                logger.info("✅ Codex CLI API 초기화 완료")
             except Exception as e:
-                logger.warning(f"Gemini API 초기화 실패: {e}")
+                logger.warning(f"Codex CLI API 초기화 실패: {e}")
 
     def _load_prompts(self) -> dict:
         """prompts.json에서 viral_hunter 프롬프트 로드"""

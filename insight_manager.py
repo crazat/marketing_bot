@@ -463,7 +463,7 @@ class InsightManager:
                         "args": "최신 비주얼 트렌드 반영 콘텐츠 기획"
                     }
                 )
-                self.log_activity("Sentinel", "Visual Trend Analysis Completed via Gemini 3 Flash.")
+                self.log_activity("Sentinel", "Visual Trend Analysis Completed via Codex CLI 3 Flash.")
                 
         except Exception as e:
             self.log_activity("Sentinel", f"Visual Analysis Error: {e}")

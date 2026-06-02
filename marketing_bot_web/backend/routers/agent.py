@@ -1343,7 +1343,7 @@ async def stream_korean(
     temperature: float = Query(default=0.7, ge=0.0, le=2.0),
     max_tokens: int = Query(default=1024, ge=16, le=4096),
 ):
-    """[Phase Z] Server-Sent Events stream of Gemini Korean output.
+    """[Phase Z] Server-Sent Events stream of Codex CLI Korean output.
 
     Frontend usage:
         const es = new EventSource(`/api/agent/stream?prompt=${encodeURIComponent(q)}`);

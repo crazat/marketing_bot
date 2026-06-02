@@ -181,7 +181,7 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp; message: string; type: ApiErrorTy
   { pattern: /Q&A.*찾을 수 없/i, message: 'Q&A 항목을 찾을 수 없습니다.', type: 'NOT_FOUND' },
   { pattern: /경쟁사.*찾을 수 없/i, message: '경쟁사 정보를 찾을 수 없습니다.', type: 'NOT_FOUND' },
   { pattern: /스캔.*실행 중/i, message: '스캔이 이미 실행 중입니다. 완료 후 다시 시도해주세요.', type: 'VALIDATION_ERROR' },
-  { pattern: /Gemini.*API/i, message: 'AI 서비스에 일시적인 문제가 있습니다. 잠시 후 다시 시도해주세요.', type: 'SERVER_ERROR' },
+  { pattern: /Codex CLI.*API/i, message: 'AI 서비스에 일시적인 문제가 있습니다. 잠시 후 다시 시도해주세요.', type: 'SERVER_ERROR' },
   { pattern: /Naver.*API/i, message: '네이버 API에 일시적인 문제가 있습니다.', type: 'SERVER_ERROR' },
   { pattern: /중복.*키워드/i, message: '이미 등록된 키워드입니다.', type: 'VALIDATION_ERROR' },
   { pattern: /필수.*입력/i, message: '필수 항목을 모두 입력해주세요.', type: 'VALIDATION_ERROR' },
@@ -195,7 +195,7 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp; message: string; type: ApiErrorTy
   { pattern: /NAVER_API_LIMIT/i, message: 'Naver API 호출 한도를 초과했습니다. 1시간 후 다시 시도해주세요.', type: 'RATE_LIMIT' },
   { pattern: /NAVER_API_ERROR/i, message: 'Naver 서비스가 일시적으로 불안정합니다.', type: 'SERVER_ERROR' },
   { pattern: /SCRAPER_BLOCKED/i, message: '스크래핑이 일시 차단되었습니다. 2-4시간 후 자동 해제됩니다.', type: 'RATE_LIMIT' },
-  { pattern: /GEMINI_API_ERROR/i, message: 'AI 서비스가 일시적으로 불안정합니다.', type: 'SERVER_ERROR' },
+  { pattern: /CODEX_CLI_API_ERROR/i, message: 'AI 서비스가 일시적으로 불안정합니다.', type: 'SERVER_ERROR' },
   { pattern: /RATE_LIMIT_EXCEEDED/i, message: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.', type: 'RATE_LIMIT' },
 ]
 

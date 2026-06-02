@@ -1,7 +1,7 @@
 /**
  * useAIStream — SSE-backed Korean AI generation hook.
  *
- * Wraps EventSource to stream Gemini output token-by-token.
+ * Wraps EventSource to stream Codex CLI output token-by-token.
  * Handles auto-cleanup, abort, error states.
  *
  * Usage:

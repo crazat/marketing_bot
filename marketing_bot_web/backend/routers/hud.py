@@ -3113,7 +3113,7 @@ async def get_ai_briefing() -> Dict[str, Any]:
     """
     AI 기반 일일 인사이트 브리핑
 
-    Gemini AI를 활용하여 현재 데이터를 분석하고
+    Codex CLI AI를 활용하여 현재 데이터를 분석하고
     의사결정에 도움이 되는 인사이트를 제공합니다.
 
     Returns:
@@ -3362,12 +3362,12 @@ async def _collect_briefing_data() -> Dict[str, Any]:
 def _generate_default_ai_briefing() -> Dict[str, Any]:
     """API 키 없거나 오류 시 기본 브리핑 반환"""
     return {
-        "executive_summary": "AI 분석을 이용하려면 Gemini API 키를 설정해주세요.",
+        "executive_summary": "AI 분석을 이용하려면 Codex CLI API 키를 설정해주세요.",
         "key_insights": [],
         "recommended_actions": [
             {
                 "priority": 1,
-                "action": "Gemini API 키 설정",
+                "action": "Codex CLI API 키 설정",
                 "reason": "AI 분석 활성화",
                 "link": "/settings"
             }

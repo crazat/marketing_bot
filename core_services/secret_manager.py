@@ -38,7 +38,7 @@ class SecretManager:
         from services.secret_manager import get_secret_manager
 
         sm = get_secret_manager()
-        api_key = sm.get_secret("GEMINI_API_KEY")
+        codex_bin = sm.get_secret("CODEX_CLI_BIN", "codex")
     """
 
     _instance: Optional['SecretManager'] = None
@@ -46,7 +46,6 @@ class SecretManager:
 
     # 필수 시크릿 목록 (없으면 경고)
     REQUIRED_SECRETS = [
-        'GEMINI_API_KEY',
     ]
 
     # 선택적 시크릿 목록
@@ -115,7 +114,7 @@ class SecretManager:
         시크릿 값 조회
 
         Args:
-            key: 시크릿 키 (예: 'GEMINI_API_KEY')
+            key: 시크릿 키 (예: 'CODEX_CLI_BIN')
             default: 기본값 (None이면 에러 발생)
 
         Returns:
@@ -225,6 +224,6 @@ def get_secret(key: str, default: Optional[str] = None) -> str:
 
     사용법:
         from services.secret_manager import get_secret
-        api_key = get_secret("GEMINI_API_KEY")
+        codex_bin = get_secret("CODEX_CLI_BIN", "codex")
     """
     return get_secret_manager().get_secret(key, default)

@@ -37,7 +37,7 @@
 **노출된 자격증명**:
 | 서비스 | 키 종류 | 위험도 |
 |--------|---------|--------|
-| Gemini | API Key | 비용 도용 |
+| Codex CLI | API Key | 비용 도용 |
 | Naver | Client ID/Secret (5쌍) | API 쿼터 남용 |
 | Kakao | REST API Key | 서비스 접근 |
 | Telegram | Bot Token + Chat ID | 봇 탈취 |
@@ -68,9 +68,9 @@ API_KEY = "AIzaSyBCiBNi186ZriAzp..."
 
 # After (안전)
 import os
-API_KEY = os.getenv('GEMINI_API_KEY')
+API_KEY = os.getenv('CODEX_CLI_API_KEY')
 if not API_KEY:
-    raise EnvironmentError("GEMINI_API_KEY not configured")
+    raise EnvironmentError("CODEX_CLI_API_KEY not configured")
 ```
 
 ---

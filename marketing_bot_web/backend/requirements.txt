@@ -24,7 +24,6 @@ watchdog==6.0.0
 
 # 기존 프로젝트 의존성 (marketing_bot)
 pandas==2.2.3
-google-generativeai==0.8.3
 playwright==1.48.0
 
 # 모니터링 (선택 의존성 — 미설치 시 optional)

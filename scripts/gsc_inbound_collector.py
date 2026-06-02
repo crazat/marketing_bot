@@ -3,7 +3,7 @@
 GSC API에서 직전 N일(기본 28일)의 query/page/clicks/impressions/ctr/position을
 inbound_search_queries 테이블에 적재. cron 자동화 없음 — 사용자 수동 트리거.
 
-키 누락 시 graceful skip + 가이드 출력. 추가 LLM 키 필요 없음 (Gemini 정책 준수).
+키 누락 시 graceful skip + 가이드 출력. 추가 LLM 키 필요 없음 (Codex CLI 정책 준수).
 
 운영자 트리거:
   python scripts/gsc_inbound_collector.py                  # 직전 28일 수집

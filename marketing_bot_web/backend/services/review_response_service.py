@@ -6,7 +6,7 @@
 
 워크플로우:
 1. 새 리뷰 감지 → generate_response_draft() 호출
-2. Gemini로 감성 분류 + 응답 초안 생성
+2. Codex CLI로 감성 분류 + 응답 초안 생성
 3. review_responses 테이블에 저장
 4. 텔레그램으로 초안 전송 (원장님 확인/수정 후 게시)
 """
@@ -71,7 +71,7 @@ async def generate_response_draft(
     clinic_name: str = "한의원",
 ) -> str:
     """
-    Gemini AI로 리뷰 응답 초안 생성
+    Codex CLI AI로 리뷰 응답 초안 생성
 
     Args:
         review_content: 리뷰 내용
@@ -117,7 +117,7 @@ async def generate_response_draft(
 
 
 def _generate_template_response(sentiment: str, content: str) -> str:
-    """Gemini 실패 시 템플릿 기반 응답"""
+    """Codex CLI 실패 시 템플릿 기반 응답"""
     if sentiment == "positive":
         return "소중한 후기 감사합니다. 더 나은 진료를 위해 노력하겠습니다. 건강한 하루 보내세요."
     elif sentiment == "negative":

@@ -650,7 +650,7 @@ return empty arrays.
         try:
             result = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
         except Exception as exc:
-            print(f"[Gemini] {competitor_name} analysis error: {exc}")
+            print(f"[Codex CLI] {competitor_name} analysis error: {exc}")
             continue
 
         if not isinstance(result, dict):
@@ -745,9 +745,9 @@ return empty arrays.
 @router.post("/analyze-reviews")
 async def analyze_reviews_for_weaknesses() -> Dict[str, Any]:
     """
-    Gemini AI를 사용하여 competitor_reviews에서 약점을 분석하고 저장
+    Codex CLI AI를 사용하여 competitor_reviews에서 약점을 분석하고 저장
 
-    - gemini-3-flash-preview 모델 사용
+    - codex_cli-3-flash-preview 모델 사용
     - 경쟁사별로 리뷰를 그룹화하여 일괄 분석
     - 약점 유형, 심각도, 기회 키워드 추출
     """
@@ -822,7 +822,7 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
                 "severity": severity
             })
 
-        # Gemini로 콘텐츠 아웃라인 생성
+        # Codex CLI로 콘텐츠 아웃라인 생성
         outlines = []
 
         try:
@@ -884,7 +884,7 @@ async def generate_content_outline(weakness_type: str = None) -> Dict[str, Any]:
         return {
             "outlines": outlines,
             "total": len(outlines),
-            "source": "gemini" if outlines else "template"
+            "source": "codex_cli" if outlines else "template"
         }
 
     except Exception as e:

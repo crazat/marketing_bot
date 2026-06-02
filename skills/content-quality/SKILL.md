@@ -100,7 +100,7 @@ python scripts/reclassify_content_intent.py --force --limit 100
 
 ## Guardrails
 
-1. **Gemini-only** — `services.ai_client.ai_generate*`만 사용. Anthropic/OpenAI 키 추가 X.
+1. **Codex CLI-only** — `services.ai_client.ai_generate*`만 사용. Anthropic/OpenAI 키 추가 X.
 2. **GSC 의존** — 카니발리제이션은 `inbound_search_queries` 테이블 필요. 미존재 시 graceful skip + 안내.
 3. **자기 한의원 필터** — 갭/의도 재분류는 `business_profile.json::self_exclusion`을 통해 자기 한의원 콘텐츠만 자사로 인정.
 4. **자동 게시 금지** — Schema.org JSON-LD는 파일로만 출력. 사이트 삽입은 운영자 수동.

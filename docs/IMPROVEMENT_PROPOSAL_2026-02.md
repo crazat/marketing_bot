@@ -21,7 +21,7 @@
 - Pathfinder V3 LEGION: 8라운드 멀티소스 키워드 수집 (2,674줄의 정성)
 - Cafe Spy: 한국 맞춤형 맘카페 리드 수집 (가장 높은 전환율)
 - Battle Intelligence: 순위 예측, 하락 알림 자동화
-- Gemini AI 통합: 약점 분석, 콘텐츠 생성, 댓글 자동화
+- Codex CLI AI 통합: 약점 분석, 콘텐츠 생성, 댓글 자동화
 
 #### 약점
 - **전환 추적 부재**: 리드→매출 경로 측정 불가능
@@ -37,11 +37,11 @@
 
 **현재 능력:**
 ```
-✅ 8라운드 멀티소스 수집 (Naver + Google + Gemini)
+✅ 8라운드 멀티소스 수집 (Naver + Google + Codex CLI)
 ✅ MF-KEI 5.0 점수 계산 (검색량, 경쟁도, 트렌드)
 ✅ S/A/B/C 등급 자동 분류
 ✅ 콘텐츠 캘린더 12주 자동 생성
-✅ AI 아웃라인 생성 (Gemini)
+✅ AI 아웃라인 생성 (Codex CLI)
 ✅ 실시간 스캔 진행 모니터링
 ```
 
@@ -99,7 +99,7 @@
 ```
 ✅ 10개 카테고리 자동 분류
 ✅ 우선순위 점수 (검색량, 댓글수, 매칭도)
-✅ AI 댓글 생성 (Gemini)
+✅ AI 댓글 생성 (Codex CLI)
 ✅ 대량 URL 검증 (비동기)
 ```
 
@@ -117,7 +117,7 @@
 **현재 능력:**
 ```
 ✅ 경쟁사 리뷰 수집 (160개)
-✅ Gemini AI 약점 분석 (API 존재)
+✅ Codex CLI AI 약점 분석 (API 존재)
 ✅ 기회 키워드 자동 생성 (API 존재)
 ✅ 콘텐츠 갭 분석
 ✅ 약점 레이더 시각화
@@ -283,7 +283,7 @@
 #### 구현 내용
 ```
 1. 블로그 초안 자동 생성
-   - 키워드 선택 → 아웃라인 생성 → 초안 작성 (Gemini)
+   - 키워드 선택 → 아웃라인 생성 → 초안 작성 (Codex CLI)
    - 경쟁사 콘텐츠 분석 반영
    - SEO 최적화 제안
 
@@ -355,7 +355,7 @@
 |-----|----------|----------|
 | **Export API** | leads만 완성 | keywords, competitors CSV 추가 |
 | **Instagram API** | stats만 완성 | posts, analysis 구현 |
-| **Reviews API** | templates만 완성 | generate, classify (Gemini 연동) |
+| **Reviews API** | templates만 완성 | generate, classify (Codex CLI 연동) |
 
 ### 4.2 성능 최적화 (1주일)
 

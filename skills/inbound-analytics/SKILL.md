@@ -113,7 +113,7 @@ python scripts/pagespeed_tracker.py --strategy mobile
 
 ## Guardrails
 
-1. **Gemini-only 정책 유지** — 4개 스크립트 모두 추가 LLM 키 요구 없음. 인사이트 자연어 변환은 보고 단계에서 사용자 요청 시 `ai_generate()` 한 번만.
+1. **Codex CLI-only 정책 유지** — 4개 스크립트 모두 추가 LLM 키 요구 없음. 인사이트 자연어 변환은 보고 단계에서 사용자 요청 시 `ai_generate()` 한 번만.
 2. **cron 자동화 금지** — 수동 트리거 패턴. "주 1회 cron 걸까요?" 제안 금지.
 3. **자동 게시·알림 없음** — 측정·발견까지만. 텔레그램 알림 추가 요청 시 별도 작업으로 분리.
 4. **키 누락은 안내만** — 4개 모두 graceful skip. "키 발급해줘"는 사용자가 직접.

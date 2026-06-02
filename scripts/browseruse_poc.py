@@ -14,10 +14,10 @@
   playwright install chromium
 
 운영자 트리거:
-  python scripts/browseruse_poc.py --task "청주 한의원 추천" --url "https://www.threads.net/search?q=청주한의원"
+  python scripts/browseruse_poc.py --task "강남 흉터 상담 기준 게시물 추출" --url "https://www.threads.net/search?q=강남흉터상담기준"
   python scripts/browseruse_poc.py --task-file tasks/cafe_extract.txt
 
-비용: GPT-4o-mini ~$0.10/실행, Gemini Flash Lite ~$0.01/실행. 단순 작업은 LLM 호출 1-3회.
+비용: GPT-4o-mini ~$0.10/실행, Codex CLI Flash Lite ~$0.01/실행. 단순 작업은 LLM 호출 1-3회.
 참조: https://github.com/browser-use/browser-use
 """
 from __future__ import annotations
@@ -36,46 +36,11 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 
 async def run_agent(task: str, headless: bool = False) -> str:
-    """browser-use Agent로 task 실행, 결과 텍스트 반환."""
-    try:
-        from browser_use import Agent, Browser, BrowserConfig
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError as e:
-        return (
-            f'browser-use 의존성 미설치: {e}\n'
-            'pip install browser-use langchain-google-genai playwright\n'
-            'playwright install chromium'
-        )
-
-    api_key = os.environ.get('GEMINI_API_KEY')
-    if not api_key:
-        # secrets에서 폴백
-        try:
-            with open(os.path.join(ROOT_DIR, 'config', 'secrets.json'), 'r', encoding='utf-8') as f:
-                api_key = json.load(f).get('GEMINI_API_KEY')
-        except Exception:
-            pass
-    if not api_key:
-        return 'GEMINI_API_KEY 없음. browser-use 실행 불가.'
-
-    llm = ChatGoogleGenerativeAI(
-        model='gemini-2.5-flash-lite',
-        google_api_key=api_key,
-        temperature=0.2,
+    """browser-use Agent is disabled under the Codex CLI-only LLM runtime."""
+    return (
+        "browser-use PoC is disabled in Codex CLI-only mode. "
+        "Use dedicated scraper modules or add a Codex-compatible browser agent adapter first."
     )
-
-    browser = Browser(config=BrowserConfig(headless=headless))
-    agent = Agent(
-        task=task,
-        llm=llm,
-        browser=browser,
-        max_actions_per_step=4,
-    )
-
-    result = await agent.run(max_steps=15)
-    await browser.close()
-
-    return str(result)
 
 
 def main() -> int:
@@ -106,3 +71,4 @@ def main() -> int:
 
 if __name__ == '__main__':
     sys.exit(main())
+

@@ -1,7 +1,7 @@
 # Marketing Bot 고도화 제안서 (2026-03-23)
 
 > 6개 영역 인터넷 광범위 리서치 기반 종합 제안서
-> 현재 시스템: FastAPI + React 18 + SQLite + Gemini AI + Selenium 기반
+> 현재 시스템: FastAPI + React 18 + SQLite + Codex CLI AI + Selenium 기반
 
 ---
 
@@ -31,7 +31,7 @@
 |---|-----------|----------------|-------------|
 | 1 | **네이버 AI 검색 전환** (AiRSearch, AI 브리핑, 스마트블록) | 미대응 | 🔴 Critical |
 | 2 | **네이버 플레이스 알고리즘 근본 변화** (행동 데이터 > 리뷰 수) | 순위 추적만 | 🔴 Critical |
-| 3 | **AI 에이전트 마케팅** (멀티 에이전트, RAG, 자동화) | Gemini 단순 호출 | 🟡 High |
+| 3 | **AI 에이전트 마케팅** (멀티 에이전트, RAG, 자동화) | Codex CLI 단순 호출 | 🟡 High |
 | 4 | **스크래핑 기술 세대 교체** (Selenium → Playwright/camoufox) | Selenium 의존 | 🟡 High |
 | 5 | **의료광고 규제 강화** (사전심의 의무화 부활) | 미대응 | 🟠 Important |
 
@@ -215,7 +215,7 @@ async def scan_naver_place(keyword: str):
 ```
 
 **콘텐츠 최적화 가이드 자동 생성**:
-- Gemini로 기존 블로그 콘텐츠 분석
+- Codex CLI로 기존 블로그 콘텐츠 분석
 - AEO 최적화 점수 산출 (구조화 정도, FAQ 포함 여부, 전문성 지표)
 - 개선 제안 자동 생성
 
@@ -229,7 +229,7 @@ async def scan_naver_place(keyword: str):
 
 | 지표 | 추적 방법 | 구현 |
 |------|----------|------|
-| **적합도** | 키워드-업체 매칭 분석 | Gemini로 자동 분석 |
+| **적합도** | 키워드-업체 매칭 분석 | Codex CLI로 자동 분석 |
 | **인기도** | 전화, 길찾기, 예약, 저장 수 | 스마트플레이스 통계 CSV 연동 강화 |
 | **최신성** | 소식 탭 업데이트 빈도 | 자동 알림 (N일 미업데이트 시) |
 | **신뢰성** | 리뷰 응답률, NAP 일관성 | 자동 점검 + 리뷰 응답 지원 |
@@ -257,7 +257,7 @@ async def scan_naver_place(keyword: str):
 
 워크플로우:
 1. 새 리뷰 감지 (place_scan_enrichment 연동)
-2. Gemini로 리뷰 분석:
+2. Codex CLI로 리뷰 분석:
    - 감성 분류 (긍정/중립/부정)
    - 주제 분류 (서비스, 가격, 시설, 효과, 대기)
    - 별점 (5점 척도 대응)
@@ -323,7 +323,7 @@ async def get_rankings():
 
 ### C-1. AI 에이전트 시스템 (멀티 에이전트) 🟡 High
 
-**현재**: Gemini 단발성 호출 (분석 요청 → 응답)
+**현재**: Codex CLI 단발성 호출 (분석 요청 → 응답)
 **개선**: 역할 기반 AI 에이전트 팀 구성
 
 **에이전트 아키텍처 (CrewAI 기반)**:
@@ -353,22 +353,22 @@ async def get_rankings():
     └─────────────┘ └────────┘ └──────────┘
 ```
 
-**Gemini 활용 고도화**:
+**Codex CLI 활용 고도화**:
 - **Grounding with Google Search**: 실시간 웹 데이터 기반 분석
 - **Grounding with Google Maps**: 위치 기반 경쟁사 인텔리전스
 - **Function Calling**: 에이전트가 DB 쿼리, API 호출을 직접 실행
 - **Structured Output**: JSON 스키마 기반 정형 데이터 추출
 
 ```python
-# Gemini 3 Flash - Grounding + Function Calling 예시
-from google import genai
-from google.genai import types
+# Codex CLI 3 Flash - Grounding + Function Calling 예시
+from google import codex_cli
+from codex_cli_bridge import types
 
-client = genai.Client(api_key=api_key)
+client = codex_cli.Client(api_key=api_key)
 
 # Google Search Grounding으로 실시간 경쟁사 정보 수집
 response = client.models.generate_content(
-    model='gemini-3-flash-preview',
+    model='codex_cli-3-flash-preview',
     contents="청주 한의원 최근 마케팅 동향과 경쟁사 활동을 분석해줘",
     config=types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -623,7 +623,7 @@ forecast = sf.forecast(df=rank_history_df, h=30)  # 30일 예측
 
 ## 7. 기술 상세: AI 고도화
 
-### 7.1 Gemini API 최신 기능 활용
+### 7.1 Codex CLI API 최신 기능 활용
 
 | 기능 | 모델 | 활용처 |
 |------|------|--------|
@@ -633,14 +633,14 @@ forecast = sf.forecast(df=rank_history_df, h=30)  # 30일 예측
 | **Structured Output** | 3.0+ | JSON 스키마 기반 정형 데이터 추출 |
 | **Multimodal Input** | 2.5+ | 경쟁사 이미지/영상 분석 |
 
-### 7.2 Gemini 모델 비교 (2026년 3월 기준)
+### 7.2 Codex CLI 모델 비교 (2026년 3월 기준)
 
 | 모델 | 입력 비용 | 출력 비용 | 컨텍스트 | 추천 용도 |
 |------|----------|----------|---------|----------|
-| Gemini 2.5 Flash | $0.30/M | $2.50/M | 1M | 대량 콘텐츠 생성, 리뷰 분석 |
-| Gemini 2.5 Pro | $1.00/M | $10.00/M | 1M | 복잡한 추론, 전략 분석 |
-| **Gemini 3 Flash** | $0.50/M | $3.00/M | 1M | 시각/공간 추론, 현재 사용 중 |
-| Gemini 3.1 Pro | $2.00/M | $12.00/M | 1M | 최고 성능 분석 |
+| Codex CLI 2.5 Flash | $0.30/M | $2.50/M | 1M | 대량 콘텐츠 생성, 리뷰 분석 |
+| Codex CLI 2.5 Pro | $1.00/M | $10.00/M | 1M | 복잡한 추론, 전략 분석 |
+| **Codex CLI 3 Flash** | $0.50/M | $3.00/M | 1M | 시각/공간 추론, 현재 사용 중 |
+| Codex CLI 3.1 Pro | $2.00/M | $12.00/M | 1M | 최고 성능 분석 |
 
 **비용 최적화 전략**:
 - 대량 처리 (리뷰 분류, 키워드 분석): **2.5 Flash** ($0.30/M)
@@ -767,7 +767,7 @@ Temporal                        ← 미션 크리티컬 장기 워크플로우
 
 워크플로우:
 1. 블로그/SNS 콘텐츠 작성
-2. Gemini로 의료광고 규정 위반 사항 사전 점검:
+2. Codex CLI로 의료광고 규정 위반 사항 사전 점검:
    - 치료 전후 사진 사용 여부
    - 과장 표현 여부 ("100% 효과", "완치" 등)
    - 환자 후기 게시 규정 준수 여부
@@ -843,7 +843,7 @@ DB: content_compliance_checks
 - Naver Search MCP Server 등장 (AI 에이전트 연동)
 
 ### AI 기술
-- Gemini 3 Flash/Pro 출시 (2025.12~), Google Maps Grounding 지원
+- Codex CLI 3 Flash/Pro 출시 (2025.12~), Google Maps Grounding 지원
 - CrewAI 에이전트 프레임워크 (LangGraph 대비 40% 빠른 개발)
 - RAG 시장 $9.86B by 2030 (CAGR 38.4%)
 - AI 에이전트 시장 $52.62B by 2030 (CAGR 46.3%)

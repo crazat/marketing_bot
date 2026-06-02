@@ -3,7 +3,7 @@ Content Search Intent Reclassifier
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 자사 콘텐츠 (qa_repository + 자기 한의원 viral_targets)를
-7-tier intent로 자동 재분류 (Gemini Flash Lite, JSON 모드).
+7-tier intent로 자동 재분류 (Codex CLI Flash Lite, JSON 모드).
 
 7-tier (pathfinder_v3_complete::_classify_intent와 동일):
   red_flag, validation, comparison, transactional, commercial,
@@ -108,7 +108,7 @@ def _ensure_search_intent_columns(conn: sqlite3.Connection) -> None:
 
 
 def _classify_via_ai(text: str) -> Optional[str]:
-    """Gemini ai_generate_json 호출. 실패 시 None."""
+    """Codex CLI ai_generate_json 호출. 실패 시 None."""
     try:
         from services.ai_client import ai_generate_json  # type: ignore
     except Exception as e:

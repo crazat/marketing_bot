@@ -162,7 +162,7 @@ marketing_bot_web/
 
 ```env
 MARKETING_BOT_API_KEY=your_shared_admin_key
-GEMINI_API_KEY=your_api_key
+CODEX_CLI_API_KEY=your_api_key
 NAVER_CLIENT_ID=your_client_id
 NAVER_CLIENT_SECRET=your_client_secret
 ```

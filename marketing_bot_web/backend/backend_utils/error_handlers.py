@@ -176,7 +176,7 @@ ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
         'hint': '인터넷 연결을 확인하고 다시 시도해주세요.',
         'severity': 'high'
     },
-    'GEMINI_API_ERROR': {
+    'CODEX_CLI_API_ERROR': {
         'message': 'AI 서비스 오류',
         'hint': 'AI 서비스가 일시적으로 불안정합니다. 잠시 후 다시 시도해주세요.',
         'severity': 'medium'

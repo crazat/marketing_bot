@@ -117,7 +117,7 @@ export default function Settings() {
                       config/config.json
                     </code>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Gemini API 키, Naver API 키 등을 설정합니다.
+                      Codex CLI API 키, Naver API 키 등을 설정합니다.
                     </p>
                   </div>
 

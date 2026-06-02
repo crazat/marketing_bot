@@ -6,7 +6,7 @@ Content Gap Analyzer (BGE-M3 임베딩 기반)
 경쟁사 콘텐츠 (competitor_blog_activity)를 BGE-M3로 임베딩 비교.
 
 코사인 유사도 < 0.5 → 갭 후보 (자사가 다루지 않는 주제)
-Gemini로 시드 키워드 제안.
+Codex CLI로 시드 키워드 제안.
 
 CLI:
   python scripts/content_gap_analyzer.py --status
@@ -178,7 +178,7 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 def _suggest_seed(competitor_title: str) -> str:
-    """Gemini로 시드 키워드 제안. 실패 시 빈 문자열."""
+    """Codex CLI로 시드 키워드 제안. 실패 시 빈 문자열."""
     try:
         from services.ai_client import ai_generate_json  # type: ignore
     except Exception as e:
@@ -245,7 +245,7 @@ def analyze_gaps(
         gaps.sort(key=lambda g: g["similarity"])
         gaps = gaps[:top_n]
 
-        # Gemini 시드 제안
+        # Codex CLI 시드 제안
         if suggest:
             for g in gaps:
                 g["suggested_seed"] = _suggest_seed(g["competitor_topic"])
@@ -315,7 +315,7 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=30, help="상위 갭 N개 (기본 30)")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--no-seed", action="store_true", help="Gemini 시드 제안 비활성")
+    parser.add_argument("--no-seed", action="store_true", help="Codex CLI 시드 제안 비활성")
     args = parser.parse_args()
 
     if args.status:

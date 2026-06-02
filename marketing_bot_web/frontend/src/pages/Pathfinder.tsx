@@ -1044,7 +1044,7 @@ export default function Pathfinder() {
                       <h4 className="font-semibold text-sm flex items-center gap-2">
                         📝 생성된 아웃라인
                         <span className="text-xs px-2 py-0.5 bg-muted rounded">
-                          {generatedOutlines[week.week].source === 'gemini' ? 'AI 생성' : '템플릿'}
+                          {generatedOutlines[week.week].source === 'codex_cli' ? 'AI 생성' : '템플릿'}
                         </span>
                       </h4>
                       <Button

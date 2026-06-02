@@ -14,9 +14,9 @@ from vision_analyst import VisionAnalyst
 class TestPhase4Integration(unittest.TestCase):
     
     @patch('prophet.TheProphet.predict_next_week')
-    @patch('vision_analyst.genai.GenerativeModel')
+    @patch('vision_analyst.ai_analyze_image', return_value="Visual Report Content")
     @patch('logging_config.DatabaseLogHandler.emit') # Supress DB writes
-    def test_sentinel_scan_flow(self, MockDBLog, MockGenAI, MockProphet):
+    def test_sentinel_scan_flow(self, MockDBLog, MockAnalyzeImage, MockProphet):
         """
         Simulate the 'Force Scan' button logic from Dashboard.
         Verifies that Prophet and Vision logic are triggered and generate insights.
@@ -34,12 +34,7 @@ class TestPhase4Integration(unittest.TestCase):
             ]
         }
         
-        # 2. Setup Mock Vision Return
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value.text = "Visual Report Content"
-        MockGenAI.return_value = mock_model
-        
-        # 3. Initialize Manager
+        # 2. Initialize Manager
         manager = InsightManager()
         # Mock DB connection to avoid real DB writes or use in-memory
         manager.get_connection = MagicMock()

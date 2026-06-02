@@ -6,7 +6,7 @@
 
 3계층 구조:
 1. 차트 이미지 (matplotlib → PNG → Telegram sendPhoto)
-2. AI 내러티브 요약 (Gemini → 한국어 200자 이내)
+2. AI 내러티브 요약 (Codex CLI → 한국어 200자 이내)
 3. 대시보드 딥링크 (선택적)
 
 핵심 알림 임계값:

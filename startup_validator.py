@@ -65,7 +65,6 @@ class StartupValidator:
         }
         
         required_keys = [
-            ('GEMINI_API_KEY', 'Gemini AI'),
             ('NAVER_CLIENT_ID', 'Naver Search API'),
             ('NAVER_CLIENT_SECRET', 'Naver Search API'),
         ]

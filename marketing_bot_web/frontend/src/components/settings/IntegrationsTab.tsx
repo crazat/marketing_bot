@@ -142,7 +142,7 @@ export default function IntegrationsTab() {
           <div className="p-4 bg-muted/50 rounded-lg flex items-center gap-3">
             <span className="text-2xl">✅</span>
             <div>
-              <p className="font-medium">Gemini AI</p>
+              <p className="font-medium">Codex CLI AI</p>
               <p className="text-xs text-muted-foreground">config.json에서 설정</p>
             </div>
           </div>

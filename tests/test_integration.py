@@ -20,9 +20,9 @@ class TestConfigManager(unittest.TestCase):
         """Environment variables should take priority over secrets.json."""
         from utils import ConfigManager
         
-        with patch.dict(os.environ, {'GEMINI_API_KEY': 'env_test_key'}):
+        with patch.dict(os.environ, {'CODEX_CLI_API_KEY': 'env_test_key'}):
             config = ConfigManager()
-            result = config.get_api_key('GEMINI_API_KEY')
+            result = config.get_api_key('CODEX_CLI_API_KEY')
             self.assertEqual(result, 'env_test_key')
     
     def test_fallback_to_secrets_json(self):

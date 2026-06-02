@@ -1,8 +1,8 @@
 """
-경쟁사 Place 사진 시각 약점 분석 (Gemini Vision)
+경쟁사 Place 사진 시각 약점 분석 (Codex CLI Vision)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ROI: 9곳 × 사진 20장 = 180장/일, Gemini Flash Lite Vision $0.03/일 (월 $0.90)
+ROI: 9곳 × 사진 20장 = 180장/일, Codex CLI Flash Lite Vision $0.03/일 (월 $0.90)
 
 분석 5축:
   - interior_cleanliness (0-10)

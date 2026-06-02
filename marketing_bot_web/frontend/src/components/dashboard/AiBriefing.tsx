@@ -1,6 +1,6 @@
 /**
  * AI 브리핑 컴포넌트
- * Gemini AI 기반 일일 인사이트 브리핑
+ * Codex CLI AI 기반 일일 인사이트 브리핑
  */
 
 import { useQuery } from '@tanstack/react-query'
@@ -159,7 +159,7 @@ export default function AiBriefing({ compact = false }: AiBriefingProps) {
             {briefing.source === 'ai' && (
               <span className="flex items-center gap-1 text-xs px-2 py-0.5 bg-violet-500/20 text-violet-400 rounded-full">
                 <Sparkles className="w-3 h-3" />
-                Gemini
+                Codex CLI
               </span>
             )}
           </div>

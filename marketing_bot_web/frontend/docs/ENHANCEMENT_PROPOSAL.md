@@ -12,7 +12,7 @@ Marketing Bot의 6개 핵심 모듈을 분석한 결과, **AI 자동화**, **실
 
 | 축 | 현재 상태 | 목표 상태 | 기대 효과 |
 |---|---------|---------|---------|
-| **AI 자동화** | 수동 분석/작업 | Gemini 기반 자동화 | 작업 시간 60% 감소 |
+| **AI 자동화** | 수동 분석/작업 | Codex CLI 기반 자동화 | 작업 시간 60% 감소 |
 | **실시간 처리** | Polling (60초) | WebSocket 실시간 | 반응 속도 95% 향상 |
 | **UX 개선** | 정보 과부하 | 스마트 우선순위 | 의사결정 속도 40% 향상 |
 
@@ -84,7 +84,7 @@ likelihood_score = (
 
 #### B. 스마트 클러스터링 (Embedding 기반)
 ```python
-# Gemini Embedding + 코사인 유사도
+# Codex CLI Embedding + 코사인 유사도
 clusters = cluster_keywords_by_embedding(keywords)
 # ["청주 여드름", "청주 여드름 치료", "청주 뾰루지"]
 # → 클러스터: "청주 여드름 관리"
@@ -102,7 +102,7 @@ clusters = cluster_keywords_by_embedding(keywords)
 ```
 
 #### D. 자동화 메커니즘
-- **자동 메모**: Gemini가 키워드별 실행 가능한 액션 제안
+- **자동 메모**: Codex CLI가 키워드별 실행 가능한 액션 제안
 - **자동 태그**: Intent/Category/Urgency 태그 자동 분류
 - **경쟁사 모니터링**: 주 1회 자동 업데이트 + 신규 키워드 알림
 
@@ -184,7 +184,7 @@ prompt = f"""
 
 ### 4.2 개선 방안
 
-#### A. AI 응답 생성 (Gemini)
+#### A. AI 응답 생성 (Codex CLI)
 ```python
 def generate_personalized_response(lead):
     prompt = f"""
@@ -197,7 +197,7 @@ def generate_personalized_response(lead):
     - seeking_info → 상세 정보 제공
     - ready_to_act → 예약 안내
     """
-    return gemini.generate(prompt)
+    return codex_cli.generate(prompt)
 ```
 
 #### B. 스마트 후속 일정
@@ -269,8 +269,8 @@ scheduler.add_job(
 
 #### B. AI 기반 카테고리 분류
 ```python
-# Gemini로 콘텐츠 분석
-analysis = gemini.analyze(f"""
+# Codex CLI로 콘텐츠 분석
+analysis = codex_cli.analyze(f"""
 제목: {target.title}
 내용: {target.content_preview}
 
@@ -340,8 +340,8 @@ ALTER TABLE competitor_weaknesses ADD COLUMN (
 
 #### B. 고객 세그먼트별 분석
 ```python
-# Gemini로 세그먼트 분석
-segment_analysis = gemini.analyze(f"""
+# Codex CLI로 세그먼트 분석
+segment_analysis = codex_cli.analyze(f"""
 리뷰에서 언급된 고객 정보를 기반으로 세그먼트별 주요 관심사를 정리:
 - 연령대별 (20s, 30s, 40s+)
 - 증상별 (다이어트, 피부, 통증)
@@ -509,7 +509,7 @@ Week 11-12:
 Marketing Bot은 현재 **수동 중심의 마케팅 도구**에서 **AI 기반 자동화 플랫폼**으로 진화할 기회를 가지고 있습니다.
 
 ### 핵심 투자 영역
-1. **Gemini AI 통합 강화**: 응답 생성, 전략 수립, 분류/분석
+1. **Codex CLI AI 통합 강화**: 응답 생성, 전략 수립, 분류/분석
 2. **실시간 데이터 처리**: WebSocket, 스케줄링, 알림
 3. **ML 예측 모델**: 전환 확률, 순위 예측, 이상 탐지
 

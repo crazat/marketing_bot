@@ -16,7 +16,7 @@
 
 ```json
 {
-  "GEMINI_API_KEY": "your-gemini-api-key",
+  "CODEX_CLI_BIN": "codex",
   "NAVER_CLIENT_ID": "your-naver-client-id",
   "NAVER_CLIENT_SECRET": "your-naver-client-secret",
   "NAVER_AD_API_KEY": "optional-ad-api-key",
@@ -32,7 +32,7 @@
 `.env` 파일을 루트에 생성하여 환경변수로 설정할 수도 있습니다:
 
 ```env
-GEMINI_API_KEY=your-key
+CODEX_CLI_BIN=codex
 NAVER_CLIENT_ID=your-id
 CHROMEDRIVER_PATH=C:\path\to\chromedriver.exe
 ```

@@ -83,7 +83,7 @@ lead_id: int   # viral_targets.id (TEXT지만 int 캐스트 가능)
 
 ## Cost target
 
-- per lead < $0.005 (Gemini 2.5 Flash Lite + cached system_prompt)
+- per lead < $0.005 (Codex CLI 2.5 Flash Lite + cached system_prompt)
 - per lead 사람 시간 < 15초 (Telegram 4-button 1탭)
 
 ## Success metrics

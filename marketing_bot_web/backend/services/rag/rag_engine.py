@@ -1,8 +1,8 @@
 """
-RAG Engine - 벡터 검색 + Gemini 생성
+RAG Engine - 벡터 검색 + Codex CLI 생성
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-[고도화 C-2] ChromaDB 기반 벡터 검색과 Gemini 생성을 결합한 RAG 엔진
+[고도화 C-2] ChromaDB 기반 벡터 검색과 Codex CLI 생성을 결합한 RAG 엔진
 
 사용법:
     engine = RAGEngine(db_path="...", chroma_path="...")
@@ -32,7 +32,7 @@ except ImportError:
 
 class RAGEngine:
     """
-    RAG 엔진: 벡터 검색(ChromaDB) + 생성(Gemini)
+    RAG 엔진: 벡터 검색(ChromaDB) + 생성(Codex CLI)
 
     데이터 소스:
     - competitor_reviews: 경쟁사 리뷰
@@ -68,7 +68,7 @@ class RAGEngine:
 
         return self._collection
 
-    # _get_gemini removed - using centralized ai_client instead
+    # _get_codex_cli removed - using centralized ai_client instead
 
     async def index_data(self, max_per_source: int = 500) -> Dict[str, int]:
         """
@@ -216,7 +216,7 @@ class RAGEngine:
         source_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        자연어 질의 → 벡터 검색 → Gemini 생성
+        자연어 질의 → 벡터 검색 → Codex CLI 생성
 
         Args:
             question: 사용자 질문

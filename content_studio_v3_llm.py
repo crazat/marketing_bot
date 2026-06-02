@@ -6,7 +6,7 @@ from datetime import datetime
 import warnings
 import warnings
 warnings.filterwarnings("ignore")
-# import google.generativeai as genai removed
+# import codex_cli_bridge as codex_cli removed
 
 # Windows console encoding fix
 if sys.platform.startswith('win'):

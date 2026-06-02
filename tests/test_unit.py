@@ -42,14 +42,14 @@ class TestConfigManager(unittest.TestCase):
         from utils import ConfigManager
         config = ConfigManager()
         model = config.get_model_name("flash")
-        self.assertIn("gemini", model.lower())
+        self.assertIn("gpt", model.lower())
     
     def test_get_model_name_pro(self):
         """Test pro model name returns correctly."""
         from utils import ConfigManager
         config = ConfigManager()
         model = config.get_model_name("pro")
-        self.assertIn("gemini", model.lower())
+        self.assertIn("gpt", model.lower())
     
     def test_load_prompts_returns_dict(self):
         """Test that load_prompts returns a dictionary."""

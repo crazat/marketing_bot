@@ -633,7 +633,7 @@ async def generate_auto_response(request: AutoResponseRequest) -> Dict[str, Any]
 
     1. 감성 분류 (positive/neutral/negative)
     2. 주제 추출 (서비스, 효과, 가격, 대기 등)
-    3. Gemini AI로 응답 초안 생성
+    3. Codex CLI AI로 응답 초안 생성
     4. review_responses 테이블에 저장
     """
     try:
@@ -767,7 +767,7 @@ async def check_content_compliance_api(request: ComplianceCheckRequest) -> Dict[
     """
     [고도화 C-5] 콘텐츠 의료광고 규정 준수 체크
 
-    키워드 기반 사전 체크 + (선택) Gemini AI 정밀 분석
+    키워드 기반 사전 체크 + (선택) Codex CLI AI 정밀 분석
     """
     try:
         backend_dir = str(Path(__file__).parent.parent)

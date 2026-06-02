@@ -52,9 +52,9 @@ class WeaknessContentGenerator:
         Args:
             keyword_data: {
                 'keyword': str,
-                'competitor_name': str,
+                'competitor': str,
                 'weakness_type': str,
-                'content_suggestion': str
+                'suggestion': str
             }
 
         Returns:
@@ -67,9 +67,9 @@ class WeaknessContentGenerator:
             }
         """
         keyword = keyword_data.get('keyword', '')
-        competitor = keyword_data.get('competitor_name', '')
+        competitor = keyword_data.get('competitor', '')
         weakness_type = keyword_data.get('weakness_type', '')
-        suggestion = keyword_data.get('content_suggestion', '')
+        suggestion = keyword_data.get('suggestion', '')
 
         logger.info(f"[WeaknessContent] 콘텐츠 생성 시작: {keyword}")
 

@@ -1,5 +1,13 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-02 Codex CLI Runtime Lock
+
+- All LLM calls now route through `marketing_bot_web/backend/services/ai_client.py` and `codex_cli_client.py`.
+- The runtime is Codex CLI-only: no legacy Google AI SDK fallback, API key fallback, or direct model client path is allowed.
+- `codex exec` runs API-like calls with `--dangerously-bypass-approvals-and-sandbox` by default through `CODEX_CLI_BYPASS_APPROVALS_AND_SANDBOX=true`.
+- Model routing is task-based: `fast_json`/`structured` use `gpt-5.4-mini`, general Korean content uses `gpt-5.4`, `viral_comment`/`compliance`/`strategy` use `gpt-5.5`, and `batch_fast` uses `gpt-5.3-codex-spark`.
+- Before reporting completion on AI work, verify the legacy-provider `rg` scan returns no active-code hits and run the focused Codex gateway tests.
+
 ## 2026-05-20 Memory: Legion/Viral Scan 26 Latest Sequential Run
 
 - Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
@@ -44,7 +52,7 @@
 - Viral Hunter after scan 21 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 6,066 candidates, filtered to 959, removed 6 repeated-content targets, refreshed/excluded 592 existing URLs before AI, saved 61 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 32 AI-suitable targets. CSV report: `reports\viral_targets_20260518_220253.csv`.
 - Final current-run saved target snapshot for scan 21 (`source_scan_run_id=21` and `discovered_at >= 2026-05-18T21:57:00`): total=93, raw_backlog=61, pending=32. Platform distribution was blog=66, kin=16, cafe=11. Category distribution was diet=65, traffic accident=18, competitor counterattack=7, skin=2, pain/disc=1.
 - Broader `source_scan_run_id=21` association after refresh contains 685 rows because existing URLs were refreshed/reassigned during the run; use the current-run `discovered_at` window when reporting newly saved scan output.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning; several Gemini 503 responses during parallel AI analysis caused affected batches to fall back to unsuitable, so pending AI-suitable output was lower than recent scans.
+- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning; several Codex CLI 503 responses during parallel AI analysis caused affected batches to fall back to unsuitable, so pending AI-suitable output was lower than recent scans.
 
 ## 2026-05-18 Memory: Legion/Viral Scan 20 Latest Sequential Run
 
@@ -295,7 +303,7 @@
   - Frontend `npm audit --audit-level=moderate`, `npm run lint`, `npm run typecheck`, and `npm run build` all pass.
 - DB path handling is centralized through `MARKETING_BOT_DB_PATH` / `APP_DB_PATH`; keep SQLite access on the shared helper path and avoid ad hoc cwd-relative DB paths.
 - DB backup/restore must use `db_backup.py` or the backend backup router, both based on SQLite Backup API and integrity checks. Do not restore by direct file overwrite while the app may be running.
-- AI/RAG side effects are opt-in for tests and local deterministic flows. Keep pytest paths free from real Gemini/RAG calls unless an explicit environment flag enables them.
+- AI/RAG side effects are opt-in for tests and local deterministic flows. Keep pytest paths free from real Codex CLI/RAG calls unless an explicit environment flag enables them.
 - Frontend is on Vite 8 with `@vitejs/plugin-react` and OXC minification. Keep the flat ESLint config (`frontend/eslint.config.js`) and package lock in sync when changing frontend tooling.
 - Known residual environment note: Python 3.14 can emit a Langfuse/Pydantic v1 compatibility warning. It is non-blocking under the current test baseline.
 
@@ -326,7 +334,7 @@
 ### 백엔드
 - **FastAPI** (Python 3.11+)
 - **SQLite** 데이터베이스
-- **Gemini 2.5 Flash Lite + 3.1 Flash Lite Preview** (google-genai SDK, 중앙 클라이언트: `services/ai_client.py`)
+- **Codex CLI 2.5 Flash Lite + 3.1 Flash Lite Preview** (codex-cli SDK, 중앙 클라이언트: `services/ai_client.py`)
 
 ### 프론트엔드
 - **React 19** + TypeScript 5.6
@@ -470,7 +478,7 @@ sqlite3 db/marketing_data.db "SELECT job_name, status, started_at FROM job_runs 
 ```
 /mnt/c/projects/marketing_bot/
 ├── config/
-│   ├── config.json          # API 키 설정 (Gemini, Naver)
+│   ├── config.json          # API 키 설정 (Codex CLI, Naver)
 │   ├── keywords.json         # 키워드 설정 (naver_place, blog_seo)
 │   ├── schedule.json         # Chronos Timeline 스케줄 설정
 │   └── business_profile.json # 업체 정보
@@ -510,7 +518,7 @@ sqlite3 db/marketing_data.db "SELECT job_name, status, started_at FROM job_runs 
 ├── pathfinder_v3_complete.py # 키워드 발굴 스크립트
 ├── pathfinder_v3_legion.py   # LEGION 모드 (대량 키워드 수집)
 ├── test_desktop_only.py      # 데스크탑 스크래핑 테스트 (모바일 제외)
-└── vision_analyst.py         # 이미지 분석 (Gemini Vision)
+└── vision_analyst.py         # 이미지 분석 (Codex CLI Vision)
 ```
 
 > ⚠️ **주의**: `backend/backend_utils/` 폴더명은 프로젝트 루트의 `utils.py`와 충돌을 피하기 위해 `backend_utils`로 명명됨. `from backend_utils.logger import ...` 형태로 import.
@@ -580,13 +588,13 @@ sqlite3 db/marketing_data.db "SELECT job_name, status, started_at FROM job_runs 
 
 ## AI 모델 사용 규칙
 
-**Gemini (google-genai SDK) — 중앙 클라이언트 사용. 용도별 2단 구성.**
+**Codex CLI (codex-cli SDK) — 중앙 클라이언트 사용. 용도별 2단 구성.**
 
 | 함수 | 모델 | 가격 (1M tok) | 용도 |
 |------|------|:---:|------|
-| `ai_generate()` | **gemini-2.5-flash-lite** (GA) | $0.10 / $0.40 | 분류·판단·요약 (바이럴 적합성 등) |
-| `ai_generate_json()` | **gemini-2.5-flash-lite** (GA) | $0.10 / $0.40 | 구조화 JSON (response_mime_type) |
-| `ai_generate_korean()` | **gemini-3.1-flash-lite-preview** | $0.25 / $1.50 | 한국어 댓글·창작 (자연스러움 우선) |
+| `ai_generate()` | **codex_cli-2.5-flash-lite** (GA) | $0.10 / $0.40 | 분류·판단·요약 (바이럴 적합성 등) |
+| `ai_generate_json()` | **codex_cli-2.5-flash-lite** (GA) | $0.10 / $0.40 | 구조화 JSON (response_mime_type) |
+| `ai_generate_korean()` | **codex_cli-3.1-flash-lite-preview** | $0.25 / $1.50 | 한국어 댓글·창작 (자연스러움 우선) |
 
 모든 AI 호출은 `services/ai_client.py`를 통해 이루어집니다. 모델 변경 시 이 파일만 수정.
 
@@ -604,17 +612,17 @@ data = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
 comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800)
 
 # 잘못된 사용 (금지)
-from google import genai              # X - 직접 호출 금지
+from google import codex_cli              # X - 직접 호출 금지
 from openai import OpenAI             # X - 사용 안 함 (Qwen 전환 완료)
-client = genai.Client(api_key=...)    # X - 중앙 클라이언트 사용
+client = codex_cli.Client(api_key=...)    # X - 중앙 클라이언트 사용
 ```
 
 **환경변수**:
-- `GEMINI_API_KEY` (필수) — `config/secrets.json`에 있음, 자동 폴백
-- `GEMINI_CLASSIFY_MODEL` (선택) — 기본 모델 오버라이드
-- `GEMINI_KOREAN_MODEL` (선택) — 한국어 모델 오버라이드
+- `CODEX_CLI_API_KEY` (필수) — `config/secrets.json`에 있음, 자동 폴백
+- `CODEX_CLI_CLASSIFY_MODEL` (선택) — 기본 모델 오버라이드
+- `CODEX_CLI_KOREAN_MODEL` (선택) — 한국어 모델 오버라이드
 
-**예외**: `vision_analyst.py`만 Gemini Vision (이미지 분석)을 직접 사용
+**예외**: `vision_analyst.py`만 Codex CLI Vision (이미지 분석)을 직접 사용
 
 **폴백 동작**: `ai_generate_korean()` 호출 실패 시 자동으로 `ai_generate()`(기본 모델)로 재시도
 
@@ -763,7 +771,7 @@ const handleApplyQuickFilter = useCallback(...)  // ← hook AFTER early return
 
 - **시드 자동 생성 권장 명령**: `python scripts/generate_viral_seeds.py` — 매번 viral_hunt 전에 실행하면 미용 주력 시드 자동 보장
 - **viral_hunt 권장 흐름**: `generate_viral_seeds.py` → `viral_hunter_curated.py` → `ai_ad_classify_submit.py` → wait → `ai_ad_classify_apply.py`
-- **AI batch 큐 대기 시간**: Gemini batch API가 트래픽 따라 1~2시간까지도 걸림 — wait 스크립트 cap 90 → 180분으로 늘림 (`scripts/_tmp_classify_wait_apply.py`)
+- **AI batch 큐 대기 시간**: Codex CLI batch API가 트래픽 따라 1~2시간까지도 걸림 — wait 스크립트 cap 90 → 180분으로 늘림 (`scripts/_tmp_classify_wait_apply.py`)
 - **골든큐 size 41건**이 적정 — 직원 하루 작업량으로 충분, 양보다 질
 
 ---
@@ -779,7 +787,7 @@ const handleApplyQuickFilter = useCallback(...)  // ← hook AFTER early return
 | 1 | 의료광고법 컴플라이언스 게이트 (services/content_compliance.py + ai_client.py 자동 통합) | `ai_generate_korean()` 모든 호출 자동 스크린, ai_korean_screen_log 감사 |
 | 2 | 자체 리뷰/허위 예약 자동화 코드 감사 | viral_targets 자기 한의원 15건 영구 차단, business_profile.json self_exclusion 추가, viral_hunter `_is_self_target()` 게이트 |
 | 3 | Camoufox 도입 (place_scan_enrichment SERP 포팅) | 19/19 캡차 차단 → 정상 200KB+ HTML 수신 |
-| 4 | Gemini 컨텍스트 캐싱 + 배치 + Pydantic structured | system_prompt ≥1500자 자동 캐싱(75-90% 절감), `ai_generate_structured`/`ai_generate_batch` 신규 |
+| 4 | Codex CLI 컨텍스트 캐싱 + 배치 + Pydantic structured | system_prompt ≥1500자 자동 캐싱(75-90% 절감), `ai_generate_structured`/`ai_generate_batch` 신규 |
 | 5 | Q&A RAG (sqlite-vec + BGE-M3 + bge-reranker-v2-m3) | services/rag/qa_search.py, lead_service에 통합, recall 40% → 자연어 변형 5건 100% 매칭 |
 | 6 | job_runs 추적 + 의존성 게이트 (APScheduler 대신 schedule lib에 wrapper) | `@track_run` 데코레이터 + `requires_recent` 게이트, /api/jobs/runs API |
 | 7 | AI 브리핑 + MY플레이스 클립 모니터 | serp_features 5컬럼 추가 (ai_briefing_text/sources/includes_us/clip_count/clip_urls) |
@@ -813,7 +821,7 @@ const handleApplyQuickFilter = useCallback(...)  // ← hook AFTER early return
 #### MEDIUM — 평가·확장 (5건)
 | # | 변경 | 결과 |
 |---|---|---|
-| M1 | scripts/build_qa_goldset.py + recall@5 baseline | Gemini Pro 합성 30 query → **Recall@5=1.0, MRR=0.97** 검증 |
+| M1 | scripts/build_qa_goldset.py + recall@5 baseline | Codex CLI Pro 합성 30 query → **Recall@5=1.0, MRR=0.97** 검증 |
 | M2 | routers/compliance_review.py | /queue (차단/통과 균형 샘플) + /label (correct/FP/FN) + /metrics (precision/recall) |
 | M3 | PWA (이미 완성됨 확인) | manifest.webmanifest + sw.js + main.tsx 등록 모두 존재, production 빌드만 필요 |
 | M4 | skills/viral-comment-drafter/SKILL.md | Anthropic Agent Skills 패턴 문서화 (lead→comment 워크플로우) |
@@ -866,7 +874,7 @@ babel-plugin-react-compiler@beta (frontend, 미적용)
 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY    # Cloud free tier 활성화
 LOGFIRE_TOKEN                                 # Cloud 활성화 (없으면 local span only)
 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID         # 이미 있다면 HITL 자동 작동
-GEMINI_VISION_MODEL                           # 기본 gemini-2.5-flash-lite
+CODEX_CLI_VISION_MODEL                           # 기본 codex_cli-2.5-flash-lite
 MARKETING_BOT_EMBED_MODEL                     # 기본 BAAI/bge-m3
 MARKETING_BOT_RERANKER_MODEL                  # 기본 BAAI/bge-reranker-v2-m3
 ```
@@ -892,7 +900,7 @@ MARKETING_BOT_RERANKER_MODEL                  # 기본 BAAI/bge-reranker-v2-m3
 | Langfuse / Logfire / Telegram | $0 |
 | **합계 신규** | **<$7/월** |
 
-Gemini 컨텍스트 캐싱(75-90% 절감) + 배치 API(50% 할인)로 기존 비용은 절반 이하로.
+Codex CLI 컨텍스트 캐싱(75-90% 절감) + 배치 API(50% 할인)로 기존 비용은 절반 이하로.
 
 ---
 
@@ -990,13 +998,13 @@ Gemini 컨텍스트 캐싱(75-90% 절감) + 배치 API(50% 할인)로 기존 비
 
 ## 최근 개선 사항 (2026-04-25)
 
-### Qwen → Gemini 전면 마이그레이션
+### Qwen → Codex CLI 전면 마이그레이션
 
 Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로 비용과 품질 양쪽 최적화.
 
 **모델 선정 근거**:
-- **분류/판단 (대량)**: `gemini-2.5-flash-lite` — GA, 최저가, 10k 타겟 스캔 1회 $0.36
-- **한국어 댓글 생성**: `gemini-3.1-flash-lite-preview` — 2.5 Flash보다 **싸고**(-17%/-40%), **빠르고**(+64%), **우수** (Intelligence Index +62%, GPQA +4p, SimpleQA +16p)
+- **분류/판단 (대량)**: `codex_cli-2.5-flash-lite` — GA, 최저가, 10k 타겟 스캔 1회 $0.36
+- **한국어 댓글 생성**: `codex_cli-3.1-flash-lite-preview` — 2.5 Flash보다 **싸고**(-17%/-40%), **빠르고**(+64%), **우수** (Intelligence Index +62%, GPQA +4p, SimpleQA +16p)
 - 세대 차이(3.1 vs 2.5)가 등급 차이(Lite vs 표준)를 압도. 단 FACTS Grounding이 85→41로 급락하므로 팩트는 프롬프트에 RAG 주입 필수
 
 **변경된 파일**: `marketing_bot_web/backend/services/ai_client.py` 전면 재작성
@@ -1005,12 +1013,12 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 
 **SDK 변경**:
 - 이전: `openai.OpenAI` + DashScope 엔드포인트
-- 현재: `google.genai.Client` (v1.60.0)
+- 현재: `codex_cli_bridge.Client` (v1.60.0)
 
 **환경변수 이전**:
-- `QWEN_API_KEY` 제거 → `GEMINI_API_KEY` 재사용 (`config/secrets.json`에 이미 있음)
+- `QWEN_API_KEY` 제거 → `CODEX_CLI_API_KEY` 재사용 (`config/secrets.json`에 이미 있음)
 
-**레거시 방어**: 호출자가 실수로 `model="qwen-..."` 넘겨도 자동으로 기본 Gemini 모델로 대체.
+**레거시 방어**: 호출자가 실수로 `model="qwen-..."` 넘겨도 자동으로 기본 Codex CLI 모델로 대체.
 
 **스모크 검증 통과**: `ai_generate` / `ai_generate_json` / `ai_generate_korean` 3개 함수 모두 실 API 호출 성공 확인.
 
@@ -1051,7 +1059,7 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 | `scrapers/medical_review_monitor.py` | 모두닥 ToS 명시 금지("무단 수집"), 굿닥 SPA noindex로 검색 결과 차단, 하이닥 미검증 — 2026-04 재확인 결과 |
 | `scrapers/review_intelligence_collector.py` | GraphQL 차단 → place_scan_enrichment로 대체 |
 | `scrapers/geo_grid_tracker.py` | Naver Local API 위치 미지원 |
-| `scrapers/review_nlp_analyzer.py` | google-genai 패키지 필요 (Windows 전용) |
+| `scrapers/review_nlp_analyzer.py` | codex-cli 패키지 필요 (Windows 전용) |
 
 #### 삭제된 파일
 
@@ -1086,7 +1094,7 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 | `keyword_clusters` | 키워드 클러스터 분석 |
 | `viral_conversion_patterns` | 바이럴 전환 패턴 |
 | `serp_features` | SERP 기능 모니터링 |
-| `review_nlp_analysis` | 리뷰 NLP 분석 (Gemini) |
+| `review_nlp_analysis` | 리뷰 NLP 분석 (Codex CLI) |
 | `smartplace_stats` | 스마트플레이스 통계 (CSV 임포트) |
 | `call_tracking` | 전화 추적 (CSV 임포트) |
 | `hira_clinics` | HIRA 의료기관 데이터 |
@@ -1158,31 +1166,31 @@ Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로
 
 ### 2. Google Generative AI 패키지 마이그레이션
 
-**문제**: `google.generativeai` 패키지가 deprecated 되어 경고 발생
+**문제**: `codex_cli_bridge` 패키지가 deprecated 되어 경고 발생
 
-**해결**: `google.genai` 신규 API로 마이그레이션
+**해결**: `codex_cli_bridge` 신규 API로 마이그레이션
 
 | 파일 | 변경 내용 |
 |------|----------|
-| `viral_hunter.py` | `google.generativeai` → `google.genai` |
-| `backend/routers/competitors.py` | `google.generativeai` → `google.genai` |
-| `backend/routers/pathfinder.py` | `google.generativeai` → `google.genai` |
+| `viral_hunter.py` | `codex_cli_bridge` → `codex_cli_bridge` |
+| `backend/routers/competitors.py` | `codex_cli_bridge` → `codex_cli_bridge` |
+| `backend/routers/pathfinder.py` | `codex_cli_bridge` → `codex_cli_bridge` |
 
 **구 API vs 신 API 비교**:
 
 ```python
 # 구 API (deprecated)
-import google.generativeai as genai
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-3-flash-preview')
+import codex_cli_bridge as codex_cli
+codex_cli.configure(api_key=api_key)
+model = codex_cli.CodexCliModel('codex_cli-3-flash-preview')
 response = model.generate_content(prompt)
 
 # 신 API (현재 사용)
-from google import genai
-from google.genai import types
-client = genai.Client(api_key=api_key)
+from google import codex_cli
+from codex_cli_bridge import types
+client = codex_cli.Client(api_key=api_key)
 response = client.models.generate_content(
-    model='gemini-3-flash-preview',
+    model='codex_cli-3-flash-preview',
     contents=prompt,
     config=types.GenerateContentConfig(temperature=0.7)
 )
@@ -1305,7 +1313,7 @@ interface KeywordAnalysisTabProps {
 from setup_paths import get_api_key, load_config, get_config_path
 
 # API 키 조회
-api_key = get_api_key('gemini')
+api_key = get_api_key('codex_cli')
 
 # 설정 파일 로드 (캐싱 지원)
 config = load_config('config.json')
@@ -1850,7 +1858,7 @@ apollo_state = driver.execute_script("return window.__APOLLO_STATE__ || null;")
 - ✅ RankingKeywordsList: 상태별 스타일 및 안내 메시지
 
 ### Competitor Analysis
-- ✅ analyze-reviews API: Gemini AI 기반 약점 분석
+- ✅ analyze-reviews API: Codex CLI AI 기반 약점 분석
 - ✅ 약점 유형별 분류 (서비스, 가격, 시설, 대기시간, 효과)
 - ✅ 기회 키워드 자동 생성
 
@@ -1858,9 +1866,9 @@ apollo_state = driver.execute_script("return window.__APOLLO_STATE__ || null;")
 - ✅ Hollow features 제거 ("곧 추가됩니다", "준비 중..." 제거)
 - ✅ 실제 유용한 시스템 정보 표시
 
-### Gemini 모델 통일
+### Codex CLI 모델 통일
 - ✅ vision_analyst.py 폴백 모델 수정
-- ✅ 모든 Gemini 사용처에서 gemini-3-flash-preview 사용 확인
+- ✅ 모든 Codex CLI 사용처에서 codex_cli-3-flash-preview 사용 확인
 
 ### 데이터베이스 백업 시스템 (신규)
 - ✅ `/api/backup/*` API 라우터 추가 (상태조회, 수동백업, 무결성검사, VACUUM)

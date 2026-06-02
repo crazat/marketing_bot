@@ -104,7 +104,7 @@ def get_api_key(service: str) -> Optional[str]:
     API 키 조회 헬퍼
 
     Args:
-        service: 서비스명 (gemini, naver 등)
+        service: 서비스명 (codex_cli, naver 등)
 
     Returns:
         API 키 또는 None

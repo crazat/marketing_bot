@@ -21,6 +21,8 @@ try:
 except Exception:
     pass
 import json
+import socket
+socket.setdefaulttimeout(15)
 import time
 import re
 import math
@@ -1647,7 +1649,7 @@ class AICommentGenerator:
             if style_suffix:
                 prompt += style_suffix
 
-            comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800)
+            comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800, task="viral_comment")
 
             # 댓글 정제
             comment = comment.replace("댓글:", "").strip()
@@ -1724,7 +1726,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                result_text = ai_generate(prompt, temperature=0.3)
+                result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
                 self._parse_competitor_results(batch, result_text)
@@ -1858,7 +1860,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                result_text = ai_generate(prompt, temperature=0.3)
+                result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable = self._parse_infiltration_results(batch, result_text)
@@ -1940,7 +1942,7 @@ POST_ID: {i}
 
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                result_text = ai_generate(prompt, temperature=0.3)
+                result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable, batch_competitor = self._parse_unified_results(batch, result_text)
@@ -2015,7 +2017,7 @@ POST_ID: {i}
                 )
             try:
                 prompt = template.format(posts_formatted=posts_formatted)
-                result_text = ai_generate(prompt, temperature=0.3)
+                result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
                 return batch_idx, suitable, unsuit, comp, None
             except Exception as e:

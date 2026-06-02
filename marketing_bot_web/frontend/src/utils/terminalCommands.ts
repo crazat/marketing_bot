@@ -109,7 +109,7 @@ export function getPageCommands(page: string): CommandInfo[] {
           dbTable: 'competitor_weaknesses',
           dbCountQuery: getDbCheckCommand('competitor_weaknesses'),
           expectedOutput: '약점 유형별 분석 결과 표시',
-          note: 'Gemini AI를 사용하여 리뷰에서 약점을 추출합니다.',
+          note: 'Codex CLI AI를 사용하여 리뷰에서 약점을 추출합니다.',
         },
       ];
 

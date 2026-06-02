@@ -86,7 +86,7 @@ priority = (KEI × 0.4) + (기회도 × 0.3) + ((100-난이도) × 0.2) + (검�
 |------|------|------------|
 | Google 자동완성 | 🔥 높음 | 쉬움 |
 | 블로그 제목 마이닝 | 🔥 높음 | 중간 |
-| AI 시맨틱 확장 (Gemini) | 🔥 높음 | 쉬움 |
+| AI 시맨틱 확장 (Codex CLI) | 🔥 높음 | 쉬움 |
 | 질문형 키워드 생성 | 중간 | 쉬움 |
 | 네이버 쇼핑인사이트 | 중간 | 중간 |
 | 경쟁사 블로그 태그 분석 | 중간 | 어려움 |
@@ -363,14 +363,14 @@ class MultiSourceCollector:
 
 ---
 
-#### 3.1.6 AI 시맨틱 확장 (Gemini 활용)
+#### 3.1.6 AI 시맨틱 확장 (Codex CLI 활용)
 
 **현재:** 하드코딩된 suffix 패턴
 
 **제안:**
 ```python
 async def expand_keywords_with_ai(seed_keywords: List[str], category: str) -> List[str]:
-    """Gemini로 시맨틱 유사 키워드 생성"""
+    """Codex CLI로 시맨틱 유사 키워드 생성"""
 
     prompt = f"""
 당신은 한의원 마케팅 키워드 전문가입니다.
@@ -388,7 +388,7 @@ async def expand_keywords_with_ai(seed_keywords: List[str], category: str) -> Li
 JSON 배열로만 응답: ["키워드1", "키워드2", ...]
 """
 
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = codex_cli.CodexCliModel('codex_cli-3-flash-preview')
     response = await model.generate_content_async(prompt)
 
     try:
@@ -658,11 +658,11 @@ def analyze_device_strategy(keyword_data: dict) -> str:
 
 ---
 
-#### 3.3.3 AI 기반 키워드 분류 (Gemini)
+#### 3.3.3 AI 기반 키워드 분류 (Codex CLI)
 
 ```python
 async def classify_keywords_with_ai(keywords: list) -> dict:
-    """Gemini로 키워드 의도/카테고리 자동 분류"""
+    """Codex CLI로 키워드 의도/카테고리 자동 분류"""
     prompt = f"""
 다음 키워드들을 분류해주세요:
 
@@ -675,7 +675,7 @@ async def classify_keywords_with_ai(keywords: list) -> dict:
 - purchase_intent: 1-10 점수
 """
 
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = codex_cli.CodexCliModel('codex_cli-3-flash-preview')
     response = await model.generate_content_async(prompt)
 
     return parse_ai_response(response.text)

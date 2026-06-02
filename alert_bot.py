@@ -51,8 +51,17 @@ class TelegramBot:
     _warned_about_missing_creds = False  # 클래스 레벨: 경고는 1회만
 
     def __init__(self, token=None, chat_id=None):
+        if not token or not chat_id:
+            try:
+                from utils import config
+                secrets = config.load_secrets()
+                token = token or os.environ.get("TELEGRAM_BOT_TOKEN") or secrets.get("TELEGRAM_BOT_TOKEN", "")
+                chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID") or secrets.get("TELEGRAM_CHAT_ID", "")
+            except Exception as e:
+                logger.warning(f"Failed to auto-load Telegram credentials: {e}")
+
         self.token = token
-        self.chat_id = chat_id
+        self.chat_id = str(chat_id) if chat_id else None
         self.base_url = f"https://api.telegram.org/bot{self.token}/sendMessage" if self.token else None
         self.is_mock = not (self.token and self.chat_id)
         if self.is_mock and not TelegramBot._warned_about_missing_creds:

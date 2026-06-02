@@ -35,7 +35,7 @@ from task_manager import TaskManager
 
 # Add backend to path for ai_client import
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'marketing_bot_web', 'backend'))
-from services.ai_client import ai_generate, ai_generate_json
+from services.ai_client import ai_available, ai_generate, ai_generate_json
 
 class AIOrchestrator:
     def __init__(self):
@@ -48,7 +48,7 @@ class AIOrchestrator:
             "pytest" in sys.modules
             and os.getenv("MARKETING_BOT_ENABLE_AI_IN_TESTS", "false").lower() != "true"
         )
-        self.has_llm = bool(self.config.get_api_key("GEMINI_API_KEY")) and not tests_disable_ai and ai_disabled not in {
+        self.has_llm = ai_available() and not tests_disable_ai and ai_disabled not in {
             "1",
             "true",
             "yes",
@@ -466,7 +466,7 @@ class AIOrchestrator:
         }}
         """
         try:
-            result = ai_generate_json(prompt, temperature=0.3)
+            result = ai_generate_json(prompt, temperature=0.3, task="fast_json")
             if result:
                 return result
             logger.error("Failed to parse intent from AI response")

@@ -96,6 +96,7 @@ def draft_korean_comment(
         system_prompt=_DRAFT_SYSTEM,
         temperature=0.7,
         max_tokens=400,
+        task="viral_comment",
         compliance_screen=False,  # 별도 critique tool에서 처리
         ai_disclosure_required=False,  # 최종 단계에서 첨부
         call_site="agent_runtime.draft",
@@ -159,6 +160,7 @@ JSON으로 응답."""
         response_schema=Judgement,
         temperature=0.2,
         max_tokens=400,
+        task="compliance",
     )
     if judge is None:
         judge = Judgement(naturalness_score=0.7, naturalness_comment="자동 평가 실패",

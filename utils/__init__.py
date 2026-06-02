@@ -66,7 +66,7 @@ class ConfigManager:
             logger.error(f"Error loading secrets: {e}")
             return {}
 
-    def get_api_key(self, key_name: str = 'GEMINI_API_KEY') -> Optional[str]:
+    def get_api_key(self, key_name: str = 'CODEX_CLI_BIN') -> Optional[str]:
         """Retrieves API key from environment variable or secrets.json.
 
         Priority: ENV > secrets.json
@@ -240,7 +240,7 @@ class ConfigManager:
             dict: {"valid": bool, "missing": list, "warnings": list}
         """
         if required_keys is None:
-            required_keys = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            required_keys = []
 
         optional_keys = ["NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET",
                          "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
@@ -278,12 +278,11 @@ class ConfigManager:
 
     def get_model_name(self, model_type="flash"):
         """Returns the configured model name to ensure consistency."""
-        # User requested: gemini-3-flash-preview
         if model_type == "flash":
-            return "gemini-3-flash-preview"
+            return os.getenv("CODEX_CLI_MODEL_FAST_JSON", "gpt-5.4-mini")
         elif model_type == "pro":
-            return "gemini-3-flash-preview" # Use 3-flash for pro workflows too if superior, or fallback
-        return "gemini-3-flash-preview"
+            return os.getenv("CODEX_CLI_MODEL_STRATEGY", "gpt-5.5")
+        return os.getenv("CODEX_CLI_MODEL", "gpt-5.4")
 
     def get_instagram_credentials(self) -> Dict[str, Optional[str]]:
         """

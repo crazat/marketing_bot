@@ -25,7 +25,7 @@ CONFIDENCE_THRESHOLD = 0.7
 
 
 def parse_response(text: str) -> dict | None:
-    """Gemini 응답 텍스트에서 JSON 객체 추출."""
+    """Codex CLI 응답 텍스트에서 JSON 객체 추출."""
     if not text:
         return None
     t = text.strip()

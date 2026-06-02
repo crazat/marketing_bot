@@ -12,7 +12,7 @@ Pathfinder V3 LEGION MODE
 - Round 5: 경쟁사 역분석
 - Round 6: 연관검색어
 - Round 7: 문제 해결형 키워드
-- Round 8: AI 시맨틱 확장 (Gemini)
+- Round 8: AI 시맨틱 확장 (Codex CLI)
 """
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
@@ -45,7 +45,7 @@ except ImportError:
     HAS_QUALITY_FILTER = False
     print("⚠️ KeywordQualityFilter 미설치 - 기본 필터만 사용")
 
-# AI 키워드 확장 (Gemini)
+# AI 키워드 확장 (Codex CLI)
 try:
     from core_services.ai_keyword_expander import AIKeywordExpander
     HAS_AI_EXPANDER = True
@@ -2551,7 +2551,13 @@ class PathfinderLegion:
 
         return new_sa
 
-    def run(self, target_sa: int = 500, max_rounds: int = 10) -> List[KeywordResult]:
+    def run(
+        self,
+        target_sa: int = 500,
+        max_rounds: int = 10,
+        round1_seed_limit: Optional[int] = None,
+        skip_ad_related: bool = False,
+    ) -> List[KeywordResult]:
         """
         LEGION MODE 실행
 
@@ -2581,7 +2587,12 @@ class PathfinderLegion:
         naver_count = 0
         google_count = 0
 
-        for seed in self.base_seeds:
+        round1_seeds = self.base_seeds
+        if round1_seed_limit is not None:
+            round1_seeds = round1_seeds[:max(0, round1_seed_limit)]
+            print(f"   Smoke/limited mode: Round 1 seeds {len(round1_seeds)}/{len(self.base_seeds)}")
+
+        for seed in round1_seeds:
             # 다중 소스 수집 (Naver + Google)
             suggestions = self.collector.get_autocomplete_multi(seed)
             if suggestions:
@@ -2600,19 +2611,22 @@ class PathfinderLegion:
         total_sa += new_sa
         print(f"   수집: {len(round1_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
-        ad_related_keywords = self._collect_ad_related_keywords(
-            list(round1_keywords) + self.base_seeds,
-            source="round1_ad_related",
-            max_seeds=50,
-            max_keywords=300,
-            min_volume=10,
-        )
-        if ad_related_keywords:
-            new_sa = self._analyze_and_add(ad_related_keywords, "round1_ad_related")
-            total_sa += new_sa
-            print(f"   검색광고 연관어: {len(ad_related_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
+        if not skip_ad_related:
+            ad_related_keywords = self._collect_ad_related_keywords(
+                list(round1_keywords) + self.base_seeds,
+                source="round1_ad_related",
+                max_seeds=50,
+                max_keywords=300,
+                min_volume=10,
+            )
+            if ad_related_keywords:
+                new_sa = self._analyze_and_add(ad_related_keywords, "round1_ad_related")
+                total_sa += new_sa
+                print(f"   검색광고 연관어: {len(ad_related_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
         if total_sa >= target_sa:
+            return self._finalize()
+        if round_num >= max_rounds:
             return self._finalize()
 
         # ==========================================
@@ -2893,11 +2907,11 @@ class PathfinderLegion:
             return self._finalize()
 
         # ==========================================
-        # Round 8: AI 시맨틱 확장 (Gemini)
+        # Round 8: AI 시맨틱 확장 (Codex CLI)
         # ==========================================
         if self.has_ai_expander and self.ai_expander:
             round_num += 1
-            print(f"\n[Round {round_num}] AI 시맨틱 확장 (Gemini)...")
+            print(f"\n[Round {round_num}] AI 시맨틱 확장 (Codex CLI)...")
 
             round8_keywords = set()
 
@@ -3574,7 +3588,24 @@ def main():
     parser.add_argument("--no-db", action="store_true", help="DB 저장 안 함")
     parser.add_argument("--no-csv", action="store_true", help="CSV 저장 안 함")
     parser.add_argument("--save-db", action="store_true", help="DB에 저장 (--no-db의 반대)")
+    parser.add_argument("--max-rounds", type=int, default=10, help="Maximum Legion rounds to run.")
+    parser.add_argument("--round1-seed-limit", type=int, default=None, help="Limit initial seed count for Round 1.")
+    parser.add_argument("--no-google", action="store_true", help="Disable Google autocomplete source.")
+    parser.add_argument("--skip-ad-related", action="store_true", help="Skip Round 1 Naver ad related keyword expansion.")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Fast validation mode: no Google, 1 round, 3 seeds, no DB/CSV writes.",
+    )
     args = parser.parse_args()
+
+    if args.smoke:
+        args.no_db = True
+        args.no_csv = True
+        args.max_rounds = 1
+        args.round1_seed_limit = 3 if args.round1_seed_limit is None else min(args.round1_seed_limit, 3)
+        args.no_google = True
+        args.skip_ad_related = True
 
     # 실시간 로그 스트리밍 설정
     tee = setup_live_logging()
@@ -3592,9 +3623,16 @@ def main():
         )
 
     legion = PathfinderLegion()
+    if args.no_google:
+        legion.collector.use_google = False
 
     try:
-        results = legion.run(target_sa=args.target)
+        results = legion.run(
+            target_sa=args.target,
+            max_rounds=args.max_rounds,
+            round1_seed_limit=args.round1_seed_limit,
+            skip_ad_related=args.skip_ad_related,
+        )
 
         print("\n" + "=" * 70)
         print(f"✅ LEGION MODE 완료! 총 {len(results)}개 키워드")

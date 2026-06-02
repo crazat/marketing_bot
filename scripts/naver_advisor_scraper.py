@@ -3,7 +3,7 @@
 공식 API 없음 → Camoufox 로그인 후 검색어 통계 페이지에서 CSV 자동 다운로드.
 다운받은 CSV를 inbound_search_queries 테이블 (source='naver_advisor')로 적재.
 
-키 누락 시 graceful skip + 가이드 출력. 추가 LLM 키 없음 (Gemini-only 정책 유지).
+키 누락 시 graceful skip + 가이드 출력. 추가 LLM 키 없음 (Codex CLI-only 정책 유지).
 
 운영자 트리거:
   python scripts/naver_advisor_scraper.py                  # 직전 90일 수집

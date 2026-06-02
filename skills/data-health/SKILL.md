@@ -37,7 +37,7 @@ for row in c.execute('SELECT job_name, status, started_at, duration_seconds FROM
 
 2. **stdout 파싱** — 각 테이블별 status (OK/WARN/CRIT) + last_record + 24h count.
 
-3. **API 키 상태** — 같은 스크립트에서 점검 (Naver/Gemini/Telegram 등).
+3. **API 키 상태** — 같은 스크립트에서 점검 (Naver/Codex CLI/Telegram 등).
 
 4. **job_runs 보강** — cron 잡 실행 결과:
    ```sql
@@ -73,7 +73,7 @@ for row in c.execute('SELECT job_name, status, started_at, duration_seconds FROM
 
 **🟢 정상 작동** (간략)
 - 활성 수집기 N개, 최근 24h 신규 N건 (top 3 테이블만 표시)
-- API 키: Naver ✅ / Gemini ✅ / Telegram ✅
+- API 키: Naver ✅ / Codex CLI ✅ / Telegram ✅
 
 ---
 
@@ -96,7 +96,7 @@ for row in c.execute('SELECT job_name, status, started_at, duration_seconds FROM
 ## Guardrails
 
 1. **빈 stat을 success로 보고 금지** — total_records=0 이지만 status=success인 잡은 의심.
-2. **API 키 만료는 RED** — Gemini 키 만료 시 전체 시스템 멈춤. 즉시 알림.
+2. **API 키 만료는 RED** — Codex CLI 키 만료 시 전체 시스템 멈춤. 즉시 알림.
 3. **disabled_reason 명시된 모듈은 정상으로 분류** — schedule.json의 `disabled_reason` 참조.
 4. **마지막 수집 시각이 cron 빈도의 2배 초과** → CRIT.
    - 매일 잡: 48h 초과 시 CRIT

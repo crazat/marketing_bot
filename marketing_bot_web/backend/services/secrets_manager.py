@@ -13,10 +13,10 @@ DPAPI로 암호화되어 해당 Windows 사용자만 복호화 가능.
     from services.secrets_manager import SecretsManager
 
     # 저장
-    SecretsManager.store("gemini_api_key", "your-key-here")
+    SecretsManager.store("codex_cli_bin", "codex")
 
     # 조회
-    key = SecretsManager.get("gemini_api_key")
+    key = SecretsManager.get("codex_cli_bin")
 
     # config.json 마이그레이션
     SecretsManager.migrate_from_config()
@@ -107,7 +107,7 @@ class SecretsManager:
         config.json의 API 키를 keyring으로 마이그레이션
 
         마이그레이션 대상:
-        - gemini.api_key
+        - codex.bin
         - naver_api.client_id / client_secret
         - telegram.bot_token / chat_id
         - openweathermap.api_key
@@ -123,7 +123,7 @@ class SecretsManager:
 
         # 마이그레이션 매핑: config 경로 → keyring 키
         migrations = [
-            (["gemini", "api_key"], "gemini_api_key"),
+            (["codex", "bin"], "codex_cli_bin"),
             (["naver_api", "client_id"], "naver_client_id"),
             (["naver_api", "client_secret"], "naver_client_secret"),
             (["telegram", "bot_token"], "telegram_bot_token"),
@@ -170,7 +170,7 @@ class SecretsManager:
 
         # keyring 키 → config 경로 역매핑
         key_map = {
-            "gemini_api_key": ["gemini", "api_key"],
+            "codex_cli_bin": ["codex", "bin"],
             "naver_client_id": ["naver_api", "client_id"],
             "naver_client_secret": ["naver_api", "client_secret"],
             "telegram_bot_token": ["telegram", "bot_token"],
@@ -208,7 +208,7 @@ class SecretsManager:
 
         stored_keys = []
         test_keys = [
-            "gemini_api_key", "naver_client_id", "naver_client_secret",
+            "codex_cli_bin", "naver_client_id", "naver_client_secret",
             "telegram_bot_token", "openweathermap_api_key",
         ]
         for key in test_keys:

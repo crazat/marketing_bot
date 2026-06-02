@@ -499,7 +499,7 @@ class MarketingAgent:
     """AI가 데이터 분석 후 액션을 제안하고 실행하는 에이전트"""
 
     def __init__(self):
-        self.ai_client = genai.Client()
+        self.ai_client = codex_cli.Client()
         self.approval_mode = "human_in_loop"  # 또는 "auto"
 
     async def analyze_and_act(self, trigger_event: dict):
@@ -691,7 +691,7 @@ CREATE TABLE agent_actions_log (...);
 
 | Phase | 지표 | 목표 | 측정 방법 |
 |-------|------|------|-----------|
-| 1 | API 비용 | 80% 감소 | 월간 Gemini 사용량 |
+| 1 | API 비용 | 80% 감소 | 월간 Codex CLI 사용량 |
 | 1 | 리드 전환율 | 2x 향상 | 고점수 리드 전환 추적 |
 | 2 | 수동 작업 시간 | 50% 감소 | 사용자 설문 |
 | 2 | 데이터 정확도 | 15% 향상 | 적응형 스케줄 성공률 |

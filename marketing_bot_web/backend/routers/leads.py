@@ -3488,7 +3488,7 @@ class AIResponseRequest(BaseModel):
 @router.post("/generate-ai-response")
 async def generate_ai_response(request: AIResponseRequest) -> Dict[str, Any]:
     """
-    [Phase 5.0] Gemini AI 기반 개인화된 응답 메시지 생성
+    [Phase 5.0] Codex CLI AI 기반 개인화된 응답 메시지 생성
 
     리드 정보(콘텐츠 제목, 본문, 플랫폼, 고객 정보)를 분석하여
     맥락에 맞는 자연스러운 첫 접촉 메시지를 생성합니다.

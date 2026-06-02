@@ -131,7 +131,7 @@ def main():
 
     if not generator.client:
         print("❌ AI 모델이 초기화되지 않았습니다.")
-        print("   Gemini API 키를 확인해주세요.")
+        print("   Codex CLI API 키를 확인해주세요.")
         return
 
     suitable_targets = generator.unified_analysis(targets, batch_size=25)

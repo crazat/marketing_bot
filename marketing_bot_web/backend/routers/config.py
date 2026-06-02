@@ -383,7 +383,7 @@ async def view_config_file(file: str = "keywords") -> Dict[str, Any]:
 
 def mask_sensitive_data(config: Dict[str, Any]) -> Dict[str, Any]:
     sensitive_keys = [
-        "gemini_api_key",
+        "codex_cli_bin",
         "naver_client_id",
         "naver_client_secret",
         "password",

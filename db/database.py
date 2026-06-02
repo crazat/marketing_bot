@@ -706,6 +706,39 @@ class DatabaseManager:
             )
         ''')
 
+        # Table: Competitor Weaknesses (경쟁사 약점 분석)
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS competitor_weaknesses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                competitor_name TEXT,
+                source TEXT,
+                weakness_type TEXT,
+                original_text TEXT,
+                weakness_keywords TEXT,
+                opportunity_keywords TEXT,
+                sentiment_score REAL DEFAULT 0,
+                source_url TEXT,
+                analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'new'
+            )
+        ''')
+
+        # Table: Opportunity Keywords (약점 기반 기회 키워드)
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS opportunity_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT UNIQUE,
+                source_weakness_id INTEGER,
+                competitor_name TEXT,
+                weakness_type TEXT,
+                priority_score REAL DEFAULT 50,
+                content_suggestion TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                used_at TIMESTAMP,
+                status TEXT DEFAULT 'pending'
+            )
+        ''')
+
         try:
             self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_module ON schedule_history(module)")
         except sqlite3.OperationalError:

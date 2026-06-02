@@ -53,7 +53,7 @@ class KeywordCluster:
 class SearchIntentClassifierAI:
     """
     A3: LLM 기반 검색 의도 분류
-    - Gemini API로 정확한 의도 분류
+    - Codex CLI API로 정확한 의도 분류
     - 배치 처리로 API 효율화
     """
 
@@ -391,7 +391,7 @@ class AIKeywordEnhancer:
                 pct = count / len(unknown_keywords) * 100
                 print(f"      {intent}: {count}개 ({pct:.1f}%)")
         else:
-            print("   ⚠️ Gemini API 불가 - 패턴 기반 분류 사용")
+            print("   ⚠️ Codex CLI API 불가 - 패턴 기반 분류 사용")
             new_intents = self.intent_classifier._fallback_classify(unknown_keywords)
             for kw, intent in new_intents.items():
                 current_intents[kw] = intent

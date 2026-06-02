@@ -274,7 +274,7 @@ async def check_with_ai(
     content_type: str = "blog",
 ) -> Dict[str, Any]:
     """
-    Gemini AI를 사용하여 의료광고 규정 위반 여부를 정밀 분석합니다.
+    Codex CLI AI를 사용하여 의료광고 규정 위반 여부를 정밀 분석합니다.
 
     키워드 기반 사전 체크 후, AI가 맥락을 고려한 정밀 분석을 수행합니다.
     """
@@ -309,7 +309,7 @@ async def check_with_ai(
 }}
 """
 
-        ai_result = ai_generate_json(prompt, temperature=0.3, max_tokens=500)
+        ai_result = ai_generate_json(prompt, temperature=0.3, max_tokens=500, task="compliance")
         if ai_result:
             keyword_result["ai_analysis"] = ai_result
         else:

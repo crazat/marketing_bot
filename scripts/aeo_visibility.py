@@ -1,20 +1,20 @@
 """[R6] AEO (Answer Engine Optimization) 모니터링 — LLM 검색에서 우리 한의원 노출 추적.
 
 배경: 2026/02 ChatGPT 한국 MAU 1,446만 (4배↑). HubSpot 오가닉 트래픽 -27%.
-       "청주 한의원 추천해줘" 같은 자연어 쿼리에서 LLM이 우리/경쟁사를 어떻게 답변하는지 = 새 KPI.
+       "강남 흉터 상담 기준" 같은 자연어 쿼리에서 LLM이 우리/경쟁사를 어떻게 답변하는지 = 새 KPI.
 
 전략:
-  - 핵심 20개 키워드를 Gemini에 자연어 질의 (Google Search grounding 사용)
+  - 핵심 20개 키워드를 Codex CLI에 자연어 질의 (Google Search grounding 사용)
   - 답변에서 우리 한의원/경쟁사 이름 등장 카운트 + 순서
   - aeo_visibility 테이블에 적재
   - 직전 대비 노출/노출 빈도 변화 보고
 
 운영자 트리거 (cron 안 씀, 주 1회 정도 권장):
   python scripts/aeo_visibility.py                  # 기본 20개 키워드
-  python scripts/aeo_visibility.py --keywords "청주 한의원 추천,청주 다이어트 한약"
+  python scripts/aeo_visibility.py --keywords "강남 흉터 상담 기준,강남 다이어트 한약 상담 기준"
   python scripts/aeo_visibility.py --status         # 직전 결과만
 
-비용: Gemini 2.5 Flash Lite + grounding ~$0.10/1M tokens. 20 쿼리 × 2k tokens = $0.0040/회.
+비용: Codex CLI 2.5 Flash Lite + grounding ~$0.10/1M tokens. 20 쿼리 × 2k tokens = $0.0040/회.
        월 4회 = $0.02/월. Perplexity 추가 시에만 $5-10/월.
 """
 from __future__ import annotations
@@ -40,30 +40,30 @@ BUSINESS_PATH = os.path.join(ROOT_DIR, 'config', 'business_profile.json')
 
 # 기본 모니터링 키워드 (자연어 질의 형식)
 DEFAULT_QUERIES = [
-    "청주 한의원 추천해줘",
-    "청주 다이어트 한약 잘하는 곳",
-    "청주 교통사고 한의원 어디가 좋아",
-    "청주 안면비대칭 교정 한의원",
-    "청주 얼굴비대칭 한의원 추천",
-    "청주 턱관절 교정 잘하는 한의원",
-    "청주 안면비대칭 다시 틀어지는 이유",
-    "청주 체형교정 안면비대칭 같이 보는 곳",
-    "청주 새살침 잘하는 곳",
-    "청주 야간진료 한의원",
-    "청주 추나 잘하는 한의원",
-    "청주 입원 가능한 한방병원",
-    "청주 산후조리 한의원",
-    "청주 여드름 한의원",
-    "충북 한방 다이어트",
-    "오송 한의원 추천",
-    "청주 흥덕구 한의원",
-    "청주 상당구 한의원",
-    "청주 한약 다이어트 효과",
-    "청주 한의원 후기 솔직",
-    "청주 한의원 진짜 잘하는 곳",
-    "청주 한의원 가성비",
-    "청주 한의원 일요일 진료",
-    "청주 한의원 vs 한방병원 차이",
+    "강남 흉터 상담 기준 알려줘",
+    "선릉 패인 흉터 회복조건 상담",
+    "강남 여드름흉터 상담 전 확인할 것",
+    "박스카 흉터 새살침 접근 범위 상담",
+    "롤링 흉터 회복 방향 상담",
+    "아이스픽 흉터 상담 기준 강남",
+    "강남 얼굴비대칭 상담 기준",
+    "선릉 안면비대칭 상담 기준",
+    "얼굴 비대칭과 턱관절 긴장 기록 기준",
+    "강남 시술 후 예민한 피부 회복 순서",
+    "흉터 상담 전 피부 준비도 확인",
+    "RECOVER NOTE 흉터 상담",
+    "리커버한의원 강남 어디야",
+    "리커버 강남 흉터 상담 기준",
+    "강남 다이어트 한약 상담 기준",
+    "선릉 비만 한약 상담 기준",
+    "식욕조절 상담 기준 강남",
+    "체중감량 한약 상담 전 확인할 것",
+    "강남 흉터 상담 포함 제외 항목",
+    "선릉역 흉터 상담 기준",
+    "역삼 흉터 회복 조건",
+    "삼성역 얼굴비대칭 상담",
+    "강남 흉터 상담 기록 확인 기준",
+    "강남 흉터 상담 방식 차이",
 ]
 
 
@@ -112,7 +112,7 @@ def load_self_aliases() -> list[str]:
             names.add(v)
         return [n for n in names if n and len(n) >= 2]
     except (FileNotFoundError, json.JSONDecodeError):
-        return ['규림한의원']
+        return ['리커버한의원 강남', '리커버 강남', 'RECOVER 강남']
 
 
 def load_competitor_names() -> list[str]:
@@ -124,8 +124,8 @@ def load_competitor_names() -> list[str]:
         return []
 
 
-def query_gemini(prompt: str) -> dict:
-    """Gemini Flash Lite + Google Search grounding으로 자연어 질의."""
+def query_codex(prompt: str) -> dict:
+    """Codex CLI Flash Lite + Google Search grounding으로 자연어 질의."""
     try:
         from services.ai_client import ai_generate
     except ImportError as e:
@@ -133,12 +133,12 @@ def query_gemini(prompt: str) -> dict:
 
     enriched = (
         f'{prompt}\n\n'
-        '실제 한의원 이름과 위치를 답변에 포함해주세요. '
-        '추천하는 한의원이 있다면 1, 2, 3 순서로 명확히 나열해주세요.'
+        '효능 보장, 가격 유인, 전후사진, 과장 표현은 피하고 확인 기준 중심으로 답변해주세요. '
+        '공개 정보로 확인되는 한의원 이름과 위치가 있다면 출처 맥락과 함께 중립적으로 언급해주세요.'
     )
     try:
         text = ai_generate(enriched, temperature=0.3, max_tokens=800)
-        return {'text': text or '', 'provider': 'gemini-2.5-flash-lite'}
+        return {'text': text or '', 'provider': 'codex_cli'}
     except Exception as e:
         return {'error': str(e)}
 
@@ -241,8 +241,8 @@ def main() -> int:
 
     mentioned_count = 0
     for q in queries:
-        print(f'\n[Gemini] "{q}"')
-        res = query_gemini(q)
+        print(f'\n[Codex CLI] "{q}"')
+        res = query_codex(q)
         if 'error' in res:
             print(f'  err: {res["error"]}')
             continue

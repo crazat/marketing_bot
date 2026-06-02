@@ -94,7 +94,7 @@ class TestAPITracker:
         tracker._ensure_table()
         
         # Log a call
-        tracker.log_call('gemini', 'test_endpoint', tokens=100, success=True)
+        tracker.log_call('codex_cli', 'test_endpoint', tokens=100, success=True)
         
         # Verify it was logged
         conn = sqlite3.connect(temp_tracker_db)
@@ -104,7 +104,7 @@ class TestAPITracker:
         conn.close()
         
         assert row is not None
-        assert row[0] == 'gemini'
+        assert row[0] == 'codex_cli'
         assert row[1] == 100
         assert row[2] == 1
     
@@ -119,14 +119,14 @@ class TestAPITracker:
         # Log multiple calls
         tracker.log_call('naver_search', 'blog/test1')
         tracker.log_call('naver_search', 'blog/test2')
-        tracker.log_call('gemini', 'generate')
+        tracker.log_call('codex_cli', 'generate')
         
         # Check counts
         naver_count = tracker.get_daily_count('naver_search')
-        gemini_count = tracker.get_daily_count('gemini')
+        codex_cli_count = tracker.get_daily_count('codex_cli')
         
         assert naver_count == 2
-        assert gemini_count == 1
+        assert codex_cli_count == 1
     
     def test_daily_stats(self, temp_tracker_db):
         """Test daily statistics aggregation"""
@@ -137,15 +137,15 @@ class TestAPITracker:
         tracker._ensure_table()
         
         # Log calls
-        tracker.log_call('gemini', 'test', tokens=500, success=True)
-        tracker.log_call('gemini', 'test', tokens=300, success=False, error='test error')
+        tracker.log_call('codex_cli', 'test', tokens=500, success=True)
+        tracker.log_call('codex_cli', 'test', tokens=300, success=False, error='test error')
         
         stats = tracker.get_daily_stats()
         
-        assert 'gemini' in stats
-        assert stats['gemini']['calls'] == 2
-        assert stats['gemini']['tokens'] == 800
-        assert stats['gemini']['failures'] == 1
+        assert 'codex_cli' in stats
+        assert stats['codex_cli']['calls'] == 2
+        assert stats['codex_cli']['tokens'] == 800
+        assert stats['codex_cli']['failures'] == 1
 
 
 class TestCodeQuality:

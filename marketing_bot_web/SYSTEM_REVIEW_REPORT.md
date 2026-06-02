@@ -42,7 +42,7 @@
   - 해시태그 검색 (recent_media, top_media)
   - 토큰 자동 갱신 (60일 만료 전 refresh)
   - Rate Limit 처리 (지수 백오프)
-  - Gemini AI 기반 콘텐츠 분석
+  - Codex CLI AI 기반 콘텐츠 분석
 - **필요 설정**: `secrets.json`에 다음 키 필요
   - `INSTAGRAM_APP_ID`
   - `INSTAGRAM_APP_SECRET`
@@ -70,7 +70,7 @@
 - **위치**: `ReviewResponseAssistant.tsx`
 - **문제**: AI가 응답 제안만, 자동 게시 불가
 - **현황**:
-  - Gemini AI로 응답 생성 ✅
+  - Codex CLI AI로 응답 생성 ✅
   - 복사 후 수동으로 리뷰 사이트에 붙여넣기 필요
 - **개선안**:
   - 네이버 플레이스 API 연동 (있다면)

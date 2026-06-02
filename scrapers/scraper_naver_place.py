@@ -1509,3 +1509,13 @@ if __name__ == "__main__":
         logger.debug("place_scan_enrichment module not available, skipping")
     except Exception as e:
         logger.warning(f"⚠️ Post-scan enrichment failed (non-critical): {e}")
+
+    # 텔레그램으로 요약 없이 모든 결과 자동 발송 (생략 금지)
+    try:
+        sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+        from scripts.send_full_telegram_report import generate_report, send_telegram_message
+        logger.info("📨 [자동 전송] 플레이스 스캔 완료, 텔레그램으로 전수 결과 보고서를 생성 및 발송합니다...")
+        report = generate_report()
+        send_telegram_message(report)
+    except Exception as report_err:
+        logger.error(f"⚠️ [자동 전송 실패] 텔레그램 보고서 발송 중 오류 발생: {report_err}")

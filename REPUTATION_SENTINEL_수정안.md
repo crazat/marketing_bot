@@ -15,7 +15,7 @@
 
 ## 2. 근본 원인 분석
 
-### 2.1 Critical - Gemini API 타임아웃 부재
+### 2.1 Critical - Codex CLI API 타임아웃 부재
 **위치**: `sentinel_agent.py:136-140`
 
 ```python
@@ -27,7 +27,7 @@ response = self.client.models.generate_content(
 # ⚠️ timeout 파라미터 없음 → 무한 대기 가능
 ```
 
-**문제점**: Gemini API 서버 지연/장애 시 응답을 무한히 대기함
+**문제점**: Codex CLI API 서버 지연/장애 시 응답을 무한히 대기함
 
 ---
 
@@ -80,7 +80,7 @@ subprocess.Popen(
 
 ## 3. 수정안
 
-### 수정 1: Gemini API 호출에 타임아웃 추가
+### 수정 1: Codex CLI API 호출에 타임아웃 추가
 **파일**: `sentinel_agent.py`
 **위치**: `analyze_threat()` 메서드 (라인 96-150)
 
@@ -93,7 +93,7 @@ response = self.client.models.generate_content(
 )
 
 # 수정 후
-from google.genai import types
+from codex_cli_bridge import types
 
 response = self.client.models.generate_content(
     model=self.model_name,
@@ -107,8 +107,8 @@ response = self.client.models.generate_content(
 
 **대안 (httpx 레벨 타임아웃)**:
 ```python
-# genai Client 초기화 시
-self.client = genai.Client(
+# codex_cli Client 초기화 시
+self.client = codex_cli.Client(
     api_key=self.api_key,
     http_options={'timeout': 30000}  # 30초 (밀리초)
 )
@@ -231,7 +231,7 @@ for kw in self.targets.get('brand_keywords', []):
 
 | 순위 | 수정안 | 영향도 | 난이도 | 예상 효과 |
 |------|--------|--------|--------|-----------|
-| 1 | Gemini API 타임아웃 | Critical | 낮음 | 무한 대기 방지 |
+| 1 | Codex CLI API 타임아웃 | Critical | 낮음 | 무한 대기 방지 |
 | 2 | patrol() 에러 격리 | Critical | 낮음 | 크래시 복원력 |
 | 3 | 상태 업데이트 개선 | High | 낮음 | 모니터링 개선 |
 | 4 | daemon 로깅 활성화 | Medium | 낮음 | 디버깅 용이성 |
@@ -244,7 +244,7 @@ for kw in self.targets.get('brand_keywords', []):
 ### 5.1 단위 테스트
 ```python
 def test_analyze_threat_timeout():
-    """Gemini API 타임아웃 동작 테스트"""
+    """Codex CLI API 타임아웃 동작 테스트"""
     brain = SentinelBrain()
     # Mock slow API response
     result = brain.analyze_threat("test", "content")
@@ -281,7 +281,7 @@ cp sentinel_agent.py.bak sentinel_agent.py
 
 ## 7. 예상 결과
 
-- Gemini API 장애 시에도 30초 후 다음 작업 진행
+- Codex CLI API 장애 시에도 30초 후 다음 작업 진행
 - patrol() 사이클 중 오류 발생해도 다음 사이클 정상 실행
 - 대시보드에서 "RUNNING" → "IDLE" 상태 전환 확인 가능
 - daemon 로그 파일로 문제 추적 가능
@@ -292,7 +292,7 @@ cp sentinel_agent.py.bak sentinel_agent.py
 
 위 수정안에 대해 검토 후 승인해 주시면 순차적으로 구현 진행하겠습니다.
 
-- [ ] 수정안 1: Gemini API 타임아웃
+- [ ] 수정안 1: Codex CLI API 타임아웃
 - [ ] 수정안 2: patrol() 에러 격리
 - [ ] 수정안 3: 상태 업데이트 개선
 - [ ] 수정안 4: daemon 로깅 활성화

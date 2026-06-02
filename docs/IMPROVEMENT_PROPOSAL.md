@@ -138,7 +138,7 @@
 
 **현재 구현 상태:**
 - 7개 탭 (약점/기회키워드/콘텐츠갭/레이더/Instagram/리뷰응답/관리)
-- AI 기반 약점 분석 (Gemini)
+- AI 기반 약점 분석 (Codex CLI)
 - 콘텐츠 아웃라인 생성 및 복사
 - 영향도 점수 시각화
 
@@ -538,7 +538,7 @@ export const STATUS_STYLES = {
 ### 기술 스택
 - **Backend**: FastAPI (Python 3.11+), SQLite
 - **Frontend**: React 18, TypeScript, TanStack Query, Tailwind CSS
-- **AI**: Gemini 3 Flash Preview (gemini-3-flash-preview)
+- **AI**: Codex CLI 3 Flash Preview (codex_cli-3-flash-preview)
 - **스크래핑**: Selenium, BeautifulSoup, Requests
 
 ---
@@ -578,7 +578,7 @@ class KeywordCluster:
 
     def cluster_keywords(self, keywords: List[str]) -> Dict[str, List[str]]:
         """
-        TF-IDF + K-Means 또는 Gemini Embedding 기반 클러스터링
+        TF-IDF + K-Means 또는 Codex CLI Embedding 기반 클러스터링
 
         예시 결과:
         {
@@ -638,7 +638,7 @@ class IntentClassifier:
     }
 
     def classify(self, keyword: str) -> Dict:
-        """Gemini AI 기반 의도 분류"""
+        """Codex CLI AI 기반 의도 분류"""
 ```
 
 **기대 효과:**
@@ -679,7 +679,7 @@ API: routers/viral.py
 
 **구현된 기능:**
 - 바이럴 콘텐츠 수집 (커뮤니티, 블로그)
-- AI 기반 댓글 생성 (Gemini)
+- AI 기반 댓글 생성 (Codex CLI)
 - 수집된 콘텐츠 목록 관리
 
 **한계점:**
@@ -926,7 +926,7 @@ class RankChangeAnalyzer:
         - 경쟁사 활동
         - 외부 요인 (계절, 이벤트)
 
-        Gemini AI로 종합 분석
+        Codex CLI AI로 종합 분석
         """
 ```
 

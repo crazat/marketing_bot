@@ -200,8 +200,8 @@ python utils/check_db.py --table competitor_weaknesses
 ```
 
 **참고사항**:
-- Gemini AI를 사용하여 리뷰에서 약점을 추출합니다.
-- `gemini-3-flash-preview` 모델만 사용합니다.
+- Codex CLI AI를 사용하여 리뷰에서 약점을 추출합니다.
+- `codex_cli-3-flash-preview` 모델만 사용합니다.
 
 ---
 
@@ -353,7 +353,7 @@ pip install -r requirements.txt
 
 **증상**:
 ```
-❌ Gemini API 키가 설정되지 않았습니다
+❌ Codex CLI API 키가 설정되지 않았습니다
 ```
 
 **해결**:
@@ -362,7 +362,7 @@ pip install -r requirements.txt
 type .env
 
 # API 키 설정
-echo GEMINI_API_KEY=your_api_key_here >> .env
+echo CODEX_CLI_API_KEY=your_api_key_here >> .env
 ```
 
 ---

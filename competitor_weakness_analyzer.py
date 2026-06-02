@@ -6,7 +6,7 @@ Sentinel 시스템의 확장 모듈입니다.
 
 Features:
 - 네이버 플레이스 리뷰 수집
-- Gemini AI로 약점 분석
+- Codex CLI AI로 약점 분석
 - 기회 키워드 자동 생성
 - 콘텐츠 제안 생성
 """
@@ -56,7 +56,7 @@ class WeaknessData:
     """약점 분석 결과"""
     competitor_name: str
     source: str  # review, blog, cafe
-    weakness_type: str  # 서비스, 가격, 시설, 대기시간, 효과, 기타
+    weakness_type: str  # 서비스, 상담투명성, 시설, 대기시간, 회복설명, 기타
     original_text: str
     weakness_keywords: List[str] = field(default_factory=list)
     opportunity_keywords: List[str] = field(default_factory=list)
@@ -69,18 +69,18 @@ class CompetitorWeaknessAnalyzer:
     """경쟁사 약점 분석기"""
 
     WEAKNESS_TYPES = {
-        '서비스': ['불친절', '응대', '설명', '상담', '태도', '무성의'],
-        '가격': ['비싸', '가격', '비용', '돈', '결제', '추가금'],
+        '서비스': ['불친절', '응대', '상담 태도', '태도', '무성의'],
+        '상담투명성': ['비싸', '가격', '비용', '돈', '결제', '추가금', '불명확', '부담'],
         '시설': ['시설', '청결', '위생', '좁', '오래된', '주차'],
         '대기시간': ['대기', '기다', '오래', '늦', '예약'],
-        '효과': ['효과', '결과', '변화', '재발', '안됨', '별로'],
+        '회복설명': ['효과', '결과', '변화', '재발', '안됨', '별로', '설명 부족'],
     }
 
     def __init__(self):
         self.config = ConfigManager()
         self.db = DatabaseManager()
         self.competitors = self._load_competitors()
-        self._init_gemini()
+        self._init_ai_client()
 
     def _load_competitors(self) -> List[Dict]:
         """targets.json에서 경쟁사 정보 로드"""
@@ -108,7 +108,7 @@ class CompetitorWeaknessAnalyzer:
             logger.error(f"Failed to load competitors: {e}")
             return []
 
-    def _init_gemini(self):
+    def _init_ai_client(self):
         """AI Client 초기화 (centralized)"""
         self.ai_available = True
         logger.info("AI Client initialized (centralized ai_client)")
@@ -195,9 +195,9 @@ class CompetitorWeaknessAnalyzer:
         try:
             # 부정적 키워드와 함께 검색
             negative_queries = [
-                f"{competitor_name} 후기 별로",
-                f"{competitor_name} 실망",
-                f"{competitor_name} 비추",
+                f"{competitor_name} 상담 불편",
+                f"{competitor_name} 설명 부족",
+                f"{competitor_name} 대기 불편",
             ]
 
             for query in negative_queries[:1]:  # API 부하 방지
@@ -249,9 +249,9 @@ class CompetitorWeaknessAnalyzer:
         분석 후 JSON으로 반환하세요:
         {{
             "is_negative": true/false,
-            "weakness_type": "서비스|가격|시설|대기시간|효과|기타",
+            "weakness_type": "서비스|상담투명성|시설|대기시간|회복설명|기타",
             "weakness_keywords": ["불친절", "비싸다" 등 약점 키워드 3개 이하],
-            "opportunity_keywords": ["청주 친절한 한의원", "청주 가성비 한의원" 등 우리가 공략할 수 있는 키워드 3개],
+            "opportunity_keywords": ["강남 흉터 상담 기준", "선릉 회복조건 상담" 등 RECOVER가 공략할 수 있는 키워드 3개],
             "content_suggestion": "이 약점을 공략하는 블로그 콘텐츠 제목 1개",
             "sentiment_score": -1.0 ~ 1.0 (부정~긍정)
         }}
@@ -300,11 +300,11 @@ class CompetitorWeaknessAnalyzer:
 
         # 기회 키워드 생성
         opportunity_map = {
-            '서비스': ['청주 친절한 한의원', '청주 상담 잘해주는 한의원'],
-            '가격': ['청주 가성비 한의원', '청주 합리적 한의원'],
-            '대기시간': ['청주 예약제 한의원', '청주 대기없는 한의원'],
-            '효과': ['청주 효과좋은 한의원', '청주 결과 보장 한의원'],
-            '시설': ['청주 깨끗한 한의원', '청주 최신시설 한의원'],
+            '서비스': ['강남 흉터 상담 기준', '선릉 상담 기록 정리'],
+            '상담투명성': ['강남 흉터 상담 항목 확인', '선릉 상담 전 비교 기준'],
+            '대기시간': ['선릉 예약 전 확인할 것', '강남 흉터 상담 준비 항목'],
+            '회복설명': ['흉터 회복 방향 상담', '회복 조건 비교 기준'],
+            '시설': ['강남 흉터 촬영 상담', '선릉 회복조건 상담'],
         }
 
         return WeaknessData(
@@ -313,8 +313,8 @@ class CompetitorWeaknessAnalyzer:
             weakness_type=weakness_type,
             original_text=text[:500],
             weakness_keywords=[kw for kw in negative_keywords if kw in text_lower][:3],
-            opportunity_keywords=opportunity_map.get(weakness_type, ['청주 한의원 추천']),
-            content_suggestion=f"'{competitor_name}' 보다 나은 선택, 규림한의원",
+            opportunity_keywords=opportunity_map.get(weakness_type, ['강남 흉터 상담 비교 기준']),
+            content_suggestion=f"'{competitor_name}' 방문 전 확인할 RECOVER 상담 기준",
             sentiment_score=-0.5
         )
 

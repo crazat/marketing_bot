@@ -1418,7 +1418,7 @@ async def generate_keyword_outline(request: OutlineRequest) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"[generate-outline] AI 실패, 템플릿 사용: {e}")
 
-        # Gemini 실패 시 기본 템플릿 사용
+        # Codex CLI 실패 시 기본 템플릿 사용
         main_keyword = keywords[0] if keywords else "한의원"
         outline = {
             "title": f"{main_keyword} 완벽 가이드: 전문가가 알려드리는 핵심 정보",

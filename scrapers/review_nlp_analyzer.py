@@ -2,7 +2,7 @@
 """
 Review NLP Analyzer - 경쟁사 리뷰 AI 심층 분석기
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Gemini AI를 활용하여 competitor_reviews 테이블의 리뷰 텍스트를
+Codex CLI AI를 활용하여 competitor_reviews 테이블의 리뷰 텍스트를
 심층 분석합니다.
 
 - 경쟁사별 강점/약점 도출
@@ -119,7 +119,7 @@ class ReviewNLPAnalyzer:
         return dict(reviews_by_competitor)
 
     def _build_prompt(self, competitor_name: str, reviews: List[Dict], batch_num: int, total_batches: int) -> str:
-        """Gemini 분석 프롬프트를 생성합니다."""
+        """Codex CLI 분석 프롬프트를 생성합니다."""
         count = len(reviews)
         reviews_text = ""
         for i, review in enumerate(reviews, 1):
@@ -148,7 +148,7 @@ JSON 형식으로 응답:
         return prompt
 
     def _parse_json_response(self, text: str) -> Optional[Dict]:
-        """Gemini 응답에서 JSON을 추출하고 파싱합니다."""
+        """Codex CLI 응답에서 JSON을 추출하고 파싱합니다."""
         if not text:
             return None
 

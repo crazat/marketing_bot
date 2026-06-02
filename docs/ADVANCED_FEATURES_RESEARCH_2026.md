@@ -99,7 +99,7 @@ CREATE TABLE reputation_scores (
 - Naver POS integration for receipt-verified reviews
 - Academic research on Korean platforms (Naver Shopping) uses: review ratings, image counts, positive/negative text content, review length, repetition of affirmative words
 - State-of-art: DeBERTa + Monarch Butterfly Optimizer (MBO-DeBERTa) for fake review detection
-- Practical approach: Use existing Gemini AI for Korean-language analysis
+- Practical approach: Use existing Codex CLI AI for Korean-language analysis
 
 **Implementation design**:
 
@@ -170,7 +170,7 @@ class ReviewResponseABTester:
         """
 
     def generate_response_variant(self, review: Review) -> Tuple[str, str]:
-        """Use Gemini to generate two response variants"""
+        """Use Codex CLI to generate two response variants"""
 
     def evaluate_experiment(self, experiment_id: str) -> ABResult:
         """Statistical significance test (chi-squared) after n responses"""
@@ -292,7 +292,7 @@ class NeighborhoodPersonalizer:
     }
 
     def personalize_content(self, base_content: str, neighborhood: str) -> str:
-        """Adapt content for neighborhood demographics using Gemini"""
+        """Adapt content for neighborhood demographics using Codex CLI"""
 
     def generate_neighborhood_campaign(self, neighborhood: str) -> Campaign:
         """Generate location-specific campaign"""
@@ -380,7 +380,7 @@ class WeatherBasedMarketing:
         """Check current and forecasted weather against triggers"""
 
     def generate_weather_content(self, trigger: WeatherTrigger) -> ContentPlan:
-        """Generate content plan based on weather trigger using Gemini"""
+        """Generate content plan based on weather trigger using Codex CLI"""
 
     def schedule_proactive_content(self, forecast_days: int = 3):
         """Pre-schedule content based on weather forecast"""
@@ -566,7 +566,7 @@ class SeasonalCampaignEngine:
         """Check which seasonal campaigns should be active"""
 
     def generate_campaign_content(self, campaign: Campaign) -> List[Content]:
-        """Use Gemini to generate campaign-specific content"""
+        """Use Codex CLI to generate campaign-specific content"""
 
     def auto_schedule_blog_posts(self, campaign: Campaign):
         """Schedule blog posts throughout the campaign period"""
@@ -939,7 +939,7 @@ class EmergingSocialMonitor:
         """Track brand and keyword mentions"""
 
     def analyze_sentiment(self, mentions: List[SocialMention]) -> SentimentReport:
-        """Analyze sentiment of social mentions using Gemini"""
+        """Analyze sentiment of social mentions using Codex CLI"""
 
     def identify_influencers(self, platform: str) -> List[Influencer]:
         """Find healthcare-related influencers on emerging platforms"""

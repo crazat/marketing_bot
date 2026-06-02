@@ -186,7 +186,7 @@ class CompetitorScout:
     def __del__(self):
         self.close()
 
-    def analyze_with_gemini(self, all_data):
+    def analyze_with_ai(self, all_data):
         """
         [BATCH OPTIMIZED] AI 분석을 배치 단위로 수행하여 API 비용 절감.
         200개 데이터를 20개씩 묶어서 10회 API 호출 (기존 200회 → 10회)
@@ -376,7 +376,7 @@ JSON 형식으로 요약하세요:
                 report_content = "❌ 데이터 수집 실패."
             else:
                 # PASS ALL DATA
-                report_content = self.analyze_with_gemini(all_data)
+                report_content = self.analyze_with_ai(all_data)
             
             timestamp = datetime.now().strftime("%Y%m%d")
             filename = f"{timestamp}_{self.target_name}_DeepReport.md"
@@ -410,7 +410,7 @@ if __name__ == "__main__":
     args, unknown = parser.parse_known_args()
     
     # Reconstruct target name if split by spaces
-    target = " ".join(args.target_name).strip() if args.target_name else "규림한의원"
+    target = " ".join(args.target_name).strip() if args.target_name else "리커버한의원 강남"
     
     scout = CompetitorScout(target, headless=not args.headed, search_suffix=args.suffix)
     atexit.register(scout.close) # [Robustness] Ensure cleanup on exit

@@ -34,7 +34,7 @@
 - `config/secrets.json`
 
 **노출된 키:**
-- Gemini API Key
+- Codex CLI API Key
 - Kakao REST API Key
 - Naver Client ID/Secret
 - Instagram Access Token

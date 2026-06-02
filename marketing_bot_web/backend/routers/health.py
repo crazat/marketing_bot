@@ -201,12 +201,23 @@ def check_external_services() -> Dict[str, Any]:
 
         services = {}
 
-        # Gemini API
-        gemini_key = config.get_api_key("gemini")
-        services["gemini"] = {
-            "configured": bool(gemini_key),
-            "status": "configured" if gemini_key else "not_configured"
-        }
+        # Codex CLI LLM runtime
+        try:
+            from services.ai_client import ai_provider_status
+
+            codex_status = ai_provider_status()
+            services["codex_cli"] = {
+                "configured": bool(codex_status.get("available")),
+                "status": "configured" if codex_status.get("available") else "not_configured",
+                "model": codex_status.get("model"),
+                "task_models": codex_status.get("task_models"),
+            }
+        except Exception as exc:
+            services["codex_cli"] = {
+                "configured": False,
+                "status": "not_configured",
+                "error": str(exc)[:200],
+            }
 
         # Naver API
         naver_client_id = config.get_api_key("naver_client_id")

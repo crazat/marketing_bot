@@ -131,17 +131,11 @@ class SystemValidator:
             with open(secrets_path, 'r', encoding='utf-8') as f:
                 secrets = json.load(f)
             
-            # Check Google/Gemini API Key
-            api_key = (secrets.get('google_api_key') or 
-                      secrets.get('GOOGLE_API_KEY') or 
-                      secrets.get('GEMINI_API_KEY'))
-            
-            if not api_key:
-                self.errors.append("No Google/Gemini API key found in secrets.json")
-            elif len(api_key) < 20:
-                self.warnings.append("API key seems too short - verify it's correct")
-            elif api_key.startswith('YOUR_') or api_key == 'placeholder':
-                self.errors.append("API key is a placeholder - please set a real key")
+            # Codex CLI is authenticated outside this secrets file.
+            import shutil
+
+            if not shutil.which(os.getenv("CODEX_CLI_BIN", "codex")):
+                self.errors.append("Codex CLI binary not found")
             
             # Check Telegram Token (optional)
             telegram_token = secrets.get('telegram_token') or secrets.get('TELEGRAM_TOKEN')
@@ -199,7 +193,6 @@ class SystemValidator:
             ('pandas', 'pandas'),
             ('selenium', 'selenium'),
             ('webdriver_manager', 'webdriver-manager'),
-            ('google.generativeai', 'google-generativeai'),
             ('bs4', 'beautifulsoup4'),
             ('requests', 'requests'),
             ('schedule', 'schedule'),

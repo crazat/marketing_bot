@@ -735,14 +735,14 @@ class PlotlyChartRenderer:
 
 
 # =============================================================================
-# 4. AI 내러티브 요약 (Gemini로 한국어 자연어 생성)
+# 4. AI 내러티브 요약 (Codex CLI로 한국어 자연어 생성)
 # =============================================================================
 
 class AIReportNarrator:
     """
     원시 메트릭을 한국어 자연어 리포트로 변환
 
-    Gemini AI 사용 (기존 프로젝트의 gemini-3-flash-preview)
+    Codex CLI AI 사용 (기존 프로젝트의 codex_cli-3-flash-preview)
     """
 
     WEEKLY_SYSTEM_PROMPT = """당신은 한의원 마케팅 전문 분석가입니다.
@@ -1076,7 +1076,7 @@ class MonthlyReportGenerator:
     4. 다음 달 전략 제안
     """
 
-    def __init__(self, db_path: str, gemini_api_key: str = None):
+    def __init__(self, db_path: str, codex_cli_api_key: str = None):
         self.db_path = db_path
         self.chart_renderer = MobileChartRenderer()
         self.narrator = AIReportNarrator()
@@ -1362,7 +1362,7 @@ class WeeklyReportPipeline:
     def __init__(
         self,
         db_path: str,
-        gemini_api_key: str = None,
+        codex_cli_api_key: str = None,
         telegram_token: str = "",
         telegram_chat_id: str = "",
     ):

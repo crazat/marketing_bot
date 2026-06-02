@@ -183,11 +183,11 @@
     },
     {
       "time": "21:45",
-      "name": "Review NLP (Gemini)",
+      "name": "Review NLP (Codex CLI)",
       "icon": "🧪",
       "cmd": "review_nlp",
       "enabled": true,
-      "note": "google-genai 패키지 필요 (Windows에서 실행)"
+      "note": "codex-cli 패키지 필요 (Windows에서 실행)"
     },
     {
       "time": "22:00",

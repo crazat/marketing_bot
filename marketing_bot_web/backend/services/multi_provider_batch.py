@@ -1,15 +1,15 @@
 """[R11] Anthropic + OpenAI Batch API wrapper — 옵션 stub.
 
-⚠️ 디폴트 정책: 이 모듈은 활성화하지 말 것. Gemini 단일 정책 유지.
-   - Gemini가 이미 batch (50%) + implicit caching (75-90%) = 87.5% 절감
-   - Gemini 3.1 Flash Lite Preview는 한국어 자연스러움 더 좋고 단가도 더 쌈
+⚠️ 디폴트 정책: 이 모듈은 활성화하지 말 것. Codex CLI 단일 정책 유지.
+   - Codex CLI가 이미 batch (50%) + implicit caching (75-90%) = 87.5% 절감
+   - Codex CLI 3.1 Flash Lite Preview는 한국어 자연스러움 더 좋고 단가도 더 쌈
    - Anthropic/OpenAI 추가 시 운영 복잡도 ↑, 절감 차이는 월 $5 미만
 
-이 wrapper는 향후 사용자가 명시적으로 "Anthropic vs Gemini A/B 검증" 같은 작업 요청 시에만 활성.
+이 wrapper는 향후 사용자가 명시적으로 "Anthropic vs Codex CLI A/B 검증" 같은 작업 요청 시에만 활성.
 일상 분류·생성은 services/ai_client.py의 ai_generate_batch / ai_generate / ai_generate_korean 사용.
 
 비용 비교 (참고):
-  - Gemini Flash Lite: $0.10/$0.40 + caching 75-90% + batch 50% (현재 사용 중)
+  - Codex CLI Flash Lite: $0.10/$0.40 + caching 75-90% + batch 50% (현재 사용 중)
   - Anthropic Sonnet:  $3/$15    + cache 90%    + batch 50%
   - OpenAI gpt-4o-mini:$0.15/$0.60 + cache 50%   + batch 50%
 

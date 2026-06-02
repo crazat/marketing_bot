@@ -372,7 +372,7 @@ async def analyze_competitor_content(request: AnalysisRequest = None) -> Dict[st
     """
     [Phase 7.1] AI 기반 경쟁사 콘텐츠 분석
 
-    Gemini AI를 사용하여 경쟁사 Instagram 콘텐츠를 분석합니다.
+    Codex CLI AI를 사용하여 경쟁사 Instagram 콘텐츠를 분석합니다.
 
     Args:
         request: 분석 요청 (account: 특정 계정, analysis_type: 분석 유형)

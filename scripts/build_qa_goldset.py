@@ -2,12 +2,12 @@
 Q&A Gold Set 합성 + recall@k baseline 측정
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. qa_repository 모든 row마다 Gemini Pro로 자연어 query 변형 3개 합성
+1. qa_repository 모든 row마다 Codex CLI Pro로 자연어 query 변형 3개 합성
 2. qa_eval_dataset에 적재 (eval_set_name 별로 버전 관리)
 3. 각 query를 qa_search.search()로 retrieve → expected_qa_id 포함 여부로 recall@5 계산
 4. qa_eval_runs에 결과 적재
 
-비용: qa_repository 200건 가정 시 Gemini Pro × 200 호출 ≈ $0.2-0.6 (1회만)
+비용: qa_repository 200건 가정 시 Codex CLI Pro × 200 호출 ≈ $0.2-0.6 (1회만)
 
 사용:
     # 1) 합성
