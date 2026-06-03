@@ -81,11 +81,11 @@ export default function SparklineChart({
     if (color !== 'currentColor') return color
     switch (trend) {
       case 'up':
-        return '#22c55e' // green-500
+        return 'var(--ok)'
       case 'down':
-        return '#ef4444' // red-500
+        return 'var(--danger)'
       default:
-        return '#6b7280' // gray-500
+        return 'var(--text-faint)'
     }
   }, [color, trend])
 
@@ -211,8 +211,8 @@ export function TrendBadge({
     <span
       className={`
         inline-flex items-center gap-0.5 text-xs font-medium
-        ${isPositive ? 'text-green-500' : ''}
-        ${isNegative ? 'text-red-500' : ''}
+        ${isPositive ? 'text-ok' : ''}
+        ${isNegative ? 'text-danger' : ''}
         ${className}
       `}
     >

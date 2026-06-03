@@ -10,6 +10,8 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import Button from '@/components/ui/Button'
+import { D } from '@/lib/chartColors'
+import { TrendingUp, TrendingDown, ArrowRight, Smartphone, Monitor, Flame, AlertTriangle, BarChart3 } from 'lucide-react'
 
 // 순위 히스토리 항목 타입
 interface RankHistoryItem {
@@ -62,18 +64,8 @@ interface RankingTrendsProps {
   rankingKeywords?: RankingKeywordItem[]  // 현재 순위 데이터 (ranking-keywords API에서)
 }
 
-// 색상 팔레트
-const COLORS = [
-  '#22c55e', // green
-  '#3b82f6', // blue
-  '#f59e0b', // amber
-  '#ec4899', // pink
-  '#8b5cf6', // violet
-  '#06b6d4', // cyan
-  '#f97316', // orange
-  '#84cc16', // lime
-  '#6366f1', // indigo
-]
+// [RECOVER OS] 통합 데이터-비주얼 팔레트 (sage = 우리, 이후 경쟁사)
+const COLORS = D
 
 export default function RankingTrends({ trends, rankingKeywords }: RankingTrendsProps) {
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([])
@@ -309,7 +301,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
   if (!trends || !trends.keywords || Object.keys(trends.keywords).length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
-        <p className="text-4xl mb-4">📊</p>
+        <div className="flex justify-center mb-4 text-faint"><BarChart3 className="w-10 h-10" strokeWidth={1.5} /></div>
         <p>트렌드 데이터가 없습니다.</p>
         <p className="text-sm mt-2">순위 스캔을 실행하여 데이터를 수집하세요.</p>
       </div>
@@ -327,26 +319,26 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
           <div className="text-2xl font-bold">{summary?.total || keywordsData.length}</div>
         </div>
         <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/30">
-          <div className="text-sm text-green-500 mb-1">📈 상승</div>
+          <div className="text-sm text-green-500 mb-1">상승</div>
           <div className="text-2xl font-bold text-green-500">{summary?.improving || 0}</div>
         </div>
         <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30">
-          <div className="text-sm text-red-500 mb-1">📉 하락</div>
+          <div className="text-sm text-red-500 mb-1">하락</div>
           <div className="text-2xl font-bold text-red-500">{summary?.declining || 0}</div>
         </div>
         <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/30">
-          <div className="text-sm text-blue-500 mb-1">➡️ 유지</div>
+          <div className="text-sm text-blue-500 mb-1">유지</div>
           <div className="text-2xl font-bold text-blue-500">{summary?.stable || 0}</div>
         </div>
         {/* 연속 상승/하락 통계 */}
         <div className="p-4 rounded-lg bg-orange-500/10 border border-orange-500/30">
-          <div className="text-sm text-orange-500 mb-1">🔥 연속 상승</div>
+          <div className="text-sm text-orange-500 mb-1">연속 상승</div>
           <div className="text-2xl font-bold text-orange-500">
             {keywordsData.filter(k => k.consecutiveDirection === 'up' && k.consecutiveDays >= 2).length}
           </div>
         </div>
         <div className="p-4 rounded-lg bg-purple-500/10 border border-purple-500/30">
-          <div className="text-sm text-purple-500 mb-1">⚠️ 연속 하락</div>
+          <div className="text-sm text-purple-500 mb-1">연속 하락</div>
           <div className="text-2xl font-bold text-purple-500">
             {keywordsData.filter(k => k.consecutiveDirection === 'down' && k.consecutiveDays >= 2).length}
           </div>
@@ -364,7 +356,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                 : 'bg-muted text-muted-foreground hover:bg-muted/80'
             }`}
           >
-            📈 차트 뷰
+            차트 뷰
           </button>
           <button
             onClick={() => setViewMode('cards')}
@@ -374,7 +366,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                 : 'bg-muted text-muted-foreground hover:bg-muted/80'
             }`}
           >
-            📋 카드 뷰
+            카드 뷰
           </button>
         </div>
 
@@ -409,8 +401,8 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                 }`}
                 style={isSelected ? { backgroundColor: color } : undefined}
               >
-                {kw.trend === 'improving' ? '📈' :
-                 kw.trend === 'declining' ? '📉' : '➡️'} {kw.keyword}
+                {kw.trend === 'improving' ? <TrendingUp className="w-3.5 h-3.5 inline" strokeWidth={1.8} /> :
+                 kw.trend === 'declining' ? <TrendingDown className="w-3.5 h-3.5 inline" strokeWidth={1.8} /> : <ArrowRight className="w-3.5 h-3.5 inline" strokeWidth={1.8} />} {kw.keyword}
               </button>
             )
           })}
@@ -482,7 +474,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
               className="text-xs text-primary hover:underline"
               aria-expanded={showDataTable}
             >
-              {showDataTable ? '테이블 숨기기' : '📊 데이터 테이블로 보기'}
+              {showDataTable ? '테이블 숨기기' : '데이터 테이블로 보기'}
             </button>
           </div>
           {/* 접근성: 데이터 테이블 */}
@@ -541,8 +533,8 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                     className="text-xs px-2 py-1 rounded-full text-white"
                     style={{ backgroundColor: color }}
                   >
-                    {kw.trend === 'improving' ? '📈 상승' :
-                     kw.trend === 'declining' ? '📉 하락' : '➡️ 유지'}
+                    {kw.trend === 'improving' ? '상승' :
+                     kw.trend === 'declining' ? '하락' : '유지'}
                   </span>
                 </div>
 
@@ -551,7 +543,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                   {/* 모바일 순위 */}
                   <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
                     <div className="flex items-center gap-1.5 text-xs text-blue-400 mb-1">
-                      <span>📱</span>
+                      <Smartphone className="w-3.5 h-3.5" strokeWidth={1.8} />
                       <span>모바일</span>
                     </div>
                     <div className="text-2xl font-bold text-blue-400">
@@ -561,7 +553,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                   {/* 데스크톱 순위 */}
                   <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
                     <div className="flex items-center gap-1.5 text-xs text-purple-400 mb-1">
-                      <span>🖥️</span>
+                      <Monitor className="w-3.5 h-3.5" strokeWidth={1.8} />
                       <span>데스크톱</span>
                     </div>
                     <div className="text-2xl font-bold text-purple-400">
@@ -578,8 +570,8 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                       : 'bg-purple-500/10 text-purple-400'
                   }`}>
                     {kw.mobileRank < kw.desktopRank
-                      ? `📱 모바일이 ${kw.desktopRank - kw.mobileRank}순위 더 높음`
-                      : `🖥️ 데스크톱이 ${kw.mobileRank - kw.desktopRank}순위 더 높음`
+                      ? `모바일이 ${kw.desktopRank - kw.mobileRank}순위 더 높음`
+                      : `데스크톱이 ${kw.mobileRank - kw.desktopRank}순위 더 높음`
                     }
                   </div>
                 )}
@@ -615,7 +607,7 @@ export default function RankingTrends({ trends, rankingKeywords }: RankingTrends
                         ? 'bg-green-500/20 text-green-500'
                         : 'bg-red-500/20 text-red-500'
                     }`}>
-                      {kw.consecutiveDirection === 'up' ? '🔥' : '⚠️'}
+                      {kw.consecutiveDirection === 'up' ? <Flame className="w-3.5 h-3.5 inline" strokeWidth={1.8} /> : <AlertTriangle className="w-3.5 h-3.5 inline" strokeWidth={1.8} />}
                       {kw.consecutiveDays}일 연속 {kw.consecutiveDirection === 'up' ? '상승' : '하락'}
                     </span>
                   )}

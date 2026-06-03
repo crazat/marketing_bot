@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { leadsApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import Button, { IconButton } from '@/components/ui/Button'
-import { X } from 'lucide-react'
+import { X, FileText, Plus, AlertTriangle, Calendar } from 'lucide-react'
 
 interface LeadNoteEditorProps {
   leadId: number
@@ -92,10 +92,10 @@ export default function LeadNoteEditor({
         } ${isOverdue ? 'text-red-500' : ''}`}
         title={hasNotes ? notes : '노트 추가'}
       >
-        {hasNotes ? '📝' : '➕'}
+        {hasNotes ? <FileText className="w-4 h-4" strokeWidth={1.8} /> : <Plus className="w-4 h-4" strokeWidth={1.8} />}
         {hasFollowUp && (
-          <span className={`text-xs ${isOverdue ? 'text-red-500' : 'text-muted-foreground'}`}>
-            {isOverdue ? '⚠️' : '📅'}
+          <span className={`text-xs ${isOverdue ? 'text-danger' : 'text-muted-foreground'}`}>
+            {isOverdue ? <AlertTriangle className="w-3 h-3" strokeWidth={2} /> : <Calendar className="w-3 h-3" strokeWidth={2} />}
           </span>
         )}
       </button>
@@ -103,7 +103,7 @@ export default function LeadNoteEditor({
       {/* 팔로업 날짜 미리보기 */}
       {hasFollowUp && !isOpen && (
         <div className={`text-xs mt-1 ${isOverdue ? 'text-red-500 font-medium' : 'text-muted-foreground'}`}>
-          {isOverdue ? '⚠️ ' : ''}
+          {isOverdue ? '' : ''}
           {new Date(initialFollowUpDate).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })}
         </div>
       )}
@@ -114,7 +114,7 @@ export default function LeadNoteEditor({
           ref={popoverRef}
           className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-lg shadow-lg z-50 p-4"
         >
-          <h4 className="font-semibold mb-3 text-sm">📝 리드 노트</h4>
+          <h4 className="font-semibold mb-3 text-sm">리드 노트</h4>
 
           {/* 상담 노트 */}
           <div className="mb-4">
@@ -184,7 +184,7 @@ export default function LeadNoteEditor({
 
           {/* [Phase 4.0] 매출 정보 */}
           <div className="mb-4 p-3 bg-muted/50 rounded-lg">
-            <label className="text-xs text-muted-foreground mb-2 block font-medium">💰 매출 정보 (ROI 분석용)</label>
+            <label className="text-xs text-muted-foreground mb-2 block font-medium">매출 정보 (ROI 분석용)</label>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">예상 매출</label>
@@ -211,7 +211,7 @@ export default function LeadNoteEditor({
 
           {/* [Phase 4.0] 출처 추적 */}
           <div className="mb-4">
-            <label className="text-xs text-muted-foreground mb-2 block font-medium">🔗 출처 추적</label>
+            <label className="text-xs text-muted-foreground mb-2 block font-medium">출처 추적</label>
             <input
               type="text"
               value={sourceKeyword}

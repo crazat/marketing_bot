@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Inbox, Flame, Swords, ChevronRight, Clock, Check, X } from 'lucide-react'
+import { Inbox, Flame, Swords, ChevronRight, Clock, Check, X, Coffee, FileText, HelpCircle, Instagram, Youtube, Music, Tag } from 'lucide-react'
 import { viralApi } from '@/services/api'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useToast } from '@/components/ui/Toast'
 import SwipeableTargetItem from '@/components/viral/SwipeableTargetItem'
 
@@ -10,18 +10,19 @@ interface TodaysQueueProps {
   onOpenCategory?: (category: string) => void
 }
 
-const CATEGORY_ICON: Record<string, string> = {
-  '경쟁사_역공략': '⚔️',
-  '기타': '📌',
+const QI = 'w-4 h-4'
+const CATEGORY_ICON: Record<string, ReactNode> = {
+  '경쟁사_역공략': <Swords className={QI} strokeWidth={1.7} />,
+  '기타': <Tag className={QI} strokeWidth={1.7} />,
 }
 
-const PLATFORM_ICON: Record<string, string> = {
-  cafe: '☕',
-  blog: '📝',
-  kin: '❓',
-  instagram: '📸',
-  youtube: '▶️',
-  tiktok: '🎵',
+const PLATFORM_ICON: Record<string, ReactNode> = {
+  cafe: <Coffee className={QI} strokeWidth={1.7} />,
+  blog: <FileText className={QI} strokeWidth={1.7} />,
+  kin: <HelpCircle className={QI} strokeWidth={1.7} />,
+  instagram: <Instagram className={QI} strokeWidth={1.7} />,
+  youtube: <Youtube className={QI} strokeWidth={1.7} />,
+  tiktok: <Music className={QI} strokeWidth={1.7} />,
 }
 
 export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueueProps) {
@@ -42,7 +43,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
     setPendingAction(targetId)
     try {
       await viralApi.targetAction(targetId, action)
-      toast.success(action === 'approve' ? '✅ 승인' : '⏭️ 스킵')
+      toast.success(action === 'approve' ? '승인' : '스킵')
       queryClient.invalidateQueries({ queryKey: ['viral-todays-queue'] })
       queryClient.invalidateQueries({ queryKey: ['viral-kpi-stats'] })
     } catch (err) {
@@ -88,7 +89,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
               todayOnly ? 'bg-primary/10 border-primary text-primary font-medium' : 'border-border'
             }`}
           >
-            {todayOnly ? '📅 오늘만' : '🗓️ 전체'}
+            {todayOnly ? '오늘만' : '전체'}
           </button>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -121,7 +122,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
             }`}
             title="오늘 발견된 타겟만 표시"
           >
-            {todayOnly ? '📅 오늘만' : '🗓️ 전체'}
+            {todayOnly ? '오늘만' : '전체'}
           </button>
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Clock className="h-3 w-3" />
@@ -136,7 +137,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
       <div className="space-y-4">
         {data.groups.map((group) => {
           const isCompetitor = group.category === '경쟁사_역공략'
-          const icon = CATEGORY_ICON[group.category] ?? '📌'
+          const icon = CATEGORY_ICON[group.category] ?? <Tag className={QI} strokeWidth={1.7} />
           return (
             <div
               key={group.category}
@@ -172,7 +173,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
                           onClick={() => onOpenTarget?.(item.id)}
                           className="flex items-center gap-3 p-3 sm:p-2 rounded hover:bg-muted/50 cursor-pointer transition-colors select-none"
                         >
-                          <span className="text-lg">{PLATFORM_ICON[item.platform] ?? '📌'}</span>
+                          <span className="text-sage">{PLATFORM_ICON[item.platform] ?? <Tag className={QI} strokeWidth={1.7} />}</span>
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium truncate">{item.title}</div>
                             <div className="text-xs text-muted-foreground flex items-center gap-2 mt-0.5">

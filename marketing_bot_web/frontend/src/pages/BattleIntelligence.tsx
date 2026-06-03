@@ -24,7 +24,7 @@ import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import KeywordHub from '@/components/ui/KeywordHub'
 import Button, { IconButton } from '@/components/ui/Button'
-import { RefreshCw, Download, Plus, Play, Square } from 'lucide-react'
+import { RefreshCw, Download, Plus, Play, Square, X, Sparkles, AlertCircle, CheckCircle, Activity } from 'lucide-react'
 
 export default function BattleIntelligence() {
   const [showAddModal, setShowAddModal] = useState(false)
@@ -250,7 +250,7 @@ export default function BattleIntelligence() {
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold mb-2">⚔️ Battle Intelligence</h1>
+            <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">Battle Intelligence</h1>
             <p className="text-muted-foreground">네이버 플레이스 순위 추적 및 경쟁 분석</p>
           </div>
         </div>
@@ -280,7 +280,7 @@ export default function BattleIntelligence() {
       {/* 헤더 */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2">⚔️ Battle Intelligence</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">Battle Intelligence</h1>
           <p className="text-muted-foreground">
             네이버 플레이스 순위 추적 및 경쟁 분석
           </p>
@@ -355,23 +355,23 @@ export default function BattleIntelligence() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-card rounded-lg border border-border p-4">
           <div className="text-sm text-muted-foreground mb-1">총 추적 키워드</div>
-          <div className="text-3xl font-bold">{stats.total}</div>
+          <div className="font-display text-3xl sm:text-4xl tracking-tight">{stats.total}</div>
         </div>
         <div className="bg-card rounded-lg border border-border p-4">
           <div className="text-sm text-muted-foreground mb-1">Top 10 진입</div>
-          <div className="text-3xl font-bold text-primary">{stats.top10}</div>
+          <div className="font-display text-3xl sm:text-4xl tracking-tight text-primary">{stats.top10}</div>
         </div>
         <div className="bg-card rounded-lg border border-border p-4">
-          <div className="text-sm text-muted-foreground mb-1">📈 순위 상승</div>
-          <div className="text-3xl font-bold text-green-500">{stats.improving}</div>
+          <div className="text-sm text-muted-foreground mb-1">순위 상승</div>
+          <div className="font-display text-3xl sm:text-4xl tracking-tight text-green-500">{stats.improving}</div>
         </div>
         <div className="bg-card rounded-lg border border-border p-4">
-          <div className="text-sm text-muted-foreground mb-1">📉 순위 하락</div>
-          <div className="text-3xl font-bold text-red-500">{stats.declining}</div>
+          <div className="text-sm text-muted-foreground mb-1">순위 하락</div>
+          <div className="font-display text-3xl sm:text-4xl tracking-tight text-red-500">{stats.declining}</div>
         </div>
         <div className="bg-card rounded-lg border border-border p-4">
-          <div className="text-sm text-muted-foreground mb-1">➡️ 순위 유지</div>
-          <div className="text-3xl font-bold text-blue-500">{stats.stable}</div>
+          <div className="text-sm text-muted-foreground mb-1">순위 유지</div>
+          <div className="font-display text-3xl sm:text-4xl tracking-tight text-blue-500">{stats.stable}</div>
         </div>
       </div>
 
@@ -380,13 +380,13 @@ export default function BattleIntelligence() {
         <div className="px-2">
           <TabNavigation
             tabs={[
-              { id: 'trends', label: '📈 순위 트렌드' },
-              { id: 'forecast', label: '🔮 순위 예측' },
-              { id: 'alerts', label: '🚨 하락 알림', badge: rankDropAlerts?.alerts?.length || 0 },
-              { id: 'keywords', label: '🎯 추적 키워드' },
-              { id: 'competitors', label: '💪 경쟁사 활력' },
-              { id: 'insights', label: '📊 경쟁 인사이트' },
-              { id: 'local-seo', label: '📍 Local SEO' },
+              { id: 'trends', label: '순위 트렌드' },
+              { id: 'forecast', label: '순위 예측' },
+              { id: 'alerts', label: '하락 알림', badge: rankDropAlerts?.alerts?.length || 0 },
+              { id: 'keywords', label: '추적 키워드' },
+              { id: 'competitors', label: '경쟁사 활력' },
+              { id: 'insights', label: '경쟁 인사이트' },
+              { id: 'local-seo', label: 'Local SEO' },
             ]}
             activeTab={activeTab}
             onTabChange={setActiveTab}
@@ -400,12 +400,12 @@ export default function BattleIntelligence() {
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <h2 className="text-xl font-bold">📈 순위 트렌드</h2>
+                  <h2 className="text-xl font-bold">순위 트렌드</h2>
                   {keywordFilter && (
                     <div className="flex items-center gap-2 px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
-                      <span>🔍 {keywordFilter}</span>
+                      <span>{keywordFilter}</span>
                       <IconButton
-                        icon={<span>✕</span>}
+                        icon={<X className="w-3 h-3" />}
                         onClick={() => setKeywordFilter('')}
                         size="xs"
                         title="필터 해제"
@@ -421,7 +421,7 @@ export default function BattleIntelligence() {
                       onClick={() => setShowInsightPanel(true)}
                       className="bg-gradient-to-r from-purple-500 to-indigo-500"
                     >
-                      💡 인사이트
+                      인사이트
                     </Button>
                   )}
                   {/* [Phase D-3] 라이프사이클 버튼 */}
@@ -432,7 +432,7 @@ export default function BattleIntelligence() {
                       onClick={() => setShowLifecycleView(true)}
                       className="bg-gradient-to-r from-cyan-500 to-teal-500"
                     >
-                      📅 라이프사이클
+                      라이프사이클
                     </Button>
                   )}
                   {/* [Phase E-1] KeywordHub 버튼 */}
@@ -443,7 +443,7 @@ export default function BattleIntelligence() {
                       onClick={() => setShowKeywordHub(true)}
                       className="bg-gradient-to-r from-amber-500 to-orange-500"
                     >
-                      🎯 Hub
+                      Hub
                     </Button>
                   )}
                 </div>
@@ -475,7 +475,7 @@ export default function BattleIntelligence() {
           {activeTab === 'forecast' && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold">🔮 순위 예측 (7일 후)</h2>
+                <h2 className="text-xl font-bold">순위 예측 (7일 후)</h2>
                 <div className="text-sm text-muted-foreground">
                   최근 {selectedPeriod}일 데이터 기반 선형 회귀 분석
                 </div>
@@ -486,7 +486,7 @@ export default function BattleIntelligence() {
               ) : !rankingForecast?.forecasts?.length ? (
                 <EmptyState
                   type="initial"
-                  icon="🔮"
+                  icon={<Sparkles className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="예측 데이터가 부족합니다"
                   description="순위 예측을 위해서는 최소 3일 이상의 순위 스캔 데이터가 필요합니다."
                   suggestion="매일 순위 스캔을 실행하면 더 정확한 예측이 가능합니다."
@@ -505,19 +505,19 @@ export default function BattleIntelligence() {
                   {/* 요약 통계 */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-green-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-green-500">
                         {rankingForecast.summary.improving}
                       </div>
                       <div className="text-xs text-muted-foreground">상승 예상</div>
                     </div>
                     <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-red-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-red-500">
                         {rankingForecast.summary.declining}
                       </div>
                       <div className="text-xs text-muted-foreground">하락 예상</div>
                     </div>
                     <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-blue-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-blue-500">
                         {rankingForecast.summary.stable}
                       </div>
                       <div className="text-xs text-muted-foreground">유지 예상</div>
@@ -544,8 +544,8 @@ export default function BattleIntelligence() {
                               ? 'bg-red-500/20 text-red-500'
                               : 'bg-blue-500/20 text-blue-500'
                           }`}>
-                            {forecast.trend === 'improving' ? '📈 상승세' :
-                             forecast.trend === 'declining' ? '📉 하락세' : '➡️ 유지'}
+                            {forecast.trend === 'improving' ? '상승세' :
+                             forecast.trend === 'declining' ? '하락세' : '유지'}
                           </div>
                         </div>
 
@@ -595,7 +595,7 @@ export default function BattleIntelligence() {
                           <div className="flex items-center justify-between text-sm">
                             <span className="text-muted-foreground">목표 달성 예측</span>
                             <span className={forecast.on_track ? 'text-green-500' : 'text-yellow-500'}>
-                              {forecast.on_track ? '✅ 목표 달성 가능' : '⚠️ 추가 노력 필요'}
+                              {forecast.on_track ? '목표 달성 가능' : '추가 노력 필요'}
                             </span>
                           </div>
                           <div className="flex items-center justify-between mt-2 gap-2 flex-wrap">
@@ -614,7 +614,7 @@ export default function BattleIntelligence() {
                               onClick={() => handleViewTrend(forecast.keyword)}
                               className="ml-auto"
                             >
-                              📈 트렌드 보기
+                              트렌드 보기
                             </Button>
                           </div>
                         </div>
@@ -625,13 +625,13 @@ export default function BattleIntelligence() {
                   {/* [P2-3] 예측 정확도 검증 섹션 */}
                   {forecastAccuracy?.accuracy_results?.length > 0 && (
                     <div className="mt-8 pt-6 border-t border-border">
-                      <h3 className="text-lg font-semibold mb-4">📊 예측 정확도 검증 (7일 전 예측 vs 실제)</h3>
+                      <h3 className="text-lg font-semibold mb-4">예측 정확도 검증 (7일 전 예측 vs 실제)</h3>
 
                       {/* 정확도 요약 카드 */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                         <div className="bg-muted/50 rounded-lg p-4 text-center">
                           <p className="text-sm text-muted-foreground">평균 정확도</p>
-                          <p className={`text-2xl font-bold ${
+                          <p className={`font-display text-2xl sm:text-3xl tracking-tight ${
                             forecastAccuracy.summary.avg_accuracy_pct >= 80 ? 'text-green-500' :
                             forecastAccuracy.summary.avg_accuracy_pct >= 60 ? 'text-yellow-500' :
                             'text-red-500'
@@ -641,21 +641,21 @@ export default function BattleIntelligence() {
                         </div>
                         <div className="bg-muted/50 rounded-lg p-4 text-center">
                           <p className="text-sm text-muted-foreground">정확 예측 비율</p>
-                          <p className="text-2xl font-bold text-primary">
+                          <p className="font-display text-2xl sm:text-3xl tracking-tight text-primary">
                             {forecastAccuracy.summary.accuracy_rate}%
                           </p>
                           <p className="text-xs text-muted-foreground">±3 이내</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-4 text-center">
                           <p className="text-sm text-muted-foreground">평균 오차</p>
-                          <p className="text-2xl font-bold">
+                          <p className="font-display text-2xl sm:text-3xl tracking-tight">
                             ±{forecastAccuracy.summary.avg_error}
                           </p>
                           <p className="text-xs text-muted-foreground">순위 차이</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-4 text-center">
                           <p className="text-sm text-muted-foreground">완벽 예측</p>
-                          <p className="text-2xl font-bold text-green-500">
+                          <p className="font-display text-2xl sm:text-3xl tracking-tight text-green-500">
                             {forecastAccuracy.summary.perfect_predictions}
                           </p>
                           <p className="text-xs text-muted-foreground">±1 이내</p>
@@ -707,7 +707,7 @@ export default function BattleIntelligence() {
                       </div>
 
                       <p className="text-xs text-muted-foreground mt-3">
-                        💡 7일 전 시점의 데이터로 오늘의 순위를 예측하고, 실제 순위와 비교한 결과입니다.
+                        7일 전 시점의 데이터로 오늘의 순위를 예측하고, 실제 순위와 비교한 결과입니다.
                         정확도가 높을수록 예측 모델의 신뢰성이 높습니다.
                       </p>
                     </div>
@@ -721,21 +721,21 @@ export default function BattleIntelligence() {
           {activeTab === 'alerts' && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold">🚨 순위 하락 알림</h2>
+                <h2 className="text-xl font-bold">순위 하락 알림</h2>
                 <Button
                   variant="secondary"
                   size="sm"
                   onClick={() => refetchAlerts()}
                 >
-                  🔄 새로고침
+                  새로고침
                 </Button>
               </div>
 
               {alertsLoading ? (
                 <SkeletonList items={5} />
               ) : alertsError ? (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-8 text-center">
-                  <p className="text-4xl mb-2">❌</p>
+                <div className="bg-danger-tint border border-danger/20 rounded-card p-8 text-center">
+                  <div className="flex justify-center mb-3 text-danger"><AlertCircle className="w-10 h-10" strokeWidth={1.6} /></div>
                   <p className="font-medium text-lg mb-1">알림 데이터를 불러올 수 없습니다</p>
                   <p className="text-sm text-muted-foreground mb-3">
                     네트워크 오류가 발생했습니다. 다시 시도해주세요.
@@ -744,12 +744,12 @@ export default function BattleIntelligence() {
                     variant="primary"
                     onClick={() => refetchAlerts()}
                   >
-                    🔄 다시 시도
+                    다시 시도
                   </Button>
                 </div>
               ) : !rankDropAlerts?.alerts?.length ? (
-                <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-8 text-center">
-                  <p className="text-4xl mb-2">✅</p>
+                <div className="bg-ok-tint border border-ok/20 rounded-card p-8 text-center">
+                  <div className="flex justify-center mb-3 text-ok"><CheckCircle className="w-10 h-10" strokeWidth={1.6} /></div>
                   <p className="font-medium text-lg mb-1">순위 하락 알림 없음</p>
                   <p className="text-sm text-muted-foreground">
                     모든 키워드가 안정적으로 유지되고 있습니다
@@ -760,26 +760,26 @@ export default function BattleIntelligence() {
                   {/* 요약 통계 */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-red-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-red-500">
                         {rankDropAlerts.summary?.total_alerts || rankDropAlerts.alerts.length}
                       </div>
                       <div className="text-xs text-muted-foreground">하락 키워드</div>
                     </div>
                     <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-orange-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-orange-500">
                         {rankDropAlerts.summary?.critical_drops || rankDropAlerts.alerts.filter((a: any) => a.severity === 'critical').length}
                       </div>
                       <div className="text-xs text-muted-foreground">심각한 하락 (5+)</div>
                     </div>
                     <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-yellow-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-yellow-500">
                         {rankDropAlerts.summary?.avg_drop ||
                           Math.round(rankDropAlerts.alerts.reduce((sum: number, a: any) => sum + a.rank_drop, 0) / rankDropAlerts.alerts.length)}
                       </div>
                       <div className="text-xs text-muted-foreground">평균 하락폭</div>
                     </div>
                     <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 text-center">
-                      <div className="text-2xl font-bold text-blue-500">
+                      <div className="font-display text-2xl sm:text-3xl tracking-tight text-blue-500">
                         {rankDropAlerts.summary?.keywords_outside_top10 ||
                           rankDropAlerts.alerts.filter((a: any) => a.current_rank > 10).length}
                       </div>
@@ -809,8 +809,8 @@ export default function BattleIntelligence() {
                                 ? 'bg-orange-500 text-white'
                                 : 'bg-yellow-500 text-black'
                             }`}>
-                              {alert.severity === 'critical' ? '🚨 심각' :
-                               alert.severity === 'warning' ? '⚠️ 주의' : '📉 하락'}
+                              {alert.severity === 'critical' ? '심각' :
+                               alert.severity === 'warning' ? '주의' : '하락'}
                             </span>
                             <span className="font-semibold">{alert.keyword}</span>
                           </div>
@@ -822,7 +822,7 @@ export default function BattleIntelligence() {
                               setActiveTab('trends')
                             }}
                           >
-                            📈 트렌드 보기
+                            트렌드 보기
                           </Button>
                         </div>
 
@@ -855,9 +855,9 @@ export default function BattleIntelligence() {
                                 alert.trend === 'improving' ? 'text-green-500' :
                                 'text-yellow-500'
                               }`}>
-                                {alert.trend === 'declining' ? '📉 지속 하락세' :
-                                 alert.trend === 'improving' ? '📈 회복 중' :
-                                 '➡️ 변동 중'}
+                                {alert.trend === 'declining' ? '지속 하락세' :
+                                 alert.trend === 'improving' ? '회복 중' :
+                                 '변동 중'}
                               </span>
                             </div>
                             {alert.consecutive_drops && (
@@ -872,7 +872,7 @@ export default function BattleIntelligence() {
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    💡 3순위 이상 하락한 키워드만 표시됩니다. 순위 스캔 후 자동 업데이트됩니다.
+                    3순위 이상 하락한 키워드만 표시됩니다. 순위 스캔 후 자동 업데이트됩니다.
                   </p>
                 </div>
               )}
@@ -883,7 +883,7 @@ export default function BattleIntelligence() {
           {activeTab === 'keywords' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold">🎯 추적 중인 키워드</h2>
+                <h2 className="text-xl font-bold">추적 중인 키워드</h2>
                 <div className="flex items-center gap-3">
                   <Button
                     variant="secondary"
@@ -892,7 +892,7 @@ export default function BattleIntelligence() {
                     loading={refreshVolumes.isPending}
                     title="검색량이 0인 키워드들의 검색량을 Naver API로 조회합니다"
                   >
-                    📊 검색량 새로고침
+                    검색량 새로고침
                   </Button>
                   <span className="text-sm text-muted-foreground">
                     {rankingKeywords?.length || 0}개 키워드 추적 중
@@ -911,7 +911,7 @@ export default function BattleIntelligence() {
           {/* 경쟁사 활력 탭 */}
           {activeTab === 'competitors' && (
             <div className="space-y-4">
-              <h2 className="text-xl font-bold">💪 경쟁사 활력 지표</h2>
+              <h2 className="text-xl font-bold">경쟁사 활력 지표</h2>
               {vitalsLoading ? (
                 <SkeletonList items={4} />
               ) : vitalsError ? (
@@ -921,8 +921,8 @@ export default function BattleIntelligence() {
                   onRetry={() => refetchVitals()}
                 />
               ) : !competitorVitals || Object.keys(competitorVitals).length === 0 ? (
-                <div className="bg-muted/50 rounded-lg p-8 text-center">
-                  <p className="text-4xl mb-2">💪</p>
+                <div className="bg-surface-2 rounded-card p-8 text-center">
+                  <div className="flex justify-center mb-3 text-faint"><Activity className="w-10 h-10" strokeWidth={1.6} /></div>
                   <p className="font-medium text-lg mb-1">경쟁사 활력 데이터가 없습니다</p>
                   <p className="text-sm text-muted-foreground mb-4">순위 스캔을 실행하면 경쟁사 리뷰 정보가 수집됩니다.</p>
                   <Button
@@ -930,7 +930,7 @@ export default function BattleIntelligence() {
                     onClick={handleRunScan}
                     loading={runScan.isPending || !!scanningModule}
                   >
-                    🔍 순위 스캔 시작
+                    순위 스캔 시작
                   </Button>
                 </div>
               ) : (
@@ -946,7 +946,7 @@ export default function BattleIntelligence() {
           {/* [Phase 5.2] 경쟁 인사이트 탭 */}
           {activeTab === 'insights' && (
             <div className="space-y-4">
-              <h2 className="text-xl font-bold">📊 경쟁 인사이트</h2>
+              <h2 className="text-xl font-bold">경쟁 인사이트</h2>
               <CompetitorInsights />
             </div>
           )}

@@ -1,11 +1,11 @@
-import { useState, useMemo, useCallback, memo } from 'react'
+import { useState, useMemo, useCallback, memo, type ReactNode } from 'react'
 import { exportToCSV, KEYWORD_EXPORT_COLUMNS } from '@/utils/export'
 import Pagination from '@/components/ui/Pagination'
 import KeywordPopover from '@/components/ui/KeywordPopover'
 import KeywordMemoEditor from '@/components/pathfinder/KeywordMemoEditor'
 import { useToast } from '@/components/ui/Toast'
 import Button from '@/components/ui/Button'
-import { Download, X } from 'lucide-react'
+import { Download, X, Flame, Sparkles, Star, Circle, TrendingUp, TrendingDown, ArrowRight, HelpCircle, Search } from 'lucide-react'
 
 interface KeywordData {
   keyword: string
@@ -48,18 +48,19 @@ const gradeColors: Record<string, string> = {
   C: 'text-muted-foreground'
 }
 
-const gradeEmojis: Record<string, string> = {
-  S: '🔥',
-  A: '🟢',
-  B: '🔵',
-  C: '⚪'
+const GR_I = 'w-3.5 h-3.5 inline'
+const gradeEmojis: Record<string, ReactNode> = {
+  S: <Flame className={GR_I} strokeWidth={1.8} />,
+  A: <Sparkles className={GR_I} strokeWidth={1.8} />,
+  B: <Star className={GR_I} strokeWidth={1.8} />,
+  C: <Circle className={GR_I} strokeWidth={1.8} />,
 }
 
-const trendEmojis: Record<string, string> = {
-  rising: '📈',
-  falling: '📉',
-  stable: '➡️',
-  unknown: '❓'
+const trendEmojis: Record<string, ReactNode> = {
+  rising: <TrendingUp className={GR_I} strokeWidth={1.8} />,
+  falling: <TrendingDown className={GR_I} strokeWidth={1.8} />,
+  stable: <ArrowRight className={GR_I} strokeWidth={1.8} />,
+  unknown: <HelpCircle className={GR_I} strokeWidth={1.8} />,
 }
 
 // [성능 최적화] React.memo로 불필요한 리렌더링 방지
@@ -198,7 +199,7 @@ function KeywordTableComponent({
   if (!keywords || keywords.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
-        <p className="text-4xl mb-4">🔍</p>
+        <div className="flex justify-center mb-4 text-faint"><Search className="w-10 h-10" strokeWidth={1.5} /></div>
         <p>키워드가 없습니다.</p>
         <p className="text-sm mt-2">Pathfinder를 실행하여 키워드를 발굴하세요.</p>
       </div>

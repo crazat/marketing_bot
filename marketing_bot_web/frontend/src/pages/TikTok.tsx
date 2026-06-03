@@ -116,7 +116,7 @@ export default function TikTok() {
         {/* 헤더 */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold mb-2 flex items-center gap-2">
+            <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2 flex items-center gap-2">
               <Play className="w-8 h-8 text-pink-500" />
               TikTok
             </h1>
@@ -145,21 +145,21 @@ export default function TikTok() {
                 <Play className="w-4 h-4" />
                 <span className="text-sm">총 비디오</span>
               </div>
-              <div className="text-2xl font-bold">{formatNumber(status.videos?.total_videos)}</div>
+              <div className="font-display text-2xl sm:text-3xl tracking-tight">{formatNumber(status.videos?.total_videos)}</div>
             </div>
             <div className="bg-card border border-border rounded-lg p-4">
               <div className="flex items-center gap-2 text-muted-foreground mb-2">
                 <Users className="w-4 h-4" />
                 <span className="text-sm">모니터링 계정</span>
               </div>
-              <div className="text-2xl font-bold">{status.videos?.unique_accounts || 0}</div>
+              <div className="font-display text-2xl sm:text-3xl tracking-tight">{status.videos?.unique_accounts || 0}</div>
             </div>
             <div className="bg-card border border-border rounded-lg p-4">
               <div className="flex items-center gap-2 text-muted-foreground mb-2">
                 <TrendingUp className="w-4 h-4" />
                 <span className="text-sm">상승 트렌드</span>
               </div>
-              <div className="text-2xl font-bold text-green-500">{status.trends?.rising_trends || 0}</div>
+              <div className="font-display text-2xl sm:text-3xl tracking-tight text-green-500">{status.trends?.rising_trends || 0}</div>
             </div>
             <div className="bg-card border border-border rounded-lg p-4">
               <div className="flex items-center gap-2 text-muted-foreground mb-2">
@@ -521,21 +521,21 @@ export default function TikTok() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="bg-card border border-border rounded-lg p-4">
                     <div className="text-sm text-muted-foreground mb-1">총 조회수</div>
-                    <div className="text-2xl font-bold">{formatNumber(analyticsData.overall?.total_views)}</div>
+                    <div className="font-display text-2xl sm:text-3xl tracking-tight">{formatNumber(analyticsData.overall?.total_views)}</div>
                   </div>
                   <div className="bg-card border border-border rounded-lg p-4">
                     <div className="text-sm text-muted-foreground mb-1">총 좋아요</div>
-                    <div className="text-2xl font-bold">{formatNumber(analyticsData.overall?.total_likes)}</div>
+                    <div className="font-display text-2xl sm:text-3xl tracking-tight">{formatNumber(analyticsData.overall?.total_likes)}</div>
                   </div>
                   <div className="bg-card border border-border rounded-lg p-4">
                     <div className="text-sm text-muted-foreground mb-1">평균 참여율</div>
-                    <div className="text-2xl font-bold">
+                    <div className="font-display text-2xl sm:text-3xl tracking-tight">
                       {analyticsData.overall?.avg_engagement?.toFixed(1) || 0}%
                     </div>
                   </div>
                   <div className="bg-card border border-border rounded-lg p-4">
                     <div className="text-sm text-muted-foreground mb-1">최고 참여율</div>
-                    <div className="text-2xl font-bold text-green-500">
+                    <div className="font-display text-2xl sm:text-3xl tracking-tight text-green-500">
                       {analyticsData.overall?.top_engagement?.toFixed(1) || 0}%
                     </div>
                   </div>

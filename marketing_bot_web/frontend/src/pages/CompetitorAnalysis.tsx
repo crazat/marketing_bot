@@ -14,7 +14,7 @@ import MissionProgress from '@/components/ui/MissionProgress'
 import TabNavigation from '@/components/ui/TabNavigation'
 import ErrorState from '@/components/ui/ErrorState'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
-import { RefreshCw, Copy } from 'lucide-react'
+import { RefreshCw, Copy, Search, KeyRound, Camera } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { useUrlState } from '@/hooks/useUrlState'
 import { TerminalGuide } from '@/components/ui/TerminalGuide'
@@ -222,7 +222,7 @@ export default function CompetitorAnalysis() {
       {/* 헤더 */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2">💪 경쟁사 분석</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">경쟁사 분석</h1>
           <p className="text-muted-foreground">
             경쟁사 약점 분석 및 Instagram 모니터링
           </p>
@@ -249,7 +249,7 @@ export default function CompetitorAnalysis() {
               disabled={isScanning}
               loading={analyzeReviews.isPending}
             >
-              🔍 {activeScanModule.name}
+              {activeScanModule.name}
             </Button>
           )}
         </div>
@@ -271,13 +271,13 @@ export default function CompetitorAnalysis() {
       {/* 탭 — 공용 TabNavigation 사용 */}
       <TabNavigation
         tabs={[
-          { id: 'weaknesses', label: '🎯 약점 공략' },
-          { id: 'opportunities', label: '🔑 기회 키워드' },
-          { id: 'content-gap', label: '📊 콘텐츠 갭' },
-          { id: 'weakness-radar', label: '📡 약점 레이더' },
-          { id: 'instagram', label: '📸 Instagram' },
-          { id: 'review-response', label: '💬 리뷰 응답' },
-          { id: 'competitors', label: '🏢 경쟁사 관리' },
+          { id: 'weaknesses', label: '약점 공략' },
+          { id: 'opportunities', label: '기회 키워드' },
+          { id: 'content-gap', label: '콘텐츠 갭' },
+          { id: 'weakness-radar', label: '약점 레이더' },
+          { id: 'instagram', label: 'Instagram' },
+          { id: 'review-response', label: '리뷰 응답' },
+          { id: 'competitors', label: '경쟁사 관리' },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -293,13 +293,13 @@ export default function CompetitorAnalysis() {
             {/* [Phase 4.0] 콘텐츠 아웃라인 생성 */}
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">✍️ 콘텐츠 아웃라인 생성</h2>
+                <h2 className="text-xl font-bold">콘텐츠 아웃라인 생성</h2>
                 <Button
                   variant="primary"
                   onClick={() => generateOutlines.mutate(undefined)}
                   loading={generateOutlines.isPending}
                 >
-                  🚀 AI 아웃라인 생성
+                  AI 아웃라인 생성
                 </Button>
               </div>
               <p className="text-sm text-muted-foreground mb-4">
@@ -367,7 +367,7 @@ export default function CompetitorAnalysis() {
 
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">📋 발견된 약점</h2>
+                <h2 className="text-xl font-bold">발견된 약점</h2>
                 <span className="text-sm text-muted-foreground">
                   {weaknesses?.length || 0}개 약점
                 </span>
@@ -383,7 +383,7 @@ export default function CompetitorAnalysis() {
                 </div>
               ) : !weaknesses || weaknesses.length === 0 ? (
                 <div className="text-center py-12">
-                  <p className="text-6xl mb-4">🔍</p>
+                  <div className="flex justify-center mb-4 text-faint"><Search className="w-12 h-12" strokeWidth={1.5} /></div>
                   <p className="text-xl font-semibold mb-2">발견된 약점이 없습니다</p>
                   <p className="text-muted-foreground mb-6">
                     경쟁사 리뷰를 분석하여 약점과 기회를 찾아보세요.
@@ -394,7 +394,7 @@ export default function CompetitorAnalysis() {
                     onClick={() => analyzeReviews.mutate()}
                     loading={analyzeReviews.isPending}
                   >
-                    🔍 약점 분석 시작
+                    약점 분석 시작
                   </Button>
                 </div>
               ) : (
@@ -411,17 +411,15 @@ export default function CompetitorAnalysis() {
                           {/* [Phase 5.0] 영향도 점수 표시 */}
                           {weakness.impact_score !== undefined && (
                             <div
-                              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                                weakness.impact_score >= 70 ? 'bg-red-500/20 text-red-500' :
-                                weakness.impact_score >= 50 ? 'bg-orange-500/20 text-orange-500' :
-                                weakness.impact_score >= 30 ? 'bg-yellow-500/20 text-yellow-500' :
-                                'bg-gray-500/20 text-gray-500'
+                              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
+                                weakness.impact_score >= 70 ? 'bg-danger-tint text-danger' :
+                                weakness.impact_score >= 50 ? 'bg-warn-tint text-warn' :
+                                weakness.impact_score >= 30 ? 'bg-warn-tint text-warn' :
+                                'bg-muted text-muted-foreground'
                               }`}
                               title={`영향도: ${weakness.impact_score}점 (심각도: ${weakness.severity || 'Medium'})`}
                             >
-                              {weakness.impact_score >= 70 ? '🔴' :
-                               weakness.impact_score >= 50 ? '🟠' :
-                               weakness.impact_score >= 30 ? '🟡' : '⚪'}
+                              <span className="w-1.5 h-1.5 rounded-full bg-current" aria-hidden="true" />
                               {weakness.impact_score}점
                             </div>
                           )}
@@ -435,7 +433,7 @@ export default function CompetitorAnalysis() {
                       </p>
                       {weakness.evidence && (
                         <div className="text-xs bg-muted/50 p-2 rounded mb-2 border-l-2 border-primary/50">
-                          <span className="text-muted-foreground">📝 근거: </span>
+                          <span className="text-muted-foreground">근거: </span>
                           <span className="italic">"{weakness.evidence}"</span>
                         </div>
                       )}
@@ -444,9 +442,9 @@ export default function CompetitorAnalysis() {
                           {weakness.opportunity_keywords.split(',').map((kw: string, kwIdx: number) => (
                             <span
                               key={`kw-${kw.trim()}-${kwIdx}`}
-                              className="text-xs px-2 py-1 rounded-md bg-green-500/10 text-green-500"
+                              className="text-xs px-2 py-1 rounded-md bg-ok-tint text-ok"
                             >
-                              <span aria-hidden="true">💡</span> {kw.trim()}
+                              {kw.trim()}
                             </span>
                           ))}
                         </div>
@@ -464,7 +462,7 @@ export default function CompetitorAnalysis() {
             {!opportunityKeywords || opportunityKeywords.length === 0 ? (
               <div className="bg-card rounded-lg border border-border p-6">
                 <div className="text-center py-12">
-                  <p className="text-6xl mb-4">🔑</p>
+                  <div className="flex justify-center mb-4 text-faint"><KeyRound className="w-12 h-12" strokeWidth={1.5} /></div>
                   <p className="text-xl font-semibold mb-2">기회 키워드가 없습니다</p>
                   <p className="text-muted-foreground mb-6">
                     경쟁사 약점을 분석하여 기회 키워드를 생성하세요.
@@ -475,7 +473,7 @@ export default function CompetitorAnalysis() {
                     onClick={() => analyzeReviews.mutate()}
                     loading={analyzeReviews.isPending}
                   >
-                    🔍 기회 키워드 스캔
+                    기회 키워드 스캔
                   </Button>
                 </div>
               </div>
@@ -498,7 +496,7 @@ export default function CompetitorAnalysis() {
             {(!instagramStats || Object.keys(instagramStats).length === 0) && (!hashtagAnalysis || hashtagAnalysis.length === 0) ? (
               <div className="bg-card rounded-lg border border-border p-6">
                 <div className="text-center py-12">
-                  <p className="text-6xl mb-4">📸</p>
+                  <div className="flex justify-center mb-4 text-faint"><Camera className="w-12 h-12" strokeWidth={1.5} /></div>
                   <p className="text-xl font-semibold mb-2">Instagram 데이터가 없습니다</p>
                   <p className="text-muted-foreground mb-6">
                     경쟁사 Instagram 계정을 분석하여 인사이트를 얻으세요.
@@ -509,7 +507,7 @@ export default function CompetitorAnalysis() {
                     onClick={() => handleRunScan('instagram')}
                     loading={isScanning}
                   >
-                    🔍 Instagram 스캔
+                    Instagram 스캔
                   </Button>
                 </div>
               </div>

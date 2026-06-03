@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { hudApi } from '@/services/api'
 import Button from '@/components/ui/Button'
+import { BarChart3, TrendingUp } from 'lucide-react'
 
 interface WeeklyReportData {
   period: {
@@ -85,11 +86,11 @@ export default function WeeklyReport() {
       <div className="bg-card rounded-lg border border-border p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold flex items-center gap-2">
-            <span>📊</span> 주간 리포트
+            <BarChart3 className="w-5 h-5 inline" strokeWidth={1.8} /> 주간 리포트
           </h2>
         </div>
         <div className="text-center py-8">
-          <div className="text-4xl mb-4">📈</div>
+          <div className="flex justify-center mb-4 text-mist"><TrendingUp className="w-9 h-9" strokeWidth={1.6} /></div>
           <h3 className="text-lg font-semibold mb-2">데이터 수집 중입니다</h3>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             주간 리포트는 최소 7일간의 데이터가 필요합니다.
@@ -101,19 +102,19 @@ export default function WeeklyReport() {
               href="/pathfinder"
               className="px-3 py-1.5 text-xs bg-purple-500/10 text-purple-500 rounded-lg hover:bg-purple-500/20"
             >
-              🔍 키워드 발굴 시작
+              키워드 발굴 시작
             </a>
             <a
               href="/viral"
               className="px-3 py-1.5 text-xs bg-orange-500/10 text-orange-500 rounded-lg hover:bg-orange-500/20"
             >
-              🎯 바이럴 수집 시작
+              바이럴 수집 시작
             </a>
             <a
               href="/battle"
               className="px-3 py-1.5 text-xs bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20"
             >
-              📊 순위 추적 시작
+              순위 추적 시작
             </a>
           </div>
         </div>
@@ -159,7 +160,7 @@ export default function WeeklyReport() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-xl font-bold flex items-center gap-2">
-            <span>📊</span> 주간 리포트
+            <BarChart3 className="w-5 h-5 inline" strokeWidth={1.8} /> 주간 리포트
           </h2>
           <p className="text-sm text-muted-foreground">
             {formatDate(data.period.start)} ~ {formatDate(data.period.end)}
@@ -213,7 +214,7 @@ export default function WeeklyReport() {
       {/* Insights */}
       {data.insights.length > 0 && (
         <div className="mb-4">
-          <h3 className="text-sm font-medium mb-2">💡 주요 인사이트</h3>
+          <h3 className="text-sm font-medium mb-2">주요 인사이트</h3>
           <ul className="space-y-1 text-sm">
             {data.insights.map((insight, idx) => (
               <li key={idx} className="text-muted-foreground">• {insight}</li>
@@ -225,7 +226,7 @@ export default function WeeklyReport() {
       {/* Recommendations */}
       {data.recommendations.length > 0 && (
         <div className="mb-4">
-          <h3 className="text-sm font-medium mb-2">🎯 권장 액션</h3>
+          <h3 className="text-sm font-medium mb-2">권장 액션</h3>
           <div className="flex flex-wrap gap-2">
             {data.recommendations.map((rec, idx) => (
               <Button

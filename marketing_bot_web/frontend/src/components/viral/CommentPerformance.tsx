@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { viralApi } from '@/services/api'
-import { TrendingUp, MessageSquare, MousePointer, Users, ArrowRight, ThumbsUp, Reply } from 'lucide-react'
+import { TrendingUp, MessageSquare, MousePointer, Users, ArrowRight, ThumbsUp, Reply, CheckCircle } from 'lucide-react'
 
 interface PerformanceData {
   total_comments: number
@@ -262,9 +262,9 @@ export function CommentPerformance({ days = 30, compact = false }: CommentPerfor
                     <span className="text-xs text-muted-foreground">{p.count}개</span>
                   </div>
                   <div className="flex items-center gap-3 text-sm">
-                    <span className="text-blue-500" title="좋아요">👍 {p.total_likes}</span>
-                    <span className="text-green-500" title="답글">💬 {p.total_replies}</span>
-                    <span className="text-purple-500" title="전환">{p.conversions > 0 ? `✅ ${p.conversions}` : ''}</span>
+                    <span className="text-blue-500" title="좋아요">{p.total_likes}</span>
+                    <span className="text-green-500" title="답글">{p.total_replies}</span>
+                    <span className="text-purple-500" title="전환">{p.conversions > 0 ? `${p.conversions}` : ''}</span>
                   </div>
                 </div>
               ))}
@@ -287,8 +287,8 @@ export function CommentPerformance({ days = 30, compact = false }: CommentPerfor
                   </div>
                   <div className="flex items-center gap-3 text-sm">
                     <span className="text-muted-foreground">{t.use_count}회</span>
-                    <span className="text-blue-500">👍 {t.avg_likes}</span>
-                    {t.conversions > 0 && <span className="text-green-500">✅ {t.conversions}</span>}
+                    <span className="text-blue-500">{t.avg_likes}</span>
+                    {t.conversions > 0 && <span className="text-green-500">{t.conversions}</span>}
                   </div>
                 </div>
               ))}
@@ -320,9 +320,9 @@ export function CommentPerformance({ days = 30, compact = false }: CommentPerfor
                     </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm shrink-0">
-                    {comment.likes > 0 && <span className="text-blue-500">👍 {comment.likes}</span>}
-                    {comment.replies > 0 && <span className="text-green-500">💬 {comment.replies}</span>}
-                    {comment.led_to_conversion && <span className="text-green-600 font-bold">✅</span>}
+                    {comment.likes > 0 && <span className="text-blue-500">{comment.likes}</span>}
+                    {comment.replies > 0 && <span className="text-green-500">{comment.replies}</span>}
+                    {comment.led_to_conversion && <CheckCircle className="w-4 h-4 text-ok" strokeWidth={2} />}
                   </div>
                 </div>
               </div>

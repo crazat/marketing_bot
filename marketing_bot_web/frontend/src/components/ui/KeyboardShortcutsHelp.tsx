@@ -5,6 +5,8 @@
  * [Phase 1.5] 키보드 단축키 도움말 모달
  */
 
+import { Keyboard, X } from 'lucide-react'
+
 interface KeyboardShortcutsHelpProps {
   isOpen: boolean
   onClose: () => void
@@ -29,14 +31,14 @@ export default function KeyboardShortcutsHelp({
       >
         <div className="p-4 border-b border-border flex items-center justify-between">
           <h2 className="text-lg font-bold flex items-center gap-2">
-            <span>⌨️</span> 키보드 단축키
+            <Keyboard className="w-5 h-5 inline" strokeWidth={1.8} /> 키보드 단축키
           </h2>
           <button
             onClick={onClose}
             className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="닫기"
           >
-            ✕
+            <X className="w-5 h-5" strokeWidth={1.8} />
           </button>
         </div>
 

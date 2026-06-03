@@ -18,7 +18,7 @@ export default function ConfigFileViewer() {
   return (
     <div className="bg-card border border-border rounded-lg p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">📄 설정 파일 뷰어</h3>
+        <h3 className="text-lg font-semibold">설정 파일 뷰어</h3>
         <select
           value={selectedFile}
           onChange={(e) => setSelectedFile(e.target.value as 'keywords' | 'config' | 'schedule')}
@@ -44,7 +44,7 @@ export default function ConfigFileViewer() {
             {JSON.stringify(fileData.content, null, 2)}
           </pre>
           <p className="text-xs text-muted-foreground">
-            💡 읽기 전용입니다. 파일을 수정하려면 VS Code나 메모장으로 직접 편집하세요.
+            읽기 전용입니다. 파일을 수정하려면 VS Code나 메모장으로 직접 편집하세요.
           </p>
         </div>
       ) : (

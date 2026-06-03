@@ -3,7 +3,7 @@
  * 자주 묻는 질문 패턴 및 표준 응답 관리
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   MessageCircle,
@@ -19,6 +19,13 @@ import {
   Tag,
   BarChart3,
   X,
+  BookOpen,
+  DollarSign,
+  Syringe,
+  Calendar,
+  MapPin,
+  Star,
+  Flame,
 } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import MetricCard from '@/components/MetricCard'
@@ -46,13 +53,14 @@ interface QAFormData {
 }
 
 // 카테고리 옵션
-const CATEGORY_OPTIONS = [
-  { value: 'general', label: '일반', icon: '💬' },
-  { value: 'price', label: '가격/비용', icon: '💰' },
-  { value: 'treatment', label: '치료/시술', icon: '💉' },
-  { value: 'reservation', label: '예약/상담', icon: '📅' },
-  { value: 'location', label: '위치/주차', icon: '📍' },
-  { value: 'review', label: '후기/효과', icon: '⭐' },
+const QA_CAT_CLS = 'w-4 h-4'
+const CATEGORY_OPTIONS: { value: string; label: string; icon: ReactNode }[] = [
+  { value: 'general', label: '일반', icon: <MessageCircle className={QA_CAT_CLS} strokeWidth={1.7} /> },
+  { value: 'price', label: '가격/비용', icon: <DollarSign className={QA_CAT_CLS} strokeWidth={1.7} /> },
+  { value: 'treatment', label: '치료/시술', icon: <Syringe className={QA_CAT_CLS} strokeWidth={1.7} /> },
+  { value: 'reservation', label: '예약/상담', icon: <Calendar className={QA_CAT_CLS} strokeWidth={1.7} /> },
+  { value: 'location', label: '위치/주차', icon: <MapPin className={QA_CAT_CLS} strokeWidth={1.7} /> },
+  { value: 'review', label: '후기/효과', icon: <Star className={QA_CAT_CLS} strokeWidth={1.7} /> },
 ]
 
 export default function QARepository() {
@@ -184,7 +192,7 @@ export default function QARepository() {
 
   // 카테고리 라벨 가져오기
   const getCategoryInfo = (value: string) => {
-    return CATEGORY_OPTIONS.find(c => c.value === value) || { label: value, icon: '💬' }
+    return CATEGORY_OPTIONS.find(c => c.value === value) || { label: value, icon: <MessageCircle className={QA_CAT_CLS} strokeWidth={1.7} /> }
   }
 
   return (
@@ -192,7 +200,7 @@ export default function QARepository() {
       {/* 헤더 */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="font-display text-2xl sm:text-3xl tracking-tight flex items-center gap-2">
             <MessageCircle className="w-7 h-7 text-primary" />
             Q&A Repository
           </h1>
@@ -226,22 +234,22 @@ export default function QARepository() {
         <MetricCard
           title="총 Q&A"
           value={stats?.total || 0}
-          icon="📚"
+          icon={<BookOpen className="w-[18px] h-[18px]" strokeWidth={1.8} />}
         />
         <MetricCard
           title="총 사용 횟수"
           value={stats?.total_uses || 0}
-          icon="📊"
+          icon={<BarChart3 className="w-[18px] h-[18px]" strokeWidth={1.8} />}
         />
         <MetricCard
           title="카테고리"
           value={Object.keys(stats?.by_category || {}).length}
-          icon="🏷️"
+          icon={<Tag className="w-[18px] h-[18px]" strokeWidth={1.8} />}
         />
         <MetricCard
           title="최다 사용"
           value={stats?.top_used?.[0]?.use_count || 0}
-          icon="🔥"
+          icon={<Flame className="w-[18px] h-[18px]" strokeWidth={1.8} />}
           subtitle={stats?.top_used?.[0]?.question_pattern?.slice(0, 15) + '...'}
         />
       </div>

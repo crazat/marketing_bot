@@ -4,6 +4,12 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   LineChart, Line, Legend
 } from 'recharts'
+import {
+  PLATFORM_COLOR as PLATFORM_COLORS,
+  CATEGORY_COLOR as CATEGORY_COLORS,
+  STATUS_COLOR as STATUS_COLORS,
+  scoreColor, SERIES,
+} from '@/lib/chartColors'
 
 interface ViralTarget {
   id: string
@@ -29,19 +35,6 @@ interface ViralChartsProps {
   compact?: boolean
 }
 
-// 플랫폼 색상 매핑
-const PLATFORM_COLORS: Record<string, string> = {
-  cafe: '#22c55e',      // green
-  blog: '#3b82f6',      // blue
-  kin: '#f59e0b',       // amber
-  youtube: '#ef4444',   // red
-  instagram: '#ec4899', // pink
-  tiktok: '#14b8a6',    // teal
-  place: '#8b5cf6',     // violet
-  karrot: '#f97316',    // orange
-  other: '#6b7280',     // gray
-}
-
 const PLATFORM_LABELS: Record<string, string> = {
   cafe: '카페',
   blog: '블로그',
@@ -52,28 +45,6 @@ const PLATFORM_LABELS: Record<string, string> = {
   place: '플레이스',
   karrot: '당근',
   other: '기타',
-}
-
-// 카테고리 색상 매핑
-const CATEGORY_COLORS: Record<string, string> = {
-  '다이어트': '#ef4444',
-  '비대칭/교정': '#f97316',
-  '피부': '#eab308',
-  '교통사고': '#22c55e',
-  '통증/디스크': '#14b8a6',
-  '두통/어지럼': '#3b82f6',
-  '소화기': '#8b5cf6',
-  '호흡기': '#ec4899',
-  '기타': '#6b7280',
-}
-
-// 댓글 상태 색상 매핑
-const STATUS_COLORS: Record<string, string> = {
-  pending: '#6b7280',
-  generated: '#3b82f6',
-  approved: '#22c55e',
-  posted: '#8b5cf6',
-  skipped: '#f59e0b',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -134,7 +105,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
     return buckets.map(b => ({
       range: b.range,
       count: b.count,
-      fill: b.min >= 81 ? '#ef4444' : b.min >= 61 ? '#f59e0b' : b.min >= 41 ? '#22c55e' : '#6b7280'
+      fill: scoreColor(b.min),
     }))
   }, [targets])
 
@@ -269,7 +240,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
         {/* 플랫폼별 분포 */}
         <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            📊 플랫폼별
+            플랫폼별
           </h3>
           <div className="flex items-center gap-3">
             <div className="w-20 h-20">
@@ -314,7 +285,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
         {/* 카테고리별 분포 */}
         <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            🏷️ 카테고리별
+            카테고리별
           </h3>
           <div className="flex items-center gap-3">
             <div className="w-20 h-20">
@@ -359,7 +330,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
         {/* 댓글 상태별 분포 */}
         <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            📝 작업 현황
+            작업 현황
           </h3>
           <div className="flex items-center gap-3">
             <div className="w-20 h-20">
@@ -405,7 +376,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 플랫폼별 분포 파이차트 */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">📊 플랫폼별 분포</h3>
+          <h3 className="text-lg font-semibold mb-4">플랫폼별 분포</h3>
           <div className="flex items-center gap-6">
             <div className="w-48 h-48">
               <ResponsiveContainer width="100%" height="100%">
@@ -455,7 +426,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
 
         {/* 우선순위 점수 분포 */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">🎯 우선순위 점수 분포</h3>
+          <h3 className="text-lg font-semibold mb-4">우선순위 점수 분포</h3>
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={scoreDistribution} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -487,19 +458,19 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
           </div>
           <div className="flex justify-center gap-4 mt-4 text-xs">
             <div className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-gray-500" />
+              <div className="w-3 h-3 rounded" style={{ background: scoreColor(0) }} />
               <span>낮음 (0-40)</span>
             </div>
             <div className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-green-500" />
+              <div className="w-3 h-3 rounded" style={{ background: scoreColor(41) }} />
               <span>중간 (41-60)</span>
             </div>
             <div className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-amber-500" />
+              <div className="w-3 h-3 rounded" style={{ background: scoreColor(61) }} />
               <span>높음 (61-80)</span>
             </div>
             <div className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-red-500" />
+              <div className="w-3 h-3 rounded" style={{ background: scoreColor(81) }} />
               <span>최우선 (81+)</span>
             </div>
           </div>
@@ -508,7 +479,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
 
       {/* 일별 발견 추이 */}
       <div className="bg-card border border-border rounded-lg p-6">
-        <h3 className="text-lg font-semibold mb-4">📈 일별 발견 추이 (최근 14일)</h3>
+        <h3 className="text-lg font-semibold mb-4">일별 발견 추이 (최근 14일)</h3>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={dailyTrend} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
@@ -535,9 +506,9 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
                 type="monotone"
                 dataKey="count"
                 name="발견 수"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={{ fill: '#3b82f6', strokeWidth: 0, r: 4 }}
+                stroke={SERIES.primary}
+                strokeWidth={2.2}
+                dot={{ fill: SERIES.primary, strokeWidth: 0, r: 3 }}
                 activeDot={{ r: 6 }}
               />
             </LineChart>
@@ -549,7 +520,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 카테고리별 분포 */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">🏷️ 카테고리별 분포</h3>
+          <h3 className="text-lg font-semibold mb-4">카테고리별 분포</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -590,7 +561,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
 
         {/* 댓글 상태별 분포 */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">📝 댓글 상태별 분포</h3>
+          <h3 className="text-lg font-semibold mb-4">댓글 상태별 분포</h3>
           <div className="flex items-center gap-6">
             <div className="w-48 h-48">
               <ResponsiveContainer width="100%" height="100%">
@@ -641,7 +612,7 @@ export function ViralCharts({ targets = [], statsData, compact = false }: ViralC
 
       {/* 플랫폼별 평균 점수 */}
       <div className="bg-card border border-border rounded-lg p-6">
-        <h3 className="text-lg font-semibold mb-4">⭐ 플랫폼별 평균 우선순위 점수</h3>
+        <h3 className="text-lg font-semibold mb-4">플랫폼별 평균 우선순위 점수</h3>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={platformScoreData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>

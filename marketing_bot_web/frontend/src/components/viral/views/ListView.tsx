@@ -7,6 +7,7 @@
 import { useEffect, useRef, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { PartyPopper, CheckCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Modal, { ConfirmModal } from '@/components/ui/Modal'
 import { safeUrl } from '@/utils/safeUrl'
@@ -255,7 +256,7 @@ export function ListView({
           ← 홈으로
         </Button>
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold sm:text-3xl">📋 일괄 작업 모드</h1>
+          <h1 className="text-2xl font-bold sm:text-3xl">일괄 작업 모드</h1>
           <p className="text-xs text-muted-foreground mt-1">
             여러 카테고리를 가로질러 필터링 · 일괄 승인/스킵/삭제 — 카테고리별 개별 작업은 홈에서 카테고리 선택
           </p>
@@ -271,7 +272,7 @@ export function ListView({
             size="sm"
             title="바이럴 타겟을 Excel로 내보내기"
           >
-            📥 Excel 내보내기
+            Excel 내보내기
           </Button>
           <div className="hidden text-xs text-muted-foreground xl:block">
             단축키:{' '}
@@ -331,7 +332,7 @@ export function ListView({
             loading={isVerifying}
             className="bg-blue-500 hover:bg-blue-600"
           >
-            🔍 일괄 검증
+            일괄 검증
           </Button>
         </div>
         {/* [F5][U4] 검증 진행 상태 — 단계별 구체 메시지 */}
@@ -373,8 +374,8 @@ export function ListView({
         {verifyResults && !isVerifying && (
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">결과:</span>
-            <span className="text-green-500 font-medium">✓ {verifyResults.commentable}</span>
-            <span className="text-red-500 font-medium">✗ {verifyResults.not_commentable}</span>
+            <span className="text-green-500 font-medium">{verifyResults.commentable}</span>
+            <span className="text-red-500 font-medium">{verifyResults.not_commentable}</span>
           </div>
         )}
         <div className="hidden flex-1 lg:block" />
@@ -396,7 +397,7 @@ export function ListView({
       {totalItems > displayTargets.length && (
         <div className="flex flex-wrap items-center gap-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-lg px-3 py-2 text-sm">
           <span className="text-amber-800 dark:text-amber-300">
-            ⚠️ 필터 매칭 <strong>{totalItems.toLocaleString()}건</strong> 전체 일괄 처리
+            필터 매칭 <strong>{totalItems.toLocaleString()}건</strong> 전체 일괄 처리
           </span>
           <span className="text-xs text-amber-700 dark:text-amber-400">
             (현재 페이지 {displayTargets.length}건 외 {(totalItems - displayTargets.length).toLocaleString()}건 포함)
@@ -716,7 +717,7 @@ export function ListView({
                             void handleGenerateComment(target)
                           }}
                         >
-                          🤖 댓글 생성
+                          댓글 생성
                         </Button>
                       </td>
                     </tr>
@@ -747,7 +748,7 @@ export function ListView({
       {/* 통계 요약 (총 타겟은 전체, 우선순위 breakdown은 현재 페이지) */}
       {totalItems > 0 && (
         <div className="bg-card border border-border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">📊 통계 요약</h3>
+          <h3 className="text-lg font-semibold mb-4">통계 요약</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <div className="text-3xl font-bold">{totalItems.toLocaleString()}</div>
@@ -798,7 +799,7 @@ export function ListView({
           />
           <div className="relative bg-card border border-border rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="text-center mb-6">
-              <div className="text-5xl mb-4">{leadTrackingModal.leadCreated ? '🎉' : '✅'}</div>
+              <div className="flex justify-center mb-4">{leadTrackingModal.leadCreated ? <PartyPopper className="w-12 h-12 text-clay" strokeWidth={1.5} /> : <CheckCircle className="w-12 h-12 text-ok" strokeWidth={1.5} />}</div>
               <h3 id="lead-tracking-result-title" className="text-xl font-bold mb-2">
                 {leadTrackingModal.leadCreated ? '리드 자동 생성 완료!' : '댓글 승인 완료!'}
               </h3>
@@ -818,7 +819,7 @@ export function ListView({
                   fullWidth
                   size="lg"
                 >
-                  📋 Lead Manager에서 확인하기
+                  Lead Manager에서 확인하기
                 </Button>
                 <Button
                   onClick={closeLeadTrackingModal}
@@ -851,7 +852,7 @@ export function ListView({
       <Modal
         isOpen={commentPreview !== null}
         onClose={() => setCommentPreview(null)}
-        title="🤖 AI 댓글 생성 완료"
+        title="AI 댓글 생성 완료"
         description={commentPreview ? `타겟: ${commentPreview.targetTitle.slice(0, 60)}${commentPreview.targetTitle.length > 60 ? '...' : ''}` : undefined}
         size="lg"
         footer={
@@ -868,7 +869,7 @@ export function ListView({
                   }
                 }}
               >
-                📋 복사
+                복사
               </Button>
               <Button onClick={() => setCommentPreview(null)}>닫기</Button>
             </div>
@@ -883,7 +884,7 @@ export function ListView({
               className="w-full min-h-[160px] p-3 bg-muted/30 border border-border rounded-lg text-sm font-mono whitespace-pre-wrap resize-y"
             />
             <p className="text-xs text-muted-foreground">
-              💡 댓글은 DB에 저장되었습니다. 게시 상태가 "생성됨"으로 변경되며, 홈의 카테고리 화면 또는 필터(comment_status=generated)에서 다시 확인·승인할 수 있습니다.
+              댓글은 DB에 저장되었습니다. 게시 상태가 "생성됨"으로 변경되며, 홈의 카테고리 화면 또는 필터(comment_status=generated)에서 다시 확인·승인할 수 있습니다.
             </p>
           </div>
         )}

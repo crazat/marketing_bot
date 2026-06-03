@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { FileText, Plus } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { pathfinderApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
@@ -69,7 +70,7 @@ export default function KeywordMemoEditor({ keyword, memo: initialMemo, userTags
         }`}
         title={hasMemo ? initialMemo : '메모/태그 추가'}
       >
-        {hasMemo || hasTags ? '📝' : '➕'}
+        {hasMemo || hasTags ? <FileText className="w-4 h-4" strokeWidth={1.8} /> : <Plus className="w-4 h-4" strokeWidth={1.8} />}
       </button>
 
       {/* 태그 미리보기 (있는 경우) */}
@@ -92,7 +93,7 @@ export default function KeywordMemoEditor({ keyword, memo: initialMemo, userTags
           ref={popoverRef}
           className="absolute right-0 top-full mt-2 w-72 bg-card border border-border rounded-lg shadow-lg z-50 p-4"
         >
-          <h4 className="font-semibold mb-3 text-sm">📝 메모 & 태그</h4>
+          <h4 className="font-semibold mb-3 text-sm">메모 & 태그</h4>
 
           {/* 메모 입력 */}
           <div className="mb-4">

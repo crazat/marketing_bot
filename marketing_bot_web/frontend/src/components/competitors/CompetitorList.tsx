@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { competitorsApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import { ConfirmModal } from '@/components/ui/Modal'
 import Button, { IconButton } from '@/components/ui/Button'
-import { Plus, Check, X, Edit2, Trash2 } from 'lucide-react'
+import { Plus, Check, X, Edit2, Trash2, Building2 } from 'lucide-react'
 
 interface Competitor {
   id: number
@@ -130,22 +130,20 @@ export default function CompetitorList({ competitors }: CompetitorListProps) {
     }
   }
 
-  // 우선순위에 따른 이모지
-  const getPriorityIcon = (priority: string) => {
-    switch (priority) {
-      case 'Critical': return '🔴'
-      case 'High': return '🟠'
-      case 'Medium': return '🟡'
-      case 'Low': return '🔵'
-      default: return '⚪'
-    }
+  // 우선순위 색 도트
+  const getPriorityIcon = (priority: string): ReactNode => {
+    const c = priority === 'Critical' ? 'var(--danger)'
+      : priority === 'High' ? 'var(--clay)'
+      : priority === 'Medium' ? 'var(--warn)'
+      : priority === 'Low' ? 'var(--mist)' : 'var(--text-faint)'
+    return <span className="inline-block w-2 h-2 rounded-full align-middle" style={{ background: c }} aria-hidden="true" />
   }
 
   return (
     <div className="bg-card rounded-lg border border-border p-6">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-xl font-bold">🏢 경쟁사 목록</h2>
+          <h2 className="text-xl font-bold">경쟁사 목록</h2>
           <p className="text-sm text-muted-foreground mt-1">
             총 {competitors?.length || 0}개 경쟁사 모니터링 중
           </p>
@@ -270,7 +268,7 @@ export default function CompetitorList({ competitors }: CompetitorListProps) {
 
       {!competitors || competitors.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
-          <p className="text-4xl mb-4">🏢</p>
+          <div className="flex justify-center mb-4 text-faint"><Building2 className="w-10 h-10" strokeWidth={1.5} /></div>
           <p>등록된 경쟁사가 없습니다.</p>
           <p className="text-sm mt-2">경쟁사를 추가하여 모니터링을 시작하세요.</p>
         </div>

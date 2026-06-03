@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { pathfinderApi } from '@/services/api'
 import Button from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
-import { Rocket, Copy } from 'lucide-react'
+import { Rocket, Copy, PenLine, Lightbulb, Package } from 'lucide-react'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface KeywordUtilizationTabProps {
@@ -18,9 +18,9 @@ export default function KeywordUtilizationTab({ stats }: KeywordUtilizationTabPr
       {/* 서브 탭 */}
       <div className="flex gap-2 border-b border-border">
         {[
-          { id: 'title-generator', label: '✍️ 블로그 제목 생성', icon: '✍️' },
-          { id: 'content-ideas', label: '💡 콘텐츠 아이디어', icon: '💡' },
-          { id: 'keyword-grouping', label: '📦 키워드 그룹화', icon: '📦' },
+          { id: 'title-generator', label: '블로그 제목 생성', icon: <PenLine className="w-4 h-4" strokeWidth={1.7} /> },
+          { id: 'content-ideas', label: '콘텐츠 아이디어', icon: <Lightbulb className="w-4 h-4" strokeWidth={1.7} /> },
+          { id: 'keyword-grouping', label: '키워드 그룹화', icon: <Package className="w-4 h-4" strokeWidth={1.7} /> },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -113,7 +113,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
     const titles: string[] = []
     const mainKeyword = selectedKeywords[0]
     const region = includeRegion ? '청주 ' : ''
-    const emoji = includeEmoji ? '✨ ' : ''
+    const emoji = includeEmoji ? '' : ''
 
     switch (titleStyle) {
       case '정보형':
@@ -185,7 +185,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
   return (
     <div className="space-y-6">
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-2">✍️ 블로그 제목 생성기</h3>
+        <h3 className="text-lg font-semibold mb-2">블로그 제목 생성기</h3>
         <p className="text-sm text-muted-foreground mb-4">
           S/A급 키워드를 선택하면 클릭을 유도하는 매력적인 블로그 제목을 생성합니다.
         </p>
@@ -195,7 +195,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
           <div className="space-y-4">
             {/* 카테고리 선택 */}
             <div>
-              <label className="block text-sm font-medium mb-2">📂 카테고리</label>
+              <label className="block text-sm font-medium mb-2">카테고리</label>
               <select
                 value={selectedCategory}
                 onChange={(e) => setSelectedCategory(e.target.value)}
@@ -211,7 +211,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
             {/* 키워드 선택 */}
             <div>
               <label className="block text-sm font-medium mb-2">
-                🔑 키워드 선택 (최대 5개) - {selectedKeywords.length}/5
+                키워드 선택 (최대 5개) - {selectedKeywords.length}/5
               </label>
               <div className="border border-border rounded-md p-3 max-h-48 overflow-y-auto bg-background">
                 {filteredKeywords.length === 0 ? (
@@ -242,7 +242,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
 
             {/* 제목 스타일 */}
             <div>
-              <label className="block text-sm font-medium mb-2">📝 제목 스타일</label>
+              <label className="block text-sm font-medium mb-2">제목 스타일</label>
               <select
                 value={titleStyle}
                 onChange={(e) => setTitleStyle(e.target.value)}
@@ -296,13 +296,13 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
           <div className="space-y-4">
             {generatedTitles.length === 0 ? (
               <div className="border border-border rounded-lg p-8 text-center">
-                <p className="text-4xl mb-4">✍️</p>
+                <div className="flex justify-center mb-4 text-faint"><PenLine className="w-10 h-10" strokeWidth={1.5} /></div>
                 <p className="text-muted-foreground">
                   키워드를 선택하고 '제목 생성' 버튼을 클릭하세요.
                 </p>
                 {filteredKeywords.length > 0 && (
                   <div className="mt-4">
-                    <p className="text-sm font-semibold mb-2">📊 S/A급 키워드 미리보기</p>
+                    <p className="text-sm font-semibold mb-2">S/A급 키워드 미리보기</p>
                     <div className="text-left space-y-1 max-h-40 overflow-y-auto">
                       {filteredKeywords.slice(0, 10).map((kw: any) => (
                         <div key={kw.keyword} className="text-xs text-muted-foreground">
@@ -316,7 +316,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
             ) : (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h4 className="font-semibold">📋 생성된 제목 ({generatedTitles.length}개)</h4>
+                  <h4 className="font-semibold">생성된 제목 ({generatedTitles.length}개)</h4>
                   <Button
                     variant="success"
                     size="sm"
@@ -351,7 +351,7 @@ function BlogTitleGenerator({ stats }: { stats: any }) {
 
                 <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3">
                   <p className="text-xs text-blue-500">
-                    💡 제목을 클릭하면 클립보드에 복사됩니다.
+                    제목을 클릭하면 클립보드에 복사됩니다.
                   </p>
                 </div>
               </div>
@@ -393,14 +393,14 @@ function ContentIdeas({ stats: _stats }: { stats: any }) {
   return (
     <div className="space-y-6">
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-2">💡 콘텐츠 아이디어</h3>
+        <h3 className="text-lg font-semibold mb-2">콘텐츠 아이디어</h3>
         <p className="text-sm text-muted-foreground mb-4">
           카테고리별 S/A급 키워드를 활용한 블로그 콘텐츠 아이디어입니다.
         </p>
 
         {Object.keys(groupedByCategory).length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
-            <p className="text-4xl mb-4">💡</p>
+            <div className="flex justify-center mb-4 text-faint"><Lightbulb className="w-10 h-10" strokeWidth={1.5} /></div>
             <p>S/A급 키워드가 없습니다.</p>
           </div>
         ) : (
@@ -408,12 +408,12 @@ function ContentIdeas({ stats: _stats }: { stats: any }) {
             {Object.entries(groupedByCategory).map(([category, keywords]) => (
               <div key={category} className="border border-border rounded-lg p-4">
                 <h4 className="font-semibold mb-3">
-                  📂 {category} ({keywords.length}개 키워드)
+                  {category} ({keywords.length}개 키워드)
                 </h4>
 
                 <div className="space-y-3">
                   <div className="bg-muted/50 rounded p-3">
-                    <p className="text-sm font-medium mb-2">📝 추천 콘텐츠 주제:</p>
+                    <p className="text-sm font-medium mb-2">추천 콘텐츠 주제:</p>
                     <ul className="text-sm space-y-1 ml-4">
                       <li>• {category} 완벽 가이드 (종합편)</li>
                       <li>• {category} 자주 묻는 질문 TOP 10</li>
@@ -463,21 +463,21 @@ function KeywordGrouping({ stats: _stats }: { stats: any }) {
   return (
     <div className="space-y-6">
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-2">📦 키워드 그룹화</h3>
+        <h3 className="text-lg font-semibold mb-2">키워드 그룹화</h3>
         <p className="text-sm text-muted-foreground mb-4">
           관련 키워드를 그룹화하여 1개 블로그 글로 여러 키워드를 동시 공략할 수 있습니다.
         </p>
 
         {!clusters || clusters.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
-            <p className="text-4xl mb-4">📦</p>
+            <div className="flex justify-center mb-4 text-faint"><Package className="w-10 h-10" strokeWidth={1.5} /></div>
             <p>클러스터 데이터가 없습니다.</p>
           </div>
         ) : (
           <div className="space-y-4">
             <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
               <p className="text-sm text-blue-500">
-                💡 총 {clusters.length}개 클러스터에 {clusters.reduce((sum: number, c: any) => sum + c.keyword_count, 0)}개 키워드가 포함되어 있습니다.
+                총 {clusters.length}개 클러스터에 {clusters.reduce((sum: number, c: any) => sum + c.keyword_count, 0)}개 키워드가 포함되어 있습니다.
               </p>
             </div>
 
@@ -486,7 +486,7 @@ function KeywordGrouping({ stats: _stats }: { stats: any }) {
                 <div className="flex items-start justify-between mb-3">
                   <div>
                     <h4 className="font-semibold">
-                      📦 {cluster.cluster_name}
+                      {cluster.cluster_name}
                     </h4>
                     <p className="text-sm text-muted-foreground">
                       {cluster.keyword_count}개 키워드 • 검색량 {cluster.total_search_volume?.toLocaleString() || 0}
@@ -500,7 +500,7 @@ function KeywordGrouping({ stats: _stats }: { stats: any }) {
                 </div>
 
                 <div className="bg-muted/50 rounded p-3 mb-3">
-                  <p className="text-sm font-medium mb-2">📝 추천 글 제목:</p>
+                  <p className="text-sm font-medium mb-2">추천 글 제목:</p>
                   <p className="text-sm">{cluster.cluster_name} 완벽 가이드 | 2026년 최신</p>
                 </div>
 

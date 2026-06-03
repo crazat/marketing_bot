@@ -2,8 +2,8 @@ import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSidebarPrefetch } from '@/hooks/usePrefetch'
-import { Menu, X, AlertTriangle, Users, Clock, ChevronDown, ChevronRight, BarChart3, Megaphone, Briefcase, Wrench, Settings, Target, Swords, Flame, Music, ClipboardList, Coins, MessageSquare, Bot, LineChart, Eye } from 'lucide-react'
-import { ThemeToggle } from '@/components/ui/ThemeProvider'
+import { Menu, X, AlertTriangle, Users, Clock, BarChart3, Megaphone, Briefcase, Wrench, Settings, Target, Swords, Flame, Music, ClipboardList, Coins, MessageSquare, Bot, LineChart, Eye, Sun, Moon, Search } from 'lucide-react'
+import { ThemeToggle, useTheme } from '@/components/ui/ThemeProvider'
 import useKeyboardShortcuts from '@/hooks/useKeyboardShortcuts'
 import { useGlobalNav } from '@/hooks/useGlobalNav'
 import KeyboardShortcutsHelp from '@/components/ui/KeyboardShortcutsHelp'
@@ -16,7 +16,6 @@ import Breadcrumb from '@/components/Breadcrumb'
 import OnboardingTour from '@/components/OnboardingTour'
 import { useToast } from '@/components/ui/Toast'
 import MobileTabBar from '@/components/MobileTabBar'
-import GlobalSearchBar from '@/components/GlobalSearchBar'
 import FeedbackWidget from '@/components/FeedbackWidget'
 import { DashboardSettingsButton } from '@/components/DashboardSettings'
 import { OfflineBanner } from '@/components/ui/OfflineBanner'
@@ -38,64 +37,102 @@ interface NavGroup {
   defaultOpen?: boolean
 }
 
+// [RECOVER OS] 모노톤 라인 아이콘 — 색상은 nav 상태(text-muted/sage)에서 상속, 1.7 stroke
+const ICON = 'w-[17px] h-[17px]'
 const navigationGroups: NavGroup[] = [
   {
     id: 'home',
     name: '홈',
-    icon: <BarChart3 className="w-4 h-4" />,
+    icon: <BarChart3 className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: '대시보드', href: '/', icon: <BarChart3 className="w-4 h-4" /> },
+      { name: '대시보드', href: '/', icon: <BarChart3 className={ICON} strokeWidth={1.7} /> },
     ],
     defaultOpen: true,
   },
   {
     id: 'analysis',
     name: '분석 도구',
-    icon: <LineChart className="w-4 h-4" />,
+    icon: <LineChart className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: 'Pathfinder', href: '/pathfinder', icon: <Target className="w-4 h-4 text-blue-500" /> },
-      { name: 'Battle Intelligence', href: '/battle', icon: <Swords className="w-4 h-4 text-red-500" /> },
-      { name: '경쟁사 분석', href: '/competitors', icon: <Eye className="w-4 h-4 text-purple-500" /> },
-      // [A안] '마케팅 분석'은 Marketing Hub에 통합됨 — 항목 제거. /analytics는 리다이렉트 셔임만 유지.
+      { name: 'Pathfinder', href: '/pathfinder', icon: <Target className={ICON} strokeWidth={1.7} /> },
+      { name: 'Battle Intelligence', href: '/battle', icon: <Swords className={ICON} strokeWidth={1.7} /> },
+      { name: '경쟁사 분석', href: '/competitors', icon: <Eye className={ICON} strokeWidth={1.7} /> },
     ],
     defaultOpen: true,
   },
   {
     id: 'content',
     name: '콘텐츠 수집',
-    icon: <Megaphone className="w-4 h-4" />,
+    icon: <Megaphone className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: 'Viral Hunter', href: '/viral', icon: <Flame className="w-4 h-4 text-orange-500" /> },
-      { name: 'TikTok', href: '/tiktok', icon: <Music className="w-4 h-4 text-pink-500" /> },
+      { name: 'Viral Hunter', href: '/viral', icon: <Flame className={ICON} strokeWidth={1.7} /> },
+      { name: 'TikTok', href: '/tiktok', icon: <Music className={ICON} strokeWidth={1.7} /> },
     ],
   },
   {
     id: 'sales',
     name: '영업 관리',
-    icon: <Briefcase className="w-4 h-4" />,
+    icon: <Briefcase className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: 'Lead Manager', href: '/leads', icon: <ClipboardList className="w-4 h-4 text-blue-500" /> },
-      { name: 'Marketing Hub', href: '/marketing', icon: <Coins className="w-4 h-4 text-yellow-500" /> },
+      { name: 'Lead Manager', href: '/leads', icon: <ClipboardList className={ICON} strokeWidth={1.7} /> },
+      { name: 'Marketing Hub', href: '/marketing', icon: <Coins className={ICON} strokeWidth={1.7} /> },
     ],
   },
   {
     id: 'tools',
     name: '도구',
-    icon: <Wrench className="w-4 h-4" />,
+    icon: <Wrench className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: 'Q&A Repository', href: '/qa', icon: <MessageSquare className="w-4 h-4 text-cyan-500" /> },
-      { name: 'AI Agent', href: '/agent', icon: <Bot className="w-4 h-4 text-purple-500" /> },
+      { name: 'Q&A Repository', href: '/qa', icon: <MessageSquare className={ICON} strokeWidth={1.7} /> },
+      { name: 'AI Agent', href: '/agent', icon: <Bot className={ICON} strokeWidth={1.7} /> },
     ],
   },
   {
     id: 'settings',
     name: '설정',
-    icon: <Settings className="w-4 h-4" />,
+    icon: <Settings className={ICON} strokeWidth={1.7} />,
     items: [
-      { name: '설정', href: '/settings', icon: <Settings className="w-4 h-4 text-gray-500" /> },
+      { name: '설정', href: '/settings', icon: <Settings className={ICON} strokeWidth={1.7} /> },
     ],
   },
 ]
+
+// [RECOVER OS] 토픽바 테마 스위치 (sun/moon 세그먼트)
+function ThemeSwitch() {
+  const { resolvedTheme, setTheme } = useTheme()
+  return (
+    <div className="ros-theme-switch" role="group" aria-label="테마 전환">
+      <button
+        type="button"
+        className={resolvedTheme === 'light' ? 'on' : ''}
+        onClick={() => setTheme('light')}
+        title="라이트 모드"
+        aria-label="라이트 모드"
+        aria-pressed={resolvedTheme === 'light'}
+      >
+        <Sun className="w-[15px] h-[15px]" strokeWidth={1.8} />
+      </button>
+      <button
+        type="button"
+        className={resolvedTheme === 'dark' ? 'on' : ''}
+        onClick={() => setTheme('dark')}
+        title="다크 모드"
+        aria-label="다크 모드"
+        aria-pressed={resolvedTheme === 'dark'}
+      >
+        <Moon className="w-[15px] h-[15px]" strokeWidth={1.8} />
+      </button>
+    </div>
+  )
+}
+
+// [RECOVER OS] 라이브 날짜 칩 — "6월 3일 화 · 09:12"
+function formatDateChip(d: Date): string {
+  const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()]
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${d.getMonth() + 1}월 ${d.getDate()}일 ${wd} · ${hh}:${mm}`
+}
 
 // 핫리드 알림 배너 컴포넌트
 function HotLeadBanner({
@@ -172,36 +209,16 @@ export default function Layout() {
   const [keywordHubKeyword, setKeywordHubKeyword] = useState('')
   // 핫리드 배너 숨김 상태 (세션 동안 유지)
   const [bannerDismissed, setBannerDismissed] = useState(false)
-  // 메뉴 그룹 접힘 상태
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
-    const defaultOpen = navigationGroups.filter(g => g.defaultOpen).map(g => g.id)
-    return new Set(defaultOpen)
-  })
   const location = useLocation()
   // [성능 최적화] 프리페칭
   const { handleMouseEnter, handleMouseLeave } = useSidebarPrefetch()
 
-  const toggleGroup = (groupId: string) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev)
-      if (next.has(groupId)) {
-        next.delete(groupId)
-      } else {
-        next.add(groupId)
-      }
-      return next
-    })
-  }
-
-  // 현재 페이지가 속한 그룹 자동 확장
+  // [RECOVER OS] 토픽바 라이브 날짜 — 1분마다 갱신
+  const [now, setNow] = useState(() => new Date())
   useEffect(() => {
-    const currentGroup = navigationGroups.find(g =>
-      g.items.some(item => item.href === location.pathname)
-    )
-    if (currentGroup && !expandedGroups.has(currentGroup.id)) {
-      setExpandedGroups(prev => new Set([...prev, currentGroup.id]))
-    }
-  }, [location.pathname])
+    const t = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(t)
+  }, [])
 
   // [Phase 1.5] 키보드 단축키
   const { showHelp, setShowHelp, shortcuts } = useKeyboardShortcuts()
@@ -331,18 +348,22 @@ export default function Layout() {
           aria-label="주 메뉴"
         >
           <div className="flex flex-col h-full">
-            {/* 로고 - md: 아이콘만, lg: 전체 */}
-            <div className="px-3 lg:px-6 py-4 lg:py-6 border-b border-border">
+            {/* 브랜드 — md: 마크만, lg: 전체 */}
+            <div className="px-3 lg:px-5 py-[18px] border-b" style={{ borderColor: 'var(--hair)' }}>
               <div className="flex items-center justify-between gap-2">
                 <Link
                   to="/"
                   onClick={() => setSidebarOpen(false)}
-                  className="text-2xl font-bold min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+                  className="flex items-center gap-[11px] min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-lg"
                   aria-label="대시보드로 이동"
                 >
-                  <span className="md:hidden lg:hidden truncate block">🧠 Marketing Bot</span>
-                  <span className="hidden md:block lg:hidden text-center">🧠</span>
-                  <span className="hidden lg:inline">🧠 Marketing Bot</span>
+                  <span className="ros-brand-mark" aria-hidden="true">M</span>
+                  <span className="min-w-0 block md:hidden lg:block">
+                    <span className="block font-display text-[17px] leading-none text-strong" style={{ fontWeight: 480, letterSpacing: '-0.01em' }}>
+                      Marketing Bot
+                    </span>
+                    <span className="block mono-label text-[10.5px] mt-[5px] text-faint truncate">{brandTagline}</span>
+                  </span>
                 </Link>
                 <IconButton
                   icon={<X className="w-4 h-4" />}
@@ -352,129 +373,79 @@ export default function Layout() {
                   className="md:hidden"
                 />
               </div>
-              <p className="hidden lg:block text-sm text-muted-foreground mt-1">
-                {brandTagline}
-              </p>
             </div>
 
-            {/* 네비게이션 - md: 아이콘만, lg: 전체 그룹화 */}
+            {/* 네비게이션 - md: 아이콘만, lg: 그룹 라벨 + 전체 (RECOVER OS sage-rail) */}
             <nav
-              className="flex-1 px-2 lg:px-4 py-4 space-y-1 overflow-y-auto"
+              className="flex-1 px-3 py-3.5 overflow-y-auto"
               aria-label="메인 네비게이션"
             >
-              {navigationGroups.map((group) => {
-                const isExpanded = expandedGroups.has(group.id)
-                const hasActiveItem = group.items.some(item => item.href === location.pathname)
-                const isSingleItem = group.items.length === 1
+              {navigationGroups.map((group) => (
+                <div key={group.id} className="mb-1">
+                  <div className="ros-nav-group-label block md:hidden lg:block">{group.name}</div>
+                  <div className="space-y-px">
+                    {group.items.map((item) => {
+                      const isActive = location.pathname === item.href
+                      const showCount = item.href === '/leads' && alertCount > 0
+                      const isViral = item.href === '/viral'
 
-                // 단일 항목 그룹은 바로 링크로 표시
-                if (isSingleItem) {
-                  const item = group.items[0]
-                  const isActive = location.pathname === item.href
-                  return (
-                    <Link
-                      key={group.id}
-                      to={item.href}
-                      onClick={() => setSidebarOpen(false)}
-                      onMouseEnter={() => handleMouseEnter(item.href)}
-                      onMouseLeave={handleMouseLeave}
-                      aria-current={isActive ? 'page' : undefined}
-                      title={item.name}
-                      className={`
-                        flex items-center justify-center lg:justify-start gap-3 px-3 py-2.5 rounded-lg
-                        transition-all duration-200 ease-out
-                        focus:outline-none focus:ring-2 focus:ring-primary focus:ring-inset
-                        ${isActive
-                          ? 'bg-primary text-primary-foreground shadow-md'
-                          : 'hover:bg-accent'
-                        }
-                      `}
-                    >
-                      <span aria-hidden="true">{item.icon}</span>
-                      <span className="hidden lg:inline font-medium">{item.name}</span>
-                    </Link>
-                  )
-                }
-
-                return (
-                  <div key={group.id} className="space-y-0.5">
-                    {/* 그룹 헤더 - md에서는 숨김 */}
-                    <button
-                      onClick={() => toggleGroup(group.id)}
-                      className={`
-                        hidden lg:flex w-full items-center gap-2 px-3 py-2 rounded-lg text-sm
-                        transition-colors hover:bg-accent
-                        ${hasActiveItem ? 'text-primary font-medium' : 'text-muted-foreground'}
-                      `}
-                      aria-expanded={isExpanded}
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="w-4 h-4 flex-shrink-0" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4 flex-shrink-0" />
-                      )}
-                      <span className="flex-1 text-left">{group.name}</span>
-                      <span className="text-xs text-muted-foreground">{group.items.length}</span>
-                    </button>
-
-                    {/* 그룹 아이템 - md: 항상 표시(아이콘만), lg: 확장시 표시 */}
-                    <div className={`lg:ml-4 space-y-0.5 ${isExpanded ? 'lg:block' : 'lg:hidden'} block`}>
-                      {group.items.map((item) => {
-                        const isActive = location.pathname === item.href
-                        const showBadge = item.href === '/leads' && alertCount > 0
-
-                        return (
-                          <Link
-                            key={item.name}
-                            to={item.href}
-                            onClick={() => setSidebarOpen(false)}
-                            onMouseEnter={() => handleMouseEnter(item.href)}
-                            onMouseLeave={handleMouseLeave}
-                            aria-current={isActive ? 'page' : undefined}
-                            title={item.name}
-                            className={`
-                              flex items-center justify-center lg:justify-start gap-2.5 px-3 py-2 rounded-lg text-sm
-                              transition-all duration-200 ease-out
-                              focus:outline-none focus:ring-2 focus:ring-primary focus:ring-inset
-                              ${isActive
-                                ? 'bg-primary text-primary-foreground shadow-sm'
-                                : 'hover:bg-accent lg:hover:translate-x-0.5'
-                              }
-                            `}
-                          >
-                            <span aria-hidden="true" className="relative">
-                              {item.icon}
-                              {/* md에서 배지 표시 (아이콘 우상단) */}
-                              {showBadge && (
-                                <span
-                                  className="lg:hidden absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"
-                                  aria-label={`${alertCount}개의 긴급 리드`}
-                                />
-                              )}
-                            </span>
-                            <span className="hidden lg:inline flex-1">{item.name}</span>
-                            {/* lg에서 배지 표시 (텍스트 옆) */}
-                            {showBadge && (
+                      return (
+                        <Link
+                          key={item.name}
+                          to={item.href}
+                          onClick={() => setSidebarOpen(false)}
+                          onMouseEnter={() => handleMouseEnter(item.href)}
+                          onMouseLeave={handleMouseLeave}
+                          aria-current={isActive ? 'page' : undefined}
+                          title={item.name}
+                          className={`ros-nav-item justify-center lg:justify-start focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${isActive ? 'active' : ''}`}
+                        >
+                          <span aria-hidden="true" className="relative inline-flex">
+                            {item.icon}
+                            {showCount && (
                               <span
-                                className="hidden lg:inline px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full animate-pulse"
+                                className="lg:hidden absolute -top-1 -right-1 w-2 h-2 rounded-full animate-pulse"
+                                style={{ background: 'var(--danger)' }}
                                 aria-label={`${alertCount}개의 긴급 리드`}
-                              >
-                                {alertCount}
-                              </span>
+                              />
                             )}
-                          </Link>
-                        )
-                      })}
-                    </div>
+                          </span>
+                          <span className="label block md:hidden lg:block">{item.name}</span>
+                          {showCount && (
+                            <span className="ros-nav-badge hidden lg:inline-flex" aria-label={`${alertCount}개의 긴급 리드`}>
+                              {alertCount}
+                            </span>
+                          )}
+                          {isViral && <span className="ros-nav-dot hidden lg:block" aria-hidden="true" />}
+                        </Link>
+                      )
+                    })}
                   </div>
-                )
-              })}
+                </div>
+              ))}
             </nav>
 
-            {/* 푸터 - md: 아이콘만, lg: 전체 */}
-            <div className="px-2 lg:px-6 py-4 border-t border-border">
-              <div className="flex flex-col lg:flex-row items-center justify-center lg:justify-between gap-2 lg:gap-0 mb-3">
-                <span className="hidden lg:inline text-xs text-muted-foreground">빠른 설정</span>
+            {/* 푸터 — 라이브 상태 블록 + 유틸 + 버전 */}
+            <div className="px-3 py-3 border-t flex flex-col gap-2" style={{ borderColor: 'var(--hair)' }}>
+              <div className="ros-sb-status block md:hidden lg:flex">
+                <span className="ros-sb-dot" aria-hidden="true" />
+                <div className="min-w-0">
+                  <div className="text-[11.5px] font-semibold text-strong whitespace-nowrap">스케줄러 running</div>
+                  <div className="text-[10px] text-faint truncate">실시간 동기화 · Sentinel 정상</div>
+                </div>
+              </div>
+              <div className="flex items-center justify-center lg:justify-between gap-1">
+                <button
+                  onClick={() => setCommandPaletteOpen(true)}
+                  className="ros-cmdk hidden lg:flex flex-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label="명령 팔레트 열기 (Ctrl+K)"
+                >
+                  <Search className="w-[15px] h-[15px] flex-shrink-0" strokeWidth={1.8} />
+                  <span className="truncate text-left">검색 · 명령 팔레트</span>
+                  <span className="ml-auto flex gap-1" aria-hidden="true">
+                    <span className="ros-kbd">Ctrl</span><span className="ros-kbd">K</span>
+                  </span>
+                </button>
                 <div className="flex items-center gap-1">
                   <NotificationBell />
                   <DashboardSettingsButton />
@@ -482,25 +453,14 @@ export default function Layout() {
                 </div>
               </div>
               <button
-                onClick={() => setCommandPaletteOpen(true)}
-                className="hidden lg:flex w-full text-xs text-muted-foreground hover:text-foreground transition-colors mb-2 items-center gap-1 px-2 py-1.5 bg-muted/50 rounded-lg hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                aria-label="명령 팔레트 열기 (Ctrl+K)"
-              >
-                <kbd className="px-1.5 py-0.5 bg-background rounded text-[10px] font-mono" aria-hidden="true">Ctrl</kbd>
-                <kbd className="px-1.5 py-0.5 bg-background rounded text-[10px] font-mono" aria-hidden="true">K</kbd>
-                <span className="ml-1">명령 팔레트</span>
-              </button>
-              <button
                 onClick={() => setShowHelp(true)}
-                className="hidden lg:flex text-xs text-muted-foreground hover:text-foreground transition-colors mb-2 items-center gap-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+                className="hidden lg:flex text-[11px] text-faint hover:text-foreground transition-colors items-center gap-1.5 px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
                 aria-label="키보드 단축키 도움말 열기"
               >
-                <kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono" aria-hidden="true">?</kbd>
+                <kbd className="ros-kbd" aria-hidden="true">?</kbd>
                 단축키 도움말
               </button>
-              <p className="hidden lg:block text-xs text-muted-foreground">
-                Version 2.0.0
-              </p>
+              <p className="hidden lg:block text-[11px] text-faint px-1">Version 2.0.0 · Recover Edition</p>
             </div>
           </div>
         </aside>
@@ -512,6 +472,39 @@ export default function Layout() {
           role="main"
           tabIndex={-1}
         >
+          {/* [RECOVER OS] 데스크톱 토픽바 — breadcrumb · 명령 팔레트 · 날짜칩 · 테마 스위치 (모바일은 상단 바 사용) */}
+          <header
+            className="hidden md:flex sticky top-0 z-20 items-center gap-4 px-4 lg:px-7 py-3 border-b"
+            style={{
+              borderColor: 'var(--hair)',
+              background: 'color-mix(in oklab, var(--bg-grain) 78%, transparent)',
+              backdropFilter: 'blur(14px) saturate(1.1)',
+            }}
+          >
+            <div className="min-w-0 flex-shrink-0">
+              <Breadcrumb />
+            </div>
+            <button
+              onClick={() => setCommandPaletteOpen(true)}
+              className="ros-cmdk ml-1 flex-1 max-w-[420px] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              aria-label="명령 팔레트 (Ctrl+K)"
+            >
+              <Search className="w-[15px] h-[15px] flex-shrink-0" strokeWidth={1.8} />
+              <span className="truncate text-left">키워드 · 리드 · 타겟 · 페이지 검색…</span>
+              <span className="ml-auto flex gap-1" aria-hidden="true">
+                <span className="ros-kbd">Ctrl</span><span className="ros-kbd">K</span>
+              </span>
+            </button>
+            <div className="ml-auto flex items-center gap-1.5">
+              <div className="ros-date-chip hidden lg:inline-flex">
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--clay)' }} aria-hidden="true" />
+                {formatDateChip(now)}
+              </div>
+              <ThemeSwitch />
+              <NotificationBell />
+            </div>
+          </header>
+
           {/* 핫리드 알림 배너 */}
           {!bannerDismissed && location.pathname !== '/leads' && (
             <HotLeadBanner
@@ -519,9 +512,7 @@ export default function Layout() {
               onDismiss={() => setBannerDismissed(true)}
             />
           )}
-          <div className="max-w-7xl mx-auto p-4 sm:p-6">
-            <Breadcrumb />
-            <GlobalSearchBar onOpen={() => setCommandPaletteOpen(true)} />
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-7 py-6">
             <Outlet />
           </div>
         </main>

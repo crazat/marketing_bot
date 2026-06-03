@@ -9,6 +9,7 @@
  */
 
 import { ReactNode } from 'react'
+import { Rocket, Search, Filter, AlertTriangle, Inbox, Plus, Lightbulb } from 'lucide-react'
 import Button from '@/components/ui/Button'
 
 // 빈 상태 타입
@@ -56,29 +57,30 @@ interface EmptyStateProps {
 }
 
 // 타입별 기본 설정
-const typeDefaults: Record<EmptyStateType, { icon: string; title: string; description: string }> = {
+const ICON_CLS = 'w-12 h-12 mx-auto'
+const typeDefaults: Record<EmptyStateType, { icon: ReactNode; title: string; description: string }> = {
   initial: {
-    icon: '🚀',
+    icon: <Rocket className={ICON_CLS} strokeWidth={1.5} />,
     title: '시작해보세요',
     description: '첫 번째 항목을 추가하여 시작하세요.',
   },
   'no-results': {
-    icon: '🔍',
+    icon: <Search className={ICON_CLS} strokeWidth={1.5} />,
     title: '검색 결과가 없습니다',
     description: '다른 검색어로 시도해보세요.',
   },
   filtered: {
-    icon: '🔎',
+    icon: <Filter className={ICON_CLS} strokeWidth={1.5} />,
     title: '필터 결과가 없습니다',
     description: '현재 필터 조건에 맞는 항목이 없습니다.',
   },
   error: {
-    icon: '⚠️',
+    icon: <AlertTriangle className={ICON_CLS} strokeWidth={1.5} />,
     title: '오류가 발생했습니다',
     description: '데이터를 불러오는 중 문제가 발생했습니다.',
   },
   custom: {
-    icon: '📭',
+    icon: <Inbox className={ICON_CLS} strokeWidth={1.5} />,
     title: '데이터가 없습니다',
     description: '',
   },
@@ -147,8 +149,8 @@ export default function EmptyState({
 
       {/* 팁/제안 */}
       {suggestion && (
-        <div className="mb-4 px-4 py-2 bg-muted/50 rounded-lg text-sm text-muted-foreground max-w-md">
-          <span aria-hidden="true">💡 </span>
+        <div className="mb-4 px-4 py-2 bg-muted/50 rounded-lg text-sm text-muted-foreground max-w-md inline-flex items-center gap-1.5">
+          <Lightbulb className="w-4 h-4 flex-shrink-0 text-sage" strokeWidth={1.8} aria-hidden="true" />
           {suggestion}
         </div>
       )}
@@ -239,7 +241,7 @@ export function FirstTimeState({
       title={`첫 ${itemName}을(를) 추가해보세요`}
       description={description || `아직 ${itemName}이(가) 없습니다. 시작하려면 아래 버튼을 클릭하세요.`}
       actions={[
-        { label: `${itemName} 추가`, onClick: onStart, variant: 'primary', icon: '➕' },
+        { label: `${itemName} 추가`, onClick: onStart, variant: 'primary', icon: <Plus className="w-4 h-4" /> },
       ]}
     />
   )

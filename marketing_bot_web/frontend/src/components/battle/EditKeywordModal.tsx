@@ -73,7 +73,7 @@ export default function EditKeywordModal({
     <Modal
       isOpen={true}
       onClose={handleClose}
-      title="✏️ 키워드 수정"
+      title="키워드 수정"
       size="md"
       footer={
         <div className="flex gap-3 w-full">

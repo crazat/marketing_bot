@@ -7,7 +7,7 @@ import {
   PathfinderStatusEvent
 } from '@/hooks/useWebSocket'
 import Button from '@/components/ui/Button'
-import { Trash2 } from 'lucide-react'
+import { Trash2, ClipboardList } from 'lucide-react'
 import { getApiAuthHeaders } from '@/services/api/base'
 
 interface LiveLogViewerProps {
@@ -227,7 +227,7 @@ export default function LiveLogViewer({ maxLines = 200 }: LiveLogViewerProps) {
       >
         {logs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-zinc-500">
-            <span className="text-4xl mb-3">📋</span>
+            <span className="mb-3"><ClipboardList className="w-10 h-10" strokeWidth={1.5} /></span>
             <p className="text-sm">실시간 로그가 여기에 표시됩니다</p>
             <p className="text-xs mt-1">Pathfinder를 실행하면 진행 상황을 확인할 수 있습니다</p>
           </div>

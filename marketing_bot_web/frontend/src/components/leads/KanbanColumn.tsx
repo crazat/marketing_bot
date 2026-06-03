@@ -1,10 +1,11 @@
+import type { ReactNode } from 'react'
 import { Lead } from '@/services/api'
 import LeadCard from './LeadCard'
 
 interface KanbanColumnProps {
   id: string
   title: string
-  icon: string
+  icon: ReactNode
   color: string
   leads: Lead[]
   onDragStart: (e: React.DragEvent, lead: Lead) => void

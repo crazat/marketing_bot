@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sparkles, Copy, Check } from 'lucide-react'
+import { Sparkles, Copy, Check, X, MessageSquare, RefreshCw } from 'lucide-react'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 interface CommentPreviewProps {
@@ -78,9 +78,9 @@ export function CommentPreview({
   const quality = comment ? analyzeQuality() : null
 
   const getScoreColor = (score: number) => {
-    if (score >= 75) return 'text-green-500'
-    if (score >= 50) return 'text-yellow-500'
-    return 'text-red-500'
+    if (score >= 75) return 'text-ok'
+    if (score >= 50) return 'text-warn'
+    return 'text-danger'
   }
 
   const getScoreLabel = (score: number) => {
@@ -94,10 +94,10 @@ export function CommentPreview({
       {/* 헤더 */}
       <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 bg-muted/30 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-lg">💬</span>
+          <MessageSquare className="w-[18px] h-[18px] text-sage" strokeWidth={1.8} />
           <span className="font-semibold">생성된 댓글</span>
           {/* [Z4] AI 생성 명시 배지 */}
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/20 rounded">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-mist-tint text-mist border border-mist/20 rounded">
             <Sparkles className="w-2.5 h-2.5" aria-hidden />
             AI 생성 · 편집 가능
           </span>
@@ -135,8 +135,8 @@ export function CommentPreview({
 
       {/* 타겟 정보 */}
       {targetTitle && (
-        <div className="px-4 py-2 bg-blue-50 dark:bg-blue-900/30 border-b border-blue-100 dark:border-blue-800">
-          <div className="text-sm text-blue-700 dark:text-blue-300 truncate">
+        <div className="px-4 py-2 bg-mist-tint border-b border-mist/15">
+          <div className="text-sm text-mist truncate">
             <span className="font-medium">대상:</span> {targetTitle}
           </div>
         </div>
@@ -148,16 +148,16 @@ export function CommentPreview({
           value={comment}
           onChange={(e) => onChange(e.target.value)}
           placeholder="AI가 생성한 댓글이 여기에 표시됩니다..."
-          className="w-full h-32 p-3 bg-background border border-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+          className="ros-composer w-full h-32 text-sm"
         />
 
         {/* 글자 수 표시 */}
         <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-          <span>
+          <span className="inline-flex items-center gap-0.5">
             {comment.length}자
             {comment.length > 0 && (
-              <span className={comment.length < 50 ? 'text-red-500' : comment.length > 300 ? 'text-yellow-500' : 'text-green-500'}>
-                {comment.length < 50 ? ' (50자 이상 권장)' : comment.length > 300 ? ' (300자 이하 권장)' : ' ✓'}
+              <span className={`inline-flex items-center ${comment.length < 50 ? 'text-danger' : comment.length > 300 ? 'text-warn' : 'text-ok'}`}>
+                {comment.length < 50 ? ' (50자 이상 권장)' : comment.length > 300 ? ' (300자 이하 권장)' : <Check className="w-3 h-3 ml-0.5" strokeWidth={2.4} />}
               </span>
             )}
           </span>
@@ -168,12 +168,12 @@ export function CommentPreview({
           >
             {isGenerating ? (
               <>
-                <span className="animate-spin">🔄</span>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 <span>생성 중...</span>
               </>
             ) : (
               <>
-                <span>🔄</span>
+                <RefreshCw className="w-3.5 h-3.5" />
                 <span>재생성</span>
               </>
             )}
@@ -190,11 +190,11 @@ export function CommentPreview({
                 key={index}
                 className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs ${
                   check.passed
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                    : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                    ? 'bg-ok-tint text-ok'
+                    : 'bg-danger-tint text-danger'
                 }`}
               >
-                {check.passed ? '✓' : '✗'} {check.label}
+                {check.passed ? <Check className="w-3 h-3" strokeWidth={2.4} /> : <X className="w-3 h-3" strokeWidth={2.4} />} {check.label}
               </span>
             ))}
           </div>
@@ -211,7 +211,7 @@ export function CommentPreview({
                 key={index}
                 className={`px-2 py-0.5 rounded text-xs ${
                   comment.toLowerCase().includes(kw.toLowerCase())
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    ? 'bg-ok-tint text-ok'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >

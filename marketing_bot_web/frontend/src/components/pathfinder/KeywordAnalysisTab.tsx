@@ -4,7 +4,7 @@ import { pathfinderApi } from '@/services/api'
 import { VirtualTable } from '@/components/ui/VirtualTable'
 import Button from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
-import { Download } from 'lucide-react'
+import { Download, Target } from 'lucide-react'
 import type { Keyword, PathfinderStats } from '@/types'
 import { GRADE_ICONS, GRADE_COLORS, TREND_ICONS } from '@/types'
 
@@ -136,7 +136,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
     return (
       <div className="bg-card rounded-lg border border-border p-6">
         <div className="text-center py-12">
-          <p className="text-4xl mb-4">🎯</p>
+          <div className="flex justify-center mb-4 text-faint"><Target className="w-10 h-10" strokeWidth={1.5} /></div>
           <p className="text-xl font-semibold mb-2">키워드 데이터가 없습니다</p>
           <p className="text-muted-foreground mb-6">
             Pathfinder를 실행하여 키워드를 수집하세요.
@@ -156,7 +156,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
     <div className="space-y-6">
       {/* 필터 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">🔍 필터</h3>
+        <h3 className="text-lg font-semibold mb-4">필터</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* 등급 필터 (다중 선택) */}
           <div>
@@ -239,7 +239,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
       {/* 키워드 테이블 */}
       <div className="bg-card rounded-lg border border-border p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">📋 키워드 목록</h3>
+          <h3 className="text-lg font-semibold">키워드 목록</h3>
           <Button
             variant="success"
             size="sm"
@@ -340,7 +340,7 @@ export default function KeywordAnalysisTab({ stats }: KeywordAnalysisTabProps) {
 
       {/* KEI 분석 차트 (선택) */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📈 KEI 분석</h3>
+        <h3 className="text-lg font-semibold mb-4">KEI 분석</h3>
         <p className="text-sm text-muted-foreground mb-4">
           KEI (Keyword Effectiveness Index) = 검색량² / 경쟁도
         </p>

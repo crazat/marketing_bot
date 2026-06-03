@@ -14,7 +14,8 @@ import { useToast } from '@/components/ui/Toast'
 import { ResultsAnnouncer } from '@/components/ui/LiveRegion'
 import { exportToCSV, LEAD_EXPORT_COLUMNS } from '@/utils/export'
 import Button, { IconButton } from '@/components/ui/Button'
-import { Download, Phone, MessageCircle, CheckCircle, XCircle, Shield, Contact, Ban, Copy } from 'lucide-react'
+import { Download, Phone, MessageCircle, CheckCircle, XCircle, Shield, Contact, Ban, Copy, ClipboardList, Mail } from 'lucide-react'
+import { platformIcon } from '@/lib/entityIcons'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 type LeadPlatform = 'youtube' | 'tiktok' | 'naver' | 'instagram' | 'carrot' | 'influencer'
@@ -67,11 +68,11 @@ interface LeadData {
 }
 
 // [Phase 1.3] 등급별 스타일
-const gradeStyles: Record<string, { bg: string; text: string; emoji: string; label: string }> = {
-  hot: { bg: 'bg-red-500/20', text: 'text-red-400', emoji: '🔴', label: 'Hot' },
-  warm: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', emoji: '🟡', label: 'Warm' },
-  cool: { bg: 'bg-green-500/20', text: 'text-green-400', emoji: '🟢', label: 'Cool' },
-  cold: { bg: 'bg-gray-500/20', text: 'text-gray-400', emoji: '⚪', label: 'Cold' },
+const gradeStyles: Record<string, { bg: string; text: string; label: string }> = {
+  hot: { bg: 'bg-danger-tint', text: 'text-danger', label: 'Hot' },
+  warm: { bg: 'bg-warn-tint', text: 'text-warn', label: 'Warm' },
+  cool: { bg: 'bg-ok-tint', text: 'text-ok', label: 'Cool' },
+  cold: { bg: 'bg-muted', text: 'text-muted-foreground', label: 'Cold' },
 }
 
 
@@ -96,21 +97,12 @@ interface LeadTableProps {
   viewMode?: ViewMode // 모바일 카드 뷰 지원
 }
 
-const platformIcons: Record<string, string> = {
-  youtube: '📺',
-  tiktok: '🎵',
-  naver: '🟢',
-  instagram: '📸',
-  carrot: '🥕',
-  influencer: '⭐'
-}
-
 const statusColors: Record<LeadStatus, string> = {
-  pending: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30',
-  contacted: 'bg-blue-500/10 text-blue-500 border-blue-500/30',
-  replied: 'bg-purple-500/10 text-purple-500 border-purple-500/30',
-  converted: 'bg-green-500/10 text-green-500 border-green-500/30',
-  rejected: 'bg-red-500/10 text-red-500 border-red-500/30'
+  pending: 'bg-warn-tint text-warn border-warn/30',
+  contacted: 'bg-mist-tint text-mist border-mist/30',
+  replied: 'bg-sage-tint text-sage border-sage/30',
+  converted: 'bg-ok-tint text-ok border-ok/30',
+  rejected: 'bg-danger-tint text-danger border-danger/30'
 }
 
 // [성능 최적화] React.memo로 불필요한 리렌더링 방지
@@ -187,7 +179,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
   if (!leads || leads.length === 0) {
     return (
       <EmptyState
-        icon="📋"
+        icon={<ClipboardList className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
         title="리드가 없습니다"
         description="바이럴 스캔을 실행하여 새로운 리드를 발굴하세요."
       />
@@ -450,14 +442,14 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                     className="w-4 h-4 rounded border-border"
                   />
                 )}
-                <span className="text-lg">{platformIcons[lead.platform] || '📄'}</span>
+                <span className="text-sage">{platformIcon(lead.platform)}</span>
                 <span className={`px-2 py-0.5 text-xs rounded-full border ${statusColors[lead.status]}`}>
                   {statusLabels[lead.status]}
                 </span>
               </div>
               {lead.grade && (
                 <span className={`px-2 py-0.5 text-xs rounded-full ${gradeStyles[lead.grade].bg} ${gradeStyles[lead.grade].text}`}>
-                  {gradeStyles[lead.grade].emoji} {lead.score}점
+                  {lead.score}점
                 </span>
               )}
             </div>
@@ -488,9 +480,9 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       variant="ghost"
                       size="xs"
                       onClick={(e) => { e.stopPropagation(); onUpdateStatus(lead.id, 'contacted'); }}
-                      className="px-2 py-1 bg-blue-500/10 text-blue-600 hover:bg-blue-500/20"
+                      className="px-2 py-1 bg-mist-tint text-mist hover:bg-mist/20"
                     >
-                      📞 연락함
+                      연락함
                     </Button>
                   )}
                   {lead.status !== 'converted' && (
@@ -498,9 +490,9 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       variant="ghost"
                       size="xs"
                       onClick={(e) => { e.stopPropagation(); onUpdateStatus(lead.id, 'converted'); }}
-                      className="px-2 py-1 bg-green-500/10 text-green-600 hover:bg-green-500/20"
+                      className="px-2 py-1 bg-ok-tint text-ok hover:bg-ok/20"
                     >
-                      ✅ 전환
+                      전환
                     </Button>
                   )}
                   {lead.url && (
@@ -511,7 +503,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       onClick={(e) => e.stopPropagation()}
                       className="px-2 py-1 text-xs bg-muted rounded hover:bg-accent"
                     >
-                      🔗 원본
+                      원본
                     </a>
                   )}
                 </div>
@@ -576,14 +568,14 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                   </td>
                 )}
                 <td className="px-4 py-3">
-                  <span className="text-2xl">{platformIcons[lead.platform]}</span>
+                  <span className="text-sage">{platformIcon(lead.platform, 'w-6 h-6')}</span>
                 </td>
                 {/* [Phase 1.3] 점수 표시 */}
                 <td className="px-4 py-3">
                   {lead.score !== undefined ? (
                     <div className="flex flex-col items-center gap-1">
                       <span className={`text-xs px-2 py-1 rounded-full font-bold ${gradeStyles[lead.grade || 'cold'].bg} ${gradeStyles[lead.grade || 'cold'].text}`}>
-                        {gradeStyles[lead.grade || 'cold'].emoji} {lead.score}
+                        {lead.score}
                       </span>
                       <span className="text-[10px] text-muted-foreground">
                         {gradeStyles[lead.grade || 'cold'].label}
@@ -600,14 +592,14 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       <span
                         className={`text-xs px-2 py-1 rounded-full font-medium ${
                           lead.trust_level === 'trusted'
-                            ? 'bg-blue-500/20 text-blue-400'
+                            ? 'bg-mist-tint text-mist'
                             : lead.trust_level === 'review'
-                            ? 'bg-amber-500/20 text-amber-400'
-                            : 'bg-red-500/20 text-red-400'
+                            ? 'bg-warn-tint text-warn'
+                            : 'bg-danger-tint text-danger'
                         }`}
                         title={lead.trust_reasons?.join(', ') || '신뢰도 평가'}
                       >
-                        {lead.trust_level === 'trusted' ? '🟢' : lead.trust_level === 'review' ? '🟡' : '🔴'} {lead.trust_score}
+                        {lead.trust_score}
                       </span>
                       <span className="text-[10px] text-muted-foreground">
                         {lead.trust_level === 'trusted' ? '신뢰' : lead.trust_level === 'review' ? '확인' : '의심'}
@@ -640,7 +632,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                 </td>
                 <td className="px-4 py-3">
                   <span className={`text-xs px-2 py-1 rounded-full border ${statusColors[lead.status]}`}>
-                    {lead.status}
+                    {statusLabels[lead.status]}
                   </span>
                 </td>
                 <td className="hidden xl:table-cell px-4 py-3 text-sm text-muted-foreground">
@@ -665,7 +657,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       icon={<Phone className="w-4 h-4" />}
                       onClick={() => onUpdateStatus(lead.id, 'contacted')}
                       size="sm"
-                      className="text-blue-500 bg-blue-500/10 hover:bg-blue-500/20"
+                      className="text-mist bg-mist-tint hover:bg-mist/20"
                       title="연락함으로 표시"
                       aria-label="연락함으로 표시"
                     />
@@ -684,7 +676,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                         }
                       }}
                       size="sm"
-                      className="text-green-500 bg-green-500/10 hover:bg-green-500/20"
+                      className="text-ok bg-ok-tint hover:bg-ok/20"
                       title="전환완료로 표시"
                       aria-label="전환완료로 표시"
                     />
@@ -692,7 +684,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       icon={<XCircle className="w-4 h-4" />}
                       onClick={() => onUpdateStatus(lead.id, 'rejected')}
                       size="sm"
-                      className="text-red-500 bg-red-500/10 hover:bg-red-500/20"
+                      className="text-danger bg-danger-tint hover:bg-danger/20"
                       title="거절됨으로 표시"
                       aria-label="거절됨으로 표시"
                     />
@@ -774,7 +766,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                       {lead.extracted_contacts?.has_contact && (
                         <div>
                           <div className="text-sm font-semibold mb-2 flex items-center gap-2">
-                            📞 추출된 연락처
+                            추출된 연락처
                             <span className="text-xs text-muted-foreground font-normal">
                               ({lead.extracted_contacts.summary})
                             </span>
@@ -782,22 +774,22 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                           <div className="flex flex-wrap gap-2">
                             {(lead.extracted_contacts.phone ?? []).map((phone, i) => (
                               <span key={`phone-${i}`} className="text-xs px-2 py-1 rounded-full bg-blue-500/10 text-blue-500">
-                                📱 {phone}
+                                {phone}
                               </span>
                             ))}
                             {(lead.extracted_contacts.email ?? []).map((email, i) => (
                               <span key={`email-${i}`} className="text-xs px-2 py-1 rounded-full bg-green-500/10 text-green-500">
-                                ✉️ {email}
+                                {email}
                               </span>
                             ))}
                             {(lead.extracted_contacts.kakao ?? []).map((kakao, i) => (
                               <span key={`kakao-${i}`} className="text-xs px-2 py-1 rounded-full bg-yellow-500/10 text-yellow-500">
-                                💬 {kakao}
+                                {kakao}
                               </span>
                             ))}
                             {(lead.extracted_contacts.instagram ?? []).map((insta, i) => (
                               <span key={`insta-${i}`} className="text-xs px-2 py-1 rounded-full bg-pink-500/10 text-pink-500">
-                                📷 @{insta}
+                                @{insta}
                               </span>
                             ))}
                           </div>
@@ -898,7 +890,7 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                             }}
                             className="text-purple-500 border-purple-500/30 hover:bg-purple-500/10"
                           >
-                            📝 컨택 히스토리
+                            컨택 히스토리
                           </Button>
                         ) : (
                           <div className="space-y-3">
@@ -925,10 +917,10 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                                   onClick={(e) => e.stopPropagation()}
                                   className="text-xs px-2 py-1.5 bg-muted border border-border rounded"
                                 >
-                                  <option value="comment">💬 댓글</option>
-                                  <option value="dm">📩 DM</option>
-                                  <option value="email">✉️ 이메일</option>
-                                  <option value="call">📞 전화</option>
+                                  <option value="comment">댓글</option>
+                                  <option value="dm">DM</option>
+                                  <option value="email">이메일</option>
+                                  <option value="call">전화</option>
                                 </select>
                                 <input
                                   type="text"
@@ -980,9 +972,9 @@ function LeadTableComponent({ leads, onUpdateStatus, onBulkUpdateStatus, onConve
                                     <div className="flex items-center justify-between mb-1">
                                       <div className="flex items-center gap-2">
                                         <span className="text-sm">
-                                          {item.contact_type === 'comment' ? '💬' :
-                                           item.contact_type === 'dm' ? '📩' :
-                                           item.contact_type === 'email' ? '✉️' : '📞'}
+                                          {item.contact_type === 'comment' ? <MessageCircle className="w-3.5 h-3.5 inline" /> :
+                                           item.contact_type === 'dm' ? <MessageCircle className="w-3.5 h-3.5 inline" /> :
+                                           item.contact_type === 'email' ? <Mail className="w-3.5 h-3.5 inline" /> : <Phone className="w-3.5 h-3.5 inline" />}
                                         </span>
                                         <span className={`text-xs px-1.5 py-0.5 rounded ${
                                           item.status === 'replied'

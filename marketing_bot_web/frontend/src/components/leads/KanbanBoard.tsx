@@ -3,6 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Lead, leadsApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import KanbanColumn from './KanbanColumn'
+import { statusIcon } from '@/lib/entityIcons'
+import { Loader2 } from 'lucide-react'
 
 // 키보드 네비게이션을 위한 포커스 상태
 interface FocusState {
@@ -14,15 +16,17 @@ interface KanbanBoardProps {
   leads: Lead[]
   // [Phase 7.1] 전환 기록 모달용 콜백
   onConversionWithLead?: (lead: { id: number; platform: string; title: string; author?: string }) => void
+  // [RECOVER OS] 카드 클릭 시 디테일 드로어 열기 (없으면 원문 URL 열기로 폴백)
+  onLeadClick?: (lead: Lead) => void
 }
 
 // 칸반 컬럼 정의
 const KANBAN_COLUMNS = [
-  { id: 'pending', title: '대기 중', icon: '⏳', color: 'border-b-yellow-500' },
-  { id: 'contacted', title: '연락 완료', icon: '📞', color: 'border-b-blue-500' },
-  { id: 'replied', title: '답변 받음', icon: '💬', color: 'border-b-purple-500' },
-  { id: 'converted', title: '전환 완료', icon: '✅', color: 'border-b-green-500' },
-  { id: 'rejected', title: '거절됨', icon: '❌', color: 'border-b-red-500' },
+  { id: 'pending', title: '대기 중', icon: statusIcon('pending'), color: 'border-b-warn' },
+  { id: 'contacted', title: '연락 완료', icon: statusIcon('contacted'), color: 'border-b-mist' },
+  { id: 'replied', title: '답변 받음', icon: statusIcon('replied'), color: 'border-b-sage' },
+  { id: 'converted', title: '전환 완료', icon: statusIcon('converted'), color: 'border-b-ok' },
+  { id: 'rejected', title: '거절됨', icon: statusIcon('rejected'), color: 'border-b-danger' },
 ]
 
 // 상태 매핑 (DB 상태 → 칸반 컬럼)
@@ -53,7 +57,7 @@ const PLATFORM_QUERY_MAP: Record<string, string> = {
   influencer: 'influencer-leads',
 }
 
-export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoardProps) {
+export default function KanbanBoard({ leads, onConversionWithLead, onLeadClick }: KanbanBoardProps) {
   const [draggedLead, setDraggedLead] = useState<Lead | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
   const [focusState, setFocusState] = useState<FocusState | null>(null)
@@ -185,8 +189,12 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
     setDraggedLead(null)
   }
 
-  // 리드 클릭 (URL 열기)
+  // 리드 클릭 — 디테일 드로어 열기(우선) 또는 URL 열기(폴백)
   const handleLeadClick = (lead: Lead) => {
+    if (onLeadClick) {
+      onLeadClick(lead)
+      return
+    }
     if (lead.url) {
       window.open(lead.url, '_blank', 'noopener,noreferrer')
     }
@@ -267,11 +275,12 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
         }
         break
       case 'Enter': {
-        // 리드 상세 보기 (URL 열기)
+        // 리드 상세 보기 (드로어 우선, 없으면 URL 열기)
         e.preventDefault()
         const lead = currentColumnLeads[leadIndex]
-        if (lead?.url) {
-          window.open(lead.url, '_blank', 'noopener,noreferrer')
+        if (lead) {
+          if (onLeadClick) onLeadClick(lead)
+          else if (lead.url) window.open(lead.url, '_blank', 'noopener,noreferrer')
         }
         break
       }
@@ -302,7 +311,7 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
         setFocusState({ columnIndex, leadIndex: Math.max(0, currentColumnLeads.length - 1) })
         break
     }
-  }, [focusState, leadsByColumn, handleStatusChange])
+  }, [focusState, leadsByColumn, handleStatusChange, onLeadClick])
 
   // 리드 포커스 설정
   const handleLeadFocus = useCallback((columnIndex: number, leadIndex: number) => {
@@ -323,14 +332,14 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
       {/* 안내 */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          <span className="hidden md:inline">💡 카드를 드래그하거나 키보드(←→↑↓)로 탐색하세요</span>
-          <span className="md:hidden">💡 카드의 "이동" 버튼으로 상태를 변경하세요</span>
+          <span className="hidden md:inline">카드를 드래그하거나 키보드(←→↑↓)로 탐색하세요</span>
+          <span className="md:hidden">카드의 "이동" 버튼으로 상태를 변경하세요</span>
         </p>
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <span>총 {leads.length}개 리드</span>
           {updateLeadMutation.isPending && (
             <span className="flex items-center gap-1 text-primary">
-              <span className="animate-spin">⚙️</span>
+              <Loader2 className="w-4 h-4 animate-spin" />
               업데이트 중...
             </span>
           )}
@@ -367,31 +376,31 @@ export default function KanbanBoard({ leads, onConversionWithLead }: KanbanBoard
 
       {/* 모바일 스크롤 안내 */}
       <p className="md:hidden text-xs text-muted-foreground text-center">
-        👆 좌우로 스와이프하여 다른 컬럼을 확인하세요
+        좌우로 스와이프하여 다른 컬럼을 확인하세요
       </p>
 
       {/* 상태 설명 */}
       <div className="bg-muted/50 rounded-lg p-4">
-        <h4 className="font-semibold mb-2">📋 상태 설명</h4>
+        <h4 className="font-semibold mb-2">상태 설명</h4>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
           <div className="flex items-center gap-2">
-            <span>⏳</span>
+            <span className="text-sage">{statusIcon('pending', 'w-4 h-4')}</span>
             <span><strong>대기 중</strong>: 신규 발견</span>
           </div>
           <div className="flex items-center gap-2">
-            <span>📞</span>
+            <span className="text-sage">{statusIcon('contacted', 'w-4 h-4')}</span>
             <span><strong>연락 완료</strong>: 첫 연락</span>
           </div>
           <div className="flex items-center gap-2">
-            <span>💬</span>
+            <span className="text-sage">{statusIcon('replied', 'w-4 h-4')}</span>
             <span><strong>답변 받음</strong>: 응답 수신</span>
           </div>
           <div className="flex items-center gap-2">
-            <span>✅</span>
+            <span className="text-sage">{statusIcon('converted', 'w-4 h-4')}</span>
             <span><strong>전환 완료</strong>: 목표 달성</span>
           </div>
           <div className="flex items-center gap-2">
-            <span>❌</span>
+            <span className="text-sage">{statusIcon('rejected', 'w-4 h-4')}</span>
             <span><strong>거절됨</strong>: 진행 불가</span>
           </div>
         </div>

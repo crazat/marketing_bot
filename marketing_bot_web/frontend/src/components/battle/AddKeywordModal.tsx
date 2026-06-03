@@ -72,7 +72,7 @@ export default function AddKeywordModal({ onClose, onSuccess }: AddKeywordModalP
     <Modal
       isOpen={true}
       onClose={handleClose}
-      title="🎯 순위 추적 키워드 추가"
+      title="순위 추적 키워드 추가"
       size="md"
       footer={
         <div className="flex gap-3 w-full">

@@ -204,7 +204,7 @@ export default function KeywordLifecycleView({
           type: 'lead',
           date: lead.collected_at || lead.created_at || '알 수 없음',
           title: `리드 발생 (${lead.platform})`,
-          description: `${lead.grade === 'hot' ? '🔥 Hot' : lead.grade === 'warm' ? '🌡 Warm' : '❄️ Cold'} - ${lead.title?.slice(0, 30)}...`,
+          description: `${lead.grade === 'hot' ? 'Hot' : lead.grade === 'warm' ? 'Warm' : 'Cold'} - ${lead.title?.slice(0, 30)}...`,
           icon: <Users className="w-4 h-4" />,
           color: lead.grade === 'hot' ? 'red' : lead.grade === 'warm' ? 'yellow' : 'gray',
           link: `/leads?keyword=${encodeURIComponent(keyword)}`,

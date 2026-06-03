@@ -12,7 +12,7 @@ export default function NotificationsTab() {
 
   return (
     <div className="bg-card rounded-lg border border-border p-6">
-      <h3 className="text-lg font-semibold mb-4">🔔 알림 설정</h3>
+      <h3 className="text-lg font-semibold mb-4">알림 설정</h3>
       {!isSupported ? (
         <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
           <p className="text-sm text-yellow-600 dark:text-yellow-400">

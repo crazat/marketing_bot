@@ -109,7 +109,7 @@ export default function SystemTab() {
     <>
       {/* 시스템 상태 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📊 시스템 상태</h3>
+        <h3 className="text-lg font-semibold mb-4">시스템 상태</h3>
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
@@ -151,7 +151,7 @@ export default function SystemTab() {
 
       {/* 시스템 진단 정보 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">🔧 시스템 진단</h3>
+        <h3 className="text-lg font-semibold mb-4">시스템 진단</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-4 bg-muted/50 rounded-lg">
             <div className="flex items-center gap-3 mb-2">
@@ -184,7 +184,7 @@ export default function SystemTab() {
 
       {/* 유용한 명령어 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">💻 유용한 명령어</h3>
+        <h3 className="text-lg font-semibold mb-4">유용한 명령어</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
             <div className="font-medium mb-2">Pathfinder 실행</div>

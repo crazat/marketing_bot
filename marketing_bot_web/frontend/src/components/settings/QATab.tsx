@@ -165,7 +165,7 @@ export default function QATab({ onMessage }: QATabProps) {
       {/* Q&A 통계 */}
       <div className="bg-card rounded-lg border border-border p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">💬 Q&A Repository</h3>
+          <h3 className="text-lg font-semibold">Q&A Repository</h3>
           <Button
             variant="primary"
             onClick={() => {
@@ -206,7 +206,7 @@ export default function QATab({ onMessage }: QATabProps) {
         {qaEditMode && (
           <div className="mb-6 p-4 bg-muted/30 rounded-lg border border-border">
             <h4 className="font-medium mb-4">
-              {qaEditMode === 'create' ? '➕ 새 Q&A 등록' : '✏️ Q&A 수정'}
+              {qaEditMode === 'create' ? '새 Q&A 등록' : 'Q&A 수정'}
             </h4>
             <div className="space-y-4">
               <div>
@@ -305,7 +305,7 @@ export default function QATab({ onMessage }: QATabProps) {
                       </span>
                     </div>
                     <div className="font-medium mb-1 truncate" title={item.question_pattern}>
-                      📝 {item.question_pattern}
+                      {item.question_pattern}
                     </div>
                     <div className="text-sm text-muted-foreground line-clamp-2">
                       {item.standard_answer}

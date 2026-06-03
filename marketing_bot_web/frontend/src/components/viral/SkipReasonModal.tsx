@@ -72,7 +72,7 @@ export default function SkipReasonModal({ open, onConfirm, onCancel }: SkipReaso
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 id="skip-reason-title" className="text-base font-semibold">⏭️ 스킵 사유 (선택)</h3>
+          <h3 id="skip-reason-title" className="text-base font-semibold">스킵 사유 (선택)</h3>
           <button
             onClick={onCancel}
             className="p-1 rounded hover:bg-muted"

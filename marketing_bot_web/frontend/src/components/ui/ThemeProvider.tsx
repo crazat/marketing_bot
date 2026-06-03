@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { Sun, Moon, Monitor } from 'lucide-react'
 import { readStorageItem, writeStorageItem } from '@/utils/safeStorage'
 
 type Theme = 'dark' | 'light' | 'system'
@@ -141,10 +142,10 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
 export function ThemeSelector({ className = '' }: { className?: string }) {
   const { theme, setTheme } = useTheme()
 
-  const options: { value: Theme; label: string; icon: string }[] = [
-    { value: 'light', label: '라이트', icon: '☀️' },
-    { value: 'dark', label: '다크', icon: '🌙' },
-    { value: 'system', label: '시스템', icon: '💻' },
+  const options: { value: Theme; label: string; icon: ReactNode }[] = [
+    { value: 'light', label: '라이트', icon: <Sun className="w-4 h-4" strokeWidth={1.8} /> },
+    { value: 'dark', label: '다크', icon: <Moon className="w-4 h-4" strokeWidth={1.8} /> },
+    { value: 'system', label: '시스템', icon: <Monitor className="w-4 h-4" strokeWidth={1.8} /> },
   ]
 
   return (

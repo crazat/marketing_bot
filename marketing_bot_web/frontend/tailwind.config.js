@@ -18,8 +18,9 @@ export default {
           'Roboto',
           'sans-serif',
         ],
-        display: ['Paperlogy', '"Pretendard Variable"', 'serif'],
-        mono: ['D2Coding', '"JetBrains Mono"', 'Menlo', 'Monaco', 'monospace'],
+        // [RECOVER OS] 디스플레이 = Fraunces (KPI 숫자·h1·값), mono = IBM Plex Mono (라벨·eyebrow)
+        display: ['Fraunces', '"Pretendard Variable"', 'serif'],
+        mono: ['"IBM Plex Mono"', 'D2Coding', '"JetBrains Mono"', 'Menlo', 'Monaco', 'monospace'],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -55,11 +56,49 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // [RECOVER OS] raw 토큰 매핑 — bg-surface / text-sage / border-hair / text-strong …
+        surface: {
+          DEFAULT: "var(--surface)",
+          2: "var(--surface-2)",
+          3: "var(--surface-3)",
+          hover: "var(--surface-hover)",
+        },
+        ink: "var(--bg-grain)",
+        hair: {
+          DEFAULT: "var(--hair)",
+          strong: "var(--hair-strong)",
+          spine: "var(--hair-spine)",
+        },
+        strong: "var(--text-strong)",
+        faint: "var(--text-faint)",
+        sage: {
+          DEFAULT: "var(--sage)",
+          fill: "var(--sage-fill)",
+          deep: "var(--sage-deep)",
+          tint: "var(--sage-tint)",
+        },
+        clay: { DEFAULT: "var(--clay)", tint: "var(--clay-tint)" },
+        mist: { DEFAULT: "var(--mist)", tint: "var(--mist-tint)" },
+        ok: { DEFAULT: "var(--ok)", tint: "var(--ok-tint)" },
+        warn: { DEFAULT: "var(--warn)", tint: "var(--warn-tint)" },
+        danger: { DEFAULT: "var(--danger)", tint: "var(--danger-tint)" },
+        info: { DEFAULT: "var(--info)", tint: "var(--info-tint)" },
+        d1: "var(--d1)", d2: "var(--d2)", d3: "var(--d3)", d4: "var(--d4)",
+        d5: "var(--d5)", d6: "var(--d6)", d7: "var(--d7)", d8: "var(--d8)",
+      },
+      boxShadow: {
+        card: "var(--shadow-card)",
+        pop: "var(--shadow-pop)",
+        cta: "var(--shadow-cta)",
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        card: "var(--r-card)",
+        inner: "var(--r-inner)",
+        chip: "var(--r-chip)",
+        pill: "var(--r-pill)",
       },
       keyframes: {
         shake: {

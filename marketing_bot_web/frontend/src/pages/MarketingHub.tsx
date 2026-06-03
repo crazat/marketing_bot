@@ -70,7 +70,7 @@ export default function MarketingHub() {
       {/* 헤더 */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-3">
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight flex items-center gap-3">
             <BarChart3 className="w-8 h-8 text-primary" />
             Marketing Hub
           </h1>
@@ -96,12 +96,12 @@ export default function MarketingHub() {
       {/* 탭 네비게이션 — 6개 (Analytics 흡수 후) */}
       <TabNavigation
         tabs={[
-          { id: 'overview', label: '📊 개요' },
-          { id: 'roi', label: '💰 ROI' },
-          { id: 'performance', label: '⏰ 성과' },
-          { id: 'growth', label: '🚀 성장' },
-          { id: 'monitoring', label: '🎯 모니터링' },
-          { id: 'attribution', label: '🔗 어트리뷰션' },
+          { id: 'overview', label: '개요' },
+          { id: 'roi', label: 'ROI' },
+          { id: 'performance', label: '성과' },
+          { id: 'growth', label: '성장' },
+          { id: 'monitoring', label: '모니터링' },
+          { id: 'attribution', label: '어트리뷰션' },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -131,7 +131,7 @@ function OverviewTab({ days }: { days: number }) {
       </div>
       <SmartAlerts compact />
       <p className="text-xs text-muted-foreground text-center py-2">
-        💡 자세한 분석은 상단 탭에서 확인하세요
+        자세한 분석은 상단 탭에서 확인하세요
       </p>
     </div>
   )
@@ -143,7 +143,7 @@ function RoiTab({ days }: { days: number }) {
     <div className="space-y-8">
       <ROIDashboard days={days} />
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">📊 채널별 ROI 분석</h3>
+        <h3 className="text-lg font-semibold mb-4">채널별 ROI 분석</h3>
         <ChannelROI defaultDays={days} />
       </div>
     </div>
@@ -159,11 +159,11 @@ function PerformanceTab({ days }: { days: number }) {
         <LeadQualityDashboard days={days} />
       </div>
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">⏱️ 응답 골든타임 (리드 전환율)</h3>
+        <h3 className="text-lg font-semibold mb-4">응답 골든타임 (리드 전환율)</h3>
         <ResponseGoldenTime />
       </div>
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">📝 성과 피드백 리포트</h3>
+        <h3 className="text-lg font-semibold mb-4">성과 피드백 리포트</h3>
         <PerformanceFeedback />
       </div>
     </div>
@@ -179,7 +179,7 @@ function GrowthTab() {
         <ABTestManager />
       </div>
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">🧠 AI 인사이트 & 예측</h3>
+        <h3 className="text-lg font-semibold mb-4">AI 인사이트 & 예측</h3>
         <AIInsights />
       </div>
     </div>
@@ -192,7 +192,7 @@ function MonitoringTab({ days }: { days: number }) {
     <div className="space-y-8">
       <CompetitorRadar days={days} />
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">📈 경쟁사 동향 타임라인</h3>
+        <h3 className="text-lg font-semibold mb-4">경쟁사 동향 타임라인</h3>
         <CompetitorMovements days={days} />
       </div>
       <div className="border-t border-border pt-8">
@@ -208,11 +208,11 @@ function AttributionTab({ days }: { days: number }) {
     <div className="space-y-8">
       <AttributionChain days={days} />
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">🔄 키워드 라이프사이클</h3>
+        <h3 className="text-lg font-semibold mb-4">키워드 라이프사이클</h3>
         <KeywordLifecycle />
       </div>
       <div className="border-t border-border pt-8">
-        <h3 className="text-lg font-semibold mb-4">📅 주간 브리핑</h3>
+        <h3 className="text-lg font-semibold mb-4">주간 브리핑</h3>
         <WeeklyBriefing />
       </div>
     </div>

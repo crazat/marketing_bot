@@ -15,7 +15,9 @@ import {
   Users,
   CheckCircle,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Target,
+  Flame,
 } from 'lucide-react'
 
 interface PipelineStage {
@@ -263,9 +265,9 @@ export default function PipelineOverview() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-lg">
-                {nextAction.type === 'keyword' && '🎯'}
-                {nextAction.type === 'viral' && '💬'}
-                {nextAction.type === 'lead' && '🔥'}
+                {nextAction.type === 'keyword' && <Target className="w-4 h-4 inline" strokeWidth={1.8} />}
+                {nextAction.type === 'viral' && <MessageSquare className="w-4 h-4 inline" strokeWidth={1.8} />}
+                {nextAction.type === 'lead' && <Flame className="w-4 h-4 inline" strokeWidth={1.8} />}
               </span>
               <span className="text-sm font-medium text-primary">
                 다음 액션: {nextAction.message}

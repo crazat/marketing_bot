@@ -7,6 +7,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { configApi } from '@/services/api'
 import PageTransition from '@/components/PageTransition'
+import { KeyRound, Target, Building2, Calendar } from 'lucide-react'
 import { useUrlState } from '@/hooks/useUrlState'
 import TabNavigation from '@/components/ui/TabNavigation'
 import GoalManager from '@/components/ui/GoalManager'
@@ -60,7 +61,7 @@ export default function Settings() {
     <PageTransition>
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold mb-2">⚙️ 시스템 설정</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">시스템 설정</h1>
           <p className="text-muted-foreground">
             시스템 상태, 백업 및 설정 관리
           </p>
@@ -80,13 +81,13 @@ export default function Settings() {
         {/* 탭 네비게이션 — 10개 → 7개 통합 */}
         <TabNavigation
           tabs={[
-            { id: 'backup', label: '💾 백업' },
-            { id: 'system', label: '📊 시스템' },
-            { id: 'automation', label: '🤖 자동화·연동' },
-            { id: 'keywords', label: `🔑 키워드 (${keywordsData?.total_count || 0})` },
-            { id: 'goals', label: '🎯 목표' },
-            { id: 'qa', label: '💬 Q&A' },
-            { id: 'notifications', label: '🔔 알림' },
+            { id: 'backup', label: '백업' },
+            { id: 'system', label: '시스템' },
+            { id: 'automation', label: '자동화·연동' },
+            { id: 'keywords', label: `키워드 (${keywordsData?.total_count || 0})` },
+            { id: 'goals', label: '목표' },
+            { id: 'qa', label: 'Q&A' },
+            { id: 'notifications', label: '알림' },
           ]}
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -106,11 +107,11 @@ export default function Settings() {
             {/* 설정 파일 섹션 */}
             <div className="space-y-4">
               <div className="bg-card rounded-lg border border-border p-6">
-                <h3 className="text-lg font-semibold mb-4">📁 설정 파일 경로</h3>
+                <h3 className="text-lg font-semibold mb-4">설정 파일 경로</h3>
                 <div className="space-y-4">
                   <div className="p-4 bg-muted/50 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg">🔑</span>
+                      <KeyRound className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                       <span className="font-medium">API 키 설정</span>
                     </div>
                     <code className="text-sm text-muted-foreground block bg-background p-2 rounded">
@@ -123,7 +124,7 @@ export default function Settings() {
 
                   <div className="p-4 bg-muted/50 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg">🎯</span>
+                      <Target className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                       <span className="font-medium">키워드 설정</span>
                     </div>
                     <code className="text-sm text-muted-foreground block bg-background p-2 rounded">
@@ -136,7 +137,7 @@ export default function Settings() {
 
                   <div className="p-4 bg-muted/50 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg">🏢</span>
+                      <Building2 className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                       <span className="font-medium">업체 정보</span>
                     </div>
                     <code className="text-sm text-muted-foreground block bg-background p-2 rounded">
@@ -149,7 +150,7 @@ export default function Settings() {
 
                   <div className="p-4 bg-muted/50 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg">📅</span>
+                      <Calendar className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                       <span className="font-medium">스케줄 설정</span>
                     </div>
                     <code className="text-sm text-muted-foreground block bg-background p-2 rounded">
@@ -166,7 +167,7 @@ export default function Settings() {
 
               <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
                 <p className="text-sm text-yellow-600 dark:text-yellow-400">
-                  <span className="font-medium">💡 팁:</span> 설정 파일을 수정한 후에는 웹 서버를 재시작해야 변경사항이 적용됩니다.
+                  <span className="font-medium">팁:</span> 설정 파일을 수정한 후에는 웹 서버를 재시작해야 변경사항이 적용됩니다.
                 </p>
               </div>
             </div>
@@ -178,7 +179,7 @@ export default function Settings() {
           <div className="space-y-8">
             <AutomationTab />
             <div className="border-t border-border pt-8">
-              <h3 className="text-lg font-semibold mb-4">🔗 연동 상태</h3>
+              <h3 className="text-lg font-semibold mb-4">연동 상태</h3>
               <IntegrationsTab />
             </div>
           </div>
@@ -204,7 +205,7 @@ export default function Settings() {
           <div className="space-y-8">
             <NotificationsTab />
             <div className="border-t border-border pt-8">
-              <h3 className="text-lg font-semibold mb-4">📲 외부 알림</h3>
+              <h3 className="text-lg font-semibold mb-4">외부 알림</h3>
               <ExternalNotificationsTab />
             </div>
           </div>

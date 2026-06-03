@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
+import { Search, X } from 'lucide-react'
 
 interface SearchInputProps {
   value: string
@@ -52,7 +53,7 @@ export default function SearchInput({
     <div className={`relative ${className}`}>
       {/* 검색 아이콘 */}
       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none">
-        🔍
+        <Search className="w-4 h-4" strokeWidth={1.8} />
       </span>
 
       {/* 검색 입력 */}
@@ -83,7 +84,7 @@ export default function SearchInput({
           "
           aria-label="검색어 지우기"
         >
-          ✕
+          <X className="w-4 h-4" strokeWidth={1.8} />
         </button>
       )}
     </div>

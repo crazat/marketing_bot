@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { hudApi } from '@/services/api'
-import { TrendingUp, Zap, CheckCircle, RefreshCw, ArrowRight } from 'lucide-react'
+import { TrendingUp, Zap, CheckCircle, RefreshCw, ArrowRight, AlertCircle, Bell, BarChart3, Users } from 'lucide-react'
+import { platformIcon } from '@/lib/entityIcons'
 import Button from '@/components/ui/Button'
 
 // 데이터 타입 정의
@@ -133,14 +134,7 @@ interface AutoApprovalAlertsData {
 
 type AlertTab = 'rank' | 'lead' | 'kei' | 'approval'
 
-const platformIcons: Record<string, string> = {
-  youtube: '📺',
-  tiktok: '🎵',
-  instagram: '📸',
-  naver: '🟢',
-  carrot: '🥕',
-  cafe: '☕',
-}
+// [RECOVER OS] 플랫폼 아이콘은 @/lib/entityIcons.platformIcon 사용
 
 export default function AlertCenter() {
   const navigate = useNavigate()
@@ -207,7 +201,7 @@ export default function AlertCenter() {
       {/* 헤더 */}
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold flex items-center gap-2">
-          <span className="text-xl">{hasCritical ? '🚨' : '🔔'}</span>
+          {hasCritical ? <AlertCircle className="w-5 h-5 text-danger" strokeWidth={1.8} /> : <Bell className="w-5 h-5 text-warn" strokeWidth={1.8} />}
           <span>알림 센터</span>
           <span className={`px-2 py-0.5 text-xs rounded-full ${
             hasCritical ? 'bg-red-500 text-white' : 'bg-yellow-500 text-black'
@@ -227,7 +221,7 @@ export default function AlertCenter() {
               : 'hover:bg-muted/50'
           }`}
         >
-          <span>📊</span>
+          <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.8} />
           <span>순위 변동</span>
           {rankAlertCount > 0 && (
             <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
@@ -245,7 +239,7 @@ export default function AlertCenter() {
               : 'hover:bg-muted/50'
           }`}
         >
-          <span>👥</span>
+          <Users className="w-3.5 h-3.5" strokeWidth={1.8} />
           <span>리드 리마인더</span>
           {leadAlertCount > 0 && (
             <span className="px-1.5 py-0.5 bg-yellow-500 text-black rounded-full text-[10px]">
@@ -294,7 +288,7 @@ export default function AlertCenter() {
           {rankData.critical_drops.length > 0 && (
             <div>
               <p className="text-xs text-red-500 dark:text-red-400 mb-2">
-                🔴 5위 이상 하락 ({rankData.critical_drops.length}개)
+                5위 이상 하락 ({rankData.critical_drops.length}개)
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {rankData.critical_drops.slice(0, 4).map((drop) => (
@@ -321,7 +315,7 @@ export default function AlertCenter() {
           {rankData.warnings.length > 0 && (
             <div>
               <p className="text-xs text-yellow-600 dark:text-yellow-400 mb-2">
-                🟡 3위 이상 하락 ({rankData.warnings.length}개)
+                3위 이상 하락 ({rankData.warnings.length}개)
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {rankData.warnings.slice(0, 4).map((warn) => (
@@ -359,7 +353,7 @@ export default function AlertCenter() {
 
       {activeTab === 'rank' && rankError && (
         <div className="text-center py-4">
-          <p className="text-sm text-red-500 mb-2">❌ 순위 알림을 불러올 수 없습니다</p>
+          <p className="text-sm text-red-500 mb-2">순위 알림을 불러올 수 없습니다</p>
           <Button
             variant="ghost"
             size="xs"
@@ -373,7 +367,7 @@ export default function AlertCenter() {
 
       {activeTab === 'rank' && !rankError && rankAlertCount === 0 && (
         <div className="text-center py-4 text-muted-foreground text-sm">
-          ✅ 순위 변동 알림이 없습니다
+          순위 변동 알림이 없습니다
         </div>
       )}
 
@@ -384,7 +378,7 @@ export default function AlertCenter() {
           {leadData.overdue_followups.length > 0 && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                📅 팔로업 기한 초과 ({leadData.overdue_followups.length}건)
+                팔로업 기한 초과 ({leadData.overdue_followups.length}건)
               </p>
               <div className="flex flex-wrap gap-2">
                 {leadData.overdue_followups.slice(0, 3).map((lead) => (
@@ -395,7 +389,7 @@ export default function AlertCenter() {
                     onClick={() => navigate(`/leads?id=${lead.id}`)}
                     className="px-3 py-1.5 bg-red-500/20 text-red-600 dark:text-red-400 hover:bg-red-500/30 flex items-center gap-1"
                   >
-                    <span>{platformIcons[lead.platform] || '📱'}</span>
+                    <span className="text-sage">{platformIcon(lead.platform, 'w-4 h-4')}</span>
                     <span className="max-w-[120px] truncate">{lead.title}</span>
                     <span className="text-red-400">D+{lead.days_overdue}</span>
                   </Button>
@@ -413,7 +407,7 @@ export default function AlertCenter() {
           {leadData.stale_leads.length > 0 && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                ⚠️ 대기 중 3일 이상 ({leadData.stale_leads.length}건)
+                대기 중 3일 이상 ({leadData.stale_leads.length}건)
               </p>
               <div className="flex flex-wrap gap-2">
                 {leadData.stale_leads.slice(0, 3).map((lead) => (
@@ -424,7 +418,7 @@ export default function AlertCenter() {
                     onClick={() => navigate(`/leads?id=${lead.id}`)}
                     className="px-3 py-1.5 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/30 flex items-center gap-1"
                   >
-                    <span>{platformIcons[lead.platform] || '📱'}</span>
+                    <span className="text-sage">{platformIcon(lead.platform, 'w-4 h-4')}</span>
                     <span className="max-w-[120px] truncate">{lead.title}</span>
                   </Button>
                 ))}
@@ -441,7 +435,7 @@ export default function AlertCenter() {
           {leadData.no_response_leads.length > 0 && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                📭 연락 후 응답 없음 ({leadData.no_response_leads.length}건)
+                연락 후 응답 없음 ({leadData.no_response_leads.length}건)
               </p>
               <div className="flex flex-wrap gap-2">
                 {leadData.no_response_leads.slice(0, 3).map((lead) => (
@@ -452,7 +446,7 @@ export default function AlertCenter() {
                     onClick={() => navigate(`/leads?id=${lead.id}`)}
                     className="px-3 py-1.5 bg-orange-500/20 text-orange-600 dark:text-orange-400 hover:bg-orange-500/30 flex items-center gap-1"
                   >
-                    <span>{platformIcons[lead.platform] || '📱'}</span>
+                    <span className="text-sage">{platformIcon(lead.platform, 'w-4 h-4')}</span>
                     <span className="max-w-[120px] truncate">{lead.title}</span>
                   </Button>
                 ))}
@@ -480,7 +474,7 @@ export default function AlertCenter() {
 
       {activeTab === 'lead' && leadError && (
         <div className="text-center py-4">
-          <p className="text-sm text-red-500 mb-2">❌ 리드 알림을 불러올 수 없습니다</p>
+          <p className="text-sm text-red-500 mb-2">리드 알림을 불러올 수 없습니다</p>
           <Button
             variant="ghost"
             size="xs"
@@ -494,7 +488,7 @@ export default function AlertCenter() {
 
       {activeTab === 'lead' && !leadError && leadAlertCount === 0 && (
         <div className="text-center py-4 text-muted-foreground text-sm">
-          ✅ 리드 리마인더가 없습니다
+          리드 리마인더가 없습니다
         </div>
       )}
 
@@ -555,7 +549,7 @@ export default function AlertCenter() {
           {keiData.opportunities.length > 0 && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                🎯 공략 기회 ({keiData.opportunities.length}개)
+                공략 기회 ({keiData.opportunities.length}개)
               </p>
               <div className="flex flex-wrap gap-2">
                 {keiData.opportunities.slice(0, 3).map((kw) => (
@@ -585,7 +579,7 @@ export default function AlertCenter() {
 
       {activeTab === 'kei' && keiError && (
         <div className="text-center py-4">
-          <p className="text-sm text-red-500 mb-2">❌ KEI 알림을 불러올 수 없습니다</p>
+          <p className="text-sm text-red-500 mb-2">KEI 알림을 불러올 수 없습니다</p>
           <Button
             variant="ghost"
             size="xs"
@@ -599,7 +593,7 @@ export default function AlertCenter() {
 
       {activeTab === 'kei' && !keiError && keiAlertCount === 0 && (
         <div className="text-center py-4 text-muted-foreground text-sm">
-          ✅ KEI 관련 알림이 없습니다
+          KEI 관련 알림이 없습니다
         </div>
       )}
 
@@ -622,7 +616,7 @@ export default function AlertCenter() {
                     onClick={() => navigate('/viral')}
                     className="px-3 py-1.5 bg-green-500/20 text-green-600 dark:text-green-400 hover:bg-green-500/30 flex items-center gap-1"
                   >
-                    <span>{platformIcons[item.platform] || '📱'}</span>
+                    <span className="text-sage">{platformIcon(item.platform, 'w-4 h-4')}</span>
                     <span className="max-w-[100px] truncate">{item.title}</span>
                   </Button>
                 ))}
@@ -639,7 +633,7 @@ export default function AlertCenter() {
           {approvalData.pending_review.length > 0 && (
             <div>
               <p className="text-xs text-yellow-500 mb-2">
-                ⚠️ 수동 검토 필요 ({approvalData.pending_review.length}건)
+                수동 검토 필요 ({approvalData.pending_review.length}건)
               </p>
               <div className="flex flex-wrap gap-2">
                 {approvalData.pending_review.slice(0, 3).map((item) => (
@@ -650,7 +644,7 @@ export default function AlertCenter() {
                     onClick={() => navigate('/viral')}
                     className="px-3 py-1.5 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/30 flex items-center gap-1"
                   >
-                    <span>{platformIcons[item.platform] || '📱'}</span>
+                    <span className="text-sage">{platformIcon(item.platform, 'w-4 h-4')}</span>
                     <span className="max-w-[100px] truncate">{item.title}</span>
                     <span className="text-yellow-400">점수 {item.priority_score}</span>
                   </Button>
@@ -679,7 +673,7 @@ export default function AlertCenter() {
 
       {activeTab === 'approval' && approvalError && (
         <div className="text-center py-4">
-          <p className="text-sm text-red-500 mb-2">❌ 자동 승인 알림을 불러올 수 없습니다</p>
+          <p className="text-sm text-red-500 mb-2">자동 승인 알림을 불러올 수 없습니다</p>
           <Button
             variant="ghost"
             size="xs"
@@ -693,7 +687,7 @@ export default function AlertCenter() {
 
       {activeTab === 'approval' && !approvalError && approvalAlertCount === 0 && (
         <div className="text-center py-4 text-muted-foreground text-sm">
-          ✅ 자동 승인 관련 알림이 없습니다
+          자동 승인 관련 알림이 없습니다
         </div>
       )}
     </div>

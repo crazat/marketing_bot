@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { leadsApi, hudApi, exportApi, Lead } from '@/services/api'
 import PageTransition from '@/components/PageTransition'
@@ -6,6 +6,7 @@ import LeadStats from '@/components/leads/LeadStats'
 import LeadTable from '@/components/leads/LeadTable'
 import { LeadAttributionStats } from '@/components/leads/LeadAttribution'
 import KanbanBoard from '@/components/leads/KanbanBoard'
+import LeadDetailDrawer from '@/components/leads/LeadDetailDrawer'
 import ConversionModal from '@/components/leads/ConversionModal'
 import ErrorState from '@/components/ui/ErrorState'
 import { SkeletonStatsGrid, SkeletonTable } from '@/components/ui/Skeleton'
@@ -16,7 +17,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import Button, { IconButton } from '@/components/ui/Button'
-import { Download, RefreshCw, Search } from 'lucide-react'
+import { Download, RefreshCw, Search, Home, Youtube, Music, Instagram, Carrot, Handshake, X, Sparkles } from 'lucide-react'
 // Lead Manager 뷰 모드 타입 — 카드 뷰 제거 (테이블이 모바일 반응형으로 동작)
 type LeadViewMode = 'table' | 'kanban'
 
@@ -37,6 +38,8 @@ export default function LeadManager() {
   // [Phase 7.1] 전환 기록 모달 상태
   const [conversionModalOpen, setConversionModalOpen] = useState(false)
   const [conversionLead, setConversionLead] = useState<Lead | null>(null)
+  // [RECOVER OS] 리드 디테일 드로어 (칸반 카드 클릭 → 우측 패널)
+  const [detailLead, setDetailLead] = useState<Lead | null>(null)
   const queryClient = useQueryClient()
   const toast = useToast()
 
@@ -314,6 +317,15 @@ export default function LeadManager() {
     setConversionModalOpen(true)
   }
 
+  // [RECOVER OS] 디테일 드로어에서 상태 변경 — 즉시 타임라인 반영 + 칸반과 동일 동작
+  const handleDrawerStatusChange = (lead: Lead, status: string) => {
+    handleUpdateLead(lead.id, status, undefined, lead.platform)
+    setDetailLead((prev) => (prev && prev.id === lead.id ? { ...prev, status } : prev))
+    if (status === 'converted') {
+      handleConversionWithLead({ id: lead.id, platform: lead.platform, title: lead.title, author: lead.author })
+    }
+  }
+
   // [Phase 6.1] 중복 리드 병합 mutation
   const mergeDuplicates = useMutation({
     mutationFn: ({ mergeIds, keepId }: { mergeIds: number[]; keepId: number }) =>
@@ -386,7 +398,7 @@ export default function LeadManager() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold mb-2">📋 Lead Manager</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">Lead Manager</h1>
           <p className="text-muted-foreground">여러 플랫폼의 리드를 발굴·관리합니다</p>
         </div>
         <SkeletonStatsGrid cards={6} />
@@ -415,7 +427,7 @@ export default function LeadManager() {
       {/* 헤더 */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2">📋 Lead Manager</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">Lead Manager</h1>
           <p className="text-muted-foreground">
             여러 플랫폼의 리드를 발굴·관리합니다
           </p>
@@ -433,7 +445,7 @@ export default function LeadManager() {
               aria-pressed={viewMode === 'table'}
               title="테이블 뷰"
             >
-              📋 <span className="hidden sm:inline">테이블</span>
+              <span className="hidden sm:inline">테이블</span>
             </button>
             <button
               onClick={() => setViewMode('kanban')}
@@ -445,7 +457,7 @@ export default function LeadManager() {
               aria-pressed={viewMode === 'kanban'}
               title="칸반 보드"
             >
-              📊 <span className="hidden sm:inline">칸반</span>
+              <span className="hidden sm:inline">칸반</span>
             </button>
           </div>
 
@@ -470,9 +482,9 @@ export default function LeadManager() {
                 className="max-w-full px-3 py-2 bg-card border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">전체 신뢰도</option>
-                <option value="trusted">🟢 신뢰</option>
-                <option value="review">🟡 확인 필요</option>
-                <option value="suspicious">🔴 의심</option>
+                <option value="trusted">신뢰</option>
+                <option value="review">확인 필요</option>
+                <option value="suspicious">의심</option>
               </select>
             </>
           )}
@@ -507,7 +519,7 @@ export default function LeadManager() {
                 }
               }}
             >
-              ⏹️ 스캔 중지
+              스캔 중지
             </Button>
           ) : activeScanModule ? (
             <Button
@@ -537,13 +549,13 @@ export default function LeadManager() {
       {/* 탭 네비게이션 */}
       <TabNavigation
         tabs={[
-          { id: 'cafe', label: '🏠 맘카페' },
-          { id: 'youtube', label: '📺 YouTube' },
-          { id: 'tiktok', label: '🎵 TikTok' },
-          { id: 'instagram', label: '📸 Instagram' },
-          { id: 'carrot', label: '🥕 당근마켓' },
-          { id: 'influencer', label: '🤝 인플루언서' },
-          { id: 'duplicates', label: `🔄 중복 (${duplicatesData?.total_duplicates || 0})` },
+          { id: 'cafe', label: '맘카페' },
+          { id: 'youtube', label: 'YouTube' },
+          { id: 'tiktok', label: 'TikTok' },
+          { id: 'instagram', label: 'Instagram' },
+          { id: 'carrot', label: '당근마켓' },
+          { id: 'influencer', label: '인플루언서' },
+          { id: 'duplicates', label: `중복 (${duplicatesData?.total_duplicates || 0})` },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -558,7 +570,7 @@ export default function LeadManager() {
             <span className="inline-flex items-center gap-1 px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
               상태: {statusFilter === 'pending' ? '대기 중' : statusFilter === 'contacted' ? '연락 완료' : statusFilter === 'replied' ? '답변 받음' : statusFilter === 'converted' ? '전환 완료' : '거절됨'}
               <IconButton
-                icon={<span>✕</span>}
+                icon={<X className="w-4 h-4" />}
                 onClick={() => setStatusFilter('')}
                 size="xs"
                 title="상태 필터 제거"
@@ -570,7 +582,7 @@ export default function LeadManager() {
             <span className="inline-flex items-center gap-1 px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
               신뢰도: {trustFilter === 'trusted' ? '신뢰' : trustFilter === 'review' ? '확인 필요' : '의심'}
               <IconButton
-                icon={<span>✕</span>}
+                icon={<X className="w-4 h-4" />}
                 onClick={() => setTrustFilter('')}
                 size="xs"
                 title="신뢰도 필터 제거"
@@ -610,20 +622,20 @@ export default function LeadManager() {
               />
             ) : !naverLeads || naverLeads.length === 0 ? (
               <EmptyState
-                icon="🏠"
+                icon={<Home className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="맘카페 리드가 없습니다"
                 description="맘카페 스캔을 실행하여 리드를 수집하세요."
                 onScan={() => handleRunScan('cafe_swarm')}
                 isScanning={isScanning}
-                secondaryAction={{ label: '📺 YouTube 보기', onClick: () => setActiveTab('youtube') }}
+                secondaryAction={{ label: 'YouTube 보기', onClick: () => setActiveTab('youtube') }}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(naverLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(naverLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">🏠 맘카페 리드 목록</h2>
+                <h2 className="text-xl font-bold">맘카페 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {naverLeads?.length || 0}개 리드
                 </span>
@@ -638,12 +650,12 @@ export default function LeadManager() {
                 />
               ) : !naverLeads || naverLeads.length === 0 ? (
                 <EmptyState
-                  icon="🏠"
+                  icon={<Home className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="맘카페 리드가 없습니다"
                   description="맘카페 스캔을 실행하여 리드를 수집하세요."
                   onScan={() => handleRunScan('cafe_swarm')}
                   isScanning={isScanning}
-                  secondaryAction={{ label: '📺 YouTube 보기', onClick: () => setActiveTab('youtube') }}
+                  secondaryAction={{ label: 'YouTube 보기', onClick: () => setActiveTab('youtube') }}
                 />
               ) : (
                 <LeadTable
@@ -672,20 +684,20 @@ export default function LeadManager() {
               />
             ) : !youtubeLeads || youtubeLeads.length === 0 ? (
               <EmptyState
-                icon="📺"
+                icon={<Youtube className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="YouTube 리드가 없습니다"
                 description="YouTube 스캔을 실행하여 관련 영상과 채널을 수집하세요."
                 onScan={() => handleRunScan('youtube')}
                 isScanning={isScanning}
-                secondaryAction={{ label: '🎵 TikTok 보기', onClick: () => setActiveTab('tiktok') }}
+                secondaryAction={{ label: 'TikTok 보기', onClick: () => setActiveTab('tiktok') }}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(youtubeLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(youtubeLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">📺 YouTube 리드 목록</h2>
+                <h2 className="text-xl font-bold">YouTube 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {youtubeLeads?.length || 0}개 리드
                 </span>
@@ -700,12 +712,12 @@ export default function LeadManager() {
                 />
               ) : !youtubeLeads || youtubeLeads.length === 0 ? (
                 <EmptyState
-                  icon="📺"
+                  icon={<Youtube className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="YouTube 리드가 없습니다"
                   description="YouTube 스캔을 실행하여 관련 영상과 채널을 수집하세요."
                   onScan={() => handleRunScan('youtube')}
                   isScanning={isScanning}
-                  secondaryAction={{ label: '🎵 TikTok 보기', onClick: () => setActiveTab('tiktok') }}
+                  secondaryAction={{ label: 'TikTok 보기', onClick: () => setActiveTab('tiktok') }}
                 />
               ) : (
                 <LeadTable
@@ -734,19 +746,19 @@ export default function LeadManager() {
               />
             ) : !tiktokLeads || tiktokLeads.length === 0 ? (
               <EmptyState
-                icon="🎵"
+                icon={<Music className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="TikTok 리드가 없습니다"
                 description="TikTok 스캔을 실행하여 관련 콘텐츠를 수집하세요."
                 onScan={() => handleRunScan('tiktok')}
                 isScanning={isScanning}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(tiktokLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(tiktokLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">🎵 TikTok 리드 목록</h2>
+                <h2 className="text-xl font-bold">TikTok 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {tiktokLeads?.length || 0}개 리드
                 </span>
@@ -761,7 +773,7 @@ export default function LeadManager() {
                 />
               ) : !tiktokLeads || tiktokLeads.length === 0 ? (
                 <EmptyState
-                  icon="🎵"
+                  icon={<Music className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="TikTok 리드가 없습니다"
                   description="TikTok 스캔을 실행하여 관련 콘텐츠를 수집하세요."
                   onScan={() => handleRunScan('tiktok')}
@@ -794,19 +806,19 @@ export default function LeadManager() {
               />
             ) : !instagramLeads || instagramLeads.length === 0 ? (
               <EmptyState
-                icon="📸"
+                icon={<Instagram className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="Instagram 리드가 없습니다"
                 description="Instagram 스캔을 실행하여 관련 콘텐츠와 인플루언서를 수집하세요."
                 onScan={() => handleRunScan('instagram')}
                 isScanning={isScanning}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(instagramLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(instagramLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">📸 Instagram 리드 목록</h2>
+                <h2 className="text-xl font-bold">Instagram 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {instagramLeads?.length || 0}개 리드
                 </span>
@@ -821,7 +833,7 @@ export default function LeadManager() {
                 />
               ) : !instagramLeads || instagramLeads.length === 0 ? (
                 <EmptyState
-                  icon="📸"
+                  icon={<Instagram className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="Instagram 리드가 없습니다"
                   description="Instagram 스캔을 실행하여 관련 콘텐츠와 인플루언서를 수집하세요."
                   onScan={() => handleRunScan('instagram')}
@@ -854,19 +866,19 @@ export default function LeadManager() {
               />
             ) : !carrotLeads || carrotLeads.length === 0 ? (
               <EmptyState
-                icon="🥕"
+                icon={<Carrot className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="당근마켓 리드가 없습니다"
                 description="당근마켓 스캔을 실행하여 지역 기반 리드를 수집하세요."
                 onScan={() => handleRunScan('carrot_farm')}
                 isScanning={isScanning}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(carrotLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(carrotLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">🥕 당근마켓 리드 목록</h2>
+                <h2 className="text-xl font-bold">당근마켓 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {carrotLeads?.length || 0}개 리드
                 </span>
@@ -881,7 +893,7 @@ export default function LeadManager() {
                 />
               ) : !carrotLeads || carrotLeads.length === 0 ? (
                 <EmptyState
-                  icon="🥕"
+                  icon={<Carrot className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="당근마켓 리드가 없습니다"
                   description="당근마켓 스캔을 실행하여 지역 기반 리드를 수집하세요."
                   onScan={() => handleRunScan('carrot_farm')}
@@ -914,19 +926,19 @@ export default function LeadManager() {
               />
             ) : !influencerLeads || influencerLeads.length === 0 ? (
               <EmptyState
-                icon="🤝"
+                icon={<Handshake className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                 title="인플루언서 리드가 없습니다"
                 description="인플루언서 스캔을 실행하여 협업 후보를 발굴하세요."
                 onScan={() => handleRunScan('ambassador')}
                 isScanning={isScanning}
               />
             ) : (
-              <KanbanBoard leads={filterByTrust(influencerLeads)} onConversionWithLead={handleConversionWithLead} />
+              <KanbanBoard leads={filterByTrust(influencerLeads)} onConversionWithLead={handleConversionWithLead} onLeadClick={setDetailLead} />
             )
           ) : (
             <div className="bg-card rounded-lg border border-border p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">🤝 인플루언서 리드 목록</h2>
+                <h2 className="text-xl font-bold">인플루언서 리드 목록</h2>
                 <span className="text-sm text-muted-foreground">
                   {influencerLeads?.length || 0}개 리드
                 </span>
@@ -941,7 +953,7 @@ export default function LeadManager() {
                 />
               ) : !influencerLeads || influencerLeads.length === 0 ? (
                 <EmptyState
-                  icon="🤝"
+                  icon={<Handshake className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
                   title="인플루언서 리드가 없습니다"
                   description="인플루언서 스캔을 실행하여 협업 후보를 발굴하세요."
                   onScan={() => handleRunScan('ambassador')}
@@ -966,7 +978,7 @@ export default function LeadManager() {
         <div className="space-y-6">
           <div className="bg-card rounded-lg border border-border p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">🔄 중복 리드 관리</h2>
+              <h2 className="text-xl font-bold">중복 리드 관리</h2>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">
                   {duplicatesData?.total_groups || 0}개 그룹, {duplicatesData?.total_duplicates || 0}개 중복
@@ -986,7 +998,7 @@ export default function LeadManager() {
               <LoadingState />
             ) : !duplicatesData?.duplicate_groups || duplicatesData.duplicate_groups.length === 0 ? (
               <div className="text-center py-12" role="status">
-                <p className="text-6xl mb-4">✨</p>
+                <div className="flex justify-center mb-4 text-faint"><Sparkles className="w-12 h-12" strokeWidth={1.5} /></div>
                 <p className="text-xl font-semibold mb-2">중복 리드가 없습니다</p>
                 <p className="text-muted-foreground">모든 리드가 고유합니다.</p>
               </div>
@@ -1036,7 +1048,7 @@ export default function LeadManager() {
                         }}
                         loading={mergeDuplicates.isPending}
                       >
-                        🔗 자동 병합
+                        자동 병합
                       </Button>
                     </div>
 
@@ -1103,6 +1115,13 @@ export default function LeadManager() {
         lead={conversionLead}
         loading={addConversion.isPending}
       />
+
+      {/* [RECOVER OS] 리드 디테일 드로어 */}
+      <LeadDetailDrawer
+        lead={detailLead}
+        onClose={() => setDetailLead(null)}
+        onStatusChange={handleDrawerStatusChange}
+      />
     </div>
     </PageTransition>
   )
@@ -1120,7 +1139,7 @@ function LoadingState() {
 
 // 빈 상태 컴포넌트
 interface EmptyStateProps {
-  icon: string
+  icon: ReactNode
   title: string
   description: string
   onScan: () => void
@@ -1141,7 +1160,7 @@ function EmptyState({
 }: EmptyStateProps) {
   return (
     <div className="text-center py-12" role="status" aria-label={title}>
-      <p className="text-6xl mb-4" aria-hidden="true">{icon}</p>
+      <div className="flex justify-center mb-4 text-faint" aria-hidden="true">{icon}</div>
       <p className="text-xl font-semibold mb-2">{title}</p>
       <p className="text-muted-foreground mb-6">{description}</p>
       <div className="flex items-center justify-center gap-3">

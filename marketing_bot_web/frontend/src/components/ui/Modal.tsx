@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { X, Info, CheckCircle, AlertTriangle, XCircle } from 'lucide-react'
 import Button, { IconButton } from '@/components/ui/Button'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { isTopModal, useModalStack } from '@/hooks/useModalStack'
@@ -113,7 +113,7 @@ export default function Modal({
         tabIndex={-1}
         className={`
           relative w-full ${sizeClasses[size]}
-          bg-card border border-border rounded-xl shadow-2xl
+          bg-surface border border-hair-strong rounded-card shadow-pop
           animate-modal-enter
           max-h-[90vh] overflow-hidden
           ${size === 'full' ? 'flex flex-col' : 'flex flex-col'}
@@ -121,10 +121,10 @@ export default function Modal({
       >
         {/* 헤더 */}
         {(title || showCloseButton) && (
-          <div className="flex items-start justify-between p-4 border-b border-border">
+          <div className="flex items-start justify-between p-5 border-b border-hair">
             <div>
               {title && (
-                <h2 id={titleId} className="text-lg font-semibold">
+                <h2 id={titleId} className="font-display text-xl text-strong">
                   {title}
                 </h2>
               )}
@@ -152,7 +152,7 @@ export default function Modal({
 
         {/* 푸터 */}
         {footer && (
-          <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <div className="flex items-center justify-end gap-2 p-4 border-t border-hair">
             {footer}
           </div>
         )}
@@ -238,25 +238,21 @@ export function AlertModal({
   message: string
   type?: 'info' | 'success' | 'warning' | 'error'
 }) {
-  const icons = {
-    info: '💡',
-    success: '✅',
-    warning: '⚠️',
-    error: '❌',
+  const config = {
+    info: { Icon: Info, color: 'text-info', tint: 'bg-info-tint' },
+    success: { Icon: CheckCircle, color: 'text-ok', tint: 'bg-ok-tint' },
+    warning: { Icon: AlertTriangle, color: 'text-warn', tint: 'bg-warn-tint' },
+    error: { Icon: XCircle, color: 'text-danger', tint: 'bg-danger-tint' },
   }
-
-  const colors = {
-    info: 'text-blue-500',
-    success: 'text-green-500',
-    warning: 'text-yellow-500',
-    error: 'text-red-500',
-  }
+  const { Icon, color, tint } = config[type]
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="sm">
       <div className="text-center py-4">
-        <div className={`text-5xl mb-4 ${colors[type]}`}>{icons[type]}</div>
-        <h3 className="text-lg font-semibold mb-2">{title}</h3>
+        <div className={`w-14 h-14 rounded-2xl grid place-items-center mx-auto mb-4 ${tint} ${color}`}>
+          <Icon className="w-7 h-7" strokeWidth={1.8} />
+        </div>
+        <h3 className="font-display text-xl text-strong mb-2">{title}</h3>
         <p className="text-muted-foreground">{message}</p>
         <Button onClick={onClose} className="mt-6">
           확인

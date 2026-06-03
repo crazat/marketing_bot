@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { leadsApi } from '@/services/api'
+import { platformIcon } from '@/lib/entityIcons'
 
 interface RoiData {
   overall_roi: {
@@ -57,15 +58,7 @@ export default function RoiAnalysis() {
     retry: 1,
   })
 
-  const platformIcons: Record<string, string> = {
-    youtube: '📺',
-    tiktok: '🎵',
-    instagram: '📸',
-    naver: '🟢',
-    carrot: '🥕',
-    cafe: '☕',
-    other: '📱',
-  }
+  // [RECOVER OS] 플랫폼 아이콘 = @/lib/entityIcons.platformIcon
 
   const formatCurrency = (value: number) => {
     if (value >= 10000) {
@@ -92,7 +85,7 @@ export default function RoiAnalysis() {
   if (!hasRoiData && !hasBottleneckData) {
     return (
       <div className="bg-card rounded-lg border border-border p-6">
-        <h2 className="text-xl font-bold mb-4">📊 ROI 분석</h2>
+        <h2 className="text-xl font-bold mb-4">ROI 분석</h2>
         <div className="text-center py-8 text-muted-foreground">
           <p className="mb-2">아직 분석할 데이터가 충분하지 않습니다</p>
           <p className="text-sm">리드에 예상 매출/실제 매출을 입력하면 ROI 분석이 가능합니다</p>
@@ -103,7 +96,7 @@ export default function RoiAnalysis() {
 
   return (
     <div className="bg-card rounded-lg border border-border p-6">
-      <h2 className="text-xl font-bold mb-4">📊 마케팅 ROI 분석</h2>
+      <h2 className="text-xl font-bold mb-4">마케팅 ROI 분석</h2>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ROI 요약 카드 */}
@@ -112,7 +105,7 @@ export default function RoiAnalysis() {
             {/* 전체 ROI */}
             <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/10 border border-green-500/30 rounded-lg p-4">
               <h3 className="font-semibold text-green-600 mb-3 flex items-center gap-2">
-                💰 전체 매출 현황
+                전체 매출 현황
               </h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -153,7 +146,7 @@ export default function RoiAnalysis() {
                       className="flex items-center justify-between p-2 bg-muted/50 rounded-lg"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="text-lg">{platformIcons[platform.platform] || '📱'}</span>
+                        <span className="text-sage">{platformIcon(platform.platform)}</span>
                         <span className="font-medium capitalize">{platform.platform}</span>
                       </div>
                       <div className="text-right">
@@ -171,7 +164,7 @@ export default function RoiAnalysis() {
             {/* 인사이트 */}
             {roiData.insights.length > 0 && (
               <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3">
-                <h4 className="text-sm font-medium text-blue-600 mb-2">💡 인사이트</h4>
+                <h4 className="text-sm font-medium text-blue-600 mb-2">인사이트</h4>
                 <ul className="space-y-1 text-sm">
                   {roiData.insights.map((insight, idx) => (
                     <li key={idx}>{insight}</li>
@@ -187,7 +180,7 @@ export default function RoiAnalysis() {
           <div className="space-y-4">
             <div className="bg-gradient-to-br from-yellow-500/10 to-orange-500/10 border border-yellow-500/30 rounded-lg p-4">
               <h3 className="font-semibold text-yellow-600 mb-3 flex items-center gap-2">
-                ⏱️ 파이프라인 분석
+                파이프라인 분석
               </h3>
 
               {/* 단계별 소요 시간 */}
@@ -201,7 +194,7 @@ export default function RoiAnalysis() {
                     <div key={stage}>
                       <div className="flex items-center justify-between mb-1">
                         <span className={`text-sm ${isBottleneck ? 'font-semibold text-yellow-600' : ''}`}>
-                          {isBottleneck ? '⚠️ ' : ''}{label}
+                          {isBottleneck ? '' : ''}{label}
                         </span>
                         <span className={`text-sm ${isBottleneck ? 'font-bold text-yellow-600' : 'text-muted-foreground'}`}>
                           {duration < 1 ? `${Math.round(duration * 60)}분` : `${duration}시간`}
@@ -230,7 +223,7 @@ export default function RoiAnalysis() {
             {/* 권장 사항 */}
             {bottleneckData.recommendations.length > 0 && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                <h4 className="text-sm font-medium text-red-600 mb-2">🎯 개선 권장</h4>
+                <h4 className="text-sm font-medium text-red-600 mb-2">개선 권장</h4>
                 <ul className="space-y-1 text-sm">
                   {bottleneckData.recommendations.map((rec, idx) => (
                     <li key={idx}>• {rec}</li>

@@ -3,6 +3,9 @@
  * 리드, 리뷰, 댓글 등에서 감성 상태를 표시
  */
 
+import type { ReactNode } from 'react'
+import { Smile, Frown, Meh } from 'lucide-react'
+
 type SentimentType = 'positive' | 'negative' | 'neutral'
 
 interface SentimentBadgeProps {
@@ -12,10 +15,10 @@ interface SentimentBadgeProps {
   className?: string
 }
 
-const sentimentConfig: Record<SentimentType, { bg: string; text: string; emoji: string; label: string }> = {
-  positive: { bg: 'bg-green-500/20', text: 'text-green-500', emoji: '😊', label: '긍정' },
-  negative: { bg: 'bg-red-500/20', text: 'text-red-500', emoji: '😟', label: '부정' },
-  neutral: { bg: 'bg-gray-500/20', text: 'text-gray-500', emoji: '😐', label: '중립' },
+const sentimentConfig: Record<SentimentType, { bg: string; text: string; icon: ReactNode; label: string }> = {
+  positive: { bg: 'bg-ok-tint', text: 'text-ok', icon: <Smile className="w-3.5 h-3.5" strokeWidth={1.8} />, label: '긍정' },
+  negative: { bg: 'bg-danger-tint', text: 'text-danger', icon: <Frown className="w-3.5 h-3.5" strokeWidth={1.8} />, label: '부정' },
+  neutral: { bg: 'bg-muted', text: 'text-muted-foreground', icon: <Meh className="w-3.5 h-3.5" strokeWidth={1.8} />, label: '중립' },
 }
 
 const sizeStyles = {
@@ -41,7 +44,7 @@ export default function SentimentBadge({
       className={`inline-flex items-center gap-1 rounded-full font-medium ${config.bg} ${config.text} ${sizeStyles[size]} ${className}`}
       title={`감성: ${config.label}`}
     >
-      <span aria-hidden="true">{config.emoji}</span>
+      <span aria-hidden="true">{config.icon}</span>
       {showLabel && <span>{config.label}</span>}
     </span>
   )
@@ -66,21 +69,21 @@ export function SentimentSummary({ positive, negative, neutral, showPercentage =
   return (
     <div className="flex items-center gap-2">
       <div className="flex items-center gap-1">
-        <span className="text-green-500">😊</span>
+        <Smile className="w-4 h-4 text-ok" strokeWidth={1.8} />
         <span className="text-sm font-medium">{positive}</span>
         {showPercentage && (
           <span className="text-xs text-muted-foreground">({getPercentage(positive)}%)</span>
         )}
       </div>
       <div className="flex items-center gap-1">
-        <span className="text-red-500">😟</span>
+        <Frown className="w-4 h-4 text-danger" strokeWidth={1.8} />
         <span className="text-sm font-medium">{negative}</span>
         {showPercentage && (
           <span className="text-xs text-muted-foreground">({getPercentage(negative)}%)</span>
         )}
       </div>
       <div className="flex items-center gap-1">
-        <span className="text-gray-500">😐</span>
+        <Meh className="w-4 h-4 text-muted-foreground" strokeWidth={1.8} />
         <span className="text-sm font-medium">{neutral}</span>
         {showPercentage && (
           <span className="text-xs text-muted-foreground">({getPercentage(neutral)}%)</span>

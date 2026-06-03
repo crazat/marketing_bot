@@ -50,29 +50,31 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     `
 
     const variantStyles = {
+      // [RECOVER OS] primary — sage + 상단 하이라이트 그라데이션 + cta shadow
       primary: `
-        bg-primary text-primary-foreground
-        hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/25
+        bg-primary text-primary-foreground shadow-cta
+        [background-image:linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0)_60%)]
+        hover:bg-primary/90
       `,
       secondary: `
         bg-secondary text-secondary-foreground
-        hover:bg-secondary/80
+        hover:bg-surface-hover
       `,
       outline: `
-        border-2 border-border bg-transparent text-foreground
-        hover:bg-muted hover:border-primary/50
+        border border-hair bg-transparent text-muted-foreground
+        hover:bg-surface-2 hover:text-foreground hover:border-hair-strong
       `,
       ghost: `
-        bg-transparent text-foreground
-        hover:bg-muted
+        bg-transparent text-muted-foreground
+        hover:bg-surface-2 hover:text-foreground
       `,
       danger: `
         bg-destructive text-destructive-foreground
-        hover:bg-destructive/90 hover:shadow-lg hover:shadow-destructive/25
+        hover:bg-destructive/90
       `,
       success: `
-        bg-green-600 text-white
-        hover:bg-green-700 hover:shadow-lg hover:shadow-green-600/25
+        bg-ok text-white
+        hover:opacity-90
       `,
     }
 
@@ -80,8 +82,8 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const statusStyles = {
       idle: '',
       loading: '',
-      success: 'bg-green-600 hover:bg-green-600 text-white',
-      error: 'bg-red-500 hover:bg-red-500 text-white animate-shake',
+      success: 'bg-ok hover:bg-ok text-white',
+      error: 'bg-danger hover:bg-danger text-white animate-shake',
     }
 
     const sizeStyles = {

@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Loader2,
   ChevronRight,
+  Flame,
 } from 'lucide-react'
 import { viralApi, leadsApi, qaApi, competitorsApi, battleApi } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
@@ -205,7 +206,7 @@ export default function ContextInsightPanel({
                 context.trend === 'down' ? 'bg-red-500/20 text-red-500' :
                 'bg-gray-500/20 text-gray-500'
               }`}>
-                {context.trend === 'up' ? '📈 상승' : context.trend === 'down' ? '📉 하락' : '➖ 유지'}
+                {context.trend === 'up' ? '상승' : context.trend === 'down' ? '하락' : '유지'}
               </div>
             )}
           </div>
@@ -274,7 +275,7 @@ export default function ContextInsightPanel({
           {leadsData?.map((lead: any, idx: number) => (
             <div key={idx} className="text-xs p-2 bg-muted/50 rounded">
               <div className="flex items-center gap-2">
-                {lead.grade === 'hot' && <span className="text-red-500">🔥</span>}
+                {lead.grade === 'hot' && <Flame className="w-3.5 h-3.5 inline text-danger" strokeWidth={1.8} />}
                 <span className="font-medium truncate">{lead.title}</span>
               </div>
               <div className="text-muted-foreground">{lead.platform} · {lead.status}</div>
@@ -327,7 +328,7 @@ export default function ContextInsightPanel({
             }}
             className="bg-gradient-to-r from-cyan-500 to-teal-500 text-white hover:opacity-90"
           >
-            📅 키워드 라이프사이클
+            키워드 라이프사이클
           </Button>
         )}
         <Button

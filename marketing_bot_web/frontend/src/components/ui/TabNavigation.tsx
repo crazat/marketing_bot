@@ -20,15 +20,7 @@ export default function TabNavigation({
   ariaLabel = '탭 네비게이션'
 }: TabNavigationProps) {
   return (
-    <div
-      className="
-        flex gap-1 sm:gap-2 border-b border-border overflow-x-auto
-        scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent
-        -mx-2 px-2 sm:mx-0 sm:px-0
-      "
-      role="tablist"
-      aria-label={ariaLabel}
-    >
+    <div className="ros-tabbar" role="tablist" aria-label={ariaLabel}>
       {tabs.map((tab) => (
         <button
           type="button"
@@ -38,24 +30,11 @@ export default function TabNavigation({
           aria-controls={`tabpanel-${tab.id}`}
           id={`tab-${tab.id}`}
           onClick={() => onTabChange(tab.id)}
-          className={`
-            px-2.5 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base font-medium transition-colors relative whitespace-nowrap
-            focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary
-            flex-shrink-0
-            ${activeTab === tab.id
-              ? 'text-primary'
-              : 'text-muted-foreground hover:text-foreground'
-            }
-          `}
+          className={`ros-tab ${activeTab === tab.id ? 'on' : ''} focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary`}
         >
           {tab.label}
           {typeof tab.badge === 'number' && tab.badge > 0 && (
-            <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-red-500 text-white rounded-full align-middle">
-              {tab.badge}
-            </span>
-          )}
-          {activeTab === tab.id && (
-            <div className="absolute -bottom-px left-0 right-0 h-0.5 bg-primary" />
+            <span className="ros-tab-badge">{tab.badge}</span>
           )}
         </button>
       ))}

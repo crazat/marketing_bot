@@ -11,9 +11,9 @@ import { viralApi } from '@/services/api'
  * 하나의 큰 카드로 수렴. 가장 긴급한 한 가지 행동을 먼저 제시.
  *
  * 우선순위 로직:
- *  1. 🔥 Tier 1 HOT LEAD (priority_score >= 120) — 즉시 처리
- *  2. 📮 오늘 대기 중 HOT LEAD (100+)
- *  3. ⏰ 24h 초과 리드 (과기)
+ *  1. Tier 1 HOT LEAD (priority_score >= 120) — 즉시 처리
+ *  2. 오늘 대기 중 HOT LEAD (100+)
+ *  3. 24h 초과 리드 (과기)
  *  4. 정상 상태: "오늘 새 스캔을 실행해 보세요"
  */
 export default function TodayFocus() {

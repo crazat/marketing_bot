@@ -39,81 +39,83 @@
 /* === Dark (기본) — 서울 진료실의 새벽 === */
 :root,
 [data-theme='dark'] {
-  /* 바탕: 먹(墨) + 아주 미세한 청록 undertone */
-  --background: 210 15% 8%;
-  --foreground: 36 20% 94%;
+  /* RECOVER OS — Sage/Clay/Mist · 다크 (shadcn HSL = recover-os.css raw 토큰 1:1 매핑) */
+  /* 바탕: bg-grain #141a19 / 카드: surface #181f1e */
+  --background: 170 13% 9%;
+  --foreground: 40 32% 89%;        /* text #ECE6DA */
 
-  /* 카드/표면 */
-  --card: 210 12% 11%;
-  --card-foreground: 36 15% 92%;
-  --popover: 210 14% 10%;
-  --popover-foreground: 36 15% 92%;
+  --card: 171 13% 11%;             /* surface #181f1e */
+  --card-foreground: 40 45% 94%;   /* text-strong #F6F1E7 */
+  --popover: 171 13% 11%;
+  --popover-foreground: 40 45% 94%;
 
-  /* muted — 한약 용기 어둠 */
-  --muted: 210 10% 15%;
-  --muted-foreground: 36 10% 60%;
+  /* muted — surface-2 #1f2726 */
+  --muted: 172 11% 14%;
+  --muted-foreground: 147 6% 62%;  /* text-muted #98A39D */
 
-  /* 경계 — 한지 결 */
-  --border: 210 10% 20%;
-  --input: 210 12% 18%;
+  /* 경계 — hairline (불투명 근사) / 입력 — hair-strong */
+  --border: 172 8% 18%;
+  --input: 171 7% 25%;
 
-  /* Primary — 인삼 옐로우 (한약 용기 황동) */
-  --primary: 36 85% 60%;
-  --primary-foreground: 210 20% 8%;
+  /* Primary — sage #6E8579 (회복 정체성) */
+  --primary: 149 9% 48%;
+  --primary-foreground: 44 33% 94%;
 
-  /* Secondary — 청자 블루그레이 */
-  --secondary: 210 12% 18%;
-  --secondary-foreground: 36 20% 92%;
+  /* Secondary — surface-2 */
+  --secondary: 172 11% 14%;
+  --secondary-foreground: 40 32% 89%;
 
-  /* Accent — 침(鍼) 포인트 레드 */
-  --accent: 355 75% 55%;
-  --accent-foreground: 36 20% 98%;
+  /* Accent — surface-hover (shadcn hover surface 시맨틱) */
+  --accent: 173 12% 15%;
+  --accent-foreground: 40 45% 94%;
 
-  /* Destructive */
-  --destructive: 0 70% 48%;
-  --destructive-foreground: 36 20% 98%;
+  /* Destructive — danger #D27567 */
+  --destructive: 8 54% 61%;
+  --destructive-foreground: 40 45% 94%;
 
-  /* Focus ring */
-  --ring: 36 85% 55%;
+  /* Focus ring — clay #CC9A7E */
+  --ring: 22 43% 65%;
 
-  --radius: 0.375rem; /* 더 정제된 편집 디자인 모서리 */
+  --radius: 0.625rem; /* 10px — 에디토리얼 soft (버튼/인풋) */
 }
 
 /* === Light — 한지 위의 먹 === */
 [data-theme='light'] {
-  /* 한지 오프화이트 */
-  --background: 36 25% 97%;
-  --foreground: 210 15% 12%;
+  /* RECOVER OS — "한지 위의 먹" · Warm Ivory + Sage-deep/Clay 잉크 */
+  --background: 39 39% 93%;          /* bg-grain #F4EFE6 */
+  --foreground: 153 13% 17%;         /* text #25302B */
 
-  --card: 0 0% 100%;
-  --card-foreground: 210 15% 12%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 210 15% 12%;
+  --card: 40 53% 97%;                /* surface #FBF8F2 */
+  --card-foreground: 128 14% 11%;    /* text-strong #182019 */
+  --popover: 40 53% 97%;
+  --popover-foreground: 128 14% 11%;
 
-  /* muted — 바랜 한지 */
-  --muted: 36 20% 93%;
-  --muted-foreground: 210 10% 42%;
+  /* muted — surface-2 #F5F0E6 */
+  --muted: 40 43% 93%;
+  --muted-foreground: 144 5% 39%;    /* text-muted #5E6862 */
 
-  /* 경계 — 먹 농담 */
-  --border: 36 15% 85%;
-  --input: 36 15% 88%;
+  /* 경계 — hairline / 입력 */
+  --border: 43 8% 82%;
+  --input: 43 10% 78%;
 
-  /* Primary — 의료 네이비 딥 */
-  --primary: 215 65% 25%;
-  --primary-foreground: 36 25% 98%;
+  /* Primary — sage-fill #46594F */
+  --primary: 148 12% 31%;
+  --primary-foreground: 40 46% 94%;
 
-  /* Secondary */
-  --secondary: 36 20% 93%;
-  --secondary-foreground: 210 15% 12%;
+  /* Secondary — surface-2 */
+  --secondary: 40 43% 93%;
+  --secondary-foreground: 128 14% 11%;
 
-  /* Accent — 침 포인트 */
-  --accent: 355 75% 48%;
-  --accent-foreground: 36 25% 98%;
+  /* Accent — surface-hover */
+  --accent: 40 45% 93%;
+  --accent-foreground: 128 14% 11%;
 
-  --destructive: 0 75% 52%;
-  --destructive-foreground: 36 25% 98%;
+  /* Destructive — danger #B14A3B */
+  --destructive: 8 50% 46%;
+  --destructive-foreground: 40 46% 94%;
 
-  --ring: 215 65% 30%;
+  /* Focus — clay #A06A48 */
+  --ring: 23 38% 45%;
 }
 
 * {

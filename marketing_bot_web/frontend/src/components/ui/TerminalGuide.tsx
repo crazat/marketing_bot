@@ -130,7 +130,7 @@ export const TerminalGuide: React.FC<TerminalGuideProps> = ({
                 {/* 참고사항 */}
                 {cmd.note && (
                   <div className="ml-8 mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded">
-                    <p className="text-xs text-yellow-800">💡 {cmd.note}</p>
+                    <p className="text-xs text-yellow-800">{cmd.note}</p>
                   </div>
                 )}
               </div>

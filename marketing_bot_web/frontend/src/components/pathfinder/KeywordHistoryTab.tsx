@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Inbox, Search, Award, Swords } from 'lucide-react'
 import { pathfinderApi } from '@/services/api'
 import type { Keyword, PathfinderStats, ScanRun, DateStat } from '@/types'
 import { safeJsonParse } from '@/utils/safeStorage'
@@ -151,7 +152,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
   if (isError || !allKeywords || allKeywords.length === 0) {
     return (
       <div className="bg-card rounded-lg border border-border p-12 text-center">
-        <p className="text-4xl mb-4">📭</p>
+        <div className="flex justify-center mb-4 text-faint"><Inbox className="w-10 h-10" strokeWidth={1.5} /></div>
         <p className="text-muted-foreground mb-4">히스토리 데이터가 없습니다.</p>
         <p className="text-sm text-muted-foreground">Pathfinder를 실행하여 키워드를 수집하세요.</p>
       </div>
@@ -170,7 +171,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
               : 'text-muted-foreground hover:text-foreground hover:bg-muted'
           }`}
         >
-          🚀 스캔 실행 기록
+          스캔 실행 기록
         </button>
         <button
           onClick={() => setHistoryView('dates')}
@@ -180,7 +181,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
               : 'text-muted-foreground hover:text-foreground hover:bg-muted'
           }`}
         >
-          📅 날짜별 수집 현황
+          날짜별 수집 현황
         </button>
       </div>
 
@@ -217,7 +218,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
           {/* 스캔 기록 목록 */}
           <div className="bg-card rounded-lg border border-border p-6">
-            <h3 className="text-lg font-semibold mb-4">📋 스캔 실행 기록</h3>
+            <h3 className="text-lg font-semibold mb-4">스캔 실행 기록</h3>
 
             {scanHistoryLoading ? (
               <div className="flex items-center justify-center py-8">
@@ -225,7 +226,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
               </div>
             ) : !parsedScanHistory || parsedScanHistory.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
-                <p className="text-4xl mb-4">🔍</p>
+                <div className="flex justify-center mb-4 text-faint"><Search className="w-10 h-10" strokeWidth={1.5} /></div>
                 <p className="font-medium mb-2">스캔 기록이 없습니다</p>
                 <p className="text-sm">Pathfinder LEGION 또는 Total War 모드를 실행하면 기록이 저장됩니다.</p>
               </div>
@@ -247,7 +248,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${
                           scan.mode === 'legion' ? 'bg-purple-500/20 text-purple-500' : 'bg-blue-500/20 text-blue-500'
                         }`}>
-                          {scan.mode === 'legion' ? '🎖️' : '⚔️'}
+                          {scan.mode === 'legion' ? <Award className="w-4 h-4" strokeWidth={1.7} /> : <Swords className="w-4 h-4" strokeWidth={1.7} />}
                         </div>
                         <div>
                           <p className="font-semibold">
@@ -279,19 +280,19 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                       <div className="grid grid-cols-4 gap-2 mb-3">
                         <div className="text-center p-2 bg-muted rounded">
                           <div className="text-lg font-bold text-red-500">{scan.s_grade_count || 0}</div>
-                          <div className="text-xs text-muted-foreground">🔥 S급</div>
+                          <div className="text-xs text-muted-foreground">S급</div>
                         </div>
                         <div className="text-center p-2 bg-muted rounded">
                           <div className="text-lg font-bold text-green-500">{scan.a_grade_count || 0}</div>
-                          <div className="text-xs text-muted-foreground">🟢 A급</div>
+                          <div className="text-xs text-muted-foreground">A급</div>
                         </div>
                         <div className="text-center p-2 bg-muted rounded">
                           <div className="text-lg font-bold text-blue-500">{scan.b_grade_count || 0}</div>
-                          <div className="text-xs text-muted-foreground">🔵 B급</div>
+                          <div className="text-xs text-muted-foreground">B급</div>
                         </div>
                         <div className="text-center p-2 bg-muted rounded">
                           <div className="text-lg font-bold text-muted-foreground">{scan.c_grade_count || 0}</div>
-                          <div className="text-xs text-muted-foreground">⚪ C급</div>
+                          <div className="text-xs text-muted-foreground">C급</div>
                         </div>
                       </div>
                     )}
@@ -299,14 +300,14 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                     {/* 에러 메시지 */}
                     {scan.status === 'failed' && scan.error_message && (
                       <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">
-                        ❌ {scan.error_message}
+                        {scan.error_message}
                       </div>
                     )}
 
                     {/* 상위 키워드 */}
                     {scan.topKeywords && scan.topKeywords.length > 0 && (
                       <div>
-                        <p className="text-xs text-muted-foreground mb-2">🔥 상위 키워드</p>
+                        <p className="text-xs text-muted-foreground mb-2">상위 키워드</p>
                         <div className="flex flex-wrap gap-1">
                           {scan.topKeywords.slice(0, 5).map((kw: Keyword, idx: number) => (
                             <span
@@ -361,7 +362,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
       {/* 조회 범위 선택 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📅 조회 범위</h3>
+        <h3 className="text-lg font-semibold mb-4">조회 범위</h3>
         <div className="flex gap-2 mb-4">
           {[
             { value: 'recent7', label: '최근 7일' },
@@ -402,11 +403,11 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
       {/* 날짜별 수집 현황 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📊 날짜별 수집 현황</h3>
+        <h3 className="text-lg font-semibold mb-4">날짜별 수집 현황</h3>
 
         {filteredDates.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
-            <p className="text-4xl mb-4">📭</p>
+            <div className="flex justify-center mb-4 text-faint"><Inbox className="w-10 h-10" strokeWidth={1.5} /></div>
             <p>선택된 기간에 데이터가 없습니다.</p>
           </div>
         ) : (
@@ -430,10 +431,10 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                   <summary className="cursor-pointer px-4 py-3 hover:bg-muted transition-colors">
                     <div className="flex items-center justify-between">
                       <div className="font-semibold">
-                        📅 {stat.date}
+                        {stat.date}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        총 {stat.total}개 (🔥S: {stat.sCount}, 🟢A: {stat.aCount})
+                        총 {stat.total}개 (S: {stat.sCount}, A: {stat.aCount})
                       </div>
                     </div>
                   </summary>
@@ -447,11 +448,11 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                       </div>
                       <div className="text-center p-3 bg-muted rounded">
                         <div className="text-2xl font-bold text-red-500">{stat.sCount}</div>
-                        <div className="text-xs text-muted-foreground mt-1">🔥 S급</div>
+                        <div className="text-xs text-muted-foreground mt-1">S급</div>
                       </div>
                       <div className="text-center p-3 bg-muted rounded">
                         <div className="text-2xl font-bold text-green-500">{stat.aCount}</div>
-                        <div className="text-xs text-muted-foreground mt-1">🟢 A급</div>
+                        <div className="text-xs text-muted-foreground mt-1">A급</div>
                       </div>
                       <div className="text-center p-3 bg-muted rounded">
                         <div className="text-2xl font-bold text-blue-500">{saRatio}%</div>
@@ -461,7 +462,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
                     {/* 소스 분포 */}
                     <div>
-                      <div className="text-sm font-semibold mb-2">📦 소스 분포</div>
+                      <div className="text-sm font-semibold mb-2">소스 분포</div>
                       <div className="flex flex-wrap gap-2">
                         {Object.entries(stat.sources).map(([source, count]) => (
                           <span
@@ -476,7 +477,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
                     {/* 카테고리 분포 */}
                     <div>
-                      <div className="text-sm font-semibold mb-2">📂 카테고리 분포</div>
+                      <div className="text-sm font-semibold mb-2">카테고리 분포</div>
                       <div className="flex flex-wrap gap-2">
                         {Object.entries(stat.categories)
                           .sort(([, a], [, b]) => b - a)
@@ -493,7 +494,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
 
                     {/* 상위 S/A급 키워드 */}
                     <div>
-                      <div className="text-sm font-semibold mb-2">🔥 상위 S/A급 키워드</div>
+                      <div className="text-sm font-semibold mb-2">상위 S/A급 키워드</div>
                       <div className="space-y-1">
                         {stat.keywords
                           .filter((kw) => ['S', 'A'].includes(kw.grade))
@@ -506,7 +507,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                             >
                               <span>
                                 <span className={kw.grade === 'S' ? 'text-red-500' : 'text-green-500'}>
-                                  {kw.grade === 'S' ? '🔥' : '🟢'} {kw.grade}
+                                  {kw.grade}
                                 </span>
                                 {' '}{kw.keyword}
                               </span>
@@ -521,7 +522,7 @@ export default function KeywordHistoryTab({ stats: _stats }: KeywordHistoryTabPr
                     {/* 전체 데이터 테이블 (접기) */}
                     <details>
                       <summary className="cursor-pointer text-sm font-semibold text-primary hover:underline">
-                        📋 전체 키워드 보기 ({stat.total}개)
+                        전체 키워드 보기 ({stat.total}개)
                       </summary>
                       <div className="mt-2 max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">

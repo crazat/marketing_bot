@@ -24,7 +24,7 @@ export function CompletionView({
       {/* 헤더 */}
       <div className="text-center py-8">
         <h1 className="text-4xl font-bold bg-gradient-to-r from-yellow-500 to-green-500 bg-clip-text text-transparent mb-2">
-          🎉 축하합니다!
+          축하합니다!
         </h1>
         <p className="text-xl text-muted-foreground">
           '{selectedCategory}' 카테고리의 모든 작업을 완료했습니다!
@@ -33,7 +33,7 @@ export function CompletionView({
 
       {/* 통계 */}
       <div>
-        <h2 className="text-2xl font-bold mb-4">📊 작업 통계</h2>
+        <h2 className="text-2xl font-bold mb-4">작업 통계</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-card border border-border rounded-lg p-6 text-center">
             <div className="text-4xl font-bold">{totalProcessed}</div>
@@ -41,15 +41,15 @@ export function CompletionView({
           </div>
           <div className="bg-card border border-border rounded-lg p-6 text-center">
             <div className="text-4xl font-bold text-green-500">{completionStats.approved}</div>
-            <div className="text-sm text-muted-foreground mt-2">✅ 승인</div>
+            <div className="text-sm text-muted-foreground mt-2">승인</div>
           </div>
           <div className="bg-card border border-border rounded-lg p-6 text-center">
             <div className="text-4xl font-bold text-blue-500">{completionStats.skipped}</div>
-            <div className="text-sm text-muted-foreground mt-2">⏭️ 건너뜀</div>
+            <div className="text-sm text-muted-foreground mt-2">건너뜀</div>
           </div>
           <div className="bg-card border border-border rounded-lg p-6 text-center">
             <div className="text-4xl font-bold text-red-500">{completionStats.deleted}</div>
-            <div className="text-sm text-muted-foreground mt-2">🗑️ 삭제</div>
+            <div className="text-sm text-muted-foreground mt-2">삭제</div>
           </div>
         </div>
       </div>
@@ -72,7 +72,7 @@ export function CompletionView({
         onClick={onGoHome}
         className="w-full py-4 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90"
       >
-        🏠 홈으로 돌아가기
+        홈으로 돌아가기
       </button>
     </div>
   )

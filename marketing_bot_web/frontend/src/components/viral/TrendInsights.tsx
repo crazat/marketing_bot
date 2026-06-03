@@ -93,7 +93,7 @@ export function TrendInsights({ compact = false }: TrendInsightsProps) {
                   key={idx}
                   className="px-2 py-0.5 bg-green-500/10 text-green-500 rounded text-xs"
                 >
-                  {kw.keyword} {kw.change === 'new' ? '🆕' : `+${kw.change_rate}%`}
+                  {kw.keyword} {kw.change === 'new' ? <span className="ros-badge ros-badge-clay">NEW</span> : `+${kw.change_rate}%`}
                 </span>
               ))}
             </div>
@@ -214,7 +214,7 @@ export function TrendInsights({ compact = false }: TrendInsightsProps) {
                   >
                     <span className="text-sm">{kw.keyword}</span>
                     <span className="text-xs text-green-500 font-medium">
-                      {kw.change === 'new' ? '🆕 신규' : `+${kw.change_rate}%`}
+                      {kw.change === 'new' ? '신규' : `+${kw.change_rate}%`}
                     </span>
                   </div>
                 ))}

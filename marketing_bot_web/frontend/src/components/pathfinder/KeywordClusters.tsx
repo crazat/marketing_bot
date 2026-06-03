@@ -51,7 +51,7 @@ export default function KeywordClusters({ clusters }: KeywordClustersProps) {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">S/A급</span>
                   <span className="font-medium">
-                    🔥 {sCount} / 🟢 {aCount}
+                    {sCount} / {aCount}
                   </span>
                 </div>
               )}

@@ -32,7 +32,7 @@ export default function InstagramAnalysis({ stats, hashtagAnalysis }: InstagramA
 
       {/* 해시태그 분석 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">🏷️ 인기 해시태그</h3>
+        <h3 className="text-lg font-semibold mb-4">인기 해시태그</h3>
         {!hashtagAnalysis || hashtagAnalysis.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <p>해시태그 데이터가 없습니다.</p>

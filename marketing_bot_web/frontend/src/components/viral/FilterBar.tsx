@@ -161,34 +161,34 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
     <div className="bg-card border-b border-border p-4 space-y-4">
       {/* [V3] 빠른 프리셋 */}
       <div className="flex flex-wrap gap-2">
-        <span className="text-xs text-muted-foreground self-center">⚡ 빠른 필터:</span>
+        <span className="text-xs text-muted-foreground self-center">빠른 필터:</span>
         <button
           onClick={() => applyPreset('today_pending')}
           className="text-xs px-3 py-1.5 rounded-full border border-primary bg-primary/10 text-primary hover:bg-primary/20 font-medium"
           title="오늘 발견된 대기 중 타겟 (가장 일반적)"
         >
-          📅 오늘 대기중
+          오늘 대기중
         </button>
         <button
           onClick={() => applyPreset('today_all')}
           className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-muted"
           title="오늘 발견 또는 처리한 전체"
         >
-          🗓️ 오늘 전체
+          오늘 전체
         </button>
         <button
           onClick={() => applyPreset('week_posted')}
           className="text-xs px-3 py-1.5 rounded-full border border-border hover:bg-muted"
           title="최근 7일 게시된 댓글"
         >
-          📮 최근 7일 게시됨
+          최근 7일 게시됨
         </button>
         <button
           onClick={() => applyPreset('hot_only')}
           className="text-xs px-3 py-1.5 rounded-full border border-red-400/50 bg-red-500/5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
           title="점수 순 대기 HOT LEAD"
         >
-          🔥 HOT 대기
+          HOT 대기
         </button>
         {/* [2026-04-27] 미용 특화 큐 — AI 분류 + 우리 강점 카테고리 + 청주 권역 */}
         <button
@@ -196,14 +196,14 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
           className="text-xs px-3 py-1.5 rounded-full border border-orange-400 bg-orange-500/10 text-orange-600 dark:text-orange-400 hover:bg-orange-500/20 font-medium"
           title="다이어트·비대칭·피부·탈모·교통사고 + 청주 권역 + AI 신뢰도 ≥85% 자연 질문"
         >
-          🎯 미용 특화 큐
+          미용 특화 큐
         </button>
         <button
           onClick={() => applyPreset('natural_only')}
           className="text-xs px-3 py-1.5 rounded-full border border-green-400/60 bg-green-500/5 text-green-600 dark:text-green-400 hover:bg-green-500/15"
           title="AI가 자연 질문으로 분류한 것만 (광고/노이즈 숨김)"
         >
-          ✓ 자연 질문만
+          자연 질문만
         </button>
         {hasActiveFilters && (
           <button

@@ -16,6 +16,8 @@ import {
   Plus,
   ArrowRightLeft,
   Trash2,
+  Building2,
+  FileText,
 } from 'lucide-react'
 
 export default function KeywordsTab() {
@@ -133,8 +135,8 @@ export default function KeywordsTab() {
               onChange={(e) => setNewKeywordCategory(e.target.value as 'naver_place' | 'blog_seo')}
               className="px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
             >
-              <option value="naver_place">🏢 네이버 플레이스</option>
-              <option value="blog_seo">📝 블로그 SEO</option>
+              <option value="naver_place">네이버 플레이스</option>
+              <option value="blog_seo">블로그 SEO</option>
             </select>
             <input
               type="text"
@@ -176,7 +178,7 @@ export default function KeywordsTab() {
             <div className="border border-border rounded-lg p-4">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="font-semibold flex items-center gap-2">
-                  <span className="text-xl">🏢</span>
+                  <Building2 className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                   네이버 플레이스
                 </h4>
                 <span className="text-sm text-muted-foreground">
@@ -221,7 +223,7 @@ export default function KeywordsTab() {
             <div className="border border-border rounded-lg p-4">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="font-semibold flex items-center gap-2">
-                  <span className="text-xl">📝</span>
+                  <FileText className="w-[18px] h-[18px] text-sage" strokeWidth={1.7} />
                   블로그 SEO
                 </h4>
                 <span className="text-sm text-muted-foreground">
@@ -267,7 +269,7 @@ export default function KeywordsTab() {
         {/* 안내 메시지 */}
         <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
           <p className="text-sm text-blue-600 dark:text-blue-400">
-            <span className="font-medium">💡 팁:</span> 네이버 플레이스 키워드는 순위 추적에 사용되고, 블로그 SEO 키워드는 콘텐츠 분석에 활용됩니다.
+            <span className="font-medium">팁:</span> 네이버 플레이스 키워드는 순위 추적에 사용되고, 블로그 SEO 키워드는 콘텐츠 분석에 활용됩니다.
             카테고리 간 이동이 필요하면 이동 버튼을 사용하세요.
           </p>
         </div>

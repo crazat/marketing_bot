@@ -3,9 +3,9 @@
  * 리드 메시지 기반으로 관련 Q&A를 자동 추천
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MessageCircle, Copy, ChevronDown, ChevronUp, Loader2, Search } from 'lucide-react'
+import { MessageCircle, Copy, ChevronDown, ChevronUp, Loader2, Search, DollarSign, Syringe, Calendar, MapPin, Star } from 'lucide-react'
 import { qaApi, configApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
 import Button from '@/components/ui/Button'
@@ -33,13 +33,14 @@ interface QAMatchPanelProps {
 }
 
 // 카테고리 정보
-const CATEGORY_INFO: Record<string, { label: string; icon: string }> = {
-  general: { label: '일반', icon: '💬' },
-  price: { label: '가격/비용', icon: '💰' },
-  treatment: { label: '치료/시술', icon: '💉' },
-  reservation: { label: '예약/상담', icon: '📅' },
-  location: { label: '위치/주차', icon: '📍' },
-  review: { label: '후기/효과', icon: '⭐' },
+const QA_ICL = 'w-3.5 h-3.5'
+const CATEGORY_INFO: Record<string, { label: string; icon: ReactNode }> = {
+  general: { label: '일반', icon: <MessageCircle className={QA_ICL} strokeWidth={1.7} /> },
+  price: { label: '가격/비용', icon: <DollarSign className={QA_ICL} strokeWidth={1.7} /> },
+  treatment: { label: '치료/시술', icon: <Syringe className={QA_ICL} strokeWidth={1.7} /> },
+  reservation: { label: '예약/상담', icon: <Calendar className={QA_ICL} strokeWidth={1.7} /> },
+  location: { label: '위치/주차', icon: <MapPin className={QA_ICL} strokeWidth={1.7} /> },
+  review: { label: '후기/효과', icon: <Star className={QA_ICL} strokeWidth={1.7} /> },
 }
 
 export default function QAMatchPanel({
@@ -102,7 +103,7 @@ export default function QAMatchPanel({
 
   // 카테고리 라벨 가져오기
   const getCategoryInfo = (category: string) => {
-    return CATEGORY_INFO[category] || { label: category, icon: '💬' }
+    return CATEGORY_INFO[category] || { label: category, icon: <MessageCircle className={QA_ICL} strokeWidth={1.7} /> }
   }
 
   return (

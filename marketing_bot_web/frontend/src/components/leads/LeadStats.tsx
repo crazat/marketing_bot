@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { leadsApi } from '@/services/api'
 import MetricCard from '../MetricCard'
+import { platformIcon, gradeIcon, statusIcon } from '@/lib/entityIcons'
+import { Search, Phone, MessageSquare, CheckCircle, Shield, AlertTriangle, Ban, BarChart3 } from 'lucide-react'
 
 // [Phase 4.0] 품질 통계 타입
 interface QualityStatsData {
@@ -67,18 +69,6 @@ interface LeadStatsProps {
   conversionTracking?: ConversionTrackingData
 }
 
-const platformIcons: Record<string, string> = {
-  youtube: '📺',
-  tiktok: '🎵',
-  naver: '🟢',
-  instagram: '📸',
-  carrot: '🥕',
-  influencer: '⭐',
-  cafe: '☕',
-  blog: '📝',
-  other: '📁',
-}
-
 const platformLabels: Record<string, string> = {
   youtube: 'YouTube',
   tiktok: 'TikTok',
@@ -110,10 +100,10 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
 
   // [Phase 5.0] 전환 퍼널 데이터 계산
   const funnelData = [
-    { stage: '발견', value: stats.total || 0, color: 'bg-blue-500', icon: '🔍' },
-    { stage: '연락', value: stats.by_status?.contacted || 0, color: 'bg-purple-500', icon: '📞' },
-    { stage: '응답', value: stats.by_status?.replied || 0, color: 'bg-yellow-500', icon: '💬' },
-    { stage: '전환', value: stats.by_status?.converted || 0, color: 'bg-green-500', icon: '✅' },
+    { stage: '발견', value: stats.total || 0, color: 'bg-d3', icon: <Search className="w-4 h-4" strokeWidth={1.8} /> },
+    { stage: '연락', value: stats.by_status?.contacted || 0, color: 'bg-d6', icon: <Phone className="w-4 h-4" strokeWidth={1.8} /> },
+    { stage: '응답', value: stats.by_status?.replied || 0, color: 'bg-warn', icon: <MessageSquare className="w-4 h-4" strokeWidth={1.8} /> },
+    { stage: '전환', value: stats.by_status?.converted || 0, color: 'bg-ok', icon: <CheckCircle className="w-4 h-4" strokeWidth={1.8} /> },
   ]
 
   const maxValue = funnelData[0].value || 1
@@ -122,7 +112,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
     <div className="space-y-4">
       {/* [Phase 5.0] 전환 퍼널 차트 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📊 전환 퍼널</h3>
+        <h3 className="text-lg font-semibold mb-4">전환 퍼널</h3>
         <div className="space-y-3">
           {funnelData.map((item, index) => {
             const percentage = maxValue > 0 ? (item.value / maxValue) * 100 : 0
@@ -133,7 +123,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
             return (
               <div key={item.stage} className="flex items-center gap-4">
                 <div className="w-20 flex items-center gap-2">
-                  <span aria-hidden="true">{item.icon}</span>
+                  <span className="text-sage" aria-hidden="true">{item.icon}</span>
                   <span className="text-sm font-medium">{item.stage}</span>
                 </div>
                 <div className="flex-1 h-8 bg-muted rounded-lg overflow-hidden relative">
@@ -176,7 +166,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
       {/* [Phase 4.0] 리드 품질 통계 */}
       {qualityStats && qualityStats.total_leads > 0 && (
         <div className="bg-card rounded-lg border border-border p-6">
-          <h3 className="text-lg font-semibold mb-4">🎯 리드 품질 분석</h3>
+          <h3 className="text-lg font-semibold mb-4">리드 품질 분석</h3>
 
           {/* 품질 점수 메인 */}
           <div className="flex items-center justify-center mb-6">
@@ -201,7 +191,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
               {/* 신뢰 */}
               <div className="flex items-center gap-3">
                 <div className="w-16 flex items-center gap-1.5 text-sm">
-                  <span className="text-blue-500">🛡️</span>
+                  <Shield className="w-4 h-4 text-mist" strokeWidth={1.8} />
                   <span>신뢰</span>
                 </div>
                 <div className="flex-1 h-6 bg-muted rounded-md overflow-hidden relative">
@@ -227,7 +217,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
               {/* 확인 필요 */}
               <div className="flex items-center gap-3">
                 <div className="w-16 flex items-center gap-1.5 text-sm">
-                  <span className="text-amber-500">⚠️</span>
+                  <AlertTriangle className="w-4 h-4 text-warn" strokeWidth={1.8} />
                   <span>확인</span>
                 </div>
                 <div className="flex-1 h-6 bg-muted rounded-md overflow-hidden relative">
@@ -253,7 +243,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
               {/* 의심 */}
               <div className="flex items-center gap-3">
                 <div className="w-16 flex items-center gap-1.5 text-sm">
-                  <span className="text-red-500">🚫</span>
+                  <Ban className="w-4 h-4 text-danger" strokeWidth={1.8} />
                   <span>의심</span>
                 </div>
                 <div className="flex-1 h-6 bg-muted rounded-md overflow-hidden relative">
@@ -282,7 +272,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
           <div className="pt-4 border-t border-border">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-purple-500">📞</span>
+                <Phone className="w-4 h-4 text-mist" strokeWidth={1.8} />
                 <span className="text-sm font-medium">연락처 보유율</span>
               </div>
               <div className="flex items-center gap-2">
@@ -312,7 +302,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
       {conversionTrends && conversionTrends.daily_trends?.length > 0 && (
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">📈 전환 트렌드 (최근 14일)</h3>
+            <h3 className="text-lg font-semibold">전환 트렌드 (최근 14일)</h3>
             <div className="text-sm text-muted-foreground">
               기간 전환율: <span className="font-bold text-green-500">{conversionTrends.summary?.overall_conversion_rate || 0}%</span>
             </div>
@@ -387,7 +377,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
       {/* [Phase 4.0] ROI 기반 전환 추적 */}
       {conversionTracking?.overview && conversionTracking.overview.total_conversions > 0 && (
         <div className="bg-card rounded-lg border border-border p-6">
-          <h3 className="text-lg font-semibold mb-4">💰 ROI 기반 전환 분석</h3>
+          <h3 className="text-lg font-semibold mb-4">ROI 기반 전환 분석</h3>
 
           {/* 전체 요약 */}
           <div className="grid grid-cols-3 gap-4 mb-6">
@@ -452,7 +442,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {conversionTracking.by_platform.map((p) => (
                   <div key={p.platform} className="bg-muted/50 rounded-lg p-3 text-center">
-                    <div className="text-xl mb-1">{platformIcons[p.platform] || '📁'}</div>
+                    <div className="flex justify-center mb-1 text-sage">{platformIcon(p.platform, 'w-5 h-5')}</div>
                     <div className="font-bold text-sm">₩{p.revenue.toLocaleString()}</div>
                     <div className="text-xs text-muted-foreground">
                       {platformLabels[p.platform] || p.platform} ({p.conversions}건)
@@ -475,29 +465,25 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
             <MetricCard
               title="Hot Lead"
               value={scoreStats.by_grade?.hot || 0}
-              icon="🔴"
-              color="text-red-500"
+              icon={gradeIcon('hot')}
               subtitle="즉시 연락"
             />
             <MetricCard
               title="Warm Lead"
               value={scoreStats.by_grade?.warm || 0}
-              icon="🟡"
-              color="text-yellow-500"
+              icon={gradeIcon('warm')}
               subtitle="1일 내"
             />
             <MetricCard
               title="Cool Lead"
               value={scoreStats.by_grade?.cool || 0}
-              icon="🟢"
-              color="text-green-500"
+              icon={gradeIcon('cool')}
               subtitle="주간 리뷰"
             />
             <MetricCard
               title="Cold Lead"
               value={scoreStats.by_grade?.cold || 0}
-              icon="⚪"
-              color="text-gray-500"
+              icon={gradeIcon('cold')}
               subtitle="자동 보관"
             />
           </div>
@@ -511,25 +497,22 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
           <MetricCard
             title="전체"
             value={stats.total || 0}
-            icon="📊"
+            icon={<BarChart3 className="w-[18px] h-[18px]" strokeWidth={1.8} />}
           />
           <MetricCard
             title="YouTube"
             value={stats.by_platform?.youtube || 0}
-            icon="📺"
-            color="text-red-500"
+            icon={platformIcon('youtube')}
           />
           <MetricCard
             title="TikTok"
             value={stats.by_platform?.tiktok || 0}
-            icon="🎵"
-            color="text-pink-500"
+            icon={platformIcon('tiktok')}
           />
           <MetricCard
             title="Naver"
             value={stats.by_platform?.naver || 0}
-            icon="🟢"
-            color="text-green-500"
+            icon={platformIcon('naver')}
           />
         </div>
       </div>
@@ -541,32 +524,27 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
           <MetricCard
             title="대기"
             value={stats.by_status?.pending || 0}
-            icon="⏳"
-            color="text-yellow-500"
+            icon={statusIcon('pending')}
           />
           <MetricCard
             title="연락함"
             value={stats.by_status?.contacted || 0}
-            icon="📞"
-            color="text-blue-500"
+            icon={statusIcon('contacted')}
           />
           <MetricCard
             title="답변받음"
             value={stats.by_status?.replied || 0}
-            icon="💬"
-            color="text-purple-500"
+            icon={statusIcon('replied')}
           />
           <MetricCard
             title="전환완료"
             value={stats.by_status?.converted || 0}
-            icon="✅"
-            color="text-green-500"
+            icon={statusIcon('converted')}
           />
           <MetricCard
             title="거절됨"
             value={stats.by_status?.rejected || 0}
-            icon="❌"
-            color="text-red-500"
+            icon={statusIcon('rejected')}
           />
         </div>
       </div>
@@ -574,7 +552,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
       {/* 플랫폼별 전환율 대시보드 */}
       {conversionRates && Object.keys(conversionRates.by_platform).length > 0 && (
         <div className="bg-card rounded-lg border border-border p-6">
-          <h3 className="text-lg font-semibold mb-4">📈 플랫폼별 전환율</h3>
+          <h3 className="text-lg font-semibold mb-4">플랫폼별 전환율</h3>
 
           {/* 모바일: 카드형 레이아웃 */}
           <div className="md:hidden space-y-3">
@@ -584,7 +562,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
                 <div key={platform} className="bg-muted/50 rounded-lg p-4">
                   <div className="flex justify-between items-center mb-3">
                     <div className="flex items-center gap-2">
-                      <span className="text-xl">{platformIcons[platform] || '📁'}</span>
+                      <span className="text-sage">{platformIcon(platform)}</span>
                       <span className="font-medium">{platformLabels[platform] || platform}</span>
                     </div>
                     <span className={`text-lg font-bold ${
@@ -674,7 +652,7 @@ export default function LeadStats({ stats, scoreStats, conversionRates, conversi
                     <tr key={platform} className="border-b border-border hover:bg-muted/50">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span>{platformIcons[platform] || '📁'}</span>
+                          <span className="text-sage">{platformIcon(platform)}</span>
                           <span className="font-medium">{platformLabels[platform] || platform}</span>
                         </div>
                       </td>

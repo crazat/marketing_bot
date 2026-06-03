@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, X, Download, MessageSquare, Check, Edit2, Trash2 } from 'lucide-react'
+import { Search, X, Download, MessageSquare, Check, Edit2, Trash2, Target } from 'lucide-react'
 import EmptyState from '@/components/ui/EmptyState'
 import Pagination from '@/components/ui/Pagination'
 import { useToast } from '@/components/ui/Toast'
@@ -113,7 +113,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
   if (!keywords || keywords.length === 0) {
     return (
       <EmptyState
-        icon="🎯"
+        icon={<Target className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
         title="추적 중인 키워드가 없습니다"
         description="새로운 키워드를 추가하여 네이버 플레이스 순위를 추적하세요."
         action={onAdd ? { label: '키워드 추가', onClick: onAdd } : undefined}
@@ -184,7 +184,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
         >
           <option value="">모든 상태</option>
           <option value="scanned">추적 중</option>
-          <option value="declining">⚠️ 하락 추세</option>
+          <option value="declining">하락 추세</option>
           <option value="pending">대기 중</option>
           <option value="not_found">순위권 밖</option>
           <option value="error">오류</option>
@@ -242,7 +242,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
       {/* 필터 결과가 없을 때 */}
       {filteredKeywords.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
-          <p className="text-4xl mb-4">🔍</p>
+          <div className="flex justify-center mb-4 text-faint"><Search className="w-10 h-10" strokeWidth={1.5} /></div>
           <p>검색 결과가 없습니다.</p>
           <Button
             variant="secondary"
@@ -297,7 +297,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
                         className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-500 animate-pulse"
                         title={`${kw.decline_streak}일 연속 하락 (총 ${kw.decline_amount}순위 하락)`}
                       >
-                        ⚠️ {kw.decline_streak}일↘
+                        {kw.decline_streak}일↘
                       </span>
                     )}
                   </div>
@@ -387,7 +387,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
                       {editingTargetKeyword !== kw.keyword && hasRank && (
                         kw.current_rank <= kw.target_rank ? (
                           <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-500" title="목표 달성!">
-                            ✓ 달성
+                            달성
                           </span>
                         ) : (
                           <span className="text-xs text-muted-foreground" title={`목표까지 ${kw.current_rank - kw.target_rank}순위 남음`}>
@@ -504,7 +504,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
       {decliningCount > 0 && !statusFilter && (
         <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
           <p className="text-sm text-red-500 flex items-center flex-wrap gap-2">
-            <span className="font-medium">🚨 주의:</span> {decliningCount}개 키워드가 연속 하락 추세입니다.
+            <span className="font-medium">주의:</span> {decliningCount}개 키워드가 연속 하락 추세입니다.
             <Button
               variant="ghost"
               size="xs"
@@ -515,7 +515,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
             </Button>
           </p>
           <p className="text-xs text-red-400 mt-2 flex items-center flex-wrap gap-1">
-            💡 <span className="font-medium">팁:</span> 하락 추세 키워드에 대해 바이럴 댓글 활동을 강화하면 순위 회복에 도움이 됩니다.
+            <span className="font-medium">팁:</span> 하락 추세 키워드에 대해 바이럴 댓글 활동을 강화하면 순위 회복에 도움이 됩니다.
             <Button
               variant="ghost"
               size="xs"
@@ -531,7 +531,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
       {paginatedKeywords.some(kw => kw.status === 'pending') && (
         <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
           <p className="text-sm text-yellow-500">
-            <span className="font-medium">💡 팁:</span> "대기 중" 키워드는 순위 스캔을 실행하면 순위가 업데이트됩니다.
+            <span className="font-medium">팁:</span> "대기 중" 키워드는 순위 스캔을 실행하면 순위가 업데이트됩니다.
           </p>
         </div>
       )}
@@ -539,7 +539,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
       {paginatedKeywords.some(kw => kw.status === 'not_found') && (
         <div className="mt-4 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg">
           <p className="text-sm text-orange-500">
-            <span className="font-medium">⚠️ 참고:</span> "순위권 밖" 키워드는 네이버 플레이스 검색 결과 상위 100위 안에 우리 업체가 없는 키워드입니다.
+            <span className="font-medium">참고:</span> "순위권 밖" 키워드는 네이버 플레이스 검색 결과 상위 100위 안에 우리 업체가 없는 키워드입니다.
           </p>
         </div>
       )}
@@ -574,7 +574,7 @@ export default function RankingKeywordsList({ keywords, onRemove, onEdit, onAdd,
           }
         }}
         title="키워드 삭제"
-        message={`"${keywordToDelete}" 키워드를 삭제하시겠습니까?\n\n⚠️ 이 키워드의 모든 순위 기록이 함께 삭제됩니다. 삭제된 데이터는 복구할 수 없습니다.`}
+        message={`"${keywordToDelete}" 키워드를 삭제하시겠습니까?\n\n이 키워드의 모든 순위 기록이 함께 삭제됩니다. 삭제된 데이터는 복구할 수 없습니다.`}
         confirmText="삭제"
         variant="danger"
       />

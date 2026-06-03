@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { competitorsApi } from '@/services/api'
-import { Sparkles, Copy } from 'lucide-react'
+import { Sparkles, Copy, KeyRound } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import Button, { IconButton } from '@/components/ui/Button'
 import Modal from '@/components/ui/Modal'
@@ -82,7 +82,7 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
     return (
       <div className="bg-card rounded-lg border border-border p-6">
         <div className="text-center py-12 text-muted-foreground">
-          <p className="text-4xl mb-4">🔑</p>
+          <div className="flex justify-center mb-4 text-faint"><KeyRound className="w-10 h-10" strokeWidth={1.5} /></div>
           <p>기회 키워드가 없습니다.</p>
           <p className="text-sm mt-2">경쟁사 약점 분석을 먼저 실행하세요.</p>
         </div>
@@ -92,7 +92,7 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
 
   return (
     <div className="bg-card rounded-lg border border-border p-6">
-      <h2 className="text-xl font-bold mb-4">🔑 기회 키워드</h2>
+      <h2 className="text-xl font-bold mb-4">기회 키워드</h2>
       <p className="text-sm text-muted-foreground mb-6">
         경쟁사 약점을 기반으로 생성된 공략 키워드입니다.
       </p>
@@ -104,7 +104,7 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
             className="p-4 rounded-lg border border-border hover:border-green-500/50 transition-colors"
           >
             <div className="flex items-start justify-between mb-3">
-              <h4 className="font-semibold text-green-500">💡 {kw.keyword}</h4>
+              <h4 className="font-semibold text-green-500">{kw.keyword}</h4>
               <div className="flex gap-1">
                 <Button
                   variant="ghost"
@@ -122,7 +122,7 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
                   onClick={() => markUsed.mutate(kw.keyword)}
                   className="text-green-500 hover:bg-green-500/20"
                 >
-                  ✓ 사용
+                  사용
                 </Button>
               </div>
             </div>
@@ -189,7 +189,7 @@ export default function OpportunityKeywords({ keywords }: OpportunityKeywordsPro
 
             <div className="mt-4 pt-4 border-t border-border">
               <p className="text-xs text-muted-foreground">
-                💡 이 아이디어를 기반으로 블로그 포스트나 SNS 콘텐츠를 작성해보세요.
+                이 아이디어를 기반으로 블로그 포스트나 SNS 콘텐츠를 작성해보세요.
               </p>
             </div>
           </div>

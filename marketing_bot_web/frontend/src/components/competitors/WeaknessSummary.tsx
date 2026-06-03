@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { FileText, ExternalLink } from 'lucide-react'
+import { FileText, ExternalLink, Wrench, DollarSign, Building2, Timer, Sparkles, Target, X } from 'lucide-react'
+import type { ReactNode } from 'react'
 import MetricCard from '../MetricCard'
 import { SentimentBar, SentimentSummary } from '@/components/ui/SentimentBadge'
 import { useToast } from '@/components/ui/Toast'
@@ -10,9 +11,9 @@ import Button, { IconButton } from '@/components/ui/Button'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 // 약점 유형별 실행 전략
-const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strategies: { text: string; action: string }[] }> = {
+const WEAKNESS_STRATEGIES: Record<string, { icon: ReactNode; title: string; strategies: { text: string; action: string }[] }> = {
   service: {
-    icon: '🔧',
+    icon: <Wrench className="w-4 h-4" strokeWidth={1.7} />,
     title: '서비스 품질',
     strategies: [
       { text: '친절한 상담 과정 강조', action: '블로그/후기에서 친절 키워드 사용' },
@@ -22,7 +23,7 @@ const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strateg
     ]
   },
   price: {
-    icon: '💰',
+    icon: <DollarSign className="w-4 h-4" strokeWidth={1.7} />,
     title: '가격',
     strategies: [
       { text: '가격 대비 가치 강조', action: '효과 비교 콘텐츠 제작' },
@@ -32,7 +33,7 @@ const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strateg
     ]
   },
   facility: {
-    icon: '🏢',
+    icon: <Building2 className="w-4 h-4" strokeWidth={1.7} />,
     title: '시설',
     strategies: [
       { text: '청결한 시설 이미지 부각', action: '시설 사진 업데이트' },
@@ -42,7 +43,7 @@ const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strateg
     ]
   },
   wait_time: {
-    icon: '⏱️',
+    icon: <Timer className="w-4 h-4" strokeWidth={1.7} />,
     title: '대기시간',
     strategies: [
       { text: '예약제 운영 강조', action: '온라인 예약 시스템 홍보' },
@@ -52,7 +53,7 @@ const WEAKNESS_STRATEGIES: Record<string, { icon: string; title: string; strateg
     ]
   },
   effect: {
-    icon: '✨',
+    icon: <Sparkles className="w-4 h-4" strokeWidth={1.7} />,
     title: '효과',
     strategies: [
       { text: '실제 치료 사례 공유', action: 'Before/After 콘텐츠 제작' },
@@ -112,24 +113,24 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
         <MetricCard
           title="총 약점"
           value={summary.total || 0}
-          icon="🎯"
+          icon={<Target className="w-[18px] h-[18px]" strokeWidth={1.8} />}
         />
         <MetricCard
           title="서비스 품질"
           value={summary.by_type?.service || 0}
-          icon="🔧"
+          icon={<Wrench className="w-[18px] h-[18px]" strokeWidth={1.8} />}
           color="text-red-500"
         />
         <MetricCard
           title="가격"
           value={summary.by_type?.price || 0}
-          icon="💰"
+          icon={<DollarSign className="w-[18px] h-[18px]" strokeWidth={1.8} />}
           color="text-yellow-500"
         />
         <MetricCard
           title="시설"
           value={summary.by_type?.facility || 0}
-          icon="🏢"
+          icon={<Building2 className="w-[18px] h-[18px]" strokeWidth={1.8} />}
           color="text-blue-500"
         />
       </div>
@@ -137,7 +138,7 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
       {/* [Phase 6.0] 경쟁사 리뷰 감성 분석 */}
       {hasSentimentData && (
         <div className="bg-card rounded-lg border border-border p-6">
-          <h3 className="text-lg font-semibold mb-4">😊 리뷰 감성 분석</h3>
+          <h3 className="text-lg font-semibold mb-4">리뷰 감성 분석</h3>
           <div className="space-y-3">
             <SentimentBar {...sentimentData} height={12} />
             <SentimentSummary {...sentimentData} />
@@ -163,7 +164,7 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
       {summary.by_type && Object.keys(summary.by_type).some(k => (summary.by_type[k] || 0) > 0) && (
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">📋 약점 공략 전략 체크리스트</h3>
+            <h3 className="text-lg font-semibold">약점 공략 전략 체크리스트</h3>
             <div className="flex items-center gap-3">
               <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
                 <div
@@ -242,7 +243,7 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
                                 {item.text}
                               </div>
                               <div className="text-xs text-muted-foreground mt-1">
-                                💡 {item.action}
+                                {item.action}
                               </div>
                             </div>
                           </div>
@@ -270,7 +271,7 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
               </span>
             </div>
             <IconButton
-              icon={<span>✕</span>}
+              icon={<X className="w-4 h-4" />}
               onClick={() => setGeneratedOutline(null)}
               title="닫기"
             />
@@ -348,7 +349,7 @@ export default function WeaknessSummary({ summary }: WeaknessSummaryProps) {
                 }
               }}
             >
-              📋 복사하기
+              복사하기
             </Button>
             <Button
               variant="primary"

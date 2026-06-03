@@ -186,15 +186,15 @@ export default function ViralHunter() {
         dedupeCountRef.current = 0
         if (deduped > 0) {
           toast.success(
-            `📡 ${count}건 전송 완료 (이미 처리된 ${deduped}건은 제외)`,
+            `${count}건 전송 완료 (이미 처리된 ${deduped}건은 제외)`,
           )
         } else {
-          toast.success(`📡 오프라인 중 쌓인 ${count}건을 전송했습니다`)
+          toast.success(`오프라인 중 쌓인 ${count}건을 전송했습니다`)
         }
         invalidateViralAndLeads(queryClient)
       },
       onActionFailed: (action) => {
-        toast.error(`❌ 재전송 실패: 타겟 #${action.payload.target_id} ${action.payload.action}`)
+        toast.error(`재전송 실패: 타겟 #${action.payload.target_id} ${action.payload.action}`)
       },
     },
   )
@@ -590,13 +590,13 @@ export default function ViralHunter() {
       }
 
       if (successCount > 0) {
-        toast.success(`✨ ${successCount}개 타겟에 AI 댓글이 생성되었습니다!`)
+        toast.success(`${successCount}개 타겟에 AI 댓글이 생성되었습니다!`)
         queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
         queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
       }
 
       if (failCount > 0) {
-        toast.warning(`⚠️ ${failCount}개 타겟 댓글 생성 실패`)
+        toast.warning(`${failCount}개 타겟 댓글 생성 실패`)
       }
     } catch (error: unknown) {
       toast.error(getToastErrorMessage(error, 'AI 댓글 생성 실패'))
@@ -733,8 +733,8 @@ export default function ViralHunter() {
         })
       } else {
         const messages = {
-          skip: '⏭️ 건너뜀',
-          delete: '🗑️ 삭제됨',
+          skip: '건너뜀',
+          delete: '삭제됨',
           reopen: '↩️ 복구됨'
         }
         // [U1] Undo 지원 — skip/delete는 6초 내 되돌리기 가능
@@ -786,7 +786,7 @@ export default function ViralHunter() {
           skip_reason: skipReason,
           skip_note: skipNote,
         })
-        toast.warning(`📡 오프라인 감지 — 큐에 저장했습니다. 연결 복구 시 자동 전송`)
+        toast.warning(`오프라인 감지 — 큐에 저장했습니다. 연결 복구 시 자동 전송`)
         // UI는 낙관적 업데이트 유지 (롤백 X)
       } else {
         // 에러 발생 시 롤백
@@ -894,14 +894,14 @@ export default function ViralHunter() {
       }
 
       if (successCount > 0) {
-        toast.success(`✅ ${successCount}개 타겟 ${actionNames[action]} 완료!`)
+        toast.success(`${successCount}개 타겟 ${actionNames[action]} 완료!`)
         queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
         queryClient.invalidateQueries({ queryKey: ['viral-all-targets'] })
         queryClient.invalidateQueries({ queryKey: ['viral-stats'] })
       }
 
       if (failCount > 0) {
-        toast.error(`⚠️ ${failCount}개 타겟 ${actionNames[action]} 실패`)
+        toast.error(`${failCount}개 타겟 ${actionNames[action]} 실패`)
       }
 
       setSelectedTargets(new Set())
@@ -951,7 +951,7 @@ export default function ViralHunter() {
         min_confidence: filters.min_confidence,
         work_scope: filters.work_scope || 'latest_legion',
       })
-      toast.success(`✅ ${result.updated.toLocaleString()}건 ${actionNames[action]} 완료`)
+      toast.success(`${result.updated.toLocaleString()}건 ${actionNames[action]} 완료`)
       queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets'] })
       queryClient.invalidateQueries({ queryKey: ['viral-filtered-targets-count'] })
       queryClient.invalidateQueries({ queryKey: ['viral-kpi-stats'] })

@@ -25,11 +25,11 @@ export default function Badge({
 
   const variantStyles = {
     default: 'bg-muted text-muted-foreground',
-    primary: 'bg-primary/20 text-primary border border-primary/30',
+    primary: 'bg-sage-tint text-sage',
     secondary: 'bg-secondary text-secondary-foreground',
-    success: 'bg-green-500/20 text-green-500 border border-green-500/30',
-    warning: 'bg-yellow-500/20 text-yellow-500 border border-yellow-500/30',
-    danger: 'bg-red-500/20 text-red-500 border border-red-500/30',
+    success: 'bg-ok-tint text-ok',
+    warning: 'bg-warn-tint text-warn',
+    danger: 'bg-danger-tint text-danger',
     outline: 'border border-border text-foreground bg-transparent',
   }
 
@@ -47,11 +47,11 @@ export default function Badge({
 
   const dotColors = {
     default: 'bg-muted-foreground',
-    primary: 'bg-primary',
+    primary: 'bg-sage',
     secondary: 'bg-secondary-foreground',
-    success: 'bg-green-500',
-    warning: 'bg-yellow-500',
-    danger: 'bg-red-500',
+    success: 'bg-ok',
+    warning: 'bg-warn',
+    danger: 'bg-danger',
     outline: 'bg-foreground',
   }
 
@@ -158,19 +158,18 @@ export function GradeBadge({
   grade: 'S' | 'A' | 'B' | 'C' | string
   size?: BadgeProps['size']
 }) {
-  const gradeConfig: Record<string, { variant: BadgeProps['variant']; icon: string }> = {
-    S: { variant: 'danger', icon: '🔥' },
-    A: { variant: 'success', icon: '🟢' },
-    B: { variant: 'primary', icon: '🔵' },
-    C: { variant: 'default', icon: '⚪' },
+  const gradeConfig: Record<string, BadgeProps['variant']> = {
+    S: 'danger',
+    A: 'success',
+    B: 'primary',
+    C: 'default',
   }
 
-  const config = gradeConfig[grade] || gradeConfig.C
+  const variant = gradeConfig[grade] || 'default'
 
   return (
-    <Badge variant={config.variant} size={size}>
-      <span>{config.icon}</span>
-      <span>{grade}급</span>
+    <Badge variant={variant} size={size} className="font-mono uppercase tracking-wider">
+      {grade}급
     </Badge>
   )
 }
@@ -187,9 +186,9 @@ export function TrendBadge({
 }) {
   const trendConfig = {
     up: { variant: 'success' as const, icon: '↑', label: '상승' },
-    rising: { variant: 'success' as const, icon: '📈', label: '상승' },
+    rising: { variant: 'success' as const, icon: '↑', label: '상승' },
     down: { variant: 'danger' as const, icon: '↓', label: '하락' },
-    falling: { variant: 'danger' as const, icon: '📉', label: '하락' },
+    falling: { variant: 'danger' as const, icon: '↓', label: '하락' },
     stable: { variant: 'default' as const, icon: '→', label: '안정' },
   }
 
@@ -213,26 +212,30 @@ export function PlatformBadge({
   platform: string
   size?: BadgeProps['size']
 }) {
-  const platformConfig: Record<string, { icon: string; color: string }> = {
-    cafe: { icon: '🏠', color: 'bg-green-500/20 text-green-500' },
-    youtube: { icon: '📺', color: 'bg-red-500/20 text-red-500' },
-    instagram: { icon: '📸', color: 'bg-pink-500/20 text-pink-500' },
-    tiktok: { icon: '🎵', color: 'bg-purple-500/20 text-purple-500' },
-    carrot: { icon: '🥕', color: 'bg-orange-500/20 text-orange-500' },
-    influencer: { icon: '🤝', color: 'bg-blue-500/20 text-blue-500' },
+  const platformColor: Record<string, string> = {
+    cafe: 'var(--d1)',
+    blog: 'var(--d3)',
+    kin: 'var(--d4)',
+    youtube: 'var(--d2)',
+    instagram: 'var(--d6)',
+    tiktok: 'var(--d7)',
+    place: 'var(--d7)',
+    carrot: 'var(--d8)',
+    karrot: 'var(--d8)',
+    influencer: 'var(--d3)',
   }
 
-  const config = platformConfig[platform.toLowerCase()] || { icon: '📱', color: 'bg-muted text-muted-foreground' }
+  const dotColor = platformColor[platform.toLowerCase()] || 'var(--text-faint)'
 
   const sizeStyles = {
-    sm: 'text-xs px-2 py-0.5',
-    md: 'text-xs px-2.5 py-1',
-    lg: 'text-sm px-3 py-1.5',
+    sm: 'text-[10px]',
+    md: 'text-[11px]',
+    lg: 'text-xs',
   }
 
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full font-medium ${config.color} ${sizeStyles[size]}`}>
-      <span>{config.icon}</span>
+    <span className={`ros-plat ${sizeStyles[size]}`}>
+      <span className="pdot" style={{ background: dotColor }} aria-hidden="true" />
       <span>{platform}</span>
     </span>
   )

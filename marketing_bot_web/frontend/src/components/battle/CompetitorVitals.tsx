@@ -1,3 +1,5 @@
+import { Activity } from 'lucide-react'
+
 interface CompetitorVitalsProps {
   vitals: any
 }
@@ -6,7 +8,7 @@ export default function CompetitorVitals({ vitals }: CompetitorVitalsProps) {
   if (!vitals || !vitals.competitors || vitals.competitors.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
-        <p className="text-4xl mb-4">💪</p>
+        <div className="flex justify-center mb-4 text-faint"><Activity className="w-10 h-10" strokeWidth={1.5} /></div>
         <p className="text-lg font-semibold mb-2">경쟁사 활력 데이터가 없습니다</p>
         <p className="text-sm">경쟁사 리뷰 스크래핑을 먼저 실행하세요.</p>
       </div>
@@ -80,9 +82,9 @@ export default function CompetitorVitals({ vitals }: CompetitorVitalsProps) {
                       />
                     </div>
                     <span className="text-sm whitespace-nowrap">
-                      {comp.trend === 'active' ? '🔥 활발' :
-                       comp.trend === 'moderate' ? '📊 보통' :
-                       '💤 낮음'}
+                      {comp.trend === 'active' ? '활발' :
+                       comp.trend === 'moderate' ? '보통' :
+                       '낮음'}
                     </span>
                   </div>
                 </td>

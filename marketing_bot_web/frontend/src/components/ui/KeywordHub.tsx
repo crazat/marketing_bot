@@ -22,6 +22,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   ArrowRight,
+  Flame,
+  ThermometerSun,
+  Snowflake,
 } from 'lucide-react'
 import { pathfinderApi, battleApi, viralApi, leadsApi, qaApi, competitorsApi } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
@@ -634,7 +637,7 @@ export default function KeywordHub({ keyword, onClose }: KeywordHubProps) {
                             <span className={`text-lg ${
                               lead.grade === 'hot' ? '' : lead.grade === 'warm' ? '' : ''
                             }`}>
-                              {lead.grade === 'hot' ? '🔥' : lead.grade === 'warm' ? '🌡️' : '❄️'}
+                              {lead.grade === 'hot' ? <Flame className="w-3.5 h-3.5 inline" strokeWidth={1.8} /> : lead.grade === 'warm' ? <ThermometerSun className="w-3.5 h-3.5 inline" strokeWidth={1.8} /> : <Snowflake className="w-3.5 h-3.5 inline" strokeWidth={1.8} />}
                             </span>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium truncate">{lead.title}</p>

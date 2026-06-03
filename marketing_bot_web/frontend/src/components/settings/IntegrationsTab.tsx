@@ -4,6 +4,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
+import { CheckCircle, AlertTriangle, AlertOctagon, XCircle, Settings, HelpCircle } from 'lucide-react'
 import { instagramApi } from '@/services/api'
 
 interface InstagramTokenStatus {
@@ -32,7 +33,7 @@ export default function IntegrationsTab() {
     <div className="space-y-6">
       {/* Instagram API 상태 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📸 Instagram Graph API</h3>
+        <h3 className="text-lg font-semibold mb-4">Instagram Graph API</h3>
 
         {instagramLoading ? (
           <div className="animate-pulse">
@@ -50,13 +51,13 @@ export default function IntegrationsTab() {
             }`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl">
-                    {instagramTokenStatus.status === 'valid' ? '✅' :
-                     instagramTokenStatus.status === 'warning' ? '⚠️' :
-                     instagramTokenStatus.status === 'expiring_soon' ? '🔶' :
-                     instagramTokenStatus.status === 'expired' ? '❌' :
-                     instagramTokenStatus.status === 'not_configured' ? '⚙️' :
-                     '❓'}
+                  <span>
+                    {instagramTokenStatus.status === 'valid' ? <CheckCircle className="w-6 h-6 text-ok" strokeWidth={1.7} /> :
+                     instagramTokenStatus.status === 'warning' ? <AlertTriangle className="w-6 h-6 text-warn" strokeWidth={1.7} /> :
+                     instagramTokenStatus.status === 'expiring_soon' ? <AlertOctagon className="w-6 h-6 text-clay" strokeWidth={1.7} /> :
+                     instagramTokenStatus.status === 'expired' ? <XCircle className="w-6 h-6 text-danger" strokeWidth={1.7} /> :
+                     instagramTokenStatus.status === 'not_configured' ? <Settings className="w-6 h-6 text-muted-foreground" strokeWidth={1.7} /> :
+                     <HelpCircle className="w-6 h-6 text-faint" strokeWidth={1.7} />}
                   </span>
                   <div>
                     <p className="font-medium">
@@ -137,17 +138,17 @@ export default function IntegrationsTab() {
 
       {/* 기타 API 상태 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">🔌 기타 API 연동</h3>
+        <h3 className="text-lg font-semibold mb-4">기타 API 연동</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-4 bg-muted/50 rounded-lg flex items-center gap-3">
-            <span className="text-2xl">✅</span>
+            <CheckCircle className="w-6 h-6 text-ok" strokeWidth={1.7} />
             <div>
               <p className="font-medium">Codex CLI AI</p>
               <p className="text-xs text-muted-foreground">config.json에서 설정</p>
             </div>
           </div>
           <div className="p-4 bg-muted/50 rounded-lg flex items-center gap-3">
-            <span className="text-2xl">✅</span>
+            <CheckCircle className="w-6 h-6 text-ok" strokeWidth={1.7} />
             <div>
               <p className="font-medium">Naver API</p>
               <p className="text-xs text-muted-foreground">config.json에서 설정</p>

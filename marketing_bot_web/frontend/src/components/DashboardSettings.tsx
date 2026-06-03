@@ -1,24 +1,25 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { preferencesApi, DashboardWidgets } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
 import Modal from '@/components/ui/Modal'
-import { Settings } from 'lucide-react'
+import { Settings, BarChart3, ClipboardList, Shield, Clock, TrendingUp, Hourglass, FileText, Lightbulb } from 'lucide-react'
 
 interface DashboardSettingsProps {
   isOpen: boolean
   onClose: () => void
 }
 
-const widgetIcons: Record<string, string> = {
-  metrics_overview: '📊',
-  daily_briefing: '📋',
-  sentinel_alerts: '🛡️',
-  chronos_timeline: '⏰',
-  rank_alerts: '📈',
-  pending_actions: '⏳',
-  recent_activities: '📝',
-  suggested_actions: '💡',
+const DW_I = 'w-[18px] h-[18px]'
+const widgetIcons: Record<string, ReactNode> = {
+  metrics_overview: <BarChart3 className={DW_I} strokeWidth={1.7} />,
+  daily_briefing: <ClipboardList className={DW_I} strokeWidth={1.7} />,
+  sentinel_alerts: <Shield className={DW_I} strokeWidth={1.7} />,
+  chronos_timeline: <Clock className={DW_I} strokeWidth={1.7} />,
+  rank_alerts: <TrendingUp className={DW_I} strokeWidth={1.7} />,
+  pending_actions: <Hourglass className={DW_I} strokeWidth={1.7} />,
+  recent_activities: <FileText className={DW_I} strokeWidth={1.7} />,
+  suggested_actions: <Lightbulb className={DW_I} strokeWidth={1.7} />,
 }
 
 export default function DashboardSettings({ isOpen, onClose }: DashboardSettingsProps) {
@@ -55,7 +56,7 @@ export default function DashboardSettings({ isOpen, onClose }: DashboardSettings
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="⚙️ 대시보드 설정"
+      title="대시보드 설정"
       size="lg"
       footer={
         <div className="flex w-full items-center justify-between gap-2">
@@ -104,7 +105,7 @@ export default function DashboardSettings({ isOpen, onClose }: DashboardSettings
                   }}
                   className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
-                <span className="text-xl">{widgetIcons[widgetId] || '📌'}</span>
+                <span className="text-sage">{widgetIcons[widgetId] || <Settings className={DW_I} strokeWidth={1.7} />}</span>
                 <span className="flex-1 font-medium">{config.title}</span>
                 {toggleMutation.isPending && toggleMutation.variables?.widgetId === widgetId && (
                   <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />

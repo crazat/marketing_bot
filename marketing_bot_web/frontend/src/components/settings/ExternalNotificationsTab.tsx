@@ -18,6 +18,7 @@ import {
   Bell,
   CheckCircle,
   XCircle,
+  MessageCircle,
 } from 'lucide-react'
 
 interface NotificationSettings {
@@ -228,7 +229,7 @@ export default function ExternalNotificationsTab() {
             <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-lg">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl">📬</span>
+                  <Send className="w-6 h-6 text-mist" strokeWidth={1.7} />
                   <div>
                     <h4 className="font-medium">텔레그램 알림</h4>
                     <p className="text-xs text-muted-foreground">
@@ -296,7 +297,7 @@ export default function ExternalNotificationsTab() {
             <div className="p-4 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl">💬</span>
+                  <MessageCircle className="w-6 h-6 text-warn" strokeWidth={1.7} />
                   <div>
                     <h4 className="font-medium">카카오톡 알림</h4>
                     <p className="text-xs text-muted-foreground">
@@ -540,8 +541,8 @@ export default function ExternalNotificationsTab() {
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <span className="text-lg">
-                    {item.channel === 'telegram' ? '📬' : '💬'}
+                  <span className="text-sage">
+                    {item.channel === 'telegram' ? <Send className="w-4 h-4" strokeWidth={1.7} /> : <MessageCircle className="w-4 h-4" strokeWidth={1.7} />}
                   </span>
                   <div>
                     <div className="font-medium text-sm">{item.title}</div>

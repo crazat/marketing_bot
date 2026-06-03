@@ -103,7 +103,7 @@ export default function MarketingFunnel() {
   return (
     <div className="bg-card rounded-lg border border-border p-6">
       <div className="flex items-center justify-between mb-6">
-        <h3 className="text-lg font-semibold">📊 마케팅 퍼널</h3>
+        <h3 className="text-lg font-semibold">마케팅 퍼널</h3>
         <div className="text-xs text-muted-foreground">
           클릭하여 상세 페이지로 이동
         </div>
@@ -222,11 +222,11 @@ export default function MarketingFunnel() {
         <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
           <div className="text-sm">
             {rankedKeywords === 0 ? (
-              <span className="text-yellow-500">💡 순위권 진입 키워드가 없습니다. Battle Intelligence에서 순위를 확인하세요.</span>
+              <span className="text-yellow-500">순위권 진입 키워드가 없습니다. Battle Intelligence에서 순위를 확인하세요.</span>
             ) : convertedLeads === 0 ? (
-              <span className="text-yellow-500">💡 아직 전환된 리드가 없습니다. 리드 관리에서 상태를 업데이트하세요.</span>
+              <span className="text-yellow-500">아직 전환된 리드가 없습니다. 리드 관리에서 상태를 업데이트하세요.</span>
             ) : (
-              <span className="text-green-500">✅ 마케팅 퍼널이 정상 작동 중입니다. {sGradeKeywords}개의 S급 키워드가 있습니다.</span>
+              <span className="text-green-500">마케팅 퍼널이 정상 작동 중입니다. {sGradeKeywords}개의 S급 키워드가 있습니다.</span>
             )}
           </div>
         </div>

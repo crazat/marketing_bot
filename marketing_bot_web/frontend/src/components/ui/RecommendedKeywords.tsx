@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import { Target, Inbox, TrendingUp, TrendingDown, ArrowRight } from 'lucide-react'
 import { hudApi } from '@/services/api'
 
 interface RecommendedKeyword {
@@ -53,11 +55,11 @@ export default function RecommendedKeywords() {
     return (
       <div className="bg-card border border-border rounded-lg p-6">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <span className="text-xl">🎯</span>
+          <Target className="w-[18px] h-[18px] text-sage" strokeWidth={1.8} />
           오늘의 추천 키워드
         </h3>
         <div className="text-center py-6 text-muted-foreground">
-          <p className="text-4xl mb-2">📭</p>
+          <div className="flex justify-center mb-2 text-faint"><Inbox className="w-9 h-9" strokeWidth={1.5} /></div>
           <p>아직 추천할 키워드가 없습니다</p>
           <button
             onClick={() => navigate('/pathfinder')}
@@ -80,12 +82,12 @@ export default function RecommendedKeywords() {
     return styles[grade] || styles['C']
   }
 
-  const getTrendIcon = (status: string) => {
+  const getTrendIcon = (status: string): ReactNode => {
     switch (status) {
-      case 'rising': return '📈'
-      case 'falling': return '📉'
-      case 'stable': return '➡️'
-      default: return ''
+      case 'rising': return <TrendingUp className="w-3.5 h-3.5 inline text-ok" strokeWidth={1.8} />
+      case 'falling': return <TrendingDown className="w-3.5 h-3.5 inline text-danger" strokeWidth={1.8} />
+      case 'stable': return <ArrowRight className="w-3.5 h-3.5 inline text-faint" strokeWidth={1.8} />
+      default: return null
     }
   }
 
@@ -94,7 +96,7 @@ export default function RecommendedKeywords() {
       {/* 헤더 */}
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold flex items-center gap-2">
-          <span className="text-xl">🎯</span>
+          <Target className="w-[18px] h-[18px] text-sage" strokeWidth={1.8} />
           오늘의 추천 키워드
         </h3>
         <button
@@ -163,7 +165,7 @@ export default function RecommendedKeywords() {
       {data.tips && data.tips.length > 0 && (
         <div className="mt-4 pt-4 border-t border-border">
           <p className="text-xs text-muted-foreground">
-            💡 {data.tips[Math.floor(Math.random() * data.tips.length)]}
+            {data.tips[Math.floor(Math.random() * data.tips.length)]}
           </p>
         </div>
       )}

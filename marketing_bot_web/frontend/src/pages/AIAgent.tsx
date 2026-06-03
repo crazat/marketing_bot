@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { agentApi } from '@/services/api'
 import PageTransition from '@/components/PageTransition'
@@ -11,8 +11,20 @@ import TabNavigation from '@/components/ui/TabNavigation'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { useUrlState } from '@/hooks/useUrlState'
 import { useToast } from '@/components/ui/Toast'
-import { TrendingUp, Clock, Zap, CheckCheck, XCircle, RefreshCw } from 'lucide-react'
+import { TrendingUp, Clock, Zap, CheckCheck, XCircle, RefreshCw, MessageSquare, BarChart3, PenLine, Search, Target, Users, Bot, AlertTriangle, ClipboardList, Check, Inbox } from 'lucide-react'
 import Button from '@/components/ui/Button'
+
+// [RECOVER OS] 액션 유형 → 라인 아이콘
+const AI_ICON = 'w-5 h-5'
+const ACTION_ICON: Record<string, ReactNode> = {
+  comment: <MessageSquare className={AI_ICON} strokeWidth={1.7} />,
+  analysis: <BarChart3 className={AI_ICON} strokeWidth={1.7} />,
+  content: <PenLine className={AI_ICON} strokeWidth={1.7} />,
+  keyword: <Search className={AI_ICON} strokeWidth={1.7} />,
+  viral: <Target className={AI_ICON} strokeWidth={1.7} />,
+  lead: <Users className={AI_ICON} strokeWidth={1.7} />,
+}
+const actionIcon = (t: string): ReactNode => ACTION_ICON[t] ?? <Bot className={AI_ICON} strokeWidth={1.7} />
 
 export default function AIAgent() {
   const queryClient = useQueryClient()
@@ -115,7 +127,7 @@ export default function AIAgent() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold mb-2">🤖 AI Agent</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">AI Agent</h1>
           <p className="text-muted-foreground">AI 에이전트 사용량 모니터링 및 액션 관리</p>
         </div>
         <SkeletonStatsGrid cards={4} />
@@ -128,7 +140,7 @@ export default function AIAgent() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold mb-2">🤖 AI Agent</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">AI Agent</h1>
           <p className="text-muted-foreground">AI 에이전트 사용량 모니터링 및 액션 관리</p>
         </div>
         <ErrorState
@@ -146,7 +158,7 @@ export default function AIAgent() {
       {/* 헤더 */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2">🤖 AI Agent</h1>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">AI Agent</h1>
           <p className="text-muted-foreground">
             AI 에이전트 사용량 모니터링 및 액션 관리
           </p>
@@ -174,10 +186,10 @@ export default function AIAgent() {
       {/* 탭 네비게이션 */}
       <TabNavigation
         tabs={[
-          { id: 'overview', label: '📊 개요' },
-          { id: 'pending', label: `⏳ 대기 중 (${summary?.actions_summary?.pending || 0})` },
-          { id: 'history', label: '📜 전체 기록' },
-          { id: 'efficiency', label: '📈 효율성 분석' },
+          { id: 'overview', label: '개요' },
+          { id: 'pending', label: `대기 중 (${summary?.actions_summary?.pending || 0})` },
+          { id: 'history', label: '전체 기록' },
+          { id: 'efficiency', label: '효율성 분석' },
         ]}
         activeTab={activeTab}
         onTabChange={(tab) => {
@@ -204,7 +216,7 @@ export default function AIAgent() {
                 </div>
                 <div>
                   <div className="text-sm text-muted-foreground">승인율</div>
-                  <div className="text-2xl font-bold">
+                  <div className="font-display text-2xl sm:text-3xl tracking-tight">
                     {summary?.actions_summary ?
                       (() => {
                         const total = (summary.actions_summary.approved || 0) +
@@ -230,7 +242,7 @@ export default function AIAgent() {
                 </div>
                 <div>
                   <div className="text-sm text-muted-foreground">일일 잔여량</div>
-                  <div className="text-2xl font-bold">
+                  <div className="font-display text-2xl sm:text-3xl tracking-tight">
                     {usageStats ? Math.max(0, (usageStats.daily_limit || 100) - (usageStats.daily_calls || 0)) : 0}
                   </div>
                 </div>
@@ -247,7 +259,7 @@ export default function AIAgent() {
                 </div>
                 <div>
                   <div className="text-sm text-muted-foreground">예상 소진 시간</div>
-                  <div className="text-2xl font-bold">
+                  <div className="font-display text-2xl sm:text-3xl tracking-tight">
                     {usageStats?.daily_calls && usageStats.daily_calls > 0 ? (
                       (() => {
                         const remaining = Math.max(0, (usageStats.daily_limit || 100) - usageStats.daily_calls)
@@ -267,28 +279,28 @@ export default function AIAgent() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* 액션 요약 */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">📊 최근 7일 액션 요약</h3>
+            <h3 className="text-lg font-semibold mb-4">최근 7일 액션 요약</h3>
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-yellow-50 rounded-lg p-4 text-center">
-                <div className="text-3xl font-bold text-yellow-600">
+                <div className="font-display text-3xl sm:text-4xl tracking-tight text-yellow-600">
                   {summary?.actions_summary?.pending || 0}
                 </div>
                 <div className="text-sm text-yellow-700 mt-1">대기 중</div>
               </div>
               <div className="bg-blue-50 rounded-lg p-4 text-center">
-                <div className="text-3xl font-bold text-blue-600">
+                <div className="font-display text-3xl sm:text-4xl tracking-tight text-blue-600">
                   {summary?.actions_summary?.approved || 0}
                 </div>
                 <div className="text-sm text-blue-700 mt-1">승인됨</div>
               </div>
               <div className="bg-green-50 rounded-lg p-4 text-center">
-                <div className="text-3xl font-bold text-green-600">
+                <div className="font-display text-3xl sm:text-4xl tracking-tight text-green-600">
                   {summary?.actions_summary?.completed || 0}
                 </div>
                 <div className="text-sm text-green-700 mt-1">완료</div>
               </div>
               <div className="bg-red-50 rounded-lg p-4 text-center">
-                <div className="text-3xl font-bold text-red-600">
+                <div className="font-display text-3xl sm:text-4xl tracking-tight text-red-600">
                   {summary?.actions_summary?.rejected || 0}
                 </div>
                 <div className="text-sm text-red-700 mt-1">거절됨</div>
@@ -298,7 +310,7 @@ export default function AIAgent() {
 
           {/* 최근 액션 */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">🕐 최근 액션</h3>
+            <h3 className="text-lg font-semibold mb-4">최근 액션</h3>
             {summary?.recent_actions && summary.recent_actions.length > 0 ? (
               <div className="space-y-3">
                 {summary.recent_actions.map((action: any) => (
@@ -306,13 +318,7 @@ export default function AIAgent() {
                     key={action.id}
                     className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
                   >
-                    <span className="text-xl">
-                      {action.action_type === 'comment' && '💬'}
-                      {action.action_type === 'analysis' && '📊'}
-                      {action.action_type === 'content' && '✍️'}
-                      {action.action_type === 'keyword' && '🔍'}
-                      {!['comment', 'analysis', 'content', 'keyword'].includes(action.action_type) && '🤖'}
-                    </span>
+                    <span className="text-sage flex-shrink-0">{actionIcon(action.action_type)}</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">
                         {action.action_type}
@@ -352,7 +358,7 @@ export default function AIAgent() {
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground">
-                <div className="text-4xl mb-2">📭</div>
+                <div className="flex justify-center mb-3 text-faint"><Inbox className="w-10 h-10" strokeWidth={1.5} /></div>
                 <p>최근 액션이 없습니다</p>
               </div>
             )}
@@ -452,13 +458,13 @@ export default function AIAgent() {
         <div className="space-y-6">
           {/* 액션 유형별 통계 */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">📊 액션 유형별 성과</h3>
+            <h3 className="text-lg font-semibold mb-4">액션 유형별 성과</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
-                { type: 'comment', label: '댓글 생성', icon: '💬', color: 'blue' },
-                { type: 'analysis', label: '콘텐츠 분석', icon: '📊', color: 'green' },
-                { type: 'content', label: '콘텐츠 작성', icon: '✍️', color: 'purple' },
-                { type: 'keyword', label: '키워드 분석', icon: '🔍', color: 'orange' },
+                { type: 'comment', label: '댓글 생성' },
+                { type: 'analysis', label: '콘텐츠 분석' },
+                { type: 'content', label: '콘텐츠 작성' },
+                { type: 'keyword', label: '키워드 분석' },
               ].map((item) => {
                 const typeActions = summary?.recent_actions?.filter(
                   (a: any) => a.action_type === item.type
@@ -468,10 +474,10 @@ export default function AIAgent() {
                 ).length
 
                 return (
-                  <div key={item.type} className="bg-muted/50 rounded-lg p-4 text-center">
-                    <div className="text-3xl mb-2">{item.icon}</div>
-                    <div className="text-sm font-medium mb-1">{item.label}</div>
-                    <div className={`text-2xl font-bold text-${item.color}-500`}>
+                  <div key={item.type} className="bg-surface-2 rounded-inner p-4 text-center">
+                    <div className="w-9 h-9 rounded-lg bg-sage-tint text-sage grid place-items-center mx-auto mb-2">{actionIcon(item.type)}</div>
+                    <div className="text-sm font-medium mb-1 text-muted-foreground">{item.label}</div>
+                    <div className="font-display text-2xl sm:text-3xl tracking-tight text-strong">
                       {typeActions.length}
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
@@ -486,28 +492,28 @@ export default function AIAgent() {
           {/* [Phase 4.0] 액션별 승인/거절 비율 분석 */}
           {approvalRates && approvalRates.by_action_type && Object.keys(approvalRates.by_action_type).length > 0 && (
             <div className="bg-card border border-border rounded-lg p-6">
-              <h3 className="text-lg font-semibold mb-4">📈 액션별 승인/거절 비율</h3>
+              <h3 className="text-lg font-semibold mb-4">액션별 승인/거절 비율</h3>
 
               {/* 모바일: 카드형 레이아웃 */}
               <div className="md:hidden space-y-3">
                 {Object.entries(approvalRates.by_action_type)
                   .sort(([, a]: [string, any], [, b]: [string, any]) => b.total - a.total)
                   .map(([actionType, data]: [string, any]) => {
-                    const actionLabels: Record<string, { label: string; icon: string }> = {
-                      comment: { label: '댓글 생성', icon: '💬' },
-                      analysis: { label: '콘텐츠 분석', icon: '📊' },
-                      content: { label: '콘텐츠 작성', icon: '✍️' },
-                      keyword: { label: '키워드 분석', icon: '🔍' },
-                      viral: { label: '바이럴 처리', icon: '🎯' },
-                      lead: { label: '리드 처리', icon: '👥' },
+                    const actionLabels: Record<string, { label: string }> = {
+                      comment: { label: '댓글 생성' },
+                      analysis: { label: '콘텐츠 분석' },
+                      content: { label: '콘텐츠 작성' },
+                      keyword: { label: '키워드 분석' },
+                      viral: { label: '바이럴 처리' },
+                      lead: { label: '리드 처리' },
                     }
-                    const info = actionLabels[actionType] || { label: actionType, icon: '🤖' }
+                    const info = actionLabels[actionType] || { label: actionType }
 
                     return (
-                      <div key={actionType} className="bg-muted/50 rounded-lg p-4">
+                      <div key={actionType} className="bg-surface-2 rounded-inner p-4">
                         <div className="flex justify-between items-center mb-3">
                           <div className="flex items-center gap-2">
-                            <span className="text-xl">{info.icon}</span>
+                            <span className="text-sage">{actionIcon(actionType)}</span>
                             <span className="font-medium">{info.label}</span>
                           </div>
                           <span className={`text-lg font-bold ${
@@ -599,21 +605,21 @@ export default function AIAgent() {
                     {Object.entries(approvalRates.by_action_type)
                       .sort(([, a]: [string, any], [, b]: [string, any]) => b.total - a.total)
                       .map(([actionType, data]: [string, any]) => {
-                        const actionLabels: Record<string, { label: string; icon: string }> = {
-                          comment: { label: '댓글 생성', icon: '💬' },
-                          analysis: { label: '콘텐츠 분석', icon: '📊' },
-                          content: { label: '콘텐츠 작성', icon: '✍️' },
-                          keyword: { label: '키워드 분석', icon: '🔍' },
-                          viral: { label: '바이럴 처리', icon: '🎯' },
-                          lead: { label: '리드 처리', icon: '👥' },
+                        const actionLabels: Record<string, { label: string }> = {
+                          comment: { label: '댓글 생성' },
+                          analysis: { label: '콘텐츠 분석' },
+                          content: { label: '콘텐츠 작성' },
+                          keyword: { label: '키워드 분석' },
+                          viral: { label: '바이럴 처리' },
+                          lead: { label: '리드 처리' },
                         }
-                        const info = actionLabels[actionType] || { label: actionType, icon: '🤖' }
+                        const info = actionLabels[actionType] || { label: actionType }
 
                         return (
                           <tr key={actionType} className="border-b border-border hover:bg-muted/50">
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
-                                <span>{info.icon}</span>
+                                <span className="text-sage">{actionIcon(actionType)}</span>
                                 <span className="font-medium">{info.label}</span>
                               </div>
                             </td>
@@ -679,7 +685,7 @@ export default function AIAgent() {
 
           {/* 시간대별 사용 패턴 */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">⏰ 사용 패턴 분석</h3>
+            <h3 className="text-lg font-semibold mb-4">사용 패턴 분석</h3>
             <div className="space-y-4">
               <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
                 <span className="text-sm">오늘 사용량</span>
@@ -722,27 +728,27 @@ export default function AIAgent() {
           </div>
 
           {/* 추천 사항 */}
-          <div className="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">💡 AI 사용 최적화 팁</h3>
+          <div className="bg-sage-tint border border-hair rounded-card p-6">
+            <h3 className="text-lg font-semibold mb-4">AI 사용 최적화 팁</h3>
             <ul className="space-y-2 text-sm">
               {usageStats?.daily_calls && usageStats.daily_calls > (usageStats.daily_limit || 100) * 0.8 && (
                 <li className="flex items-start gap-2">
-                  <span className="text-yellow-500">⚠️</span>
+                  <AlertTriangle className="w-4 h-4 text-warn flex-shrink-0 mt-0.5" strokeWidth={1.8} />
                   <span>일일 한도의 80% 이상을 사용했습니다. 중요한 작업을 우선 처리하세요.</span>
                 </li>
               )}
               {summary?.actions_summary?.pending && summary.actions_summary.pending > 5 && (
                 <li className="flex items-start gap-2">
-                  <span className="text-blue-500">📋</span>
+                  <ClipboardList className="w-4 h-4 text-mist flex-shrink-0 mt-0.5" strokeWidth={1.8} />
                   <span>{summary.actions_summary.pending}개의 액션이 대기 중입니다. 검토 후 승인해주세요.</span>
                 </li>
               )}
               <li className="flex items-start gap-2">
-                <span className="text-green-500">✓</span>
+                <Check className="w-4 h-4 text-ok flex-shrink-0 mt-0.5" strokeWidth={2} />
                 <span>댓글 생성 시 여러 개를 한 번에 요청하면 효율적입니다.</span>
               </li>
               <li className="flex items-start gap-2">
-                <span className="text-green-500">✓</span>
+                <Check className="w-4 h-4 text-ok flex-shrink-0 mt-0.5" strokeWidth={2} />
                 <span>분석 작업은 오전 시간대에 집중하면 좋습니다.</span>
               </li>
             </ul>
@@ -752,7 +758,7 @@ export default function AIAgent() {
 
       {/* 안내 */}
       <div className="bg-muted/50 border border-border rounded-lg p-4">
-        <h4 className="font-semibold mb-2">💡 AI Agent 안내</h4>
+        <h4 className="font-semibold mb-2">AI Agent 안내</h4>
         <ul className="text-sm text-muted-foreground space-y-1">
           <li>• AI Agent는 댓글 생성, 콘텐츠 분석 등 자동화 작업을 수행합니다.</li>
           <li>• 일일 사용량 한도가 있으며, 매일 자정에 리셋됩니다.</li>

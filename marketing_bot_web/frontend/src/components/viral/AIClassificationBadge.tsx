@@ -37,7 +37,7 @@ const LABEL_INFO: Record<string, { icon: string; bg: string; label: string }> = 
 
 const SPECIALTY_INFO: Record<string, { icon: string; bg: string; label: string }> = {
   high: {
-    icon: '🎯',
+    icon: '◎',
     bg: 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-700',
     label: '특화 매칭',
   },
@@ -103,7 +103,7 @@ export function AIClassificationMini({ label, confidence, specialtyMatch }: Pick
   if (specialtyMatch === 'high') {
     return (
       <span className="inline-flex items-center gap-0.5 rounded border border-orange-300 bg-orange-100 text-orange-700 px-1 py-0 text-[10px] font-medium dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-700">
-        🎯 특화 {confidence != null ? `${Math.round(confidence * 100)}%` : ''}
+        특화 {confidence != null ? `${Math.round(confidence * 100)}%` : ''}
       </span>
     )
   }
@@ -117,7 +117,7 @@ export function AIClassificationMini({ label, confidence, specialtyMatch }: Pick
   if (label === '자연_질문') {
     return (
       <span className="inline-flex items-center gap-0.5 rounded border border-green-300 bg-green-100 text-green-700 px-1 py-0 text-[10px] font-medium dark:bg-green-900/30 dark:text-green-400">
-        ✓ 자연
+        자연
       </span>
     )
   }

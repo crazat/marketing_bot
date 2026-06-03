@@ -87,7 +87,7 @@ export default function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProp
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">⌨️ 키보드 단축키</h2>
+          <h2 className="text-lg font-semibold">키보드 단축키</h2>
           <button
             onClick={onClose}
             className="p-1 rounded hover:bg-muted"

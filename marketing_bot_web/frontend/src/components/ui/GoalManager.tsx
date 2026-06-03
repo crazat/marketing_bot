@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { hudApi } from '@/services/api'
-import { Target, Plus, Trash2, TrendingUp, AlertCircle } from 'lucide-react'
+import { Target, Plus, Trash2, TrendingUp, AlertCircle, Users, CheckCircle, Trophy, BarChart3 } from 'lucide-react'
 import Button, { IconButton } from '@/components/ui/Button'
 
 interface Goal {
@@ -22,11 +22,12 @@ const VALIDATION_RULES = {
   MAX_TITLE_LENGTH: 50,
 }
 
-const GOAL_TYPES = [
-  { id: 'leads', label: '리드 수', icon: '👥', unit: '명', suggestedRange: { min: 10, max: 500 } },
-  { id: 'conversions', label: '전환 수', icon: '✅', unit: '건', suggestedRange: { min: 1, max: 100 } },
-  { id: 'keywords', label: '키워드 수', icon: '🎯', unit: '개', suggestedRange: { min: 10, max: 1000 } },
-  { id: 'rank_top10', label: 'TOP 10 키워드', icon: '🏆', unit: '개', suggestedRange: { min: 1, max: 50 } },
+const GM_I = 'w-4 h-4'
+const GOAL_TYPES: { id: string; label: string; icon: ReactNode; unit: string; suggestedRange: { min: number; max: number } }[] = [
+  { id: 'leads', label: '리드 수', icon: <Users className={GM_I} strokeWidth={1.7} />, unit: '명', suggestedRange: { min: 10, max: 500 } },
+  { id: 'conversions', label: '전환 수', icon: <CheckCircle className={GM_I} strokeWidth={1.7} />, unit: '건', suggestedRange: { min: 1, max: 100 } },
+  { id: 'keywords', label: '키워드 수', icon: <Target className={GM_I} strokeWidth={1.7} />, unit: '개', suggestedRange: { min: 10, max: 1000 } },
+  { id: 'rank_top10', label: 'TOP 10 키워드', icon: <Trophy className={GM_I} strokeWidth={1.7} />, unit: '개', suggestedRange: { min: 1, max: 50 } },
 ]
 
 export default function GoalManager() {
@@ -158,7 +159,7 @@ export default function GoalManager() {
   }
 
   const getGoalTypeInfo = (type: string) => {
-    return GOAL_TYPES.find(g => g.id === type) || { id: type, label: type, icon: '📊', unit: '' }
+    return GOAL_TYPES.find(g => g.id === type) || { id: type, label: type, icon: <BarChart3 className={GM_I} strokeWidth={1.7} />, unit: '', suggestedRange: { min: 0, max: 0 } }
   }
 
   const getProgressColor = (progress: number) => {

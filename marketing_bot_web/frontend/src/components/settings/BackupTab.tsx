@@ -149,7 +149,7 @@ export default function BackupTab({ onMessage }: BackupTabProps) {
         isOpen={backupToRestore !== null}
         onClose={() => setBackupToRestore(null)}
         onConfirm={() => backupToRestore && restoreMutation.mutate(backupToRestore)}
-        title="⚠️ 데이터베이스 복구"
+        title="데이터베이스 복구"
         message={`"${backupToRestore}"에서 데이터베이스를 복구하시겠습니까?\n\n현재 데이터베이스가 선택한 백업으로 덮어씌워집니다.\n복구 전에 현재 상태의 백업이 자동으로 생성됩니다.`}
         confirmText="복구 실행"
         cancelText="취소"
@@ -159,7 +159,7 @@ export default function BackupTab({ onMessage }: BackupTabProps) {
 
       {/* 데이터베이스 백업 */}
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">💾 데이터베이스 백업</h3>
+        <h3 className="text-lg font-semibold mb-4">데이터베이스 백업</h3>
 
         {backupLoading ? (
           <div className="animate-pulse space-y-4">
@@ -183,12 +183,12 @@ export default function BackupTab({ onMessage }: BackupTabProps) {
               )}
               {backupStatus?.warning_level === 'critical' && (
                 <div className="mt-2 text-sm font-medium">
-                  ⚠️ 7일 이상 백업이 없습니다. 즉시 백업을 생성하세요!
+                  7일 이상 백업이 없습니다. 즉시 백업을 생성하세요!
                 </div>
               )}
               {backupStatus?.warning_level === 'warning' && (
                 <div className="mt-2 text-sm font-medium">
-                  ⚠️ 3일 이상 백업이 없습니다. 백업을 권장합니다.
+                  3일 이상 백업이 없습니다. 백업을 권장합니다.
                 </div>
               )}
             </div>
@@ -252,7 +252,7 @@ export default function BackupTab({ onMessage }: BackupTabProps) {
                       className="flex items-center justify-between p-2 bg-muted/30 rounded text-sm group hover:bg-muted/50 transition-colors"
                     >
                       <div className="flex items-center gap-2">
-                        <span>{index === 0 ? '🟢' : '⚪'}</span>
+                        <span className="inline-block w-2 h-2 rounded-full" style={{ background: index === 0 ? 'var(--ok)' : 'var(--text-faint)' }} aria-hidden="true" />
                         <span className="font-mono text-xs">{backup.filename}</span>
                       </div>
                       <div className="flex items-center gap-3">

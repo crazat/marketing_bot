@@ -92,7 +92,7 @@ export function ToastProvider({
     const actualDuration = duration ?? typeDuration
 
     // [Y7] 토스트 그룹화 — 같은 type의 연속 토스트를 묶어서 표시
-    // 예: "⏭️ 건너뜀" 여러 번 → "⏭️ 건너뜀 (3건)"
+    // 예: "건너뜀" 여러 번 → "건너뜀 (3건)"
     setToasts((prev) => {
       const last = prev[prev.length - 1]
       const groupable = !action && last && last.type === type && last.message === message
@@ -202,14 +202,14 @@ export function useToast() {
 }
 
 const toastConfig: Record<ToastType, {
-  bg: string
+  tint: string
   Icon: typeof CheckCircle
   label: string
 }> = {
-  success: { bg: 'bg-green-500/90', Icon: CheckCircle, label: '성공' },
-  error: { bg: 'bg-red-500/90', Icon: XCircle, label: '오류' },
-  info: { bg: 'bg-blue-500/90', Icon: Info, label: '정보' },
-  warning: { bg: 'bg-yellow-500/90', Icon: AlertTriangle, label: '경고' },
+  success: { tint: 'bg-ok-tint text-ok', Icon: CheckCircle, label: '성공' },
+  error: { tint: 'bg-danger-tint text-danger', Icon: XCircle, label: '오류' },
+  info: { tint: 'bg-clay-tint text-clay', Icon: Info, label: '정보' },
+  warning: { tint: 'bg-warn-tint text-warn', Icon: AlertTriangle, label: '경고' },
 }
 
 function ToastContainer({
@@ -253,28 +253,29 @@ function ToastContainer({
         </div>
       )}
       {displayToasts.map((toast) => {
-        const { bg, Icon, label } = toastConfig[toast.type]
+        const { tint, Icon, label } = toastConfig[toast.type]
         return (
           <div
             key={toast.id}
             role="alert"
             aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
             className={`
-              ${bg}
-              text-white px-4 py-3 rounded-lg shadow-lg
-              flex items-start gap-3
-              ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[440px]'}
+              bg-surface-3 border border-hair-strong text-strong px-3.5 py-3 rounded-xl shadow-pop
+              flex items-start gap-2.5
+              ${isMobile ? 'w-full' : 'min-w-[300px] max-w-[400px]'}
               animate-in ${isMobile ? 'slide-in-from-top' : 'slide-in-from-right'} duration-300
               transition-all
             `}
           >
-            <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" aria-hidden="true" />
+            <span className={`w-6 h-6 rounded-md grid place-items-center flex-shrink-0 mt-0.5 ${tint}`} aria-hidden="true">
+              <Icon className="w-3.5 h-3.5" strokeWidth={2} />
+            </span>
             <div className="flex-1 min-w-0">
               <span className="sr-only">{label}: </span>
-              <span className="block max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-snug pr-1">
+              <span className="block max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-snug pr-1">
                 {toast.message}
                 {toast.count && toast.count > 1 && (
-                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-white/25 text-[11px] font-bold tabular-nums">
+                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-surface-2 text-faint text-[11px] font-bold tabular-nums font-mono">
                     ×{toast.count}
                   </span>
                 )}
@@ -283,7 +284,7 @@ function ToastContainer({
             {toast.action && (
               <button
                 type="button"
-                className="text-white font-semibold underline underline-offset-2 hover:brightness-125 px-1.5 flex-shrink-0 text-sm"
+                className="text-sage font-semibold hover:brightness-110 px-1.5 flex-shrink-0 text-[13px]"
                 onClick={(e) => {
                   e.stopPropagation()
                   toast.action!.onClick()
@@ -295,7 +296,7 @@ function ToastContainer({
             )}
             <button
               type="button"
-              className="text-white/70 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/50 rounded p-0.5 flex-shrink-0"
+              className="text-faint hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary rounded p-0.5 flex-shrink-0"
               onClick={(e) => {
                 e.stopPropagation()
                 onDismiss(toast.id)

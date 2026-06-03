@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { leadsApi } from '@/services/api'
 import { Flame, ArrowRight, X } from 'lucide-react'
+import { platformIcon } from '@/lib/entityIcons'
 import { useState, useEffect } from 'react'
 import { useNotification, createHotLeadNotification } from '@/hooks/useNotification'
 import Button, { IconButton } from '@/components/ui/Button'
@@ -52,14 +53,7 @@ export default function HotLeadBanner() {
     return null
   }
 
-  const platformIcons: Record<string, string> = {
-    youtube: '📺',
-    tiktok: '🎵',
-    naver: '🟢',
-    instagram: '📸',
-    carrot: '🥕',
-    influencer: '⭐',
-  }
+  // [RECOVER OS] 플랫폼 아이콘 = @/lib/entityIcons.platformIcon
 
   return (
     <div className="relative bg-gradient-to-r from-red-500/20 via-orange-500/20 to-yellow-500/20 border border-red-500/30 rounded-lg p-4 mb-6 animate-pulse-slow">
@@ -98,7 +92,7 @@ export default function HotLeadBanner() {
             aria-label={`${lead.title} 리드 보기`}
           >
             <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1">
-              <span className="text-lg md:text-xl flex-shrink-0">{platformIcons[lead.platform] || '📋'}</span>
+              <span className="text-sage flex-shrink-0">{platformIcon(lead.platform, 'w-[18px] h-[18px]')}</span>
               <div className="min-w-0">
                 <div className="font-medium text-sm truncate">
                   {lead.title}

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target, Clock } from 'lucide-react'
+import { Search, Command, ArrowRight, Loader2, TrendingUp, MessageSquare, Users, Target, Clock, BarChart3, Flame, Swords, ClipboardList, Eye, Settings, RefreshCw, Radio, Telescope } from 'lucide-react'
+
+const CMD_ICON = 'w-4 h-4'
 import { pathfinderApi, battleApi, viralApi, leadsApi, hudApi } from '@/services/api'
 import { useRecentItems, type RecentItem } from '@/hooks/useRecentItems'
 import { useToast } from '@/components/ui/Toast'
@@ -102,7 +104,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     // 네비게이션
     {
       id: 'nav-dashboard',
-      icon: '📊',
+      icon: <BarChart3 className={CMD_ICON} strokeWidth={1.7} />,
       label: '대시보드',
       description: '메인 대시보드로 이동',
       action: () => { navigate('/'); onClose() },
@@ -111,7 +113,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-pathfinder',
-      icon: '🎯',
+      icon: <Target className={CMD_ICON} strokeWidth={1.7} />,
       label: 'Pathfinder',
       description: '키워드 발굴 도구',
       action: () => { navigate('/pathfinder'); onClose() },
@@ -120,7 +122,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-viral',
-      icon: '🔥',
+      icon: <Flame className={CMD_ICON} strokeWidth={1.7} />,
       label: 'Viral Hunter',
       description: '바이럴 콘텐츠 수집',
       action: () => { navigate('/viral'); onClose() },
@@ -129,7 +131,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-battle',
-      icon: '⚔️',
+      icon: <Swords className={CMD_ICON} strokeWidth={1.7} />,
       label: 'Battle Intelligence',
       description: '순위 추적 및 경쟁 분석',
       action: () => { navigate('/battle'); onClose() },
@@ -138,7 +140,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-leads',
-      icon: '📋',
+      icon: <ClipboardList className={CMD_ICON} strokeWidth={1.7} />,
       label: 'Lead Manager',
       description: '리드 관리',
       action: () => { navigate('/leads'); onClose() },
@@ -147,7 +149,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-competitors',
-      icon: '💪',
+      icon: <Eye className={CMD_ICON} strokeWidth={1.7} />,
       label: '경쟁사 분석',
       description: '경쟁사 약점 분석',
       action: () => { navigate('/competitors'); onClose() },
@@ -156,7 +158,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-qa',
-      icon: '💬',
+      icon: <MessageSquare className={CMD_ICON} strokeWidth={1.7} />,
       label: 'Q&A Repository',
       description: 'Q&A 패턴 관리',
       action: () => { navigate('/qa'); onClose() },
@@ -165,7 +167,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'nav-settings',
-      icon: '⚙️',
+      icon: <Settings className={CMD_ICON} strokeWidth={1.7} />,
       label: '설정',
       description: '시스템 설정',
       action: () => { navigate('/settings'); onClose() },
@@ -176,7 +178,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     // 액션
     {
       id: 'action-refresh',
-      icon: '🔄',
+      icon: <RefreshCw className={CMD_ICON} strokeWidth={1.7} />,
       label: '새로고침',
       description: '현재 페이지 새로고침',
       action: () => { window.location.reload() },
@@ -185,7 +187,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'action-scan-rank',
-      icon: '📡',
+      icon: <Radio className={CMD_ICON} strokeWidth={1.7} />,
       label: '순위 스캔 실행',
       description: 'Place Sniper 실행',
       action: async () => {
@@ -205,7 +207,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
     },
     {
       id: 'action-pathfinder-run',
-      icon: '🔭',
+      icon: <Telescope className={CMD_ICON} strokeWidth={1.7} />,
       label: '키워드 발굴 실행',
       description: 'Pathfinder 스캔 시작',
       action: async () => {
@@ -315,7 +317,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
       id: `lead-${l.id}`,
       icon: <Users className="w-5 h-5 text-green-500" />,
       label: l.title?.slice(0, 40) + (l.title?.length > 40 ? '...' : ''),
-      description: `${l.platform} · ${l.grade === 'hot' ? '🔥 Hot' : l.grade === 'warm' ? '🌡️ Warm' : '❄️ Cold'}`,
+      description: `${l.platform} · ${l.grade === 'hot' ? 'Hot' : l.grade === 'warm' ? 'Warm' : 'Cold'}`,
       action: () => {
         navigate(`/leads?keyword=${encodeURIComponent(query)}`)
         onClose()
@@ -444,33 +446,31 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
         aria-modal="true"
         aria-label="명령 팔레트"
       >
-        <div className="bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
+        <div className="bg-surface border border-hair-strong rounded-2xl shadow-pop overflow-hidden">
           {/* 검색 입력 */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+          <div className="flex items-center gap-3 px-4 py-3.5 border-b border-hair">
             {isLoading || isSearching ? (
-              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+              <Loader2 className="w-[17px] h-[17px] text-faint animate-spin" />
             ) : (
-              <Search className="w-5 h-5 text-muted-foreground" />
+              <Search className="w-[17px] h-[17px] text-faint" strokeWidth={1.8} />
             )}
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="명령 또는 키워드 검색... (3자 이상 입력 시 통합 검색)"
-              className="flex-1 bg-transparent outline-none text-foreground placeholder:text-muted-foreground"
+              className="flex-1 bg-transparent outline-none text-strong text-[15px] placeholder:text-faint"
               autoFocus
               aria-label="명령 또는 키워드 검색"
             />
-            <kbd className="px-2 py-1 bg-muted rounded text-xs text-muted-foreground">
-              ESC
-            </kbd>
+            <kbd className="ros-kbd">ESC</kbd>
           </div>
 
           {/* 검색 결과 헤더 */}
           {searchEnabled && (keywordCommands.length > 0 || viralCommands.length > 0 || leadCommands.length > 0) && (
-            <div className="px-4 py-2 bg-primary/5 border-b border-border">
+            <div className="px-4 py-2 bg-sage-tint border-b border-hair">
               <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                <span className="font-medium text-primary">통합 검색 결과</span>
+                <span className="font-medium text-sage">통합 검색 결과</span>
                 {keywordCommands.length > 0 && (
                   <span>키워드 {keywordCommands.length}</span>
                 )}
@@ -506,20 +506,18 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
                     onClick={cmd.action}
                     aria-current={idx === selectedIndex ? 'true' : undefined}
                     className={`
-                      w-full flex items-center gap-3 px-4 py-3
+                      w-full flex items-center gap-3 px-4 py-2.5
                       transition-colors text-left
                       ${idx === selectedIndex
-                        ? 'bg-primary/10 text-primary'
-                        : 'hover:bg-accent'
+                        ? 'bg-sage-tint text-strong'
+                        : 'hover:bg-surface-2'
                       }
                     `}
                     onMouseEnter={() => setSelectedIndex(idx)}
                   >
-                    {typeof cmd.icon === 'string' ? (
-                      <span className="text-xl">{cmd.icon}</span>
-                    ) : (
-                      cmd.icon
-                    )}
+                    <span className="w-7 h-7 rounded-lg bg-surface-2 grid place-items-center text-sage flex-shrink-0">
+                      {cmd.icon}
+                    </span>
                     <div className="flex-1 min-w-0">
                       <div className="font-medium truncate">{cmd.label}</div>
                       <div className="text-sm text-muted-foreground truncate">
@@ -544,7 +542,7 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
                       </div>
                     )}
                     {idx === selectedIndex && (
-                      <ArrowRight className="w-4 h-4 text-primary" />
+                      <ArrowRight className="w-4 h-4 text-sage" />
                     )}
                   </button>
                 ))}
@@ -553,14 +551,14 @@ export default function CommandPalette({ isOpen, onClose, onOpenKeywordHub }: Co
           </div>
 
           {/* 푸터 힌트 */}
-          <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted/30 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between px-4 py-2.5 border-t border-hair bg-surface-2 text-xs text-muted-foreground">
             <div className="flex items-center gap-4">
-              <span className="flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 bg-muted rounded">↑↓</kbd>
+              <span className="flex items-center gap-1.5">
+                <kbd className="ros-kbd">↑↓</kbd>
                 이동
               </span>
-              <span className="flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 bg-muted rounded">Enter</kbd>
+              <span className="flex items-center gap-1.5">
+                <kbd className="ros-kbd">Enter</kbd>
                 실행
               </span>
             </div>

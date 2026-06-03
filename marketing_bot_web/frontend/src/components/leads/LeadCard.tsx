@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, memo } from 'react'
 import { Lead } from '@/services/api'
 import Button from '@/components/ui/Button'
 import { safeUrl } from '@/utils/safeUrl'
+import { platformIcon as platformIconFn, statusIcon } from '@/lib/entityIcons'
+import { Zap, Search } from 'lucide-react'
 import {
-  PLATFORM_ICONS,
   getScoreBadgeStyle,
   getTrustBadgeStyle,
   getTrustLabel,
@@ -28,11 +29,11 @@ interface LeadCardProps {
 }
 
 const STATUS_OPTIONS = [
-  { id: 'pending', label: '대기 중', icon: '⏳' },
-  { id: 'contacted', label: '연락 완료', icon: '📞' },
-  { id: 'replied', label: '답변 받음', icon: '💬' },
-  { id: 'converted', label: '전환 완료', icon: '✅' },
-  { id: 'rejected', label: '거절됨', icon: '❌' },
+  { id: 'pending', label: '대기 중', icon: statusIcon('pending', 'w-4 h-4') },
+  { id: 'contacted', label: '연락 완료', icon: statusIcon('contacted', 'w-4 h-4') },
+  { id: 'replied', label: '답변 받음', icon: statusIcon('replied', 'w-4 h-4') },
+  { id: 'converted', label: '전환 완료', icon: statusIcon('converted', 'w-4 h-4') },
+  { id: 'rejected', label: '거절됨', icon: statusIcon('rejected', 'w-4 h-4') },
 ]
 
 // [성능 최적화] React.memo로 불필요한 리렌더링 방지
@@ -47,7 +48,7 @@ function LeadCardComponent({
 }: LeadCardProps) {
   const [showStatusMenu, setShowStatusMenu] = useState(false)
   const cardRef = useRef<HTMLDivElement>(null)
-  const platformIcon = PLATFORM_ICONS[lead.platform?.toLowerCase()] || '📌'
+  const platformGlyph = platformIconFn(lead.platform, 'w-[18px] h-[18px]')
 
   // 포커스 상태 시 스크롤 및 포커스 적용
   useEffect(() => {
@@ -102,7 +103,7 @@ function LeadCardComponent({
       {/* 헤더 */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-lg flex-shrink-0">{platformIcon}</span>
+          <span className="text-sage flex-shrink-0">{platformGlyph}</span>
           <span className="text-xs text-muted-foreground truncate">
             {lead.platform || '기타'}
           </span>
@@ -126,19 +127,19 @@ function LeadCardComponent({
           {/* [Phase 4.0] 연락처 추출 배지 */}
           {lead.extracted_contacts?.has_contact && (
             <span
-              className="px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+              className="px-1.5 py-0.5 rounded text-xs font-medium bg-mist-tint text-mist"
               title={lead.extracted_contacts.summary}
             >
-              📞 연락처
+              연락처
             </span>
           )}
           {/* [Phase 5.0] 기회 배지 - opportunity_bonus > 10 */}
           {lead.opportunity_bonus !== undefined && lead.opportunity_bonus > 10 && (
             <span
-              className="px-1.5 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-              title={`🎯 높은 기회 점수 (${lead.opportunity_bonus}점): 최근 게시물, 낮은 경쟁, 질문형 콘텐츠로 전환 가능성이 높습니다.`}
+              className="px-1.5 py-0.5 rounded text-xs font-medium bg-ok-tint text-ok"
+              title={`높은 기회 점수 (${lead.opportunity_bonus}점): 최근 게시물, 낮은 경쟁, 질문형 콘텐츠로 전환 가능성이 높습니다.`}
             >
-              🎯 기회
+              기회
             </span>
           )}
           {/* [Phase 5.0] 참여 신호 배지 */}
@@ -146,10 +147,10 @@ function LeadCardComponent({
             <span
               className={`px-1.5 py-0.5 rounded text-xs font-medium ${getEngagementSignalStyle(lead.engagement_signal)}`}
               title={lead.engagement_signal === 'ready_to_act'
-                ? '⚡ 즉시대응: 예약, 비교, 결정 관련 언급으로 구매/전환 준비가 된 상태입니다.'
-                : '🔍 정보탐색: 정보를 찾고 있는 단계로, 상세한 안내가 효과적입니다.'}
+                ? '즉시대응: 예약, 비교, 결정 관련 언급으로 구매/전환 준비가 된 상태입니다.'
+                : '정보탐색: 정보를 찾고 있는 단계로, 상세한 안내가 효과적입니다.'}
             >
-              {lead.engagement_signal === 'ready_to_act' ? '⚡' : '🔍'} {getEngagementSignalLabel(lead.engagement_signal)}
+              {lead.engagement_signal === 'ready_to_act' ? <Zap className="w-3.5 h-3.5 inline" strokeWidth={2} /> : <Search className="w-3.5 h-3.5 inline" strokeWidth={2} />} {getEngagementSignalLabel(lead.engagement_signal)}
             </span>
           )}
           {/* [Phase 5.1] 우선순위 배지 */}
@@ -197,7 +198,7 @@ function LeadCardComponent({
       <div className="flex items-center justify-between text-xs">
         {lead.author && (
           <span className="text-muted-foreground truncate max-w-[60%]" title={lead.author}>
-            👤 {lead.author}
+            {lead.author}
           </span>
         )}
         <div className="flex items-center gap-2">
@@ -209,7 +210,7 @@ function LeadCardComponent({
               onClick={(e) => e.stopPropagation()}
               className="text-primary hover:underline flex-shrink-0"
             >
-              🔗 링크
+              링크
             </a>
           )}
           {/* 터치 디바이스용 상태 변경 버튼 */}
@@ -225,7 +226,7 @@ function LeadCardComponent({
                 className="md:hidden"
                 aria-label="상태 변경"
               >
-                📋 이동
+                이동
               </Button>
               {/* 상태 선택 메뉴 */}
               {showStatusMenu && (

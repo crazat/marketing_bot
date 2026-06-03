@@ -145,7 +145,7 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget, workScope = 'lat
                   <div className="text-sm truncate">{target.title}</div>
                   <div className="text-xs text-muted-foreground">
                     {platformLabels[target.platform] || target.platform} · {target.priority_score?.toFixed(0)}점
-                    {target.scan_count >= 2 && ` · 🔄 ${target.scan_count}회`}
+                    {target.scan_count >= 2 && ` · ${target.scan_count}회`}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

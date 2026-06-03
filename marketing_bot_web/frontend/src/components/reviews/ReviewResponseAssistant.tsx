@@ -347,7 +347,7 @@ export default function ReviewResponseAssistant() {
                   </Button>
 
                   <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                    <p className="text-sm font-medium text-blue-500 mb-2">📋 다음 단계</p>
+                    <p className="text-sm font-medium text-blue-500 mb-2">다음 단계</p>
                     <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
                       <li>위 버튼으로 응답 복사</li>
                       <li>네이버 플레이스 리뷰 페이지 접속</li>

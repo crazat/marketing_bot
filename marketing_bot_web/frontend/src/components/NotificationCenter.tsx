@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { notificationsApi, Notification } from '@/services/api'
 import Button, { IconButton } from '@/components/ui/Button'
-import { X, Bell } from 'lucide-react'
+import { X, Bell, BarChart3, Target, Building2, Settings, KeyRound, Flame } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 interface NotificationCenterProps {
   isOpen: boolean
@@ -17,13 +18,14 @@ const priorityStyles: Record<string, string> = {
   low: 'border-l-4 border-gray-300 bg-gray-50 dark:bg-gray-800/50',
 }
 
-const typeIcons: Record<string, string> = {
-  rank_change: '📊',
-  new_lead: '🎯',
-  competitor: '🏢',
-  system: '⚙️',
-  keyword: '🔑',
-  viral: '🔥',
+const NC_I = 'w-4 h-4'
+const typeIcons: Record<string, ReactNode> = {
+  rank_change: <BarChart3 className={NC_I} strokeWidth={1.7} />,
+  new_lead: <Target className={NC_I} strokeWidth={1.7} />,
+  competitor: <Building2 className={NC_I} strokeWidth={1.7} />,
+  system: <Settings className={NC_I} strokeWidth={1.7} />,
+  keyword: <KeyRound className={NC_I} strokeWidth={1.7} />,
+  viral: <Flame className={NC_I} strokeWidth={1.7} />,
 }
 
 function formatRelativeTime(dateString: string): string {
@@ -150,7 +152,7 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
             </div>
           ) : notifications.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
-              <div className="text-4xl mb-2">🔔</div>
+              <div className="flex justify-center mb-2 text-faint"><Bell className="w-9 h-9" strokeWidth={1.5} /></div>
               <p>새 알림이 없습니다</p>
             </div>
           ) : (
@@ -165,7 +167,7 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
                 >
                   <div className="flex items-start gap-3">
                     <span className="text-xl flex-shrink-0">
-                      {typeIcons[notification.type] || '📌'}
+                      <span className="text-sage">{typeIcons[notification.type] || <Bell className={NC_I} strokeWidth={1.7} />}</span>
                     </span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">

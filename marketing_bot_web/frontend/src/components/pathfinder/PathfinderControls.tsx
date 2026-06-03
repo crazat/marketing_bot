@@ -1,3 +1,5 @@
+import { Swords, Rocket, Loader2 } from 'lucide-react'
+
 interface PathfinderControlsProps {
   onRun: (mode: 'total_war' | 'legion') => void
   isRunning: boolean
@@ -13,7 +15,7 @@ export default function PathfinderControls({
 }: PathfinderControlsProps) {
   return (
     <div className="bg-card rounded-lg border border-border p-6">
-      <h3 className="text-lg font-semibold mb-4">⚡ Pathfinder 실행</h3>
+      <h3 className="text-lg font-semibold mb-4">Pathfinder 실행</h3>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Total War */}
@@ -28,7 +30,7 @@ export default function PathfinderControls({
           onClick={() => onModeChange('total_war')}
         >
           <div className="flex items-center gap-3 mb-3">
-            <span className="text-3xl">⚔️</span>
+            <Swords className="w-7 h-7" strokeWidth={1.6} />
             <h4 className="text-lg font-bold">Total War</h4>
           </div>
           <p className="text-sm text-muted-foreground mb-4">
@@ -53,7 +55,7 @@ export default function PathfinderControls({
           onClick={() => onModeChange('legion')}
         >
           <div className="flex items-center gap-3 mb-3">
-            <span className="text-3xl">🚀</span>
+            <Rocket className="w-7 h-7" strokeWidth={1.6} />
             <h4 className="text-lg font-bold">LEGION MODE</h4>
           </div>
           <p className="text-sm text-muted-foreground mb-4">
@@ -84,12 +86,12 @@ export default function PathfinderControls({
         >
           {isRunning ? (
             <>
-              <span className="inline-block animate-spin mr-2">⚙️</span>
+              <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
               실행 중...
             </>
           ) : (
             <>
-              {selectedMode === 'total_war' ? '⚔️ Total War 실행' : '🚀 LEGION MODE 실행'}
+              {selectedMode === 'total_war' ? 'Total War 실행' : 'LEGION MODE 실행'}
             </>
           )}
         </button>
@@ -98,7 +100,7 @@ export default function PathfinderControls({
       {isRunning && (
         <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
           <p className="text-sm text-yellow-500">
-            ⚡ Pathfinder가 실행 중입니다. 몇 분 정도 소요될 수 있습니다.
+            Pathfinder가 실행 중입니다. 몇 분 정도 소요될 수 있습니다.
           </p>
         </div>
       )}

@@ -77,7 +77,7 @@ export default function KpiWidget({ onNavigate }: KpiWidgetProps = {}) {
           value={summary.backlog_pending.toLocaleString()}
           subLabel={
             summary.backlog_hot > 0
-              ? `🔥 HOT ${summary.backlog_hot.toLocaleString()}건 (클릭)`
+              ? `HOT ${summary.backlog_hot.toLocaleString()}건 (클릭)`
               : '전체 보기 (클릭)'
           }
           accent={summary.backlog_hot > 500 ? 'warning' : 'default'}

@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Inbox } from 'lucide-react'
 
 interface Column<T> {
   key: string
@@ -140,7 +141,7 @@ export function VirtualTable<T>({
         role="status"
         aria-label="데이터 없음"
       >
-        <p className="text-4xl mb-4">📭</p>
+        <div className="flex justify-center mb-4 text-faint"><Inbox className="w-10 h-10" strokeWidth={1.5} /></div>
         <p>{emptyMessage}</p>
       </div>
     )

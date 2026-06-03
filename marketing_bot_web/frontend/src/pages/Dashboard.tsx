@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -14,6 +14,7 @@ import {
   type KeywordHighlight,
 } from '@/services/api'
 import MetricCard from '@/components/MetricCard'
+import { Target, Flame, Layers, ClipboardList, Users, KeyRound, TrendingUp, Zap, AlertCircle, AlertTriangle, Megaphone, Lightbulb, BarChart3, CheckCircle } from 'lucide-react'
 import ChronosTimeline from '@/components/ChronosTimeline'
 import HotLeadBanner from '@/components/ui/HotLeadBanner'
 import MarketingFunnel from '@/components/ui/MarketingFunnel'
@@ -53,11 +54,12 @@ const GOAL_TYPE_LABELS: Record<string, string> = {
   s_grade: 'S급 키워드'
 }
 
-const GOAL_TYPE_ICONS: Record<string, string> = {
-  leads: '📋',
-  keywords: '🔑',
-  conversions: '✅',
-  s_grade: '🔥'
+const GOAL_ICON_CLS = 'w-5 h-5'
+const GOAL_TYPE_ICONS: Record<string, ReactNode> = {
+  leads: <Users className={GOAL_ICON_CLS} strokeWidth={1.7} />,
+  keywords: <KeyRound className={GOAL_ICON_CLS} strokeWidth={1.7} />,
+  conversions: <TrendingUp className={GOAL_ICON_CLS} strokeWidth={1.7} />,
+  s_grade: <Flame className={GOAL_ICON_CLS} strokeWidth={1.7} />,
 }
 
 export default function Dashboard() {
@@ -308,7 +310,7 @@ export default function Dashboard() {
               <MetricCard
                 title="총 키워드"
                 value={metrics?.total_keywords || 0}
-                icon="🎯"
+                icon={<Target className="w-[18px] h-[18px]" strokeWidth={1.8} />}
                 subtitle="Pathfinder에서 관리"
                 onClick={handleNavigatePathfinder}
                 sparklineData={metricsTrend?.cumulative?.keywords}
@@ -317,8 +319,7 @@ export default function Dashboard() {
               <MetricCard
                 title="S급 키워드"
                 value={metrics?.s_grade_keywords || 0}
-                icon="🔥"
-                color="text-red-500"
+                icon={<Flame className="w-[18px] h-[18px]" strokeWidth={1.8} />}
                 subtitle="고가치 키워드"
                 onClick={handleNavigatePathfinderS}
                 sparklineData={metricsTrend?.cumulative?.s_grade}
@@ -327,8 +328,7 @@ export default function Dashboard() {
               <MetricCard
                 title="A급 키워드"
                 value={metrics?.a_grade_keywords || 0}
-                icon="🟢"
-                color="text-green-500"
+                icon={<Layers className="w-[18px] h-[18px]" strokeWidth={1.8} />}
                 subtitle="우수 키워드"
                 onClick={handleNavigatePathfinderA}
                 sparklineData={metricsTrend?.cumulative?.a_grade}
@@ -337,7 +337,7 @@ export default function Dashboard() {
               <MetricCard
                 title="총 리드"
                 value={metrics?.total_leads || 0}
-                icon="📋"
+                icon={<ClipboardList className="w-[18px] h-[18px]" strokeWidth={1.8} />}
                 subtitle="Lead Manager에서 관리"
                 onClick={handleNavigateLeads}
                 sparklineData={metricsTrend?.cumulative?.leads}
@@ -351,7 +351,7 @@ export default function Dashboard() {
         {goals && goals.length > 0 && (
           <div className="bg-card rounded-lg border border-border p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">🎯 이번 달 목표</h2>
+              <h2 className="text-xl font-bold">이번 달 목표</h2>
               <Button
                 variant="ghost"
                 size="sm"
@@ -363,40 +363,40 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {goals.map((goal) => {
                 const isComplete = goal.progress >= 100
-                const progressColor = isComplete ? 'bg-green-500' :
+                const progressColor = isComplete ? 'bg-ok' :
                   goal.progress >= 70 ? 'bg-primary' :
-                  goal.progress >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+                  goal.progress >= 40 ? 'bg-warn' : 'bg-danger'
 
                 return (
                   <div
                     key={goal.id}
-                    className={`rounded-lg border p-4 transition-colors ${
-                      isComplete ? 'border-green-500/50 bg-green-500/5' : 'border-border'
+                    className={`rounded-inner border p-4 transition-colors ${
+                      isComplete ? 'border-ok/40 bg-ok-tint' : 'border-hair bg-surface-2'
                     }`}
                   >
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-2xl">{GOAL_TYPE_ICONS[goal.type] || '🎯'}</span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-sage">{GOAL_TYPE_ICONS[goal.type] || <Target className={GOAL_ICON_CLS} strokeWidth={1.7} />}</span>
+                      <span className="text-xs text-faint font-mono">
                         D-{goal.days_remaining}
                       </span>
                     </div>
-                    <p className="text-sm font-medium mb-1">
+                    <p className="text-sm font-medium mb-1 text-muted-foreground">
                       {goal.title || GOAL_TYPE_LABELS[goal.type] || goal.type}
                     </p>
                     <div className="flex items-baseline gap-1 mb-2">
-                      <span className={`text-2xl font-bold ${isComplete ? 'text-green-500' : ''}`}>
+                      <span className={`font-display text-2xl sm:text-3xl tracking-tight ${isComplete ? 'text-ok' : 'text-strong'}`}>
                         {goal.current_value}
                       </span>
-                      <span className="text-muted-foreground">/ {goal.target_value}</span>
+                      <span className="text-faint">/ {goal.target_value}</span>
                     </div>
-                    <div className="h-2 bg-muted rounded-full overflow-hidden mb-1">
+                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden mb-1">
                       <div
                         className={`h-full ${progressColor} transition-all duration-500`}
                         style={{ width: `${Math.min(100, goal.progress)}%` }}
                       />
                     </div>
-                    <p className={`text-xs ${isComplete ? 'text-green-500' : 'text-muted-foreground'}`}>
-                      {isComplete ? '✅ 달성 완료!' : `${goal.remaining}개 남음`}
+                    <p className={`text-xs ${isComplete ? 'text-ok' : 'text-faint'}`}>
+                      {isComplete ? '달성 완료!' : `${goal.remaining}개 남음`}
                     </p>
                   </div>
                 )
@@ -410,7 +410,7 @@ export default function Dashboard() {
         <section aria-label="스마트 액션" id="actions" className="bg-card border border-border p-4">
           <div className="flex items-baseline justify-between mb-3">
             <h2 className="font-display text-xl flex items-center gap-2">
-              🧠 스마트 액션
+              스마트 액션
             </h2>
             <span className="caps text-muted-foreground">AI recommendations</span>
           </div>
@@ -442,10 +442,10 @@ export default function Dashboard() {
           <QuickActions />
         </section>
 
-        {/* 📊 상세 분석 — 파이프라인·브리핑·스마트액션·트렌드·키워드·퍼널
+        {/* 상세 분석 — 파이프라인·브리핑·스마트액션·트렌드·키워드·퍼널
             (ROI·주간 리포트는 Marketing Hub로 이관) */}
         <Collapsible
-          title="📊 상세 분석"
+          title="상세 분석"
           summary="파이프라인, AI 브리핑, 스마트 액션, 트렌드, 키워드, 마케팅 퍼널"
           defaultOpen={false}
         >
@@ -483,7 +483,7 @@ export default function Dashboard() {
               onClick={() => navigate('/marketing')}
               className="w-full bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors p-4 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <p className="text-sm font-medium">💰 ROI 분석 · 주간 리포트는 Marketing Hub로 이동했습니다</p>
+              <p className="text-sm font-medium">ROI 분석 · 주간 리포트는 Marketing Hub로 이동했습니다</p>
               <p className="text-xs text-muted-foreground mt-1">
                 캠페인, A/B 테스트, 경쟁사 레이더와 함께 확인 →
               </p>
@@ -504,7 +504,7 @@ export default function Dashboard() {
       {/* Chronos Timeline */}
       <WidgetErrorBoundary widgetName="Chronos Timeline">
         <div className="bg-card rounded-lg border border-border p-6">
-          <h2 className="text-xl font-bold mb-4">⏰ Chronos Timeline</h2>
+          <h2 className="text-xl font-bold mb-4">Chronos Timeline</h2>
           <ChronosTimeline />
         </div>
       </WidgetErrorBoundary>
@@ -540,11 +540,11 @@ export default function Dashboard() {
 
             {/* [Phase 4.0] 오늘의 필수 액션 */}
             {briefing.urgent_actions && briefing.urgent_actions.length > 0 && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+              <div className="bg-danger-tint border border-danger/30 rounded-inner p-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xl">⚡</span>
-                  <h3 className="font-semibold text-red-500">오늘의 필수 액션</h3>
-                  <span className="px-2 py-0.5 text-xs bg-red-500 text-white rounded-full">
+                  <Zap className="w-[18px] h-[18px] text-danger" strokeWidth={1.8} />
+                  <h3 className="font-semibold text-danger">오늘의 필수 액션</h3>
+                  <span className="px-2 py-0.5 text-xs font-mono bg-danger text-white rounded-full">
                     {briefing.urgent_actions.length}
                   </span>
                 </div>
@@ -553,21 +553,21 @@ export default function Dashboard() {
                     <button
                       type="button"
                       key={idx}
-                      className={`w-full flex items-center justify-between p-3 rounded-lg text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                      className={`w-full flex items-center justify-between p-3 rounded-inner text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
                         action.priority === 'critical'
-                          ? 'bg-red-500/20 hover:bg-red-500/30'
+                          ? 'bg-danger-tint hover:bg-danger/20'
                           : action.priority === 'high'
-                          ? 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                          : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-warn-tint hover:bg-warn/20'
+                          : 'bg-surface-2 hover:bg-surface-hover'
                       }`}
                       onClick={() => navigate(action.action_link)}
                       aria-label={`${action.title}: ${action.action_label}`}
                     >
                       <div className="flex-1">
                         <div className="font-medium text-sm flex items-center gap-2">
-                          {action.priority === 'critical' && <span>🚨</span>}
-                          {action.priority === 'high' && <span>⚠️</span>}
-                          {action.priority === 'medium' && <span>📢</span>}
+                          {action.priority === 'critical' && <AlertCircle className="w-4 h-4 text-danger flex-shrink-0" strokeWidth={1.8} />}
+                          {action.priority === 'high' && <AlertTriangle className="w-4 h-4 text-warn flex-shrink-0" strokeWidth={1.8} />}
+                          {action.priority === 'medium' && <Megaphone className="w-4 h-4 text-mist flex-shrink-0" strokeWidth={1.8} />}
                           {action.title}
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
@@ -588,7 +588,7 @@ export default function Dashboard() {
               <Collapsible
                 title={
                   <div className="flex items-center gap-2">
-                    <span>🎯</span>
+                    <Target className="w-4 h-4 text-sage" strokeWidth={1.8} />
                     <span className="font-semibold">키워드 하이라이트</span>
                     <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">
                       +{briefing.keyword_highlights.new_keywords}개
@@ -614,8 +614,8 @@ export default function Dashboard() {
                       <p className="text-xs text-muted-foreground mb-2">최근 추가된 S급 키워드</p>
                       {briefing.keyword_highlights.top_keywords.slice(0, 3).map((kw: KeywordHighlight) => (
                         <div key={kw.keyword} className="text-sm flex items-center justify-between p-2 bg-muted/50 rounded">
-                          <span>
-                            <span className="text-red-500 mr-1" aria-hidden="true">🔥</span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <Flame className="w-3.5 h-3.5 text-clay flex-shrink-0" strokeWidth={1.8} aria-hidden="true" />
                             {kw.keyword}
                           </span>
                           <span className="text-xs text-muted-foreground">
@@ -634,7 +634,7 @@ export default function Dashboard() {
               <Collapsible
                 title={
                   <div className="flex items-center gap-2">
-                    <span>💡</span>
+                    <Lightbulb className="w-4 h-4 text-warn" strokeWidth={1.8} />
                     <span className="font-semibold">권장 액션</span>
                     <span className="text-xs bg-yellow-500/20 text-yellow-600 px-2 py-0.5 rounded-full">
                       {briefing.recommended_actions.length}개
@@ -676,7 +676,7 @@ export default function Dashboard() {
               <Collapsible
                 title={
                   <div className="flex items-center gap-2">
-                    <span>📊</span>
+                    <BarChart3 className="w-4 h-4 text-mist" strokeWidth={1.8} />
                     <span className="font-semibold">최근 인사이트</span>
                     <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
                       {briefing.recent_insights.length}개
@@ -743,22 +743,24 @@ export default function Dashboard() {
         ) : sentinelAlerts ? (
           <div>
             {sentinelAlerts.status === 'normal' ? (
-              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
-                <p className="text-2xl mb-2">✅</p>
-                <p className="text-sm text-green-500">모든 시스템 정상 작동 중</p>
+              <div className="bg-ok-tint border border-ok/30 rounded-inner p-4 text-center">
+                <div className="flex justify-center mb-2 text-ok"><CheckCircle className="w-7 h-7" strokeWidth={1.7} /></div>
+                <p className="text-sm text-ok">모든 시스템 정상 작동 중</p>
               </div>
             ) : (
               <div className="space-y-3">
                 <div
-                  className={`p-4 rounded border text-center ${
+                  className={`p-4 rounded-inner border text-center ${
                     sentinelAlerts.status === 'critical'
-                      ? 'bg-red-500/10 border-red-500/30'
-                      : 'bg-yellow-500/10 border-yellow-500/30'
+                      ? 'bg-danger-tint border-danger/30'
+                      : 'bg-warn-tint border-warn/30'
                   }`}
                 >
-                  <p className="text-2xl mb-2">
-                    {sentinelAlerts.status === 'critical' ? '🚨' : '⚠️'}
-                  </p>
+                  <div className={`flex justify-center mb-2 ${sentinelAlerts.status === 'critical' ? 'text-danger' : 'text-warn'}`}>
+                    {sentinelAlerts.status === 'critical'
+                      ? <AlertCircle className="w-7 h-7" strokeWidth={1.7} />
+                      : <AlertTriangle className="w-7 h-7" strokeWidth={1.7} />}
+                  </div>
                   <p className="text-sm font-semibold">
                     {sentinelAlerts.alert_count}건의 경고
                   </p>
@@ -809,7 +811,7 @@ export default function Dashboard() {
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold flex items-center gap-2">
-              🔥 긴급 리드
+              긴급 리드
               <span className="text-sm font-normal px-2 py-0.5 bg-red-500/20 text-red-500 rounded-full">
                 {pendingAlerts.total_alerts}
               </span>
@@ -828,7 +830,7 @@ export default function Dashboard() {
             {pendingAlerts.hot_leads?.length > 0 && (
               <div>
                 <h3 className="text-sm font-semibold text-muted-foreground mb-2">
-                  🆕 새 Hot Lead ({pendingAlerts.hot_leads.length}개)
+                  새 Hot Lead ({pendingAlerts.hot_leads.length}개)
                 </h3>
                 <div className="space-y-2">
                   {pendingAlerts.hot_leads.slice(0, 3).map((lead: any) => (
@@ -858,7 +860,7 @@ export default function Dashboard() {
             {pendingAlerts.overdue_leads?.length > 0 && (
               <div>
                 <h3 className="text-sm font-semibold text-muted-foreground mb-2">
-                  ⏰ 24시간+ 미연락 ({pendingAlerts.overdue_leads.length}개)
+                  24시간+ 미연락 ({pendingAlerts.overdue_leads.length}개)
                 </h3>
                 <div className="space-y-2">
                   {pendingAlerts.overdue_leads.slice(0, 3).map((lead: any) => (

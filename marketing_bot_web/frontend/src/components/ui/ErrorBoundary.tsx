@@ -1,4 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from 'react'
+import { AlertOctagon } from 'lucide-react'
 
 interface Props {
   children: ReactNode
@@ -48,7 +49,7 @@ class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="min-h-screen flex items-center justify-center bg-background p-4">
           <div className="max-w-md w-full bg-card rounded-lg border border-border p-6 text-center">
-            <div className="text-6xl mb-4">😵</div>
+            <div className="flex justify-center mb-4 text-danger"><AlertOctagon className="w-14 h-14" strokeWidth={1.4} /></div>
             <h1 className="text-2xl font-bold mb-2">오류가 발생했습니다</h1>
             <p className="text-muted-foreground mb-4">
               예상치 못한 오류가 발생했습니다. 페이지를 새로고침하거나 다시 시도해주세요.

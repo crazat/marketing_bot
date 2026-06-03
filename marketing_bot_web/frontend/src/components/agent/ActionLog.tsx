@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
+import { MessageSquare, BarChart3, PenLine, Search, Activity, Bot } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { agentApi } from '@/services/api'
 import { useToast } from '@/components/ui/Toast'
@@ -33,13 +34,14 @@ interface ActionLogProps {
   limit?: number
 }
 
-const ACTION_TYPE_LABELS: Record<string, { label: string; icon: string }> = {
-  comment: { label: '댓글 생성', icon: '💬' },
-  analysis: { label: '분석', icon: '📊' },
-  content: { label: '콘텐츠 생성', icon: '✍️' },
-  keyword: { label: '키워드 분석', icon: '🔍' },
-  weakness: { label: '약점 분석', icon: '💪' },
-  default: { label: '기타', icon: '🤖' },
+const AL_I = 'w-4 h-4'
+const ACTION_TYPE_LABELS: Record<string, { label: string; icon: ReactNode }> = {
+  comment: { label: '댓글 생성', icon: <MessageSquare className={AL_I} strokeWidth={1.7} /> },
+  analysis: { label: '분석', icon: <BarChart3 className={AL_I} strokeWidth={1.7} /> },
+  content: { label: '콘텐츠 생성', icon: <PenLine className={AL_I} strokeWidth={1.7} /> },
+  keyword: { label: '키워드 분석', icon: <Search className={AL_I} strokeWidth={1.7} /> },
+  weakness: { label: '약점 분석', icon: <Activity className={AL_I} strokeWidth={1.7} /> },
+  default: { label: '기타', icon: <Bot className={AL_I} strokeWidth={1.7} /> },
 }
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -91,7 +93,7 @@ function DataViewer({ data }: { data: JsonData }) {
 
   const formatValue = (value: JsonValue): string => {
     if (value === null || value === undefined) return '-'
-    if (typeof value === 'boolean') return value ? '✓ 예' : '✗ 아니오'
+    if (typeof value === 'boolean') return value ? '예' : '아니오'
     if (Array.isArray(value)) {
       if (value.length === 0) return '(없음)'
       if (value.length <= 3) return value.map(v => String(v)).join(', ')
@@ -111,7 +113,7 @@ function DataViewer({ data }: { data: JsonData }) {
           onClick={() => setIsRawView(!isRawView)}
           className="text-[10px]"
         >
-          {isRawView ? '📋 정리된 보기' : '{ } JSON 보기'}
+          {isRawView ? '정리된 보기' : '{ } JSON 보기'}
         </Button>
       </div>
 
@@ -194,7 +196,7 @@ export default function ActionLog({
   if (actions.length === 0) {
     return (
       <div className="bg-card border border-border rounded-lg p-12 text-center">
-        <div className="text-6xl mb-4">🤖</div>
+        <div className="flex justify-center mb-4 text-faint"><Bot className="w-14 h-14" strokeWidth={1.4} /></div>
         <h3 className="text-xl font-semibold mb-2">액션 로그가 없습니다</h3>
         <p className="text-muted-foreground">
           AI Agent가 수행한 액션이 이곳에 표시됩니다.
@@ -301,7 +303,7 @@ export default function ActionLog({
                   {action.input_data && (
                     <div>
                       <div className="text-xs font-medium text-muted-foreground mb-1">
-                        📥 입력 데이터
+                        입력 데이터
                       </div>
                       <DataViewer data={action.input_data} />
                     </div>
@@ -310,7 +312,7 @@ export default function ActionLog({
                   {action.output_data && (
                     <div>
                       <div className="text-xs font-medium text-muted-foreground mb-1">
-                        📤 출력 데이터
+                        출력 데이터
                       </div>
                       <DataViewer data={action.output_data} />
                     </div>
@@ -319,7 +321,7 @@ export default function ActionLog({
                   {action.error_message && (
                     <div>
                       <div className="text-xs font-medium text-red-500 dark:text-red-400 mb-1">
-                        ⚠️ 오류 메시지
+                        오류 메시지
                       </div>
                       <div className="text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-2 rounded">
                         {action.error_message}

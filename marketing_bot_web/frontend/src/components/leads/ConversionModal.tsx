@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import Modal from '@/components/ui/Modal'
 import Button from '@/components/ui/Button'
 import { Lead } from '@/services/api'
+import { Lightbulb } from 'lucide-react'
 
 interface ConversionModalProps {
   isOpen: boolean
@@ -244,7 +245,7 @@ export default function ConversionModal({
 
         {/* 도움말 */}
         <div className="flex items-start gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
-          <span className="text-lg">💡</span>
+          <Lightbulb className="w-[18px] h-[18px] text-warn flex-shrink-0" strokeWidth={1.8} />
           <div className="text-blue-700 dark:text-blue-300">
             <p className="font-medium">전환 기록의 활용</p>
             <ul className="mt-1 text-xs space-y-0.5 text-blue-600 dark:text-blue-400">

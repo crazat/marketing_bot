@@ -25,7 +25,7 @@ import { TerminalGuide } from '@/components/ui/TerminalGuide'
 import { getPageCommands } from '@/utils/terminalCommands'
 import { readStorageJson, writeStorageJson } from '@/utils/safeStorage'
 import Button, { IconButton } from '@/components/ui/Button'
-import { Download, Save, RotateCcw, X } from 'lucide-react'
+import { Download, Save, RotateCcw, X, Search, Target, Swords, Award, FileText, Calendar } from 'lucide-react'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 // 필터 프리셋 타입
@@ -396,7 +396,7 @@ export default function Pathfinder() {
     <div className="space-y-6">
       {/* 헤더 */}
       <div>
-        <h1 className="text-3xl font-bold mb-2">🎯 Pathfinder V3</h1>
+        <h1 className="font-display text-3xl sm:text-4xl tracking-tight mb-2">Pathfinder V3</h1>
         <p className="text-muted-foreground">
           AI 기반 키워드 발굴 시스템 - SERP 분석 & 등급 기반
         </p>
@@ -445,12 +445,12 @@ export default function Pathfinder() {
       {/* 탭 네비게이션 */}
       <TabNavigation
         tabs={[
-          { id: 'collection', label: '🚀 키워드 수집' },
-          { id: 'analysis', label: '📊 키워드 분석' },
-          { id: 'utilization', label: '✍️ 키워드 활용' },
-          { id: 'history', label: '📜 히스토리' },
-          { id: 'clusters', label: '📝 콘텐츠 클러스터' },
-          { id: 'calendar', label: '📅 콘텐츠 캘린더' },
+          { id: 'collection', label: '키워드 수집' },
+          { id: 'analysis', label: '키워드 분석' },
+          { id: 'utilization', label: '키워드 활용' },
+          { id: 'history', label: '히스토리' },
+          { id: 'clusters', label: '콘텐츠 클러스터' },
+          { id: 'calendar', label: '콘텐츠 캘린더' },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -503,7 +503,7 @@ export default function Pathfinder() {
         {/* 필터 */}
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">🔍 필터</h3>
+            <h3 className="text-lg font-semibold">필터</h3>
             <div className="flex items-center gap-2">
               {hasActiveFilters && (
                 <>
@@ -614,10 +614,10 @@ export default function Pathfinder() {
                 className="w-full px-3 py-2 bg-background border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">전체</option>
-                <option value="S">🔥 S급</option>
-                <option value="A">🟢 A급</option>
-                <option value="B">🔵 B급</option>
-                <option value="C">⚪ C급</option>
+                <option value="S">S급</option>
+                <option value="A">A급</option>
+                <option value="B">B급</option>
+                <option value="C">C급</option>
               </select>
             </div>
 
@@ -657,9 +657,9 @@ export default function Pathfinder() {
                 className="w-full px-3 py-2 bg-background border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="">전체</option>
-                <option value="rising">📈 Rising</option>
-                <option value="falling">📉 Falling</option>
-                <option value="stable">➡️ Stable</option>
+                <option value="rising">Rising</option>
+                <option value="falling">Falling</option>
+                <option value="stable">Stable</option>
               </select>
             </div>
           </div>
@@ -733,7 +733,7 @@ export default function Pathfinder() {
         {/* 키워드 테이블 */}
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">📊 키워드 목록</h3>
+            <h3 className="text-lg font-semibold">키워드 목록</h3>
             <Button
               variant="success"
               size="sm"
@@ -757,7 +757,7 @@ export default function Pathfinder() {
             <div className="text-center py-12">
               {searchQuery || hasActiveFilters ? (
                 <>
-                  <p className="text-4xl mb-4">🔍</p>
+                  <div className="flex justify-center mb-4 text-faint"><Search className="w-10 h-10" strokeWidth={1.5} /></div>
                   <p className="text-lg font-medium mb-2">검색 결과가 없습니다</p>
                   <p className="text-sm text-muted-foreground mb-4">
                     다른 검색어나 필터를 시도해보세요.
@@ -772,12 +772,12 @@ export default function Pathfinder() {
                 </>
               ) : (
                 <>
-                  <p className="text-6xl mb-6">🎯</p>
-                  <p className="text-2xl font-bold mb-3">키워드가 없습니다</p>
+                  <div className="flex justify-center mb-6 text-faint"><Target className="w-14 h-14" strokeWidth={1.4} /></div>
+                  <p className="font-display text-2xl sm:text-3xl tracking-tight mb-3">키워드가 없습니다</p>
 
                   <div className="max-w-2xl mx-auto space-y-4">
                     <div className="bg-primary/10 border border-primary/30 rounded-lg p-6">
-                      <p className="text-lg font-semibold text-primary mb-2">💡 사용 방법</p>
+                      <p className="text-lg font-semibold text-primary mb-2">사용 방법</p>
                       <p className="text-sm text-muted-foreground">
                         위의 <strong>컨트롤 패널</strong>에서 Total War 또는 LEGION 모드를 선택하고 실행하세요.
                         <br />
@@ -786,17 +786,17 @@ export default function Pathfinder() {
                     </div>
 
                     <div className="bg-card border border-border rounded-lg p-6 text-left">
-                      <p className="text-sm font-semibold mb-3">📊 모드 설명:</p>
+                      <p className="text-sm font-semibold mb-3">모드 설명:</p>
                       <div className="space-y-3">
                         <div className="flex items-start gap-3">
-                          <span className="text-xl">⚔️</span>
+                          <Swords className="w-5 h-5 text-sage flex-shrink-0 mt-0.5" strokeWidth={1.7} />
                           <div>
                             <p className="font-medium">Total War 모드</p>
                             <p className="text-xs text-muted-foreground">자동완성 기반 빠른 키워드 수집 (약 5분)</p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
-                          <span className="text-xl">🎖️</span>
+                          <Award className="w-5 h-5 text-clay flex-shrink-0 mt-0.5" strokeWidth={1.7} />
                           <div>
                             <p className="font-medium">LEGION 모드</p>
                             <p className="text-xs text-muted-foreground">6단계 확장으로 고품질 키워드 대량 수집 (약 15-30분)</p>
@@ -810,7 +810,7 @@ export default function Pathfinder() {
                       size="lg"
                       onClick={() => window.location.reload()}
                     >
-                      🔄 페이지 새로고침
+                      페이지 새로고침
                     </Button>
                   </div>
                 </>
@@ -828,7 +828,7 @@ export default function Pathfinder() {
   function renderClustersTab() {
     return (
       <div className="bg-card rounded-lg border border-border p-6">
-        <h3 className="text-lg font-semibold mb-4">📝 콘텐츠 클러스터</h3>
+        <h3 className="text-lg font-semibold mb-4">콘텐츠 클러스터</h3>
         <p className="text-sm text-muted-foreground mb-4">
           관련 키워드를 그룹화하여 한 블로그 포스트로 여러 키워드를 커버할 수 있습니다.
         </p>
@@ -841,7 +841,7 @@ export default function Pathfinder() {
         ) : !clusters || clusters.length === 0 ? (
           <EmptyState
             type="initial"
-            icon="📝"
+            icon={<FileText className="w-12 h-12 mx-auto" strokeWidth={1.5} />}
             title="콘텐츠 클러스터가 없습니다"
             description="키워드를 수집한 후 자동으로 관련 키워드들이 그룹화됩니다."
             suggestion="먼저 '키워드 수집' 탭에서 Pathfinder를 실행해보세요."
@@ -880,7 +880,7 @@ export default function Pathfinder() {
       return (
         <div className="bg-card rounded-lg border border-border p-6">
           <div className="text-center py-12 text-muted-foreground">
-            <p className="text-4xl mb-4">📅</p>
+            <div className="flex justify-center mb-4 text-faint"><Calendar className="w-10 h-10" strokeWidth={1.5} /></div>
             <p className="text-lg font-medium mb-2">콘텐츠 캘린더를 생성할 수 없습니다</p>
             <p className="text-sm">S급 또는 A급 키워드 클러스터가 필요합니다.</p>
             <p className="text-xs mt-2">먼저 키워드 수집을 실행해주세요.</p>
@@ -914,8 +914,8 @@ export default function Pathfinder() {
           </div>
           {completedCount > 0 && (
             <p className="text-xs text-muted-foreground mt-2">
-              ✨ {completedCount}주차 콘텐츠 제작 완료!
-              {progressPercent === 100 && ' 🎉 모든 콘텐츠 제작이 완료되었습니다!'}
+              {completedCount}주차 콘텐츠 제작 완료!
+              {progressPercent === 100 && ' 모든 콘텐츠 제작이 완료되었습니다!'}
             </p>
           )}
         </div>
@@ -924,25 +924,25 @@ export default function Pathfinder() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-card rounded-lg border border-border p-4">
             <p className="text-sm text-muted-foreground">총 기간</p>
-            <p className="text-2xl font-bold">{summary?.total_weeks || 0}주</p>
+            <p className="font-display text-2xl sm:text-3xl tracking-tight">{summary?.total_weeks || 0}주</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
             <p className="text-sm text-muted-foreground">커버 키워드</p>
-            <p className="text-2xl font-bold text-primary">{summary?.total_keywords || 0}개</p>
+            <p className="font-display text-2xl sm:text-3xl tracking-tight text-primary">{summary?.total_keywords || 0}개</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
             <p className="text-sm text-muted-foreground">예상 트래픽</p>
-            <p className="text-2xl font-bold text-green-500">{(summary?.estimated_monthly_traffic || 0).toLocaleString()}</p>
+            <p className="font-display text-2xl sm:text-3xl tracking-tight text-green-500">{(summary?.estimated_monthly_traffic || 0).toLocaleString()}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
             <p className="text-sm text-muted-foreground">클러스터</p>
-            <p className="text-2xl font-bold">{summary?.clusters_used || 0}개</p>
+            <p className="font-display text-2xl sm:text-3xl tracking-tight">{summary?.clusters_used || 0}개</p>
           </div>
         </div>
 
         {/* 주별 계획 */}
         <div className="bg-card rounded-lg border border-border p-6">
-          <h3 className="text-lg font-semibold mb-4">📅 주별 콘텐츠 계획</h3>
+          <h3 className="text-lg font-semibold mb-4">주별 콘텐츠 계획</h3>
           <p className="text-sm text-muted-foreground mb-6">
             S/A 등급 클러스터 기반으로 자동 생성된 12주 콘텐츠 캘린더입니다.
           </p>
@@ -967,7 +967,7 @@ export default function Pathfinder() {
                       onClick={() => toggleWeekComplete(week.week)}
                       className={`w-10 h-10 rounded-full flex items-center justify-center font-bold flex-shrink-0 transition-all ${
                         isCompleted
-                          ? 'bg-green-500 text-white'
+                          ? 'bg-ok text-white'
                           : 'bg-primary/20 text-primary hover:bg-primary/30'
                       }`}
                       title={isCompleted ? '완료 취소' : '완료로 표시'}
@@ -979,7 +979,7 @@ export default function Pathfinder() {
                         {week.cluster_name}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {isCompleted ? '✅ 완료' : (week.grade === 'S' ? '🔥' : '🟢')} {week.grade}급 클러스터
+                        {isCompleted ? '완료 · ' : ''}{week.grade}급 클러스터
                       </p>
                     </div>
                   </div>
@@ -1033,7 +1033,7 @@ export default function Pathfinder() {
                     loading={generateOutline.isPending && expandedOutline === week.week}
                     className="bg-gradient-to-r from-purple-500 to-pink-500"
                   >
-                    ✨ 아웃라인 생성
+                    아웃라인 생성
                   </Button>
                 </div>
 
@@ -1042,7 +1042,7 @@ export default function Pathfinder() {
                   <div className="mt-4 pt-4 border-t border-border">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="font-semibold text-sm flex items-center gap-2">
-                        📝 생성된 아웃라인
+                        생성된 아웃라인
                         <span className="text-xs px-2 py-0.5 bg-muted rounded">
                           {generatedOutlines[week.week].source === 'codex_cli' ? 'AI 생성' : '템플릿'}
                         </span>
@@ -1059,7 +1059,7 @@ export default function Pathfinder() {
                           }
                         }}
                       >
-                        📋 복사
+                        복사
                       </Button>
                     </div>
 
@@ -1117,7 +1117,7 @@ export default function Pathfinder() {
         {/* 안내 */}
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
           <p className="text-sm text-blue-400">
-            💡 <strong>팁:</strong> 캘린더는 고품질(S/A급) 클러스터를 우선으로 배치합니다.
+            <strong>팁:</strong> 캘린더는 고품질(S/A급) 클러스터를 우선으로 배치합니다.
             각 주마다 하나의 클러스터를 집중 공략하면 SEO 효과가 극대화됩니다.
           </p>
         </div>

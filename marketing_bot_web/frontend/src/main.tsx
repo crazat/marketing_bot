@@ -9,6 +9,7 @@ import { queryRetryFn, queryRetryDelayFn } from '@/utils/errorMessages'
 import { installErrorTracking } from '@/lib/errorTracking'
 import App from './App'
 import './index.css'
+import './styles/recover-os.css'
 
 // [AA1] 전역 에러 추적 설치 — React 렌더 전 실행
 installErrorTracking()

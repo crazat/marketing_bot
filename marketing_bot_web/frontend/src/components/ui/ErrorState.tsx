@@ -13,7 +13,6 @@ import {
   type ApiErrorType,
   type ErrorSeverity,
   parseApiError,
-  getErrorIcon,
 } from '@/utils/errorMessages'
 
 interface ErrorAction {
@@ -94,24 +93,24 @@ export function WarningIcon({ className = 'w-6 h-6' }: { className?: string }) {
  */
 const severityStyles: Record<ErrorSeverity, { container: string; icon: string; button: string }> = {
   critical: {
-    container: 'bg-red-500/10 border-red-500/30',
-    icon: 'text-red-600',
-    button: 'bg-red-600 hover:bg-red-700 focus:ring-red-500',
+    container: 'bg-danger-tint border-danger/30',
+    icon: 'text-danger',
+    button: 'bg-destructive hover:bg-destructive/90 focus:ring-danger',
   },
   error: {
-    container: 'bg-red-500/10 border-red-500/30',
-    icon: 'text-red-500',
-    button: 'bg-red-500 hover:bg-red-600 focus:ring-red-500',
+    container: 'bg-danger-tint border-danger/30',
+    icon: 'text-danger',
+    button: 'bg-destructive hover:bg-destructive/90 focus:ring-danger',
   },
   warning: {
-    container: 'bg-yellow-500/10 border-yellow-500/30',
-    icon: 'text-yellow-600',
-    button: 'bg-yellow-600 hover:bg-yellow-700 focus:ring-yellow-500',
+    container: 'bg-warn-tint border-warn/30',
+    icon: 'text-warn',
+    button: 'bg-warn hover:opacity-90 focus:ring-warn',
   },
   info: {
-    container: 'bg-blue-500/10 border-blue-500/30',
-    icon: 'text-blue-500',
-    button: 'bg-blue-500 hover:bg-blue-600 focus:ring-blue-500',
+    container: 'bg-info-tint border-info/30',
+    icon: 'text-info',
+    button: 'bg-info hover:opacity-90 focus:ring-info',
   },
 }
 
@@ -153,7 +152,7 @@ export default function ErrorState({
   const errorMessage = message || parsed?.userMessage || '오류가 발생했습니다.'
   const errorSeverity = severity || parsed?.config.severity || 'error'
   const errorTitle = title || errorTitles[errorType]
-  const errorEmoji = getErrorIcon(errorType)
+  const IconComp = errorSeverity === 'warning' ? WarningIcon : ErrorIcon
 
   const styles = severityStyles[errorSeverity]
 
@@ -182,7 +181,7 @@ export default function ErrorState({
         aria-live="polite"
       >
         <div className="flex items-start gap-3">
-          <span className="text-2xl flex-shrink-0" aria-hidden="true">{errorEmoji}</span>
+          <span className={`flex-shrink-0 ${styles.icon}`} aria-hidden="true"><IconComp className="w-6 h-6" /></span>
           <div className="flex-1 min-w-0">
             <h4 className={`font-semibold ${styles.icon}`}>{errorTitle}</h4>
             <p className="text-sm text-muted-foreground mt-1">{errorMessage}</p>
@@ -208,7 +207,7 @@ export default function ErrorState({
     >
       {/* 아이콘 */}
       <div className={`flex justify-center mb-3 ${styles.icon}`}>
-        <span className="text-5xl" aria-hidden="true">{errorEmoji}</span>
+        <IconComp className="w-12 h-12" />
       </div>
 
       {/* 제목 */}
@@ -253,7 +252,7 @@ export function InlineError({
   message: string
   severity?: ErrorSeverity
 }) {
-  const colorClass = severity === 'warning' ? 'text-yellow-600' : 'text-red-500'
+  const colorClass = severity === 'warning' ? 'text-warn' : 'text-danger'
 
   return (
     <div className={`flex items-center gap-2 ${colorClass} text-sm`} role="alert">
@@ -276,7 +275,7 @@ export function FormErrorMessage({
   return (
     <div
       id={id}
-      className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm flex items-center gap-2"
+      className="p-3 bg-danger-tint border border-danger/30 rounded-lg text-danger text-sm flex items-center gap-2"
       role="alert"
     >
       <ErrorIcon className="w-4 h-4 flex-shrink-0" />

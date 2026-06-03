@@ -5,7 +5,7 @@
 
 import { useEffect, useRef } from 'react'
 import { UseMutationResult } from '@tanstack/react-query'
-import { CheckCircle2, ExternalLink, MessageSquarePlus, SkipForward, Trash2, Copy, Search, ThumbsUp, MessageSquareWarning } from 'lucide-react'
+import { CheckCircle2, ExternalLink, MessageSquarePlus, SkipForward, Trash2, Copy, Search, ThumbsUp, MessageSquareWarning, Star, Bot } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { PlatformBadge } from '@/components/viral/PlatformBadge'
 import { ScanCountBadge } from '@/components/viral/ScanCountBadge'
@@ -72,14 +72,14 @@ interface WorkViewProps {
 }
 
 const platformIcons: Record<string, string> = {
-  cafe: '☕ 네이버 카페',
-  blog: '📝 블로그',
-  kin: '❓ 지식iN',
-  youtube: '📺 유튜브',
-  instagram: '📸 인스타그램',
-  tiktok: '🎵 틱톡',
-  place: '📍 플레이스',
-  karrot: '🥕 당근',
+  cafe: '네이버 카페',
+  blog: '블로그',
+  kin: '지식iN',
+  youtube: '유튜브',
+  instagram: '인스타그램',
+  tiktok: '틱톡',
+  place: '플레이스',
+  karrot: '당근',
 }
 
 function getWorkLabel(target?: ViralTargetData | null) {
@@ -150,7 +150,7 @@ export function WorkView({
             ← 홈으로
           </Button>
           <h1 className="text-2xl font-bold sm:text-3xl">
-            🎯 {selectedCategory} ({categoryTargets.length}개)
+            {selectedCategory} ({categoryTargets.length}개)
           </h1>
         </div>
         <div className="hidden text-xs text-muted-foreground md:block">
@@ -269,7 +269,7 @@ export function WorkView({
               <Button
                 size="sm"
                 onClick={() => onTargetAction(activeTarget.id, 'skip', 'unspecified')}
-                className="bg-yellow-500 hover:bg-yellow-600"
+                className="bg-warn hover:bg-warn/90 text-white"
               >
                 <SkipForward className="w-4 h-4" />
                 건너뜀
@@ -290,20 +290,20 @@ export function WorkView({
       {/* 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <div className="text-2xl font-bold">{categoryTargets.length}</div>
+          <div className="text-2xl font-bold num">{categoryTargets.length}</div>
           <div className="text-xs text-muted-foreground">남은 타겟</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <div className="text-2xl font-bold text-green-500">{completionStats.approved}</div>
-          <div className="text-xs text-muted-foreground">✅ 승인</div>
+          <div className="text-2xl font-bold text-ok num">{completionStats.approved}</div>
+          <div className="text-xs text-muted-foreground">승인</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <div className="text-2xl font-bold text-yellow-500">{completionStats.skipped}</div>
-          <div className="text-xs text-muted-foreground">⏭️ 건너뜀</div>
+          <div className="text-2xl font-bold text-warn num">{completionStats.skipped}</div>
+          <div className="text-xs text-muted-foreground">건너뜀</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <div className="text-2xl font-bold text-red-500">{completionStats.deleted}</div>
-          <div className="text-xs text-muted-foreground">🗑️ 삭제</div>
+          <div className="text-2xl font-bold text-danger num">{completionStats.deleted}</div>
+          <div className="text-xs text-muted-foreground">삭제</div>
         </div>
       </div>
 
@@ -354,7 +354,7 @@ export function WorkView({
                           }`}
                           title={target.is_commentable ? '댓글 작성 가능' : '댓글 불가'}
                         >
-                          {target.is_commentable ? '✓ 댓글 가능' : '✗ 댓글 불가'}
+                          {target.is_commentable ? '댓글 가능' : '댓글 불가'}
                         </span>
                       )}
                       {/* [2026-04-27] AI 분류 배지 — 한눈에 작업 가치 판단 */}
@@ -388,10 +388,10 @@ export function WorkView({
                   <div
                     className={`font-bold text-lg ${
                       (target.priority_score || 0) >= 80
-                        ? 'text-red-500'
+                        ? 'text-danger'
                         : (target.priority_score || 0) >= 50
-                          ? 'text-yellow-500'
-                          : 'text-blue-500'
+                          ? 'text-warn'
+                          : 'text-mist'
                     }`}
                   >
                     {target.priority_score?.toFixed(0) || 0}점
@@ -402,26 +402,29 @@ export function WorkView({
                       size="xs"
                       onClick={() => onVerifyTarget(target.id)}
                       loading={verifyTargetMutation.isPending}
-                      className="bg-blue-500 hover:bg-blue-600 text-white"
+                      className="bg-mist hover:bg-mist/90 text-white"
                       title="댓글 가능 여부 확인"
+                      aria-label="댓글 가능 여부 확인"
                     >
-                      🔍
+                      <Search className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       size="xs"
                       onClick={(e) => onTargetAction(target.id, 'skip', e.shiftKey ? undefined : 'unspecified')}
-                      className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                      className="bg-warn hover:bg-warn/90 text-white"
                       title="건너뛰기 (Shift+클릭: 사유 선택)"
+                      aria-label="건너뛰기"
                     >
-                      ⏭️
+                      <SkipForward className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       size="xs"
                       variant="danger"
                       onClick={() => onTargetAction(target.id, 'delete')}
                       title="삭제"
+                      aria-label="삭제"
                     >
-                      🗑️
+                      <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                   </div>
                 </div>
@@ -437,11 +440,11 @@ export function WorkView({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-6">
                       <div className="space-y-3">
                         <div>
-                          <span className="text-muted-foreground text-sm">📍 플랫폼:</span>{' '}
-                          <span className="font-semibold">{platformIcons[target.platform] || '📌 기타'}</span>
+                          <span className="text-muted-foreground text-sm">플랫폼:</span>{' '}
+                          <span className="font-semibold">{platformIcons[target.platform] || '기타'}</span>
                         </div>
                         <div>
-                          <span className="text-muted-foreground text-sm">🔗 URL:</span>{' '}
+                          <span className="text-muted-foreground text-sm">URL:</span>{' '}
                           <a
                             href={safeUrl(target.url)}
                             target="_blank"
@@ -453,7 +456,7 @@ export function WorkView({
                         </div>
                         {target.matched_keywords && target.matched_keywords.length > 0 && (
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-muted-foreground text-sm">🏷️ 매칭 키워드:</span>
+                            <span className="text-muted-foreground text-sm">매칭 키워드:</span>
                             {target.matched_keywords.slice(0, 10).map((kw: string) => (
                               <a
                                 key={kw}
@@ -470,18 +473,18 @@ export function WorkView({
                       <div>
                         <div className="text-right">
                           {(target.priority_score || 0) >= 90 ? (
-                            <div className="text-red-500">
-                              <div className="text-2xl">⭐⭐⭐⭐⭐</div>
+                            <div className="text-danger">
+                              <div className="flex gap-0.5 justify-end mb-1">{Array.from({ length: 5 }, (_, i) => <Star key={i} className="w-4 h-4 fill-current" strokeWidth={0} />)}</div>
                               <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 최우선</div>
                             </div>
                           ) : (target.priority_score || 0) >= 70 ? (
-                            <div className="text-yellow-500">
-                              <div className="text-2xl">⭐⭐⭐⭐</div>
+                            <div className="text-warn">
+                              <div className="flex gap-0.5 justify-end mb-1">{Array.from({ length: 4 }, (_, i) => <Star key={i} className="w-4 h-4 fill-current" strokeWidth={0} />)}</div>
                               <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 우선</div>
                             </div>
                           ) : (
-                            <div className="text-blue-500">
-                              <div className="text-2xl">⭐⭐⭐</div>
+                            <div className="text-mist">
+                              <div className="flex gap-0.5 justify-end mb-1">{Array.from({ length: 3 }, (_, i) => <Star key={i} className="w-4 h-4 fill-current" strokeWidth={0} />)}</div>
                               <div className="text-lg font-bold">{target.priority_score?.toFixed(0)}점 - 일반</div>
                             </div>
                           )}
@@ -497,7 +500,7 @@ export function WorkView({
                     {target.content_preview && (
                       <details className="mb-6">
                         <summary className="cursor-pointer text-sm font-semibold text-muted-foreground mb-2">
-                          📄 내용 미리보기
+                          내용 미리보기
                         </summary>
                         <div className="bg-background rounded-lg p-4 text-sm border border-border">
                           {target.content_preview.substring(0, 800)}
@@ -508,7 +511,7 @@ export function WorkView({
                     {/* 컨텍스트 인사이트 */}
                     <details className="mb-6" open>
                       <summary className="cursor-pointer text-sm font-semibold text-muted-foreground mb-2">
-                        💡 컨텍스트 인사이트
+                        컨텍스트 인사이트
                       </summary>
                       <TargetContext
                         targetId={target.id}
@@ -550,8 +553,8 @@ export function WorkView({
                           )}
 
                           <div className="text-center mb-4">
-                            <div className="text-4xl mb-3">
-                              {commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'}
+                            <div className="flex justify-center mb-3 text-sage">
+                              {commentStyles.find(s => s.id === selectedCommentStyle)?.icon || <Bot className="w-8 h-8" strokeWidth={1.6} />}
                             </div>
                             <p className="text-muted-foreground mb-4">
                               {selectedCommentStyle !== 'default'
@@ -565,7 +568,7 @@ export function WorkView({
                               loading={isGenerating}
                               className="group relative"
                             >
-                              <span>{commentStyles.find(s => s.id === selectedCommentStyle)?.icon || '🤖'} AI 댓글 생성하기</span>
+                              <span className="inline-flex items-center gap-2">{commentStyles.find(s => s.id === selectedCommentStyle)?.icon || <Bot className="w-4 h-4" strokeWidth={1.8} />} AI 댓글 생성하기</span>
                               <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">G</kbd>
                             </Button>
                           </div>
@@ -590,7 +593,7 @@ export function WorkView({
                                     }}
                                     title={template.content}
                                   >
-                                    📝 {template.name}
+                                    {template.name}
                                   </Button>
                                 ))}
                               </div>
@@ -633,17 +636,17 @@ export function WorkView({
                         fullWidth
                         className="group relative"
                       >
-                        <span>✅ 승인 (댓글 저장)</span>
+                        <span>승인 (댓글 저장)</span>
                         <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">A</kbd>
                       </Button>
                       <Button
                         onClick={(e) => onTargetAction(target.id, 'skip', (e as React.MouseEvent).shiftKey ? undefined : 'unspecified')}
                         size="lg"
                         fullWidth
-                        className="bg-yellow-500 hover:bg-yellow-600 group relative"
+                        className="bg-warn hover:bg-warn/90 text-white group relative"
                         title="Shift+클릭: 사유 선택"
                       >
-                        <span>⏭️ 건너뛰기</span>
+                        <span>건너뛰기</span>
                         <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">S</kbd>
                       </Button>
                       <Button
@@ -653,7 +656,7 @@ export function WorkView({
                         fullWidth
                         className="group relative"
                       >
-                        <span>🗑️ 삭제</span>
+                        <span>삭제</span>
                         <kbd className="ml-2 hidden group-hover:inline-flex items-center h-5 px-1.5 text-[10px] font-mono rounded bg-black/20 text-white/90">D</kbd>
                       </Button>
                     </div>
@@ -668,7 +671,7 @@ export function WorkView({
       {/* 하단 안내 */}
       {categoryTargets.length > 0 && (
         <div className="text-center text-sm text-muted-foreground">
-          💡 제목을 클릭하면 상세 정보가 펼쳐집니다. 목록에서 바로 ⏭️ 건너뛰기, 🗑️ 삭제도 가능합니다.
+          제목을 클릭하면 상세 정보가 펼쳐집니다. 목록에서 바로 건너뛰기, 삭제도 가능합니다.
         </div>
       )}
     </div>
