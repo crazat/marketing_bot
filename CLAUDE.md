@@ -1,5 +1,13 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-03 Memory: Codex CLI Image Generation Only
+
+- User requirement: image generation must use Codex CLI built-in image generation only. Do not use `OPENAI_API_KEY`, direct OpenAI API calls, or app/project code paths for this image-generation issue unless the user explicitly changes this constraint.
+- In Codex CLI, invoke image generation in natural language or with `$imagegen`. `gpt-image-2` is the internal model used by the built-in Codex image-generation skill, not a user-specified tool name to place in a `tools` array.
+- If an error says `The model 'gpt-image-2' does not exist` with `param: tools`, treat it as API/tool-schema misuse or server-side Codex tool mapping, not as a local `marketing_bot` code fix. Do not try to "fix" it by editing application code.
+- Local verification on 2026-06-03: `codex --version` returned `codex-cli 0.136.0`; `npm view @openai/codex version` also returned `0.136.0`; `~/.codex/config.toml` and project `.codex` settings had no `gpt-image-2`, `image_generation`, or `$imagegen` override.
+- `C:\Projects\blog_automation` is explicitly off limits. Do not inspect, edit, restore, commit, or otherwise touch it for this work unless the user gives a new explicit instruction naming that project.
+
 ## 2026-06-03 Memory: Viral Hunter Ad Filtering and Legion Longtail Upgrade
 
 - Viral Hunter/KIN filtering was hardened after the 2026-06-02 UI timeout and ad-like target review. The filter now scores actual user need, reply opportunity, timing window, journey fit, and qualification fit separately, with explicit KIN provider-answer/ad-answer/recommendation-spam patterns and stronger blog/brand/legal promo suppression. Keep this distinction: do not treat polished provider answers or covert recommendation ads as commentable user questions.
