@@ -11,6 +11,7 @@ import KeywordAnalysisTab from '@/components/pathfinder/KeywordAnalysisTab'
 import KeywordUtilizationTab from '@/components/pathfinder/KeywordUtilizationTab'
 import KeywordHistoryTab from '@/components/pathfinder/KeywordHistoryTab'
 import LiveLogViewer from '@/components/pathfinder/LiveLogViewer'
+import InsightBriefPanel from '@/components/pathfinder/InsightBriefPanel'
 import { SkeletonStatsGrid, SkeletonTable } from '@/components/ui/Skeleton'
 import EmptyState from '@/components/ui/EmptyState'
 import MissionProgress from '@/components/ui/MissionProgress'
@@ -85,6 +86,7 @@ export default function Pathfinder() {
   // [P1-2] 캘린더 아웃라인 상태
   const [expandedOutline, setExpandedOutline] = useState<number | null>(null)
   const [generatedOutlines, setGeneratedOutlines] = useState<Record<number, any>>({})
+  const [useCodexBrief, setUseCodexBrief] = useState(false)
 
   // [P2-2] 캘린더 진행 트래킹 (localStorage)
   const [completedWeeks, setCompletedWeeks] = useState<Set<number>>(() => loadCompletedWeeks())
@@ -201,6 +203,54 @@ export default function Pathfinder() {
     retry: 2,
   })
 
+  const {
+    data: insightBrief,
+    isLoading: insightBriefLoading,
+    isError: insightBriefError,
+    refetch: refetchInsightBrief,
+  } = useQuery({
+    queryKey: ['pathfinder-insight-brief', useCodexBrief],
+    queryFn: () => pathfinderApi.getInsightBrief(12, useCodexBrief),
+    staleTime: 60000,
+    retry: 2,
+  })
+
+  const submitInsightFeedback = useMutation({
+    mutationFn: (payload: {
+      handoff_id: string
+      keyword?: string
+      agent?: string
+      feedback_type: 'accepted' | 'needs_review'
+      metadata?: Record<string, unknown>
+    }) => pathfinderApi.submitInsightFeedback(payload),
+    onSuccess: (_data, payload) => {
+      toast.success(payload.feedback_type === 'accepted' ? '인사이트 피드백을 저장했습니다' : '검토 필요 피드백을 저장했습니다')
+      queryClient.invalidateQueries({ queryKey: ['pathfinder-insight-brief'] })
+    },
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(`피드백 저장 실패: ${error.response?.data?.detail || error.message}`)
+    },
+  })
+
+  const handleInsightFeedback = useCallback((feedbackType: 'accepted' | 'needs_review') => {
+    const action = insightBrief?.action_queue?.[0]
+    if (!action?.handoff_id) {
+      toast.warning('피드백을 저장할 handoff_id가 없습니다')
+      return
+    }
+    submitInsightFeedback.mutate({
+      handoff_id: action.handoff_id,
+      keyword: action.keyword,
+      agent: action.owner,
+      feedback_type: feedbackType,
+      metadata: {
+        source: 'pathfinder_insight_brief_panel',
+        quality_gate: insightBrief?.quality_gate?.status,
+        confidence: action.confidence,
+      },
+    })
+  }, [insightBrief, submitInsightFeedback, toast])
+
   // [Phase 5.0] 키워드 검색 필터링
   const filteredKeywords = useMemo(() => {
     if (!keywords) return []
@@ -280,6 +330,7 @@ export default function Pathfinder() {
     queryClient.invalidateQueries({ queryKey: ['pathfinder-stats'] })
     queryClient.invalidateQueries({ queryKey: ['pathfinder-keywords'] })
     queryClient.invalidateQueries({ queryKey: ['pathfinder-clusters'] })
+    queryClient.invalidateQueries({ queryKey: ['pathfinder-insight-brief'] })
   }
 
   const handleMissionStop = () => {
@@ -424,6 +475,7 @@ export default function Pathfinder() {
             onRefresh={() => {
               refetchStats()
               refetchKeywords()
+              refetchInsightBrief()
             }}
             isRefreshing={statsRefreshing || keywordsRefreshing}
             compact
@@ -443,6 +495,22 @@ export default function Pathfinder() {
       </div>
 
       {/* 탭 네비게이션 */}
+      <InsightBriefPanel
+        brief={insightBrief}
+        isLoading={insightBriefLoading}
+        isError={insightBriefError}
+        onRefresh={() => refetchInsightBrief()}
+        onRequestCodex={() => {
+          if (useCodexBrief) {
+            refetchInsightBrief()
+          } else {
+            setUseCodexBrief(true)
+          }
+        }}
+        onFeedback={handleInsightFeedback}
+        onCopy={(message) => toast.info(message)}
+      />
+
       <TabNavigation
         tabs={[
           { id: 'collection', label: '키워드 수집' },

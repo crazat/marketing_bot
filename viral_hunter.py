@@ -47,6 +47,7 @@ from utils.json_io import atomic_write_json
 from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import ViralSeedBuilder
+from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -3079,8 +3080,20 @@ class AICommentGenerator:
                 prompt += style_suffix
 
             guardrail = self._compliance_guardrail(target)
+            try:
+                topic = " ".join([target.title or "", " ".join(target.matched_keywords or [])]).strip()
+                db_path = os.path.join(ConfigManager().root_dir, "db", "marketing_data.db")
+                pathfinder_context = load_pathfinder_prompt_context(
+                    db_path,
+                    agent="viral_hunter_agent",
+                    topic=topic,
+                    limit=5,
+                )
+            except Exception as e:
+                pathfinder_context = f"[Pathfinder Insight Handoff unavailable: {e}]"
             prompt = (
                 f"{guardrail}\n{prompt}\n"
+                f"\n[Pathfinder Insight Handoff]\n{pathfinder_context}\n"
                 "[최종 확인] 위 필수 운영 원칙을 우선 적용하고, 허위 경험담/사칭/은폐성 광고는 절대 작성하지 마세요."
             )
             comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800, task="viral_comment")

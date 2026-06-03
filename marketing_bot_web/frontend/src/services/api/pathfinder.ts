@@ -106,4 +106,30 @@ export const pathfinderApi = {
     const response = await api.post('/pathfinder/keywords/recalculate-kei')
     return response.data
   },
+
+  getInsightBrief: async (limit = 12, useCodex = false) => {
+    const response = await api.get('/pathfinder/insight-brief', {
+      params: { limit, use_codex: useCodex }
+    })
+    return response.data
+  },
+
+  getAgentHandoff: async (agent: 'all' | 'blog' | 'shorts' | 'viral' | 'ads' = 'all', limit = 8) => {
+    const response = await api.get('/pathfinder/agent-handoff', {
+      params: { agent, limit }
+    })
+    return response.data
+  },
+
+  submitInsightFeedback: async (payload: {
+    handoff_id: string
+    keyword?: string
+    agent?: string
+    feedback_type: 'accepted' | 'rejected' | 'needs_review' | 'sent_to_agent' | 'completed' | 'failed'
+    note?: string
+    metadata?: Record<string, unknown>
+  }) => {
+    const response = await api.post('/pathfinder/insight-feedback', payload)
+    return response.data
+  },
 }

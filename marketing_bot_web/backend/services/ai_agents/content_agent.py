@@ -6,6 +6,17 @@ from typing import Dict, Any
 from services.ai_agents.base_agent import BaseAgent
 
 
+def _pathfinder_context(db_path: str, agent: str, limit: int = 5) -> str:
+    if not db_path:
+        return "[Pathfinder Insight Handoff unavailable: db_path is not configured]"
+    try:
+        from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
+
+        return load_pathfinder_prompt_context(db_path, agent=agent, limit=limit)
+    except Exception as exc:
+        return f"[Pathfinder Insight Handoff unavailable: {exc}]"
+
+
 class ContentAgent(BaseAgent):
     def __init__(self, db_path: str = None):
         super().__init__(
@@ -24,6 +35,8 @@ class ContentAgent(BaseAgent):
             return await self._optimize_for_aeo(task.get("content", ""))
         elif action == "content_calendar":
             return await self._content_calendar(task.get("weeks", 4))
+        elif action == "pathfinder_handoff":
+            return await self._pathfinder_handoff(task.get("agent", "all"), task.get("limit", 8))
         else:
             return {"error": f"Unknown action: {action}"}
 
@@ -60,6 +73,7 @@ class ContentAgent(BaseAgent):
 
         trending_text = ", ".join(f"{t['keyword']}({t['grade']}급)" for t in trending)
         community_text = ", ".join(f"{c['keyword']}({c['mentions']}건)" for c in community)
+        pathfinder_context = _pathfinder_context(self.db_path, "blog_agent", limit=8)
 
         suggestions = await self.think(f"""
 한의원 블로그와 SNS에 올릴 콘텐츠 주제를 제안해주세요.
@@ -69,6 +83,9 @@ class ContentAgent(BaseAgent):
 
 [최근 커뮤니티 화제]
 {community_text or "(데이터 없음)"}
+
+[Pathfinder 인사이트 브리프]
+{pathfinder_context}
 
 [제안 요청]
 1. 블로그 포스팅 주제 5개 (AEO 최적화 고려)
@@ -126,12 +143,16 @@ class ContentAgent(BaseAgent):
             f"- {k['keyword']} ({k['grade']}급, {k.get('category', '미분류')})"
             for k in keywords
         )
+        pathfinder_context = _pathfinder_context(self.db_path, "all", limit=8)
 
         calendar = await self.think(f"""
 향후 {weeks}주간의 한의원 콘텐츠 캘린더를 작성해주세요.
 
 [활용 가능 키워드]
 {kw_text or "(키워드 데이터 없음)"}
+
+[Pathfinder 인사이트 브리프]
+{pathfinder_context}
 
 [캘린더 형식]
 각 주마다:
@@ -143,3 +164,15 @@ class ContentAgent(BaseAgent):
 """, max_tokens=2000)
 
         return {"calendar": calendar, "weeks": weeks}
+
+    async def _pathfinder_handoff(self, agent: str = "all", limit: int = 8) -> Dict[str, Any]:
+        """Return structured Pathfinder packets for other agents."""
+        if not self.db_path:
+            return {"error": "db_path is not configured"}
+        try:
+            from core_services.pathfinder_insight_broker import PathfinderInsightBroker
+
+            broker = PathfinderInsightBroker(self.db_path)
+            return broker.build_agent_handoffs(agent=agent, limit=limit)
+        except Exception as exc:
+            return {"error": str(exc)}

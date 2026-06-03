@@ -1,5 +1,21 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-03 Memory: Pathfinder Insight Handoff System
+
+- Pathfinder now has a dedicated insight broker at `core_services/pathfinder_insight_broker.py`. It turns `keyword_insights` rows into user-facing briefs, Codex prompt context, and per-agent handoff packets for `blog_agent`, `shorts_studio_agent`, `viral_hunter_agent`, and `ad_agent`.
+- Each keyword card must preserve the same execution contract downstream: `handoff_id`, `evidence_trace`, `confidence`, `confidence_band`, `human_review`, `feedback_snapshot`, `decision_packet`, `measurement_plan`, and `data_quality`.
+- `decision_packet.state` is the publish gate: `go` can draft/publish with normal operator oversight, `review` can draft but requires operator review before publish, and `hold` is operator-review-only. Feedback such as `needs_review`, `rejected`, or `failed` can promote a card back to review/hold.
+- `data_quality` follows a DQV-style fitness-for-purpose snapshot: completeness, source diversity, scan-run linkage, evidence count, and quality warnings. Thin data quality keeps the quality gate in review.
+- `measurement_plan` is mandatory for insight delivery. It records the hypothesis, primary metric, review cadence, success threshold, and stop condition for each `handoff_id`.
+- Backend routes: `GET /pathfinder/insight-brief`, `GET /pathfinder/agent-handoff`, and `POST /pathfinder/insight-feedback`. Feedback is stored in `pathfinder_insight_feedback` and is read back into future briefs through `feedback_summary` and card-level `feedback_snapshot`.
+- Frontend `InsightBriefPanel` shows the brief, Codex synthesis, quality gate, decision overview, feedback state, action queue, and approval/review feedback controls.
+- Existing content agents now consume Pathfinder handoff context: `agent_crew.py` blog research, `director.py` shorts scripting, backend content agent topic/calendar generation, and `viral_hunter.py` comment generation.
+- CLI export: `python scripts/pathfinder_insight_handoff.py --out scratch/pathfinder_handoff_test.json --limit 3 --allow-stale`; delete scratch exports after verification.
+- Focused verification for this system:
+  - `python -m py_compile core_services/pathfinder_insight_broker.py scripts/pathfinder_insight_handoff.py marketing_bot_web/backend/routers/pathfinder.py marketing_bot_web/backend/services/ai_agents/content_agent.py agent_crew.py director.py viral_hunter.py tests/test_pathfinder_insight_broker.py`
+  - `$env:PYTHONPATH=(Get-Location).Path; pytest tests/test_pathfinder_insight_broker.py tests/test_pathfinder_viral_stability.py -q`
+  - `npm --prefix marketing_bot_web/frontend run build`
+
 ## 2026-06-03 Memory: RECOVER OS Frontend Redesign (Seoul Clinical Editorial)
 
 - The marketing_bot_web frontend was fully re-skinned to the "RECOVER OS — Seoul Clinical Editorial" design from `markbotdesign_upgrade.zip`. Decision: apply the full visual system (palette/type/layout) but KEEP the existing "Marketing Bot / 규림한의원 마케팅 OS" brand identity in the chrome — do NOT introduce a "RECOVER OS" wordmark.

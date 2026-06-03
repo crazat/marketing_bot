@@ -52,6 +52,32 @@ def test_pathfinder_save_counts_insert_update_and_last_seen(tmp_path):
     assert row == (1, 2, 120.0, 1)
 
 
+def test_pathfinder_save_persists_access_convenience_fields(tmp_path):
+    db_path = tmp_path / "pathfinder_access.db"
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    result = _keyword("청주 교통사고 한의원 주차 가능 길찾기")
+    result.access_convenience_score = 82.0
+    result.access_convenience_type = "parking_access"
+    result.access_convenience_flags = ["parking_intent", "access_high_intent"]
+
+    save_result = legion.save_to_db([result], db_path=str(db_path), scan_run_id=3)
+
+    assert save_result["inserted"] == 1
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT access_convenience_score, access_convenience_type, access_convenience_flags_json
+            FROM keyword_insights
+            WHERE keyword = ?
+            """,
+            (result.keyword,),
+        ).fetchone()
+
+    assert row[0] == 82.0
+    assert row[1] == "parking_access"
+    assert "access_high_intent" in row[2]
+
+
 def test_legion_business_core_filter_matches_actual_acquisition_categories():
     collector = LegionCollector(delay=0.0, use_google=False)
 
@@ -148,6 +174,882 @@ def test_legion_high_value_longtail_is_promoted_without_large_volume_bias():
         business_value_score=60,
     )
     assert longtail_priority > generic_priority
+
+
+def test_legion_longtail_variant_builder_balances_categories_and_contexts():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    variants = legion._build_high_value_longtail_variants(
+        ["청주 다이어트 한의원", "청주 교통사고 한의원", "청주 여드름 한의원"],
+        max_keywords=1200,
+    )
+
+    assert len(variants) >= 900
+    assert any("복대동" in kw and "다이어트 한약" in kw and "비용" in kw for kw in variants)
+    assert any("교통사고 입원" in kw and "자보" in kw for kw in variants)
+    assert any("여드름흉터 한의원" in kw and "추천" in kw for kw in variants)
+    assert any("다이어트 한약" in kw and "비용 얼마" in kw for kw in variants)
+    assert any("직장인" in kw and "다이어트 한약" in kw for kw in variants)
+
+
+def test_legion_ad_keyword_metrics_create_business_value_signal():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+
+    legion._merge_ad_keyword_metrics({
+        "청주다이어트한약비용": {
+            "monthly_pc_clicks": 18.0,
+            "monthly_mobile_clicks": 64.0,
+            "monthly_pc_ctr": 0.8,
+            "monthly_mobile_ctr": 2.1,
+            "avg_ad_depth": 7.0,
+            "competition": "높음",
+        }
+    })
+
+    metrics = legion._get_ad_keyword_metrics("청주 다이어트 한약 비용")
+    signal = legion._calculate_ad_value_signal(metrics)
+
+    assert metrics["competition"] == "높음"
+    assert signal >= 65
+
+
+def test_legion_inbound_query_metrics_build_first_party_seeds():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    legion.inbound_query_metrics = {
+        PathfinderLegion._normalize_keyword_for_history("복대동 다이어트 한약 비용"): {
+            "query": "복대동 다이어트 한약 비용",
+            "sources": ["gsc"],
+            "impressions": 80,
+            "clicks": 3,
+            "ctr": 0.0375,
+            "position": 9.0,
+        },
+        PathfinderLegion._normalize_keyword_for_history("서울 한의원"): {
+            "query": "서울 한의원",
+            "sources": ["gsc"],
+            "impressions": 1000,
+            "clicks": 10,
+            "ctr": 0.01,
+            "position": 4.0,
+        },
+    }
+
+    seeds = legion._build_inbound_query_seeds(limit=10)
+    signal = legion._calculate_inbound_value_signal(legion._get_inbound_query_metrics("복대동 다이어트 한약 비용"))
+
+    assert "복대동 다이어트 한약 비용" in seeds
+    assert "서울 한의원" not in seeds
+    assert signal >= 30
+
+
+def test_legion_content_cluster_key_separates_page_targets():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    price_key = legion._content_cluster_key("복대동 다이어트 한약 비용", "다이어트", "transactional")
+    review_key = legion._content_cluster_key("복대동 다이어트 한약 후기", "다이어트", "validation")
+
+    assert price_key != review_key
+    assert "price" in price_key
+    assert "review" in review_key
+
+
+def test_legion_owned_rank_gap_seeds_prioritize_striking_distance():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    gap_norm = PathfinderLegion._normalize_keyword_for_history("복대동 다이어트 한약 비용")
+    top_norm = PathfinderLegion._normalize_keyword_for_history("청주 여드름 한의원")
+    legion.owned_rank_metrics = {
+        gap_norm: {
+            "keyword": "복대동 다이어트 한약 비용",
+            "rank": 14,
+            "status": "found",
+            "device": "mobile",
+            "rank_gap_signal": PathfinderLegion._calculate_rank_gap_signal({
+                "rank": 14,
+                "status": "found",
+                "device": "mobile",
+            }),
+            "rank_status": "striking_page2",
+        },
+        top_norm: {
+            "keyword": "청주 여드름 한의원",
+            "rank": 2,
+            "status": "found",
+            "device": "mobile",
+            "rank_gap_signal": PathfinderLegion._calculate_rank_gap_signal({
+                "rank": 2,
+                "status": "found",
+                "device": "mobile",
+            }),
+            "rank_status": "owned_top3",
+        },
+    }
+
+    seeds = legion._build_owned_rank_gap_seeds(limit=10)
+
+    assert legion.owned_rank_metrics[gap_norm]["rank_gap_signal"] >= 55
+    assert PathfinderLegion._rank_status_label({"rank": 2, "status": "found"}) == "owned_top3"
+    assert "복대동 다이어트 한약 비용" in seeds
+    assert "청주 여드름 한의원" not in seeds
+
+
+def test_legion_community_signal_seeds_capture_real_question_demand():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    focus_norm = PathfinderLegion._normalize_keyword_for_history("복대동 여드름흉터 한의원 후기")
+    off_scope_norm = PathfinderLegion._normalize_keyword_for_history("서울 피부과 후기")
+    legion.community_keyword_metrics = {
+        focus_norm: {
+            "keyword": "복대동 여드름흉터 한의원 후기",
+            "mentions": 5,
+            "platforms": ["cafe", "kin"],
+            "commentable": 3,
+            "max_priority": 120.0,
+            "max_conversion_fit": 78.0,
+            "max_infiltration": 66.0,
+        },
+        off_scope_norm: {
+            "keyword": "서울 피부과 후기",
+            "mentions": 12,
+            "platforms": ["cafe", "kin"],
+            "commentable": 8,
+            "max_priority": 150.0,
+            "max_conversion_fit": 90.0,
+            "max_infiltration": 80.0,
+        },
+    }
+    for data in legion.community_keyword_metrics.values():
+        data["community_signal"] = PathfinderLegion._calculate_community_value_signal(data)
+
+    seeds = legion._build_community_signal_seeds(limit=10)
+
+    assert legion.community_keyword_metrics[focus_norm]["community_signal"] >= 40
+    assert "복대동 여드름흉터 한의원 후기" in seeds
+    assert "서울 피부과 후기" not in seeds
+
+
+def test_legion_conversion_signal_seeds_prioritize_actual_calls():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    focus_norm = PathfinderLegion._normalize_keyword_for_history("복대동 교통사고 한의원 입원")
+    off_scope_norm = PathfinderLegion._normalize_keyword_for_history("서울 교통사고 병원")
+    legion.conversion_keyword_metrics = {
+        focus_norm: {
+            "keyword": "복대동 교통사고 한의원 입원",
+            "total_calls": 4,
+            "naver_search_calls": 3,
+            "duration_seconds": 480,
+            "rows": 2,
+        },
+        off_scope_norm: {
+            "keyword": "서울 교통사고 병원",
+            "total_calls": 10,
+            "naver_search_calls": 7,
+            "duration_seconds": 1200,
+            "rows": 4,
+        },
+    }
+    for data in legion.conversion_keyword_metrics.values():
+        data["conversion_signal"] = PathfinderLegion._calculate_conversion_value_signal(data)
+
+    seeds = legion._build_conversion_signal_seeds(limit=10)
+
+    assert legion.conversion_keyword_metrics[focus_norm]["conversion_signal"] >= 35
+    assert "복대동 교통사고 한의원 입원" in seeds
+    assert "서울 교통사고 병원" not in seeds
+
+
+def test_legion_profile_action_signal_scores_directions_and_bookings():
+    metrics = {
+        "calls": 2,
+        "directions": 5,
+        "website_clicks": 3,
+        "bookings": 2,
+        "messages": 1,
+    }
+
+    signal = PathfinderLegion._calculate_profile_action_value_signal(metrics)
+
+    assert signal >= 60
+
+
+def test_legion_profile_action_seeds_prioritize_local_action_keywords():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    focus_norm = PathfinderLegion._normalize_keyword_for_history("복대동 교통사고 한의원 입원 예약 길찾기")
+    off_scope_norm = PathfinderLegion._normalize_keyword_for_history("서울 교통사고 병원 예약")
+    legion.profile_action_metrics = {
+        focus_norm: {
+            "keyword": "복대동 교통사고 한의원 입원 예약 길찾기",
+            "calls": 2,
+            "directions": 5,
+            "website_clicks": 2,
+            "bookings": 2,
+            "messages": 1,
+            "sources": ["gbp"],
+        },
+        off_scope_norm: {
+            "keyword": "서울 교통사고 병원 예약",
+            "calls": 8,
+            "directions": 10,
+            "website_clicks": 3,
+            "bookings": 5,
+            "messages": 2,
+            "sources": ["gbp"],
+        },
+    }
+    for data in legion.profile_action_metrics.values():
+        data["profile_action_signal"] = PathfinderLegion._calculate_profile_action_value_signal(data)
+        data["total_actions"] = (
+            data["calls"] + data["directions"] + data["website_clicks"] + data["bookings"] + data["messages"]
+        )
+
+    seeds = legion._build_profile_action_seeds(limit=10)
+
+    assert legion.profile_action_metrics[focus_norm]["profile_action_signal"] >= 60
+    assert "복대동 교통사고 한의원 입원 예약 길찾기" in seeds
+    assert "서울 교통사고 병원 예약" not in seeds
+
+
+def test_legion_profile_action_signal_keeps_local_action_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_keyword_value_profile(
+        "복대동 교통사고 한의원 입원 예약 길찾기",
+        category="교통사고",
+        search_intent="transactional",
+        search_volume=25,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=50.0,
+        local_surface_score=45.0,
+        profile_action_signal=72.0,
+    )
+
+    assert profile["profile_action_signal"] >= 60
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_availability_profile_scores_same_day_booking_intent():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_availability_intent_profile(
+        "복대동 교통사고 한의원 오늘 입원 예약 가능",
+        "교통사고",
+        "transactional",
+        local_surface_score=68.0,
+        profile_action_signal=45.0,
+        service_fit_score=92.0,
+    )
+
+    assert profile["availability_intent_type"] == "same_day_booking"
+    assert profile["availability_intent_score"] >= 70
+    assert "availability_high_intent" in profile["flags"]
+
+
+def test_legion_availability_intent_keeps_time_sensitive_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    availability = legion._calculate_availability_intent_profile(
+        "청주 교통사고 한의원 주말 입원 가능",
+        "교통사고",
+        "transactional",
+        local_surface_score=50.0,
+        service_fit_score=90.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 교통사고 한의원 주말 입원 가능",
+        category="교통사고",
+        search_intent="transactional",
+        search_volume=25,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=50.0,
+        local_surface_score=50.0,
+        availability_intent_score=availability["availability_intent_score"],
+        availability_intent_type=availability["availability_intent_type"],
+    )
+
+    assert availability["availability_intent_score"] >= 70
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_availability_profile_distinguishes_hours_check():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_availability_intent_profile(
+        "청주 규림한의원 진료시간 휴무",
+        "한의원일반",
+        "navigational",
+        local_surface_score=62.0,
+        service_fit_score=75.0,
+    )
+
+    assert profile["availability_intent_type"] == "hours_check"
+    assert profile["availability_intent_score"] >= 55
+    assert "hours_check" in profile["flags"]
+
+
+def test_legion_payment_profile_scores_auto_insurance_longtail():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_payment_coverage_profile(
+        "청주 교통사고 한의원 자보 입원 치료비",
+        "교통사고",
+        "transactional",
+        service_fit_score=94.0,
+        local_surface_score=68.0,
+    )
+
+    assert profile["payment_coverage_type"] == "auto_insurance"
+    assert profile["payment_coverage_score"] >= 70
+    assert "payment_high_intent" in profile["flags"]
+
+
+def test_legion_payment_coverage_keeps_insurance_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    payment = legion._calculate_payment_coverage_profile(
+        "청주 추나요법 한의원 보험 적용 비용",
+        "체형교정",
+        "transactional",
+        service_fit_score=90.0,
+        local_surface_score=50.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 추나요법 한의원 보험 적용 비용",
+        category="체형교정",
+        search_intent="transactional",
+        search_volume=25,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=50.0,
+        local_surface_score=50.0,
+        payment_coverage_score=payment["payment_coverage_score"],
+        payment_coverage_type=payment["payment_coverage_type"],
+    )
+
+    assert payment["payment_coverage_score"] >= 70
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_payment_profile_detects_claim_documents():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_payment_coverage_profile(
+        "청주 한의원 실비 청구 영수증 서류",
+        "한의원일반",
+        "transactional",
+        service_fit_score=82.0,
+        local_surface_score=55.0,
+    )
+
+    assert profile["payment_coverage_type"] == "claim_documents"
+    assert profile["payment_coverage_score"] >= 70
+    assert "claim_document_intent" in profile["flags"]
+
+
+def test_legion_access_convenience_profile_scores_parking_access():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_access_convenience_profile(
+        "청주 교통사고 한의원 주차 가능 길찾기 도보",
+        "교통사고",
+        "transactional",
+        service_fit_score=92.0,
+        local_surface_score=68.0,
+        availability_intent_score=70.0,
+    )
+
+    assert profile["access_convenience_type"] == "parking_access"
+    assert profile["access_convenience_score"] >= 70
+    assert "access_high_intent" in profile["flags"]
+
+
+def test_legion_access_convenience_keeps_parking_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    access = legion._calculate_access_convenience_profile(
+        "청주 교통사고 한의원 주차 가능한 곳 길찾기 도보",
+        "교통사고",
+        "transactional",
+        service_fit_score=90.0,
+        local_surface_score=50.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 교통사고 한의원 주차 가능한 곳 길찾기 도보",
+        category="교통사고",
+        search_intent="transactional",
+        search_volume=20,
+        difficulty=22,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=50.0,
+        local_surface_score=50.0,
+        access_convenience_score=access["access_convenience_score"],
+        access_convenience_type=access["access_convenience_type"],
+    )
+
+    assert access["access_convenience_score"] >= 70
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_access_convenience_profile_detects_accessibility_need():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_access_convenience_profile(
+        "청주 한의원 휠체어 엘리베이터 위치 길찾기",
+        "한의원일반",
+        "navigational",
+        service_fit_score=82.0,
+        local_surface_score=65.0,
+    )
+
+    assert profile["access_convenience_type"] == "accessibility_need"
+    assert profile["access_convenience_score"] >= 70
+    assert "accessibility_need" in profile["flags"]
+
+
+def test_legion_medical_ad_risk_distinguishes_claims_from_safe_info():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+
+    risky = legion._calculate_medical_ad_risk_profile("청주 다이어트 한약 100% 완치 보장", "transactional")
+    safe_info = legion._calculate_medical_ad_risk_profile("청주 다이어트 한약 부작용 있나요", "red_flag")
+
+    assert risky["score"] >= 70
+    assert "high_risk_claim" in risky["flags"]
+    assert risky["content_feasibility_score"] < safe_info["content_feasibility_score"]
+    assert safe_info["score"] < 40
+    assert "safe_info_possible" in safe_info["flags"]
+
+
+def test_legion_service_fit_blocks_negative_intent_longtails():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    good = legion._calculate_service_fit_profile("청주 다이어트 한약 비용", "다이어트", "transactional")
+    employment = legion._calculate_service_fit_profile("청주 한의원 채용", "한의원일반", "transactional")
+    off_region = legion._calculate_service_fit_profile("서울 다이어트 한의원 비용", "다이어트", "transactional")
+    self_care = legion._calculate_service_fit_profile("청주 여드름흉터 셀프 홈케어", "피부/여드름", "informational")
+
+    assert good["score"] >= 85
+    assert employment["score"] < 35
+    assert "employment_intent" in employment["flags"]
+    assert off_region["score"] < 65
+    assert "non_target_region" in off_region["flags"]
+    assert self_care["hard_negative"] is True
+
+
+def test_legion_negative_intent_cannot_be_promoted_as_high_value_longtail():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_keyword_value_profile(
+        "청주 다이어트 한의원 채용 비용",
+        category="다이어트",
+        search_intent="transactional",
+        search_volume=50,
+        difficulty=18,
+        opportunity=88,
+        document_count=1200,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+    )
+    promoted, flags = legion._promote_grade_for_high_value_longtail(
+        "B",
+        profile,
+        has_real_volume=True,
+        search_volume=50,
+        difficulty=18,
+        opportunity=88,
+        verification_score=80,
+        quality_flags=[],
+    )
+
+    assert profile["service_fit_score"] < 65
+    assert profile["hard_negative_intent"] is True
+    assert profile["high_value_longtail"] is False
+    assert promoted == "B"
+    assert "negative_intent:employment_intent" in flags
+
+
+def test_legion_content_actionability_routes_service_and_safe_faq_pages():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    service = legion._calculate_content_actionability_profile(
+        "복대동 다이어트 한약 비용",
+        "다이어트",
+        "transactional",
+        medical_ad_risk_score=0.0,
+        service_fit_score=95.0,
+    )
+    safe_faq = legion._calculate_content_actionability_profile(
+        "청주 다이어트 한약 부작용 있나요",
+        "다이어트",
+        "red_flag",
+        medical_ad_risk_score=12.0,
+        service_fit_score=90.0,
+    )
+
+    assert service["score"] >= 80
+    assert service["recommended_content_type"] == "service_landing"
+    assert safe_faq["score"] >= 80
+    assert safe_faq["recommended_content_type"] == "faq_safety"
+    assert "safe_faq_candidate" in safe_faq["flags"]
+
+
+def test_legion_content_actionability_limits_proof_sensitive_claims():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    action = legion._calculate_content_actionability_profile(
+        "청주 다이어트 한약 1위 추천",
+        "다이어트",
+        "commercial",
+        medical_ad_risk_score=42.0,
+        service_fit_score=95.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 다이어트 한약 1위 추천",
+        category="다이어트",
+        search_intent="commercial",
+        search_volume=80,
+        difficulty=20,
+        opportunity=88,
+        document_count=1200,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        medical_ad_risk_score=42.0,
+        content_actionability_score=action["score"],
+    )
+
+    assert action["score"] < 60
+    assert "proof_sensitive_claim" in action["flags"]
+    assert profile["high_value_longtail"] is False
+
+
+def test_legion_local_surface_routes_place_action_keywords():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_local_surface_profile(
+        "복대동 교통사고 한의원 입원 주차 전화",
+        "교통사고",
+        "transactional",
+        mobile_share=0.82,
+        rank_gap_signal=72.0,
+        conversion_signal=48.0,
+        service_fit_score=94.0,
+    )
+
+    assert profile["score"] >= 70
+    assert profile["preferred_search_surface"] == "profile_action"
+    assert "place_action_intent" in profile["flags"]
+    assert "mobile_heavy" in profile["flags"]
+
+
+def test_legion_local_surface_keeps_map_heavy_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    local_surface = legion._calculate_local_surface_profile(
+        "청주 교통사고 한의원 입원 주차",
+        "교통사고",
+        "transactional",
+        mobile_share=0.8,
+        rank_gap_signal=70.0,
+        conversion_signal=45.0,
+        service_fit_score=90.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 교통사고 한의원 입원 주차",
+        category="교통사고",
+        search_intent="transactional",
+        search_volume=20,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=52.0,
+        local_surface_score=local_surface["score"],
+    )
+
+    assert local_surface["score"] >= 70
+    assert profile["local_surface_score"] >= 70
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_brand_intent_separates_own_brand_from_competitor_terms():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.own_brand_terms = {"규림", "규림한의원"}
+    legion.competitor_brand_terms = {"자연과한의원"}
+
+    own = legion._calculate_brand_intent_profile("청주 규림한의원 후기", "validation")
+    competitor = legion._calculate_brand_intent_profile("청주 자연과한의원 다이어트 한약 후기", "commercial")
+
+    assert own["brand_intent_type"] == "own_brand_defense"
+    assert own["brand_signal_score"] >= 80
+    assert competitor["brand_intent_type"] == "competitor_comparison"
+    assert competitor["competitor_brand_risk_score"] >= 70
+    assert "competitor_brand_high_risk" in competitor["flags"]
+
+
+def test_legion_competitor_brand_terms_do_not_promote_to_high_value_longtail():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    legion.own_brand_terms = {"규림", "규림한의원"}
+    legion.competitor_brand_terms = {"자연과한의원"}
+
+    brand = legion._calculate_brand_intent_profile("청주 자연과한의원 다이어트 한약 후기", "commercial")
+    profile = legion._calculate_keyword_value_profile(
+        "청주 자연과한의원 다이어트 한약 후기",
+        category="다이어트",
+        search_intent="commercial",
+        search_volume=80,
+        difficulty=20,
+        opportunity=88,
+        document_count=1200,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=82.0,
+        local_surface_score=72.0,
+        brand_intent_type=brand["brand_intent_type"],
+        competitor_brand_risk_score=brand["competitor_brand_risk_score"],
+    )
+    promoted, flags = legion._promote_grade_for_high_value_longtail(
+        "B",
+        profile,
+        has_real_volume=True,
+        search_volume=80,
+        difficulty=20,
+        opportunity=88,
+        verification_score=82,
+        quality_flags=[],
+    )
+
+    assert profile["high_value_longtail"] is False
+    assert promoted == "B"
+    assert "brand_intent:competitor_comparison" in flags
+
+
+def test_legion_review_reputation_profile_routes_own_brand_reviews_to_defense():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_review_reputation_profile(
+        "청주 규림한의원 후기 평점",
+        "validation",
+        brand_intent_type="own_brand_defense",
+        community_signal=55.0,
+        local_surface_score=72.0,
+    )
+
+    assert profile["review_intent_type"] == "own_review_defense"
+    assert profile["review_surface_score"] >= 70
+    assert profile["reputation_risk_score"] < 40
+    assert "review_defense" in profile["flags"]
+
+
+def test_legion_reputation_risk_blocks_review_longtail_promotion():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    review = legion._calculate_review_reputation_profile(
+        "청주 다이어트 한의원 불친절 후기 환불",
+        "validation",
+        brand_intent_type="generic",
+        local_surface_score=55.0,
+        medical_ad_risk_score=42.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "청주 다이어트 한의원 불친절 후기 환불",
+        category="다이어트",
+        search_intent="validation",
+        search_volume=30,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=82.0,
+        local_surface_score=55.0,
+        review_surface_score=review["review_surface_score"],
+        reputation_risk_score=review["reputation_risk_score"],
+        review_intent_type=review["review_intent_type"],
+    )
+
+    assert review["reputation_risk_score"] >= 70
+    assert "reputation_high_risk" in review["flags"]
+    assert profile["high_value_longtail"] is False
+
+
+def test_legion_review_surface_keeps_generic_review_longtail_promotable():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    review = legion._calculate_review_reputation_profile(
+        "복대동 여드름흉터 한의원 후기",
+        "validation",
+        brand_intent_type="generic",
+        local_surface_score=45.0,
+    )
+    profile = legion._calculate_keyword_value_profile(
+        "복대동 여드름흉터 한의원 후기",
+        category="피부/여드름",
+        search_intent="validation",
+        search_volume=30,
+        difficulty=20,
+        opportunity=88,
+        document_count=900,
+        source_signal_count=2,
+        has_real_volume=True,
+        business_core=True,
+        content_actionability_score=50.0,
+        local_surface_score=45.0,
+        review_surface_score=review["review_surface_score"],
+        reputation_risk_score=review["reputation_risk_score"],
+        review_intent_type=review["review_intent_type"],
+    )
+
+    assert review["review_surface_score"] >= 70
+    assert review["reputation_risk_score"] == 0
+    assert profile["high_value_longtail"] is True
+
+
+def test_legion_missing_volume_high_value_longtail_recovers_to_estimated_b_grade():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    keyword = "복대동 직장인 다이어트 한약 비용"
+    profile = legion._calculate_keyword_value_profile(
+        keyword,
+        category="다이어트",
+        search_intent="transactional",
+        search_volume=30,
+        difficulty=20,
+        opportunity=88,
+        document_count=1200,
+        source_signal_count=3,
+        has_real_volume=False,
+        business_core=True,
+    )
+    verification = legion._calculate_verification_score(
+        keyword,
+        search_volume=30,
+        document_count=1200,
+        source_signal_count=3,
+        has_real_volume=False,
+        business_core=True,
+    )
+
+    assert profile["high_value_longtail"] is True
+    assert verification >= 55
+
+    promoted, flags = legion._promote_grade_for_high_value_longtail(
+        "C",
+        profile,
+        has_real_volume=False,
+        search_volume=30,
+        difficulty=20,
+        opportunity=88,
+        verification_score=verification,
+        quality_flags=["missing_real_volume"],
+    )
+
+    assert promoted == "B"
+    assert "missing_real_volume" in flags
+    assert "estimated_high_value_longtail" in flags
+
+
+def test_legion_quality_flag_sync_drops_stale_document_count_flags():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    legion.keyword_source_signals = {
+        PathfinderLegion._normalize_keyword_for_history("청주 다이어트 한약 비용"): {"round1_seed"}
+    }
+    legion.keyword_canonical_by_norm = {}
+    legion.candidate_stats = {
+        "input_by_source": Counter(),
+        "valid_by_source": Counter(),
+        "accepted_by_source": Counter(),
+        "sa_by_source": Counter(),
+        "rejected_by_source": {},
+    }
+    legion.diversity_metrics = {}
+
+    result = KeywordResult(
+        keyword="청주 다이어트 한약 비용",
+        search_volume=30,
+        difficulty=20,
+        opportunity=88,
+        grade="A",
+        category="다이어트",
+        priority_score=100,
+        source="round1_seed",
+        search_intent="transactional",
+        document_count=1000,
+        business_core=True,
+        quality_flags=["missing_document_count", "low_document_count"],
+    )
+
+    legion._sync_result_quality_fields(result)
+
+    assert "missing_document_count" not in result.quality_flags
+    assert "low_document_count" not in result.quality_flags
+
+
+def test_legion_run_respects_max_rounds_after_fixed_rounds():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    legion.base_seeds = ["청주 다이어트 한의원"]
+
+    analyzed_sources = []
+    legion._analyze_and_add = lambda keywords, source: analyzed_sources.append(source) or 0
+    legion._build_high_value_longtail_variants = lambda *args, **kwargs: set()
+    legion._collect_ad_related_keywords = lambda *args, **kwargs: []
+    legion._select_expansion_keywords = lambda *args, **kwargs: []
+    legion._finalize = lambda: []
+    legion.collector.get_autocomplete_multi = lambda seed: set()
+    legion.collector.get_autocomplete = lambda keyword: []
+
+    legion.run(target_sa=99, max_rounds=2, skip_ad_related=True)
+
+    assert analyzed_sources == ["round1_seed", "round2_expand"]
 
 
 def test_viral_seed_builder_penalizes_revisited_keyword_history(tmp_path):

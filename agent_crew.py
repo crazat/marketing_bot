@@ -42,7 +42,16 @@ class BaseAgent:
 class ResearchAgent(BaseAgent):
     def __init__(self):
         super().__init__("Researcher")
-    
+
+    def _pathfinder_context(self, topic: str) -> str:
+        try:
+            from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
+
+            db_path = os.path.join(self.config.root_dir, 'db', 'marketing_data.db')
+            return load_pathfinder_prompt_context(db_path, agent="blog_agent", topic=topic, limit=5)
+        except Exception as e:
+            return f"[Pathfinder Insight Handoff unavailable: {e}]"
+
     def gather_intel(self, topic):
         logger.info(f"🕵️ Researcher looking up: {topic}")
         # In a real scenario, this would trigger web search tools (SerpApi etc).
@@ -66,6 +75,7 @@ class ResearchAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"Failed to fetch DB context: {e}")
             context_data += "[Internal Data] (DB Connection Failed)\n"
+        pathfinder_context = self._pathfinder_context(topic)
         
         # 2. Knowledge Base (Theory)
         # We assume the agent 'knows' medical theory or we inject some rules.
@@ -73,12 +83,18 @@ class ResearchAgent(BaseAgent):
         prompt = f"""
         You are a Medical Research Assistant.
         Topic: {topic}
-        
+
+        [Internal Market Context]:
+        {context_data}
+
+        [Pathfinder Insight Handoff]:
+        {pathfinder_context}
+
         Provide a structured research brief for a Blog Writer.
         1. **Medical Fact**: What is the physiological cause of {topic}? (Briefly)
         2. **Patient Pain Points**: What are they most worried about?
         3. **Key Stats/Trends**: Are there seasonal trends for this in Korea?
-        
+
         Output as bullet points.
         """
         return self.generate(prompt)

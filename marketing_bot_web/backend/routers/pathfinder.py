@@ -390,6 +390,15 @@ class PathfinderRequest(BaseModel):
     target: Optional[int] = 500
     save_db: bool = True
 
+
+class PathfinderInsightFeedbackRequest(BaseModel):
+    handoff_id: str
+    keyword: Optional[str] = None
+    agent: Optional[str] = None
+    feedback_type: str
+    note: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
 @router.get("/stats")
 @cached(ttl=300)
 @handle_exceptions
@@ -2227,6 +2236,136 @@ async def get_content_suggestions(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # [Phase 6.2] KEI (Keyword Effectiveness Index) API
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/insight-brief")
+async def get_pathfinder_insight_brief(
+    limit: int = Query(default=12, ge=1, le=50),
+    business_core_only: bool = Query(default=True),
+    latest_verified_only: bool = Query(default=True),
+    use_codex: bool = Query(default=False, description="Codex CLI로 사용자용 전략 요약을 한 번 더 합성"),
+) -> Dict[str, Any]:
+    """
+    Pathfinder 결과를 사용자와 에이전트가 바로 이해할 수 있는 인사이트 브리프로 변환합니다.
+
+    단순 키워드 목록이 아니라 왜 중요한지, 어느 에이전트가 실행해야 하는지,
+    의료광고/브랜드/평판 가드레일은 무엇인지까지 하나의 JSON 계약으로 제공합니다.
+    """
+    try:
+        from core_services.pathfinder_insight_broker import PathfinderInsightBroker
+
+        db = DatabaseManager()
+        broker = PathfinderInsightBroker(db.db_path)
+        return broker.build_user_brief(
+            limit=limit,
+            business_core_only=business_core_only,
+            latest_verified_only=latest_verified_only,
+            use_codex=use_codex,
+        )
+    except Exception as e:
+        logger.error(f"[insight-brief] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/agent-handoff")
+async def get_pathfinder_agent_handoff(
+    agent: str = Query(default="all", description="all, blog, shorts, viral, ads"),
+    limit: int = Query(default=8, ge=1, le=50),
+    business_core_only: bool = Query(default=True),
+    latest_verified_only: bool = Query(default=True),
+) -> Dict[str, Any]:
+    """Blog/Shorts/Viral/Ads 에이전트가 재사용할 Pathfinder handoff 패킷을 반환합니다."""
+    try:
+        from core_services.pathfinder_insight_broker import PathfinderInsightBroker
+
+        db = DatabaseManager()
+        broker = PathfinderInsightBroker(db.db_path)
+        return broker.build_agent_handoffs(
+            agent=agent,
+            limit=limit,
+            business_core_only=business_core_only,
+            latest_verified_only=latest_verified_only,
+        )
+    except Exception as e:
+        logger.error(f"[agent-handoff] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/insight-feedback")
+async def submit_pathfinder_insight_feedback(
+    request: PathfinderInsightFeedbackRequest,
+) -> Dict[str, Any]:
+    """Store user or agent feedback for a Pathfinder handoff."""
+    allowed_feedback_types = {
+        "accepted",
+        "rejected",
+        "needs_review",
+        "sent_to_agent",
+        "completed",
+        "failed",
+    }
+    if request.feedback_type not in allowed_feedback_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"feedback_type must be one of {sorted(allowed_feedback_types)}",
+        )
+
+    conn = None
+    try:
+        db = DatabaseManager()
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pathfinder_insight_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                handoff_id TEXT NOT NULL,
+                keyword TEXT,
+                agent TEXT,
+                feedback_type TEXT NOT NULL,
+                note TEXT,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO pathfinder_insight_feedback (
+                handoff_id, keyword, agent, feedback_type, note, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request.handoff_id,
+                request.keyword,
+                request.agent,
+                request.feedback_type,
+                request.note,
+                json.dumps(request.metadata or {}, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        return {
+            "success": True,
+            "id": cursor.lastrowid,
+            "handoff_id": request.handoff_id,
+            "feedback_type": request.feedback_type,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[insight-feedback] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn is not None:
+            conn.close()
+
 
 @router.get("/keywords/top-kei")
 async def get_top_kei_keywords(

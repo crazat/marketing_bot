@@ -45,6 +45,7 @@ class NaverAdManager:
 
         # [CACHING] In-memory cache for current session
         self._memory_cache = {}  # {keyword: {volume: int, cached_at: datetime}}
+        self._last_keyword_metrics = {}
         self._cache_ttl_days = 7  # Cache validity: 7 days
 
         # Initialize DB cache table
@@ -237,6 +238,31 @@ class NaverAdManager:
         except Exception as e:
             logger.warning(f"Cache write error: {e}")
 
+    @staticmethod
+    def _parse_count(value) -> int:
+        if isinstance(value, str) and "<" in value:
+            return 5
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _parse_float(value) -> float:
+        if isinstance(value, str) and "<" in value:
+            return 0.0
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def get_last_keyword_metrics(self):
+        """
+        Returns detailed Keyword Tool metrics captured during the latest API fetch.
+        Cached volume hits do not include detailed ad metrics.
+        """
+        return dict(getattr(self, "_last_keyword_metrics", {}) or {})
+
     def get_keyword_volumes(self, keywords):
         """
         Retrieves monthly search volume for a list of keywords.
@@ -254,16 +280,18 @@ class NaverAdManager:
         # Circuit Breaker check
         if getattr(self, 'disabled', False):
             return {}
-        
+
+        self._last_keyword_metrics = {}
+
         # [CACHE FIRST] Check cached volumes
         cached_results, uncached_keywords = self._get_cached_volumes(keywords)
-        
+
         if cached_results:
             logger.info(f"💾 Cache HIT: {len(cached_results)}/{len(keywords)} keywords from cache")
-        
+
         if not uncached_keywords:
             return cached_results  # All from cache!
-        
+
         logger.info(f"🔍 Fetching {len(uncached_keywords)} uncached keywords from API...")
 
         api_results = {}
@@ -275,7 +303,7 @@ class NaverAdManager:
 
         for chunk in chunks:
             if getattr(self, 'disabled', False): break
-            
+
             try:
                 query_params = {
                     "hintKeywords": ",".join([k.replace(" ", "") for k in chunk]),
@@ -294,20 +322,26 @@ class NaverAdManager:
                     
                     for item in keyword_list:
                         kw = item["relKeyword"].strip()
-                        
+
                         # Parse PC/Mobile Counts
-                        pc_cnt = item["monthlyPcQcCnt"]
-                        mo_cnt = item["monthlyMobileQcCnt"]
-                        
-                        if isinstance(pc_cnt, str) and "<" in pc_cnt: pc_cnt = 5
-                        if isinstance(mo_cnt, str) and "<" in mo_cnt: mo_cnt = 5
-                        
-                        total_vol = int(pc_cnt) + int(mo_cnt)
-                        
+                        pc_cnt = self._parse_count(item.get("monthlyPcQcCnt"))
+                        mo_cnt = self._parse_count(item.get("monthlyMobileQcCnt"))
+                        total_vol = pc_cnt + mo_cnt
+
                         # [UNLEASHED MODE]
                         # Capture EVERYTHING the API gives us.
                         # This typically returns 100+ related keywords for every 5 inputs.
                         api_results[kw] = total_vol
+                        self._last_keyword_metrics[kw] = {
+                            "monthly_pc_count": pc_cnt,
+                            "monthly_mobile_count": mo_cnt,
+                            "monthly_pc_clicks": self._parse_float(item.get("monthlyAvePcClkCnt")),
+                            "monthly_mobile_clicks": self._parse_float(item.get("monthlyAveMobileClkCnt")),
+                            "monthly_pc_ctr": self._parse_float(item.get("monthlyAvePcCtr")),
+                            "monthly_mobile_ctr": self._parse_float(item.get("monthlyAveMobileCtr")),
+                            "avg_ad_depth": self._parse_float(item.get("plAvgDepth")),
+                            "competition": str(item.get("compIdx", "") or ""),
+                        }
                         
                     # Ensure original seeds are present (even if 0 vol) to prevent key errors
                     for k in chunk:

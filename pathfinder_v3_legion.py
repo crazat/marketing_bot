@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Set, Tuple, Optional
 from collections import Counter, defaultdict
+from contextlib import closing
 from pathlib import Path
 from functools import lru_cache
 from utils.json_io import atomic_write_json
@@ -324,6 +325,62 @@ class KeywordResult:
     longtail_score: float = 0.0
     business_value_score: float = 0.0
     high_value_longtail: bool = False
+    inbound_impressions: int = 0
+    inbound_clicks: int = 0
+    inbound_ctr: float = 0.0
+    inbound_position: float = 0.0
+    inbound_sources: List[str] = None
+    mobile_share: float = 0.0
+    content_cluster_key: str = ""
+    owned_rank: int = 0
+    owned_rank_device: str = ""
+    rank_gap_signal: float = 0.0
+    rank_status: str = "unknown"
+    community_mentions: int = 0
+    community_conversion_fit: float = 0.0
+    community_signal: float = 0.0
+    community_platforms: List[str] = None
+    conversion_calls: int = 0
+    conversion_naver_calls: int = 0
+    conversion_duration_seconds: int = 0
+    conversion_signal: float = 0.0
+    profile_action_signal: float = 0.0
+    profile_actions_total: int = 0
+    profile_direction_actions: int = 0
+    profile_website_actions: int = 0
+    profile_booking_actions: int = 0
+    profile_message_actions: int = 0
+    profile_action_sources: List[str] = None
+    profile_action_flags: List[str] = None
+    availability_intent_score: float = 0.0
+    availability_intent_type: str = "none"
+    availability_action_flags: List[str] = None
+    payment_coverage_score: float = 0.0
+    payment_coverage_type: str = "none"
+    payment_action_flags: List[str] = None
+    access_convenience_score: float = 0.0
+    access_convenience_type: str = "none"
+    access_convenience_flags: List[str] = None
+    medical_ad_risk_score: float = 0.0
+    medical_ad_risk_flags: List[str] = None
+    content_feasibility_score: float = 100.0
+    local_service_fit_score: float = 0.0
+    negative_intent_flags: List[str] = None
+    content_actionability_score: float = 0.0
+    recommended_content_type: str = ""
+    content_action_flags: List[str] = None
+    local_surface_score: float = 0.0
+    preferred_search_surface: str = ""
+    local_surface_flags: List[str] = None
+    brand_intent_type: str = "generic"
+    brand_signal_score: float = 0.0
+    brand_mentions: List[str] = None
+    competitor_brand_risk_score: float = 0.0
+    brand_action_flags: List[str] = None
+    review_surface_score: float = 0.0
+    reputation_risk_score: float = 0.0
+    review_intent_type: str = "none"
+    review_action_flags: List[str] = None
 
     def __post_init__(self):
         if self.merged_from is None:
@@ -332,6 +389,34 @@ class KeywordResult:
             self.source_signals = []
         if self.quality_flags is None:
             self.quality_flags = []
+        if self.inbound_sources is None:
+            self.inbound_sources = []
+        if self.community_platforms is None:
+            self.community_platforms = []
+        if self.profile_action_sources is None:
+            self.profile_action_sources = []
+        if self.profile_action_flags is None:
+            self.profile_action_flags = []
+        if self.availability_action_flags is None:
+            self.availability_action_flags = []
+        if self.payment_action_flags is None:
+            self.payment_action_flags = []
+        if self.access_convenience_flags is None:
+            self.access_convenience_flags = []
+        if self.medical_ad_risk_flags is None:
+            self.medical_ad_risk_flags = []
+        if self.negative_intent_flags is None:
+            self.negative_intent_flags = []
+        if self.content_action_flags is None:
+            self.content_action_flags = []
+        if self.local_surface_flags is None:
+            self.local_surface_flags = []
+        if self.brand_mentions is None:
+            self.brand_mentions = []
+        if self.brand_action_flags is None:
+            self.brand_action_flags = []
+        if self.review_action_flags is None:
+            self.review_action_flags = []
 
 
 # ============================================================
@@ -631,6 +716,175 @@ class KeywordMerger:
             best_result.longtail_score = max(results[k].longtail_score for k in group)
             best_result.business_value_score = max(results[k].business_value_score for k in group)
             best_result.high_value_longtail = any(results[k].high_value_longtail for k in group)
+            best_result.inbound_impressions = sum(results[k].inbound_impressions for k in group)
+            best_result.inbound_clicks = sum(results[k].inbound_clicks for k in group)
+            best_result.inbound_ctr = (
+                best_result.inbound_clicks / best_result.inbound_impressions
+                if best_result.inbound_impressions > 0 else 0.0
+            )
+            inbound_positions = [results[k].inbound_position for k in group if results[k].inbound_position > 0]
+            best_result.inbound_position = min(inbound_positions) if inbound_positions else 0.0
+            best_result.inbound_sources = sorted({
+                source
+                for k in group
+                for source in (results[k].inbound_sources or [])
+            })
+            best_result.mobile_share = max(results[k].mobile_share for k in group)
+            best_result.content_cluster_key = best_result.content_cluster_key or next(
+                (results[k].content_cluster_key for k in group if results[k].content_cluster_key),
+                "",
+            )
+            rank_candidates = [results[k] for k in group if results[k].rank_gap_signal > 0 or results[k].owned_rank > 0]
+            if rank_candidates:
+                rank_best = max(rank_candidates, key=lambda r: r.rank_gap_signal)
+                best_result.owned_rank = rank_best.owned_rank
+                best_result.owned_rank_device = rank_best.owned_rank_device
+                best_result.rank_gap_signal = rank_best.rank_gap_signal
+                best_result.rank_status = rank_best.rank_status
+            community_candidates = [results[k] for k in group if results[k].community_signal > 0 or results[k].community_mentions > 0]
+            if community_candidates:
+                community_best = max(community_candidates, key=lambda r: r.community_signal)
+                best_result.community_mentions = sum(results[k].community_mentions for k in group)
+                best_result.community_conversion_fit = max(results[k].community_conversion_fit for k in group)
+                best_result.community_signal = community_best.community_signal
+                best_result.community_platforms = sorted({
+                    platform
+                    for k in group
+                    for platform in (results[k].community_platforms or [])
+                })
+            conversion_candidates = [results[k] for k in group if results[k].conversion_signal > 0 or results[k].conversion_calls > 0]
+            if conversion_candidates:
+                conversion_best = max(conversion_candidates, key=lambda r: r.conversion_signal)
+                best_result.conversion_calls = sum(results[k].conversion_calls for k in group)
+                best_result.conversion_naver_calls = sum(results[k].conversion_naver_calls for k in group)
+                best_result.conversion_duration_seconds = sum(results[k].conversion_duration_seconds for k in group)
+                best_result.conversion_signal = conversion_best.conversion_signal
+            profile_action_candidates = [results[k] for k in group if results[k].profile_action_signal > 0 or results[k].profile_actions_total > 0]
+            if profile_action_candidates:
+                profile_action_best = max(profile_action_candidates, key=lambda r: r.profile_action_signal)
+                best_result.profile_action_signal = profile_action_best.profile_action_signal
+                best_result.profile_actions_total = sum(results[k].profile_actions_total for k in group)
+                best_result.profile_direction_actions = sum(results[k].profile_direction_actions for k in group)
+                best_result.profile_website_actions = sum(results[k].profile_website_actions for k in group)
+                best_result.profile_booking_actions = sum(results[k].profile_booking_actions for k in group)
+                best_result.profile_message_actions = sum(results[k].profile_message_actions for k in group)
+                best_result.profile_action_sources = sorted({
+                    source
+                    for k in group
+                    for source in (results[k].profile_action_sources or [])
+                })
+                best_result.profile_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].profile_action_flags or [])
+                })
+            availability_candidates = [results[k] for k in group if results[k].availability_intent_score > 0]
+            if availability_candidates:
+                availability_best = max(availability_candidates, key=lambda r: r.availability_intent_score)
+                best_result.availability_intent_score = availability_best.availability_intent_score
+                best_result.availability_intent_type = availability_best.availability_intent_type
+                best_result.availability_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].availability_action_flags or [])
+                })
+            payment_candidates = [results[k] for k in group if results[k].payment_coverage_score > 0]
+            if payment_candidates:
+                payment_best = max(payment_candidates, key=lambda r: r.payment_coverage_score)
+                best_result.payment_coverage_score = payment_best.payment_coverage_score
+                best_result.payment_coverage_type = payment_best.payment_coverage_type
+                best_result.payment_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].payment_action_flags or [])
+                })
+            access_candidates = [results[k] for k in group if results[k].access_convenience_score > 0]
+            if access_candidates:
+                access_best = max(access_candidates, key=lambda r: r.access_convenience_score)
+                best_result.access_convenience_score = access_best.access_convenience_score
+                best_result.access_convenience_type = access_best.access_convenience_type
+                best_result.access_convenience_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].access_convenience_flags or [])
+                })
+            risk_candidates = [results[k] for k in group if results[k].medical_ad_risk_score > 0]
+            if risk_candidates:
+                risk_worst = max(risk_candidates, key=lambda r: r.medical_ad_risk_score)
+                best_result.medical_ad_risk_score = risk_worst.medical_ad_risk_score
+                best_result.medical_ad_risk_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].medical_ad_risk_flags or [])
+                })
+                best_result.content_feasibility_score = min(results[k].content_feasibility_score for k in group)
+            best_result.local_service_fit_score = max(results[k].local_service_fit_score for k in group)
+            best_result.negative_intent_flags = sorted({
+                flag
+                for k in group
+                for flag in (results[k].negative_intent_flags or [])
+            })
+            action_candidates = [results[k] for k in group if results[k].content_actionability_score > 0]
+            if action_candidates:
+                action_best = max(action_candidates, key=lambda r: r.content_actionability_score)
+                best_result.content_actionability_score = action_best.content_actionability_score
+                best_result.recommended_content_type = action_best.recommended_content_type
+                best_result.content_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].content_action_flags or [])
+                })
+            surface_candidates = [results[k] for k in group if results[k].local_surface_score > 0]
+            if surface_candidates:
+                surface_best = max(surface_candidates, key=lambda r: r.local_surface_score)
+                best_result.local_surface_score = surface_best.local_surface_score
+                best_result.preferred_search_surface = surface_best.preferred_search_surface
+                best_result.local_surface_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].local_surface_flags or [])
+                })
+            brand_candidates = [
+                results[k] for k in group
+                if results[k].brand_signal_score > 0 or results[k].competitor_brand_risk_score > 0
+            ]
+            if brand_candidates:
+                brand_best = max(
+                    brand_candidates,
+                    key=lambda r: (r.competitor_brand_risk_score, r.brand_signal_score),
+                )
+                best_result.brand_intent_type = brand_best.brand_intent_type
+                best_result.brand_signal_score = max(results[k].brand_signal_score for k in group)
+                best_result.competitor_brand_risk_score = max(
+                    results[k].competitor_brand_risk_score for k in group
+                )
+                best_result.brand_mentions = sorted({
+                    mention
+                    for k in group
+                    for mention in (results[k].brand_mentions or [])
+                })
+                best_result.brand_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].brand_action_flags or [])
+                })
+            review_candidates = [
+                results[k] for k in group
+                if results[k].review_surface_score > 0 or results[k].reputation_risk_score > 0
+            ]
+            if review_candidates:
+                review_best = max(
+                    review_candidates,
+                    key=lambda r: (r.reputation_risk_score, r.review_surface_score),
+                )
+                best_result.review_surface_score = max(results[k].review_surface_score for k in group)
+                best_result.reputation_risk_score = max(results[k].reputation_risk_score for k in group)
+                best_result.review_intent_type = review_best.review_intent_type
+                best_result.review_action_flags = sorted({
+                    flag
+                    for k in group
+                    for flag in (results[k].review_action_flags or [])
+                })
 
             # 검색량 합산 (옵션)
             total_volume = sum(results[k].search_volume for k in group)
@@ -1714,6 +1968,9 @@ class PathfinderLegion:
         "모충동", "용암동", "금천동", "율량동", "사직동", "성화동", "내덕동",
         "우암동", "오창", "오송", "율량", "복대", "가경", "분평", "봉명",
     )
+    LONGTAIL_SCOUT_REGIONS = (
+        "청주", "복대동", "가경동", "분평동", "봉명동", "율량동", "용암동", "오송", "오창",
+    )
     CATEGORY_CANONICAL_SERVICES = {
         "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원"),
         "교통사고": ("교통사고 한의원", "교통사고 입원", "교통사고 후유증"),
@@ -1730,6 +1987,142 @@ class PathfinderLegion:
         "체형교정": ("비용", "후기", "교정 상담", "추천", "효과"),
         "리프팅/탄력": ("비용", "후기", "추천", "상담", "효과"),
     }
+    HIGH_VALUE_LONGTAIL_CONTEXTS = {
+        "다이어트": ("직장인", "산후", "출산후", "갱년기", "웨딩", "요요", "식욕억제"),
+        "교통사고": ("입원 가능한", "야간", "주말", "목통증", "허리통증", "합의전"),
+        "피부/여드름": ("흉터", "민감피부", "재발", "성인", "마스크", "압출후"),
+        "안면비대칭": ("턱관절", "얼굴형", "사진", "교정 전후", "통증", "비수술"),
+        "체형교정": ("골반", "라운드숄더", "거북목", "허리통증", "산후", "비수술"),
+        "리프팅/탄력": ("팔자주름", "이중턱", "탄력", "웨딩", "자연스러운", "통증 적은"),
+    }
+    HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS = (
+        "{region} {service} 비용 얼마",
+        "{region} {service} 효과 있나요",
+        "{region} {service} 후기 괜찮은곳",
+        "{region} {service} 부작용 있나요",
+        "{region} {service} 상담 어디",
+    )
+    MEDICAL_AD_HIGH_RISK_TERMS = (
+        "100%", "완치", "보장", "확실", "무조건", "반드시", "부작용없", "부작용 없음",
+        "안전보장", "즉시효과", "단기간완성", "1회완성", "유일", "최고", "1위",
+    )
+    MEDICAL_AD_TESTIMONIAL_RISK_TERMS = (
+        "성공사례", "치료경험담", "환자후기", "실제후기", "솔직후기", "내돈내산",
+        "전후사진", "비포애프터", "before after", "beforeafter",
+    )
+    MEDICAL_AD_CLAIM_RISK_TERMS = (
+        "전후", "효과", "효능", "개선효과", "치료효과", "근본치료", "완성", "해결",
+    )
+    MEDICAL_AD_COMPARISON_RISK_TERMS = (
+        "비교", "vs", "보다", "타병원", "타한의원", "더 잘", "더잘", "제일",
+    )
+    MEDICAL_AD_SAFE_INFO_TERMS = (
+        "부작용", "주의", "금기", "상담", "진료", "확인", "가능", "되나요", "있나요",
+    )
+    NEGATIVE_INTENT_TERMS = {
+        "employment_intent": (
+            "채용", "구인", "구직", "알바", "취업", "연봉", "면접", "직원모집", "간호조무사",
+        ),
+        "education_course_intent": (
+            "학원", "강의", "교육", "자격증", "수업", "배우기", "세미나", "강사",
+        ),
+        "retail_product_intent": (
+            "쇼핑몰", "쿠팡", "스마트스토어", "도매", "중고", "판매처", "구매처", "직구",
+        ),
+        "self_care_intent": (
+            "셀프", "홈케어", "집에서", "혼자", "직접", "diy", "자가관리", "민간요법",
+        ),
+        "directory_admin_intent": (
+            "전화번호부", "사업자등록", "허가", "보건소", "민원", "서류양식",
+        ),
+    }
+    HARD_NEGATIVE_INTENT_FLAGS = {
+        "non_target_region",
+        "medical_general",
+        "employment_intent",
+        "education_course_intent",
+        "retail_product_intent",
+        "self_care_intent",
+        "directory_admin_intent",
+    }
+    CONTENT_ACTION_TERMS = (
+        "비용", "가격", "상담", "예약", "입원", "보험", "실비", "자보", "치료비",
+        "부작용", "주의", "기간", "방법", "가능", "어디", "얼마", "있나요", "되나요",
+    )
+    CONTENT_PROOF_SENSITIVE_TERMS = (
+        "1위", "최고", "제일", "유일", "잘하는", "잘하는곳", "추천", "후기",
+        "실제후기", "솔직후기", "내돈내산", "전후", "전후사진", "비교", "vs",
+    )
+    LOCAL_SURFACE_TERMS = (
+        "근처", "가까운", "주변", "위치", "주소", "지도", "길찾기", "전화", "전화번호",
+        "영업시간", "진료시간", "주차", "예약", "상담", "입원", "야간", "주말", "일요일",
+    )
+    PLACE_ACTION_TERMS = (
+        "전화", "전화번호", "예약", "상담", "길찾기", "위치", "주소", "주차",
+        "영업시간", "진료시간", "입원", "야간", "주말", "일요일",
+    )
+    AVAILABILITY_IMMEDIATE_TERMS = (
+        "오늘", "지금", "당일", "바로", "급하게", "즉시", "이번주", "이번 주",
+    )
+    AVAILABILITY_SCHEDULE_TERMS = (
+        "야간", "저녁", "주말", "토요일", "일요일", "공휴일", "휴일",
+        "평일", "퇴근후", "퇴근 후", "점심시간",
+    )
+    AVAILABILITY_HOURS_TERMS = (
+        "영업시간", "진료시간", "운영시간", "오픈", "문여는", "문 여는",
+        "닫는시간", "마감", "휴무", "휴진",
+    )
+    AVAILABILITY_BOOKING_TERMS = (
+        "예약", "상담", "예약가능", "예약 가능", "당일예약", "당일 예약",
+        "네이버예약", "네이버 예약", "접수",
+    )
+    AVAILABILITY_CAPACITY_TERMS = (
+        "입원가능", "입원 가능", "주차가능", "주차 가능", "초진가능", "초진 가능",
+        "진료 가능", "가능한곳", "가능한 곳",
+    )
+    PAYMENT_COST_TERMS = (
+        "비용", "가격", "진료비", "치료비", "입원비", "상담비", "검사비",
+        "한약값", "한약 비용", "얼마", "금액", "비싸", "저렴",
+    )
+    PAYMENT_INSURANCE_TERMS = (
+        "보험", "건강보험", "실비", "실손", "실손보험", "자동차보험", "자보",
+        "산재", "보험적용", "보험 적용", "적용되나요", "급여", "비급여",
+        "본인부담", "본인 부담",
+    )
+    PAYMENT_CLAIM_TERMS = (
+        "청구", "보험청구", "보험 청구", "서류", "영수증", "진단서", "소견서",
+        "확인서", "제출", "환급", "보상",
+    )
+    AUTO_INSURANCE_TERMS = ("교통사고", "자동차사고", "자동차 사고", "자보", "자동차보험", "후유증")
+    ACCESS_PARKING_TERMS = (
+        "주차", "주차장", "주차가능", "주차 가능", "무료주차", "무료 주차",
+        "주차비", "주차권", "발렛", "건물주차", "건물 주차",
+    )
+    ACCESSIBILITY_NEED_TERMS = (
+        "휠체어", "장애인", "무장애", "계단없는", "계단 없는", "엘리베이터",
+        "엘베", "유모차", "노약자", "보행", "거동불편",
+    )
+    TRANSIT_PROXIMITY_TERMS = (
+        "역근처", "역 근처", "터미널", "버스", "버스정류장", "정류장",
+        "대중교통", "지하철", "택시", "도보", "걸어서",
+    )
+    ROUTE_LOCATION_TERMS = (
+        "길찾기", "위치", "주소", "가는길", "가는 길", "근처", "가까운",
+        "주변", "몇층", "몇 층", "찾아가는",
+    )
+    OWN_BRAND_FALLBACK_TERMS = ("규림한의원", "규림", "kyurim", "규림한의원청주점")
+    BRAND_COMPARISON_TERMS = ("비교", "vs", "보다", "차이", "어디", "추천", "후기")
+    BRAND_DEFENSE_TERMS = ("후기", "가격", "비용", "예약", "전화", "위치", "영업시간", "진료시간")
+    REVIEW_INTENT_TERMS = (
+        "후기", "리뷰", "평점", "별점", "방문자 리뷰", "영수증 리뷰", "만족도",
+        "추천", "잘하는", "잘하는곳", "괜찮은곳", "어디가 좋아",
+    )
+    REPUTATION_RISK_TERMS = (
+        "불친절", "비싸", "비싼", "바가지", "실망", "후회", "환불", "불만",
+        "민원", "부작용", "효과없", "효과 없음", "사기", "과잉진료", "대기시간",
+    )
+    REVIEW_DEFENSE_TERMS = ("후기", "리뷰", "평점", "별점", "방문자", "영수증", "만족도")
+    TREND_ANALYSIS_LIMIT = 150
 
     def __init__(self):
         self.collector = LegionCollector(delay=0.2, use_google=True)  # Multi-Source 수집
@@ -1850,7 +2243,33 @@ class PathfinderLegion:
         self.keyword_source_signals: Dict[str, Set[str]] = defaultdict(set)
         self.keyword_canonical_by_norm: Dict[str, str] = {}
         self.volume_hints: Dict[str, int] = {}
+        self.keyword_ad_metrics: Dict[str, Dict[str, object]] = {}
+        self.inbound_query_metrics: Dict[str, Dict[str, object]] = self._load_inbound_query_metrics()
+        self.owned_rank_metrics: Dict[str, Dict[str, object]] = self._load_owned_rank_metrics()
+        self.community_keyword_metrics: Dict[str, Dict[str, object]] = self._load_community_keyword_metrics()
+        self.conversion_keyword_metrics: Dict[str, Dict[str, object]] = self._load_conversion_keyword_metrics()
+        self.profile_action_metrics: Dict[str, Dict[str, object]] = self._load_profile_action_metrics()
         self.diversity_metrics: Dict[str, object] = {}
+        inbound_seeds = self._build_inbound_query_seeds()
+        if inbound_seeds:
+            print(f"📥 실제 유입 쿼리 시드 추가: {len(inbound_seeds)}개")
+            self.base_seeds.extend(inbound_seeds)
+        rank_gap_seeds = self._build_owned_rank_gap_seeds()
+        if rank_gap_seeds:
+            print(f"📍 자체 순위 갭 시드 추가: {len(rank_gap_seeds)}개")
+            self.base_seeds.extend(rank_gap_seeds)
+        community_seeds = self._build_community_signal_seeds()
+        if community_seeds:
+            print(f"💬 커뮤니티 수요 시드 추가: {len(community_seeds)}개")
+            self.base_seeds.extend(community_seeds)
+        conversion_seeds = self._build_conversion_signal_seeds()
+        if conversion_seeds:
+            print(f"☎️ 실제 전화 전환 시드 추가: {len(conversion_seeds)}개")
+            self.base_seeds.extend(conversion_seeds)
+        profile_action_seeds = self._build_profile_action_seeds()
+        if profile_action_seeds:
+            print(f"🧭 프로필 액션 전환 시드 추가: {len(profile_action_seeds)}개")
+            self.base_seeds.extend(profile_action_seeds)
 
     @staticmethod
     def _normalize_keyword_for_history(keyword: str) -> str:
@@ -1880,13 +2299,638 @@ class PathfinderLegion:
             self.keyword_canonical_by_norm = {}
         if not hasattr(self, "volume_hints"):
             self.volume_hints = {}
+        if not hasattr(self, "keyword_ad_metrics"):
+            self.keyword_ad_metrics = {}
+        if not hasattr(self, "inbound_query_metrics"):
+            self.inbound_query_metrics = {}
+        if not hasattr(self, "owned_rank_metrics"):
+            self.owned_rank_metrics = {}
+        if not hasattr(self, "community_keyword_metrics"):
+            self.community_keyword_metrics = {}
+        if not hasattr(self, "conversion_keyword_metrics"):
+            self.conversion_keyword_metrics = {}
+        if not hasattr(self, "profile_action_metrics"):
+            self.profile_action_metrics = {}
         if not hasattr(self, "diversity_metrics"):
             self.diversity_metrics = {}
+        if not hasattr(self, "own_brand_terms") or not hasattr(self, "competitor_brand_terms"):
+            self._load_brand_intent_terms()
 
     def _collector_or_default(self) -> LegionCollector:
         if not hasattr(self, "collector") or self.collector is None:
             self.collector = LegionCollector(delay=0.0, use_google=False)
         return self.collector
+
+    @staticmethod
+    def _normalize_brand_term(term: str) -> str:
+        return re.sub(r"\s+", "", (term or "").strip().lower())
+
+    def _load_brand_intent_terms(self) -> None:
+        own_terms: Set[str] = set(self.OWN_BRAND_FALLBACK_TERMS)
+        competitor_terms: Set[str] = set()
+
+        business_profile_path = Path("config/business_profile.json")
+        if business_profile_path.exists():
+            try:
+                with open(business_profile_path, "r", encoding="utf-8") as f:
+                    profile = json.load(f)
+                for key in ("name", "short_name"):
+                    value = str(profile.get(key) or "").strip()
+                    if value:
+                        own_terms.add(value)
+                branding = profile.get("branding") or {}
+                for value in branding.values():
+                    for token in re.findall(r"[0-9A-Za-z가-힣]+", str(value or "")):
+                        if "규림" in token.lower() or "kyurim" in token.lower():
+                            own_terms.add(token)
+            except Exception:
+                pass
+
+        competitors_path = Path("config/competitors.json")
+        if competitors_path.exists():
+            try:
+                with open(competitors_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                competitors = list(config.get("competitors", []))
+                for category_config in (config.get("category_competitors") or {}).values():
+                    competitors.extend(category_config.get("main_competitors", []) or [])
+                for comp in competitors:
+                    if isinstance(comp, dict):
+                        name = str(comp.get("name") or "").strip()
+                    else:
+                        name = str(comp or "").strip()
+                    if name:
+                        competitor_terms.add(name)
+            except Exception:
+                pass
+
+        sentinel_path = Path("config/sentinel_targets.json")
+        if sentinel_path.exists():
+            try:
+                with open(sentinel_path, "r", encoding="utf-8") as f:
+                    sentinel = json.load(f)
+                for term in sentinel.get("brand_keywords", []) or []:
+                    if term:
+                        own_terms.add(str(term))
+                for term in sentinel.get("competitors", []) or []:
+                    if term:
+                        competitor_terms.add(str(term))
+            except Exception:
+                pass
+
+        own_norms = {
+            term for term in (self._normalize_brand_term(t) for t in own_terms)
+            if len(term) >= 2
+        }
+        competitor_norms = {
+            term for term in (self._normalize_brand_term(t) for t in competitor_terms)
+            if len(term) >= 3 and term not in own_norms
+        }
+        self.own_brand_terms = own_norms
+        self.competitor_brand_terms = competitor_norms
+
+    def _load_inbound_query_metrics(self, lookback_days: int = 120) -> Dict[str, Dict[str, object]]:
+        """Load first-party GSC/Naver Advisor queries when the shared inbound table exists."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return {}
+
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        try:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                cursor = conn.cursor()
+                exists = cursor.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbound_search_queries'"
+                ).fetchone()
+                if not exists:
+                    return {}
+                rows = cursor.execute(
+                    """
+                    SELECT query,
+                           GROUP_CONCAT(DISTINCT source),
+                           SUM(COALESCE(impressions, 0)),
+                           SUM(COALESCE(clicks, 0)),
+                           AVG(COALESCE(position, 0)),
+                           MAX(measured_date)
+                      FROM inbound_search_queries
+                     WHERE measured_date >= ?
+                       AND query IS NOT NULL
+                       AND TRIM(query) <> ''
+                     GROUP BY query
+                    """,
+                    (cutoff,),
+                ).fetchall()
+        except Exception:
+            return {}
+
+        metrics: Dict[str, Dict[str, object]] = {}
+        for query, sources, impressions, clicks, position, latest_date in rows:
+            norm = self._normalize_keyword_for_history(query)
+            if not norm:
+                continue
+            impressions = int(impressions or 0)
+            clicks = int(clicks or 0)
+            metrics[norm] = {
+                "query": query,
+                "sources": [s for s in (sources or "").split(",") if s],
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr": (clicks / impressions) if impressions > 0 else 0.0,
+                "position": float(position or 0.0),
+                "latest_date": latest_date,
+            }
+        return metrics
+
+    def _build_inbound_query_seeds(self, limit: int = 80) -> List[str]:
+        collector = self._collector_or_default()
+        scored: List[Tuple[float, str]] = []
+        for data in getattr(self, "inbound_query_metrics", {}).values():
+            keyword = str(data.get("query") or "").strip()
+            if not keyword or not collector._is_valid_keyword(keyword):
+                continue
+            category = collector._detect_category(keyword)
+            if not collector.is_focus_candidate(keyword, category):
+                continue
+            if collector.low_business_value_reason(keyword, category):
+                continue
+            impressions = int(data.get("impressions", 0) or 0)
+            clicks = int(data.get("clicks", 0) or 0)
+            position = float(data.get("position", 0.0) or 0.0)
+            score = clicks * 25.0 + impressions * 0.25
+            if 0 < position <= 20:
+                score += 20.0 - position
+            if self._is_longtail_keyword(keyword):
+                score += 12.0
+            scored.append((score, keyword))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: Set[str] = set()
+        seeds: List[str] = []
+        for _, keyword in scored:
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            seeds.append(keyword)
+            if len(seeds) >= limit:
+                break
+        return seeds
+
+    def _load_owned_rank_metrics(self, lookback_days: int = 45, target_name: str = "규림한의원") -> Dict[str, Dict[str, object]]:
+        """Load latest owned mobile/desktop rankings for rank-gap prioritization."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return {}
+
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        try:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                cursor = conn.cursor()
+                exists = cursor.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rank_history'"
+                ).fetchone()
+                if not exists:
+                    return {}
+                columns = {row[1] for row in cursor.execute("PRAGMA table_info(rank_history)").fetchall()}
+                date_col = "date" if "date" in columns else None
+                checked_col = "checked_at" if "checked_at" in columns else None
+                if date_col:
+                    date_filter = "date >= ?"
+                    order_expr = "date DESC"
+                elif checked_col:
+                    date_filter = "DATE(checked_at) >= ?"
+                    order_expr = "checked_at DESC"
+                else:
+                    date_filter = "1=1"
+                    order_expr = "id DESC"
+
+                rows = cursor.execute(
+                    f"""
+                    SELECT keyword,
+                           COALESCE(rank, 0),
+                           COALESCE(status, ''),
+                           COALESCE(target_name, ''),
+                           COALESCE(device_type, 'mobile'),
+                           COALESCE(total_results, 0)
+                      FROM rank_history
+                     WHERE target_name LIKE ?
+                       AND {date_filter}
+                     ORDER BY keyword ASC, device_type ASC, {order_expr}, id DESC
+                    """,
+                    (f"%{target_name}%", cutoff) if date_filter != "1=1" else (f"%{target_name}%",),
+                ).fetchall()
+        except Exception:
+            return {}
+
+        latest_by_device: Dict[Tuple[str, str], Dict[str, object]] = {}
+        for keyword, rank, status, target, device, total_results in rows:
+            norm = self._normalize_keyword_for_history(keyword)
+            device = (device or "mobile").lower()
+            key = (norm, device)
+            if not norm or key in latest_by_device:
+                continue
+            latest_by_device[key] = {
+                "keyword": keyword,
+                "rank": int(rank or 0),
+                "status": status or "",
+                "target_name": target or "",
+                "device": device,
+                "total_results": int(total_results or 0),
+            }
+
+        metrics: Dict[str, Dict[str, object]] = {}
+        for (norm, device), data in latest_by_device.items():
+            current = metrics.setdefault(norm, {"keyword": data["keyword"], "devices": {}})
+            current["devices"][device] = data
+
+        for norm, data in metrics.items():
+            devices = data.get("devices", {}) or {}
+            preferred = devices.get("mobile") or devices.get("desktop") or next(iter(devices.values()), {})
+            best_found = [
+                item for item in devices.values()
+                if str(item.get("status", "")).lower() == "found" and int(item.get("rank", 0) or 0) > 0
+            ]
+            if best_found:
+                preferred = min(
+                    best_found,
+                    key=lambda item: (
+                        0 if str(item.get("device", "")).lower() == "mobile" else 1,
+                        int(item.get("rank", 999) or 999),
+                    ),
+                )
+            data["rank"] = int(preferred.get("rank", 0) or 0)
+            data["status"] = str(preferred.get("status", "") or "")
+            data["device"] = str(preferred.get("device", "") or "")
+            data["rank_gap_signal"] = self._calculate_rank_gap_signal(data)
+            data["rank_status"] = self._rank_status_label(data)
+
+        return metrics
+
+    def _build_owned_rank_gap_seeds(self, limit: int = 80) -> List[str]:
+        collector = self._collector_or_default()
+        scored: List[Tuple[float, str]] = []
+        for data in getattr(self, "owned_rank_metrics", {}).values():
+            keyword = str(data.get("keyword") or "").strip()
+            if not keyword or not collector._is_valid_keyword(keyword):
+                continue
+            category = collector._detect_category(keyword)
+            if not collector.is_focus_candidate(keyword, category):
+                continue
+            if collector.low_business_value_reason(keyword, category):
+                continue
+            rank_gap_signal = float(data.get("rank_gap_signal", 0.0) or 0.0)
+            rank = int(data.get("rank", 0) or 0)
+            if rank_gap_signal < 55 or rank <= 0:
+                continue
+            scored.append((rank_gap_signal + (8.0 if self._is_longtail_keyword(keyword) else 0.0), keyword))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: Set[str] = set()
+        seeds: List[str] = []
+        for _, keyword in scored:
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            seeds.append(keyword)
+            if len(seeds) >= limit:
+                break
+        return seeds
+
+    def _load_community_keyword_metrics(self, lookback_days: int = 120) -> Dict[str, Dict[str, object]]:
+        """Load Viral Hunter community evidence keyed by matched keyword."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return {}
+
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        try:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                cursor = conn.cursor()
+                exists = cursor.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viral_targets'"
+                ).fetchone()
+                if not exists:
+                    return {}
+                columns = {row[1] for row in cursor.execute("PRAGMA table_info(viral_targets)").fetchall()}
+                date_col = next(
+                    (col for col in ("last_scanned_at", "updated_at", "discovered_at", "first_seen_at") if col in columns),
+                    None,
+                )
+                where_clause = f"WHERE DATE({date_col}) >= ?" if date_col else ""
+                params: Tuple[object, ...] = (cutoff,) if date_col else ()
+                rows = cursor.execute(
+                    f"""
+                    SELECT COALESCE(platform, ''),
+                           COALESCE(matched_keywords, '[]'),
+                           COALESCE(matched_keyword, ''),
+                           COALESCE(priority_score, 0),
+                           COALESCE(conversion_fit_score, 0),
+                           COALESCE(ai_infiltration_score, 0),
+                           COALESCE(is_commentable, 0)
+                      FROM viral_targets
+                      {where_clause}
+                    """,
+                    params,
+                ).fetchall()
+        except Exception:
+            return {}
+
+        metrics: Dict[str, Dict[str, object]] = {}
+        for platform, matched_keywords_raw, matched_keyword, priority, conversion_fit, infiltration, is_commentable in rows:
+            keywords: List[str] = []
+            if matched_keyword:
+                keywords.append(str(matched_keyword))
+            if matched_keywords_raw:
+                try:
+                    parsed = json.loads(matched_keywords_raw) if isinstance(matched_keywords_raw, str) else matched_keywords_raw
+                    if isinstance(parsed, list):
+                        keywords.extend(str(item) for item in parsed if item)
+                except Exception:
+                    pass
+            for keyword in dict.fromkeys(keywords):
+                norm = self._normalize_keyword_for_history(keyword)
+                if not norm:
+                    continue
+                data = metrics.setdefault(
+                    norm,
+                    {
+                        "keyword": keyword,
+                        "mentions": 0,
+                        "platforms": set(),
+                        "commentable": 0,
+                        "max_priority": 0.0,
+                        "max_conversion_fit": 0.0,
+                        "max_infiltration": 0.0,
+                    },
+                )
+                data["mentions"] = int(data.get("mentions", 0) or 0) + 1
+                if platform:
+                    data["platforms"].add(str(platform))
+                if int(is_commentable or 0):
+                    data["commentable"] = int(data.get("commentable", 0) or 0) + 1
+                data["max_priority"] = max(float(data.get("max_priority", 0.0) or 0.0), float(priority or 0.0))
+                data["max_conversion_fit"] = max(float(data.get("max_conversion_fit", 0.0) or 0.0), float(conversion_fit or 0.0))
+                data["max_infiltration"] = max(float(data.get("max_infiltration", 0.0) or 0.0), float(infiltration or 0.0))
+
+        for data in metrics.values():
+            data["platforms"] = sorted(data.get("platforms", set()))
+            data["community_signal"] = self._calculate_community_value_signal(data)
+
+        return metrics
+
+    def _build_community_signal_seeds(self, limit: int = 80) -> List[str]:
+        collector = self._collector_or_default()
+        scored: List[Tuple[float, str]] = []
+        for data in getattr(self, "community_keyword_metrics", {}).values():
+            keyword = str(data.get("keyword") or "").strip()
+            if not keyword or not collector._is_valid_keyword(keyword):
+                continue
+            category = collector._detect_category(keyword)
+            if not collector.is_focus_candidate(keyword, category):
+                continue
+            if collector.low_business_value_reason(keyword, category):
+                continue
+            signal = float(data.get("community_signal", 0.0) or 0.0)
+            if signal < 40.0:
+                continue
+            scored.append((signal + (10.0 if self._is_longtail_keyword(keyword) else 0.0), keyword))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: Set[str] = set()
+        seeds: List[str] = []
+        for _, keyword in scored:
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            seeds.append(keyword)
+            if len(seeds) >= limit:
+                break
+        return seeds
+
+    def _load_conversion_keyword_metrics(self, lookback_days: int = 180) -> Dict[str, Dict[str, object]]:
+        """Load keyword-level call tracking evidence from SmartPlace call imports."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return {}
+
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        try:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                cursor = conn.cursor()
+                exists = cursor.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='call_tracking'"
+                ).fetchone()
+                if not exists:
+                    return {}
+                rows = cursor.execute(
+                    """
+                    SELECT keyword,
+                           COALESCE(SUM(total_calls), 0),
+                           COALESCE(SUM(naver_search_calls), 0),
+                           COALESCE(SUM(duration_seconds), 0),
+                           COUNT(*)
+                      FROM call_tracking
+                     WHERE stat_date >= ?
+                       AND keyword IS NOT NULL
+                       AND TRIM(keyword) <> ''
+                     GROUP BY keyword
+                    """,
+                    (cutoff,),
+                ).fetchall()
+        except Exception:
+            return {}
+
+        metrics: Dict[str, Dict[str, object]] = {}
+        for keyword, total_calls, naver_calls, duration_seconds, rows_count in rows:
+            norm = self._normalize_keyword_for_history(keyword)
+            if not norm:
+                continue
+            data = {
+                "keyword": keyword,
+                "total_calls": int(total_calls or 0),
+                "naver_search_calls": int(naver_calls or 0),
+                "duration_seconds": int(duration_seconds or 0),
+                "rows": int(rows_count or 0),
+            }
+            data["conversion_signal"] = self._calculate_conversion_value_signal(data)
+            metrics[norm] = data
+        return metrics
+
+    def _build_conversion_signal_seeds(self, limit: int = 80) -> List[str]:
+        collector = self._collector_or_default()
+        scored: List[Tuple[float, str]] = []
+        for data in getattr(self, "conversion_keyword_metrics", {}).values():
+            keyword = str(data.get("keyword") or "").strip()
+            if not keyword or not collector._is_valid_keyword(keyword):
+                continue
+            category = collector._detect_category(keyword)
+            if not collector.is_focus_candidate(keyword, category):
+                continue
+            if collector.low_business_value_reason(keyword, category):
+                continue
+            signal = float(data.get("conversion_signal", 0.0) or 0.0)
+            if signal < 35.0:
+                continue
+            scored.append((signal + (8.0 if self._is_longtail_keyword(keyword) else 0.0), keyword))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: Set[str] = set()
+        seeds: List[str] = []
+        for _, keyword in scored:
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            seeds.append(keyword)
+            if len(seeds) >= limit:
+                break
+        return seeds
+
+    @staticmethod
+    def _first_existing_column(columns: Set[str], candidates: Tuple[str, ...]) -> Optional[str]:
+        for candidate in candidates:
+            if candidate in columns:
+                return candidate
+        return None
+
+    @staticmethod
+    def _sum_columns_expr(columns: Set[str], candidates: Tuple[str, ...]) -> str:
+        parts = [f"COALESCE({col}, 0)" for col in candidates if col in columns]
+        return " + ".join(parts) if parts else "0"
+
+    def _load_profile_action_metrics(self, lookback_days: int = 180) -> Dict[str, Dict[str, object]]:
+        """Load keyword-level Google Business Profile / SmartPlace action evidence when imported."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return {}
+
+        candidate_tables = (
+            "profile_action_metrics",
+            "business_profile_action_metrics",
+            "smartplace_keyword_actions",
+            "gbp_keyword_actions",
+        )
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        metrics: Dict[str, Dict[str, object]] = {}
+
+        try:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                cursor = conn.cursor()
+                existing_tables = {
+                    row[0]
+                    for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                for table in candidate_tables:
+                    if table not in existing_tables:
+                        continue
+                    columns = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
+                    keyword_col = self._first_existing_column(columns, ("keyword", "query", "search_query", "search_term"))
+                    if not keyword_col:
+                        continue
+                    date_col = self._first_existing_column(columns, ("stat_date", "measured_date", "date", "month", "created_at"))
+                    calls_expr = self._sum_columns_expr(columns, ("calls", "phone_clicks", "call_clicks", "total_calls"))
+                    directions_expr = self._sum_columns_expr(columns, ("directions", "direction_clicks", "direction_requests"))
+                    website_expr = self._sum_columns_expr(columns, ("website_clicks", "website_actions", "site_clicks"))
+                    bookings_expr = self._sum_columns_expr(columns, ("bookings", "booking_clicks", "booking_actions", "reservations", "reservation_clicks"))
+                    messages_expr = self._sum_columns_expr(columns, ("messages", "message_clicks", "talktalk_clicks", "chat_clicks"))
+                    source_expr = "GROUP_CONCAT(DISTINCT source)" if "source" in columns else f"'{table}'"
+
+                    where_clause = f"WHERE DATE({date_col}) >= ?" if date_col else "WHERE 1=1"
+                    params: Tuple[object, ...] = (cutoff,) if date_col else ()
+                    rows = cursor.execute(
+                        f"""
+                        SELECT {keyword_col},
+                               SUM({calls_expr}),
+                               SUM({directions_expr}),
+                               SUM({website_expr}),
+                               SUM({bookings_expr}),
+                               SUM({messages_expr}),
+                               {source_expr}
+                          FROM {table}
+                         {where_clause}
+                           AND {keyword_col} IS NOT NULL
+                           AND TRIM({keyword_col}) <> ''
+                         GROUP BY {keyword_col}
+                        """,
+                        params,
+                    ).fetchall()
+
+                    for keyword, calls, directions, website, bookings, messages, sources in rows:
+                        norm = self._normalize_keyword_for_history(keyword)
+                        if not norm:
+                            continue
+                        current = metrics.setdefault(
+                            norm,
+                            {
+                                "keyword": keyword,
+                                "calls": 0,
+                                "directions": 0,
+                                "website_clicks": 0,
+                                "bookings": 0,
+                                "messages": 0,
+                                "sources": set(),
+                            },
+                        )
+                        current["calls"] = int(current.get("calls", 0) or 0) + int(calls or 0)
+                        current["directions"] = int(current.get("directions", 0) or 0) + int(directions or 0)
+                        current["website_clicks"] = int(current.get("website_clicks", 0) or 0) + int(website or 0)
+                        current["bookings"] = int(current.get("bookings", 0) or 0) + int(bookings or 0)
+                        current["messages"] = int(current.get("messages", 0) or 0) + int(messages or 0)
+                        for source in str(sources or table).split(","):
+                            if source:
+                                current["sources"].add(source)
+        except Exception:
+            return {}
+
+        for data in metrics.values():
+            data["sources"] = sorted(data.get("sources", set()))
+            data["profile_action_signal"] = self._calculate_profile_action_value_signal(data)
+            data["total_actions"] = (
+                int(data.get("calls", 0) or 0)
+                + int(data.get("directions", 0) or 0)
+                + int(data.get("website_clicks", 0) or 0)
+                + int(data.get("bookings", 0) or 0)
+                + int(data.get("messages", 0) or 0)
+            )
+
+        return metrics
+
+    def _build_profile_action_seeds(self, limit: int = 80) -> List[str]:
+        collector = self._collector_or_default()
+        scored: List[Tuple[float, str]] = []
+        for data in getattr(self, "profile_action_metrics", {}).values():
+            keyword = str(data.get("keyword") or "").strip()
+            if not keyword or not collector._is_valid_keyword(keyword):
+                continue
+            category = collector._detect_category(keyword)
+            if not collector.is_focus_candidate(keyword, category):
+                continue
+            if collector.low_business_value_reason(keyword, category):
+                continue
+            signal = float(data.get("profile_action_signal", 0.0) or 0.0)
+            if signal < 35.0:
+                continue
+            scored.append((signal + (8.0 if self._is_longtail_keyword(keyword) else 0.0), keyword))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: Set[str] = set()
+        seeds: List[str] = []
+        for _, keyword in scored:
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            seeds.append(keyword)
+            if len(seeds) >= limit:
+                break
+        return seeds
 
     @staticmethod
     def _keyword_terms(keyword: str) -> List[str]:
@@ -1913,6 +2957,754 @@ class PathfinderLegion:
             or any(region in keyword for region in self.LONGTAIL_REGION_TERMS)
         )
 
+    def _calculate_service_fit_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Score whether a keyword is truly local, service-relevant, and conversion-fit."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        kw_lower = keyword.lower()
+        compact = self._compact_keyword(keyword)
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        flags: List[str] = []
+        score = 0.0
+
+        if collector._is_in_target_region(keyword):
+            score += 30.0
+        else:
+            score -= 35.0
+            flags.append("non_target_region")
+
+        if collector._is_medical_general(keyword):
+            score -= 55.0
+            flags.append("medical_general")
+
+        business_core = collector.is_business_core_keyword(keyword, category)
+        focus_candidate = collector.is_focus_candidate(keyword, category)
+        if business_core:
+            score += 30.0
+        elif focus_candidate:
+            score += 22.0
+        else:
+            score -= 18.0
+            flags.append("non_focus_category")
+
+        if collector._has_direct_service_anchor(keyword, category):
+            score += 22.0
+        elif business_core:
+            score += 8.0
+        else:
+            score -= 12.0
+            flags.append("weak_service_anchor")
+
+        if search_intent in self.HIGH_VALUE_INTENTS:
+            score += 8.0
+        if any(term in keyword for term in self.HIGH_INTENT_TERMS):
+            score += 5.0
+
+        low_reason = collector.low_business_value_reason(keyword, category)
+        if low_reason:
+            score -= 40.0
+            flags.append("low_business_value")
+
+        for flag, terms in self.NEGATIVE_INTENT_TERMS.items():
+            if any(term.lower().replace(" ", "") in compact or term.lower() in kw_lower for term in terms):
+                score -= 42.0
+                flags.append(flag)
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        hard_negative = any(flag in self.HARD_NEGATIVE_INTENT_FLAGS for flag in flags)
+        return {
+            "score": score,
+            "flags": sorted(set(flags)),
+            "hard_negative": hard_negative,
+            "low_business_value_reason": low_reason,
+        }
+
+    def _calculate_local_surface_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        mobile_share: float = 0.0,
+        rank_gap_signal: float = 0.0,
+        conversion_signal: float = 0.0,
+        service_fit_score: Optional[float] = None,
+    ) -> Dict[str, object]:
+        """Score whether a keyword is best handled through local/map/profile surfaces."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if service_fit_score is None:
+            service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
+
+        flags: List[str] = []
+        score = 0.0
+        has_target_region = collector._is_in_target_region(keyword)
+        has_neighborhood = any(region in keyword for region in self.LONGTAIL_REGION_TERMS)
+        has_local_surface_term = any(term in keyword for term in self.LOCAL_SURFACE_TERMS)
+        has_place_action_term = any(term in keyword for term in self.PLACE_ACTION_TERMS)
+
+        if has_target_region:
+            score += 24.0
+            flags.append("target_region")
+        if has_neighborhood:
+            score += 14.0
+            flags.append("neighborhood_modifier")
+        if has_local_surface_term:
+            score += 18.0
+            flags.append("local_surface_intent")
+        if has_place_action_term:
+            score += 18.0
+            flags.append("place_action_intent")
+        if search_intent in {"navigational", "transactional"}:
+            score += 8.0
+        if mobile_share >= 0.75:
+            score += 12.0
+            flags.append("mobile_heavy")
+        elif mobile_share >= 0.65:
+            score += 8.0
+            flags.append("mobile_local")
+        if rank_gap_signal >= 55.0:
+            score += min(14.0, rank_gap_signal / 8.0)
+            flags.append("owned_rank_gap_surface")
+        if conversion_signal >= 35.0:
+            score += min(16.0, conversion_signal / 5.0)
+            flags.append("call_conversion_surface")
+        if float(service_fit_score or 0.0) >= 80.0:
+            score += 6.0
+        elif float(service_fit_score or 0.0) < 60.0:
+            score -= 18.0
+            flags.append("weak_service_fit")
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 70.0 and has_place_action_term:
+            preferred_surface = "profile_action"
+        elif score >= 58.0:
+            preferred_surface = "local_pack"
+        elif score >= 40.0:
+            preferred_surface = "hybrid_local_content"
+        else:
+            preferred_surface = "web_content"
+
+        return {
+            "score": score,
+            "preferred_search_surface": preferred_surface,
+            "flags": sorted(set(flags)),
+        }
+
+    def _calculate_availability_intent_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        local_surface_score: float = 0.0,
+        profile_action_signal: float = 0.0,
+        service_fit_score: Optional[float] = None,
+    ) -> Dict[str, object]:
+        """Score time-sensitive availability queries such as same-day, hours, weekend, and booking intent."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if service_fit_score is None:
+            service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
+
+        compact = self._compact_keyword(keyword)
+        flags: List[str] = []
+
+        def matched(terms: Tuple[str, ...]) -> List[str]:
+            return [term for term in terms if term.lower().replace(" ", "") in compact]
+
+        immediate_terms = matched(self.AVAILABILITY_IMMEDIATE_TERMS)
+        schedule_terms = matched(self.AVAILABILITY_SCHEDULE_TERMS)
+        hours_terms = matched(self.AVAILABILITY_HOURS_TERMS)
+        booking_terms = matched(self.AVAILABILITY_BOOKING_TERMS)
+        capacity_terms = matched(self.AVAILABILITY_CAPACITY_TERMS)
+
+        if not any((immediate_terms, schedule_terms, hours_terms, booking_terms, capacity_terms)):
+            return {
+                "availability_intent_score": 0.0,
+                "availability_intent_type": "none",
+                "flags": [],
+            }
+
+        score = 0.0
+        if immediate_terms:
+            score += 28.0
+            flags.append("same_day_or_now")
+        if schedule_terms:
+            score += 22.0
+            flags.append("schedule_sensitive")
+        if hours_terms:
+            score += 30.0
+            flags.append("hours_check")
+        if booking_terms:
+            score += 20.0
+            flags.append("booking_or_consult")
+        if capacity_terms:
+            score += 18.0
+            flags.append("capacity_check")
+        if schedule_terms and capacity_terms:
+            score += 14.0
+            flags.append("schedule_capacity_match")
+        if hours_terms and collector._is_in_target_region(keyword):
+            score += 10.0
+            flags.append("local_hours_check")
+        if hours_terms and local_surface_score >= 55.0:
+            score += 8.0
+        if collector._is_in_target_region(keyword):
+            score += 8.0
+            flags.append("target_region_availability")
+        if any(region in keyword for region in self.LONGTAIL_REGION_TERMS):
+            score += 5.0
+            flags.append("neighborhood_availability")
+        if search_intent in {"transactional", "navigational"}:
+            score += 6.0
+        if local_surface_score >= 70.0:
+            score += 8.0
+            flags.append("local_surface_availability")
+        elif local_surface_score >= 55.0:
+            score += 5.0
+        if profile_action_signal >= 60.0:
+            score += 8.0
+            flags.append("profile_action_backed")
+        elif profile_action_signal >= 35.0:
+            score += 5.0
+        if float(service_fit_score or 0.0) >= 80.0:
+            score += 5.0
+        elif float(service_fit_score or 0.0) < 60.0:
+            score -= 15.0
+            flags.append("weak_service_fit")
+
+        if immediate_terms and booking_terms:
+            intent_type = "same_day_booking"
+        elif schedule_terms and booking_terms:
+            intent_type = "after_hours_or_weekend_booking"
+        elif capacity_terms:
+            intent_type = "capacity_availability"
+        elif hours_terms:
+            intent_type = "hours_check"
+        elif booking_terms:
+            intent_type = "booking_availability"
+        elif schedule_terms:
+            intent_type = "schedule_availability"
+        else:
+            intent_type = "availability_discovery"
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 70.0:
+            flags.append("availability_high_intent")
+        elif score >= 55.0:
+            flags.append("availability_review")
+
+        return {
+            "availability_intent_score": score,
+            "availability_intent_type": intent_type,
+            "flags": sorted(set(flags)),
+        }
+
+    def _calculate_payment_coverage_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        service_fit_score: Optional[float] = None,
+        medical_ad_risk_score: float = 0.0,
+        local_surface_score: float = 0.0,
+        profile_action_signal: float = 0.0,
+    ) -> Dict[str, object]:
+        """Score cost, insurance, reimbursement, and payment-coverage decision intent."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if service_fit_score is None:
+            service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
+
+        compact = self._compact_keyword(keyword)
+        flags: List[str] = []
+
+        def matched(terms: Tuple[str, ...]) -> List[str]:
+            return [term for term in terms if term.lower().replace(" ", "") in compact]
+
+        cost_terms = matched(self.PAYMENT_COST_TERMS)
+        insurance_terms = matched(self.PAYMENT_INSURANCE_TERMS)
+        claim_terms = matched(self.PAYMENT_CLAIM_TERMS)
+        auto_terms = matched(self.AUTO_INSURANCE_TERMS)
+        chuna_insurance = "추나" in keyword and bool(insurance_terms)
+
+        if not any((cost_terms, insurance_terms, claim_terms)):
+            return {
+                "payment_coverage_score": 0.0,
+                "payment_coverage_type": "none",
+                "flags": [],
+            }
+
+        score = 0.0
+        if cost_terms:
+            score += 28.0
+            flags.append("cost_transparency")
+        if insurance_terms:
+            score += 30.0
+            flags.append("insurance_coverage")
+        if claim_terms:
+            score += 18.0
+            flags.append("claim_document_intent")
+        if insurance_terms and claim_terms:
+            score += 14.0
+            flags.append("insurance_claim_context")
+        if auto_terms and insurance_terms:
+            score += 16.0
+            flags.append("auto_insurance_context")
+        if chuna_insurance:
+            score += 12.0
+            flags.append("chuna_insurance_context")
+        if any(term in compact for term in ("비급여", "급여", "본인부담", "본인부담률")):
+            score += 10.0
+            flags.append("coverage_scope_check")
+        if collector._is_in_target_region(keyword):
+            score += 8.0
+            flags.append("target_region_payment")
+        if any(region in keyword for region in self.LONGTAIL_REGION_TERMS):
+            score += 5.0
+            flags.append("neighborhood_payment")
+        if collector._has_direct_service_anchor(keyword, category):
+            score += 8.0
+            flags.append("service_payment_anchor")
+        elif collector.is_business_core_keyword(keyword, category):
+            score += 5.0
+        if search_intent in {"transactional", "commercial", "comparison"}:
+            score += 6.0
+        if local_surface_score >= 70.0:
+            score += 5.0
+        if profile_action_signal >= 60.0:
+            score += 6.0
+            flags.append("profile_action_backed")
+        elif profile_action_signal >= 35.0:
+            score += 3.0
+        if float(service_fit_score or 0.0) < 60.0:
+            score -= 18.0
+            flags.append("weak_service_fit")
+        if medical_ad_risk_score >= 70.0:
+            score -= 12.0
+            flags.append("medical_ad_high_risk_payment")
+
+        if auto_terms and insurance_terms:
+            payment_type = "auto_insurance"
+        elif cost_terms and insurance_terms:
+            payment_type = "cost_and_insurance"
+        elif claim_terms:
+            payment_type = "claim_documents"
+        elif insurance_terms:
+            payment_type = "insurance_coverage"
+        elif any(term in compact for term in ("비급여", "급여", "본인부담", "본인부담률")):
+            payment_type = "coverage_scope"
+        else:
+            payment_type = "cost_transparency"
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 70.0:
+            flags.append("payment_high_intent")
+        elif score >= 55.0:
+            flags.append("payment_review")
+
+        return {
+            "payment_coverage_score": score,
+            "payment_coverage_type": payment_type,
+            "flags": sorted(set(flags)),
+        }
+
+    def _calculate_access_convenience_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        service_fit_score: Optional[float] = None,
+        local_surface_score: float = 0.0,
+        profile_action_signal: float = 0.0,
+        availability_intent_score: float = 0.0,
+    ) -> Dict[str, object]:
+        """Score visit-readiness terms such as parking, wheelchair access, transit, and route finding."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if service_fit_score is None:
+            service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
+
+        compact = self._compact_keyword(keyword)
+        flags: List[str] = []
+
+        def matched(terms: Tuple[str, ...]) -> List[str]:
+            return [term for term in terms if term.lower().replace(" ", "") in compact]
+
+        parking_terms = matched(self.ACCESS_PARKING_TERMS)
+        accessibility_terms = matched(self.ACCESSIBILITY_NEED_TERMS)
+        transit_terms = matched(self.TRANSIT_PROXIMITY_TERMS)
+        route_terms = matched(self.ROUTE_LOCATION_TERMS)
+
+        if not any((parking_terms, accessibility_terms, transit_terms, route_terms)):
+            return {
+                "access_convenience_score": 0.0,
+                "access_convenience_type": "none",
+                "flags": [],
+            }
+
+        score = 0.0
+        if parking_terms:
+            score += 30.0
+            flags.append("parking_intent")
+        if accessibility_terms:
+            score += 32.0
+            flags.append("accessibility_need")
+        if transit_terms:
+            score += 20.0
+            flags.append("transit_proximity")
+        if route_terms:
+            score += 18.0
+            flags.append("route_or_location_check")
+        if parking_terms and route_terms:
+            score += 8.0
+            flags.append("parking_route_match")
+        if accessibility_terms and route_terms:
+            score += 8.0
+            flags.append("accessible_route_match")
+        if collector._is_in_target_region(keyword):
+            score += 8.0
+            flags.append("target_region_access")
+        if any(region in keyword for region in self.LONGTAIL_REGION_TERMS):
+            score += 5.0
+            flags.append("neighborhood_access")
+        if collector._has_direct_service_anchor(keyword, category):
+            score += 7.0
+            flags.append("service_access_anchor")
+        elif collector.is_business_core_keyword(keyword, category):
+            score += 4.0
+        if search_intent in {"transactional", "navigational"}:
+            score += 5.0
+        if local_surface_score >= 70.0:
+            score += 8.0
+            flags.append("local_surface_backed")
+        elif local_surface_score >= 55.0:
+            score += 5.0
+        if profile_action_signal >= 60.0:
+            score += 6.0
+            flags.append("profile_action_backed")
+        elif profile_action_signal >= 35.0:
+            score += 3.0
+        if availability_intent_score >= 70.0:
+            score += 5.0
+            flags.append("availability_backed")
+        if float(service_fit_score or 0.0) < 60.0:
+            score -= 16.0
+            flags.append("weak_service_fit")
+
+        if accessibility_terms:
+            access_type = "accessibility_need"
+        elif parking_terms:
+            access_type = "parking_access"
+        elif transit_terms:
+            access_type = "transit_proximity"
+        elif route_terms:
+            access_type = "route_finding"
+        else:
+            access_type = "visit_logistics"
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 70.0:
+            flags.append("access_high_intent")
+        elif score >= 55.0:
+            flags.append("access_review")
+
+        return {
+            "access_convenience_score": score,
+            "access_convenience_type": access_type,
+            "flags": sorted(set(flags)),
+        }
+
+    def _calculate_brand_intent_profile(
+        self,
+        keyword: str,
+        search_intent: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Separate own-brand defense and competitor-brand queries from generic acquisition terms."""
+        self._ensure_quality_tracking()
+        keyword = keyword or ""
+        compact = self._normalize_brand_term(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        flags: List[str] = []
+
+        def matches(terms: Set[str]) -> List[str]:
+            found: List[str] = []
+            for term in sorted(terms, key=len, reverse=True):
+                if term and term in compact:
+                    found.append(term)
+            return found
+
+        own_matches = matches(set(getattr(self, "own_brand_terms", set()) or set()))
+        competitor_matches = matches(set(getattr(self, "competitor_brand_terms", set()) or set()))
+        comparison_intent = any(term.lower() in keyword.lower() for term in self.BRAND_COMPARISON_TERMS)
+        defense_intent = any(term.lower() in keyword.lower() for term in self.BRAND_DEFENSE_TERMS)
+
+        brand_type = "generic"
+        signal_score = 0.0
+        competitor_risk = 0.0
+
+        if own_matches and competitor_matches:
+            brand_type = "own_vs_competitor"
+            signal_score = 74.0
+            competitor_risk = 62.0
+            flags.extend(["own_brand_defense", "competitor_brand_review", "brand_comparison"])
+        elif competitor_matches:
+            if comparison_intent or search_intent in {"comparison", "commercial", "validation"}:
+                brand_type = "competitor_comparison"
+                signal_score = 58.0
+                competitor_risk = 72.0
+                flags.extend(["competitor_brand_review", "brand_comparison"])
+            else:
+                brand_type = "competitor_brand"
+                signal_score = 44.0
+                competitor_risk = 56.0
+                flags.append("competitor_brand_review")
+        elif own_matches:
+            brand_type = "own_brand_defense"
+            signal_score = 92.0 if defense_intent else 80.0
+            flags.append("own_brand_defense")
+
+        if competitor_risk >= 70.0:
+            flags.append("competitor_brand_high_risk")
+        elif competitor_risk >= 50.0:
+            flags.append("competitor_brand_policy_review")
+
+        return {
+            "brand_intent_type": brand_type,
+            "brand_signal_score": signal_score,
+            "brand_mentions": sorted(set(own_matches + competitor_matches)),
+            "competitor_brand_risk_score": competitor_risk,
+            "flags": sorted(set(flags)),
+        }
+
+    def _calculate_review_reputation_profile(
+        self,
+        keyword: str,
+        search_intent: Optional[str] = None,
+        brand_intent_type: str = "generic",
+        community_signal: float = 0.0,
+        local_surface_score: float = 0.0,
+        medical_ad_risk_score: float = 0.0,
+    ) -> Dict[str, object]:
+        """Score review-surface value separately from reputation-response risk."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        keyword_lower = keyword.lower()
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        brand_intent_type = brand_intent_type or "generic"
+        flags: List[str] = []
+
+        matched_review_terms = [
+            term for term in self.REVIEW_INTENT_TERMS
+            if term.lower() in keyword_lower
+        ]
+        matched_direct_review_terms = [
+            term for term in self.REVIEW_DEFENSE_TERMS
+            if term.lower() in keyword_lower
+        ]
+        matched_risk_terms = [
+            term for term in self.REPUTATION_RISK_TERMS
+            if term.lower() in keyword_lower
+        ]
+        has_review_intent = bool(matched_review_terms)
+        has_direct_review_surface = bool(matched_direct_review_terms)
+        hard_risk_terms = [term for term in matched_risk_terms if term not in {"부작용"}]
+        has_reputation_risk = bool(matched_risk_terms) and (has_review_intent or bool(hard_risk_terms))
+
+        if not has_review_intent and not has_reputation_risk:
+            return {
+                "review_surface_score": 0.0,
+                "reputation_risk_score": 0.0,
+                "review_intent_type": "none",
+                "flags": [],
+            }
+
+        category = collector._detect_category(keyword)
+        review_score = 0.0
+        reputation_risk = 0.0
+        review_type = "generic_review_discovery" if has_review_intent else "reputation_issue"
+
+        if has_direct_review_surface:
+            review_score += 42.0
+            flags.append("review_intent")
+        elif has_review_intent:
+            review_score += 24.0
+            review_type = "recommendation_discovery"
+            flags.append("recommendation_discovery")
+        if any(term in keyword for term in ("추천", "잘하는", "잘하는곳", "괜찮은곳", "어디가 좋아")):
+            review_score += 12.0
+            flags.append("recommendation_intent")
+        if has_direct_review_surface:
+            review_score += 6.0
+            flags.append("rating_or_review_surface")
+        if collector._is_in_target_region(keyword):
+            review_score += 10.0
+            flags.append("target_region_review")
+        if any(region in keyword for region in self.LONGTAIL_REGION_TERMS):
+            review_score += 8.0
+            flags.append("neighborhood_review")
+        if collector._has_direct_service_anchor(keyword, category):
+            review_score += 8.0
+            flags.append("service_review_anchor")
+        if search_intent in {"validation", "commercial"}:
+            review_score += 6.0
+
+        if brand_intent_type == "own_brand_defense":
+            review_score += 24.0
+            review_type = "own_review_defense"
+            flags.append("review_defense")
+        elif brand_intent_type in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}:
+            review_score += 18.0
+            reputation_risk += 28.0
+            review_type = "competitor_review_monitor"
+            flags.append("competitor_review_monitor")
+
+        if has_reputation_risk:
+            reputation_risk += 42.0 + min(28.0, max(0, len(matched_risk_terms) - 1) * 12.0)
+            review_score += 10.0
+            if review_type == "generic_review_discovery":
+                review_type = "reputation_issue"
+            flags.append("reputation_risk_query")
+
+        if community_signal >= 40.0:
+            review_score += min(16.0, float(community_signal) / 6.0)
+            flags.append("community_review_signal")
+        if local_surface_score >= 70.0:
+            review_score += 8.0
+            flags.append("local_review_surface")
+        elif local_surface_score >= 55.0:
+            review_score += 5.0
+        if medical_ad_risk_score >= 40.0 and has_review_intent:
+            reputation_risk += 16.0
+            flags.append("medical_review_claim_sensitive")
+
+        review_score = round(max(0.0, min(100.0, review_score)), 2)
+        reputation_risk = round(max(0.0, min(100.0, reputation_risk)), 2)
+
+        if review_score >= 70.0:
+            flags.append("review_surface_high_value")
+        elif review_score >= 55.0:
+            flags.append("review_surface_review")
+        if reputation_risk >= 70.0:
+            flags.append("reputation_high_risk")
+        elif reputation_risk >= 40.0:
+            flags.append("reputation_review_required")
+
+        return {
+            "review_surface_score": review_score,
+            "reputation_risk_score": reputation_risk,
+            "review_intent_type": review_type,
+            "flags": sorted(set(flags)),
+        }
+
+    def _recommend_content_type(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+    ) -> str:
+        keyword = keyword or ""
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if search_intent == "red_flag" or any(term in keyword for term in ("부작용", "주의", "금기")):
+            return "faq_safety"
+        if any(term in keyword for term in ("입원", "야간", "주말", "일요일", "위치", "주소", "주차")):
+            return "access_landing"
+        if any(term in keyword for term in ("비용", "가격", "얼마", "치료비", "보험", "실비", "자보")):
+            return "service_landing"
+        if search_intent == "transactional":
+            return "service_landing"
+        if search_intent in {"validation", "commercial"} or any(term in keyword for term in ("후기", "추천", "잘하는")):
+            return "proof_safe_guide"
+        if search_intent == "comparison":
+            return "comparison_guide"
+        if search_intent == "informational":
+            return "educational_article"
+        return "topic_hub"
+
+    def _calculate_content_actionability_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        medical_ad_risk_score: Optional[float] = None,
+        service_fit_score: Optional[float] = None,
+    ) -> Dict[str, object]:
+        """Score whether a keyword can become a distinct, helpful page without thin/unsafe content."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if medical_ad_risk_score is None:
+            medical_ad_risk_score = float(self._calculate_medical_ad_risk_profile(keyword, search_intent)["score"])
+        if service_fit_score is None:
+            service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
+
+        recommended_type = self._recommend_content_type(keyword, category, search_intent)
+        flags: List[str] = []
+        score = float(service_fit_score) * 0.55
+
+        business_core = collector.is_business_core_keyword(keyword, category)
+        has_direct_anchor = collector._has_direct_service_anchor(keyword, category)
+        if has_direct_anchor:
+            score += 20.0
+        elif business_core:
+            score += 10.0
+        else:
+            score -= 12.0
+            flags.append("needs_service_anchor")
+
+        if business_core:
+            score += 10.0
+        if search_intent in self.HIGH_VALUE_INTENTS:
+            score += 8.0
+        if any(term in keyword for term in self.CONTENT_ACTION_TERMS):
+            score += 10.0
+        if collector._is_in_target_region(keyword):
+            score += 4.0
+
+        if recommended_type in {"service_landing", "access_landing"} and has_direct_anchor:
+            score += 5.0
+        if recommended_type == "faq_safety":
+            score += 8.0
+            flags.append("safe_faq_candidate")
+
+        proof_terms = [term for term in self.CONTENT_PROOF_SENSITIVE_TERMS if term.lower() in keyword.lower()]
+        if proof_terms:
+            score -= 24.0
+            flags.append("proof_sensitive_claim")
+
+        if medical_ad_risk_score >= 70.0:
+            score -= 42.0
+            flags.append("medical_ad_high_risk_content")
+        elif medical_ad_risk_score >= 40.0:
+            score -= 15.0
+            flags.append("medical_ad_review_content")
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score < 45.0:
+            flags.append("content_low_actionability")
+        elif score < 60.0:
+            flags.append("content_review_required")
+
+        return {
+            "score": score,
+            "recommended_content_type": recommended_type,
+            "flags": sorted(set(flags)),
+        }
+
     def _calculate_keyword_value_profile(
         self,
         keyword: str,
@@ -1925,6 +3717,21 @@ class PathfinderLegion:
         source_signal_count: int = 1,
         has_real_volume: Optional[bool] = None,
         business_core: Optional[bool] = None,
+        medical_ad_risk_score: Optional[float] = None,
+        content_actionability_score: Optional[float] = None,
+        local_surface_score: Optional[float] = None,
+        brand_intent_type: Optional[str] = None,
+        competitor_brand_risk_score: Optional[float] = None,
+        review_surface_score: Optional[float] = None,
+        reputation_risk_score: Optional[float] = None,
+        review_intent_type: Optional[str] = None,
+        profile_action_signal: Optional[float] = None,
+        availability_intent_score: Optional[float] = None,
+        availability_intent_type: Optional[str] = None,
+        payment_coverage_score: Optional[float] = None,
+        payment_coverage_type: Optional[str] = None,
+        access_convenience_score: Optional[float] = None,
+        access_convenience_type: Optional[str] = None,
     ) -> Dict[str, object]:
         """검색량이 작은 롱테일도 사업 전환 가치가 있으면 보존하기 위한 별도 프로필."""
         collector = self._collector_or_default()
@@ -1946,6 +3753,78 @@ class PathfinderLegion:
         category_terms = collector.category_patterns.get(category, ())
         category_term_count = sum(1 for term in category_terms if term in keyword)
         low_reason = collector.low_business_value_reason(keyword, category)
+        service_fit_profile = self._calculate_service_fit_profile(keyword, category, search_intent)
+        service_fit_score = float(service_fit_profile["score"])
+        negative_intent_flags = list(service_fit_profile["flags"])
+        if content_actionability_score is None:
+            content_profile = self._calculate_content_actionability_profile(
+                keyword,
+                category,
+                search_intent,
+                medical_ad_risk_score=medical_ad_risk_score,
+                service_fit_score=service_fit_score,
+            )
+            content_actionability_score = float(content_profile["score"])
+        if local_surface_score is None:
+            local_surface_profile = self._calculate_local_surface_profile(
+                keyword,
+                category,
+                search_intent,
+                service_fit_score=service_fit_score,
+            )
+            local_surface_score = float(local_surface_profile["score"])
+        if brand_intent_type is None or competitor_brand_risk_score is None:
+            brand_profile = self._calculate_brand_intent_profile(keyword, search_intent)
+            brand_intent_type = str(brand_profile["brand_intent_type"])
+            competitor_brand_risk_score = float(brand_profile["competitor_brand_risk_score"])
+        if review_surface_score is None or reputation_risk_score is None or review_intent_type is None:
+            review_profile = self._calculate_review_reputation_profile(
+                keyword,
+                search_intent,
+                brand_intent_type=brand_intent_type,
+                local_surface_score=float(local_surface_score or 0.0),
+                medical_ad_risk_score=float(medical_ad_risk_score or 0.0),
+            )
+            review_surface_score = float(review_profile["review_surface_score"])
+            reputation_risk_score = float(review_profile["reputation_risk_score"])
+            review_intent_type = str(review_profile["review_intent_type"])
+        if profile_action_signal is None:
+            profile_action_signal = 0.0
+        if availability_intent_score is None or availability_intent_type is None:
+            availability_profile = self._calculate_availability_intent_profile(
+                keyword,
+                category,
+                search_intent,
+                local_surface_score=float(local_surface_score or 0.0),
+                profile_action_signal=float(profile_action_signal or 0.0),
+                service_fit_score=service_fit_score,
+            )
+            availability_intent_score = float(availability_profile["availability_intent_score"])
+            availability_intent_type = str(availability_profile["availability_intent_type"])
+        if payment_coverage_score is None or payment_coverage_type is None:
+            payment_profile = self._calculate_payment_coverage_profile(
+                keyword,
+                category,
+                search_intent,
+                service_fit_score=service_fit_score,
+                medical_ad_risk_score=float(medical_ad_risk_score or 0.0),
+                local_surface_score=float(local_surface_score or 0.0),
+                profile_action_signal=float(profile_action_signal or 0.0),
+            )
+            payment_coverage_score = float(payment_profile["payment_coverage_score"])
+            payment_coverage_type = str(payment_profile["payment_coverage_type"])
+        if access_convenience_score is None or access_convenience_type is None:
+            access_profile = self._calculate_access_convenience_profile(
+                keyword,
+                category,
+                search_intent,
+                service_fit_score=service_fit_score,
+                local_surface_score=float(local_surface_score or 0.0),
+                profile_action_signal=float(profile_action_signal or 0.0),
+                availability_intent_score=float(availability_intent_score or 0.0),
+            )
+            access_convenience_score = float(access_profile["access_convenience_score"])
+            access_convenience_type = str(access_profile["access_convenience_type"])
 
         is_longtail = self._is_longtail_keyword(keyword)
         intent_is_valuable = search_intent in self.HIGH_VALUE_INTENTS or bool(matched_intents)
@@ -1971,6 +3850,48 @@ class PathfinderLegion:
             business_value_score -= 45.0
         if collector._is_medical_general(keyword):
             business_value_score -= 60.0
+        if service_fit_score >= 80.0:
+            business_value_score += 8.0
+        elif service_fit_score < 60.0:
+            business_value_score -= min(35.0, (60.0 - service_fit_score) * 0.7)
+        if content_actionability_score >= 80.0:
+            business_value_score += 6.0
+        elif content_actionability_score < 55.0:
+            business_value_score -= min(28.0, (55.0 - content_actionability_score) * 0.65)
+        if local_surface_score >= 70.0:
+            business_value_score += 8.0
+        elif local_surface_score >= 55.0:
+            business_value_score += 4.0
+        if brand_intent_type == "own_brand_defense":
+            business_value_score += 8.0
+        elif brand_intent_type in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}:
+            business_value_score -= 20.0
+            if competitor_brand_risk_score >= 70.0:
+                business_value_score -= 18.0
+        if review_surface_score >= 70.0:
+            business_value_score += 8.0
+        elif review_surface_score >= 55.0:
+            business_value_score += 4.0
+        if reputation_risk_score >= 70.0:
+            business_value_score -= 18.0
+        elif reputation_risk_score >= 40.0:
+            business_value_score -= 8.0
+        if profile_action_signal >= 60.0:
+            business_value_score += 10.0
+        elif profile_action_signal >= 35.0:
+            business_value_score += 5.0
+        if availability_intent_score >= 70.0:
+            business_value_score += 9.0
+        elif availability_intent_score >= 55.0:
+            business_value_score += 5.0
+        if payment_coverage_score >= 70.0:
+            business_value_score += 10.0
+        elif payment_coverage_score >= 55.0:
+            business_value_score += 5.0
+        if access_convenience_score >= 70.0:
+            business_value_score += 8.0
+        elif access_convenience_score >= 55.0:
+            business_value_score += 4.0
         business_value_score = round(max(0.0, min(100.0, business_value_score)), 2)
 
         longtail_score = 0.0
@@ -2017,6 +3938,42 @@ class PathfinderLegion:
             longtail_score += 6.0
         if low_reason:
             longtail_score -= 35.0
+        if service_fit_score >= 80.0:
+            longtail_score += 5.0
+        elif service_fit_score < 55.0:
+            longtail_score -= min(25.0, (55.0 - service_fit_score) * 0.5)
+        if content_actionability_score >= 80.0:
+            longtail_score += 4.0
+        elif content_actionability_score < 55.0:
+            longtail_score -= min(20.0, (55.0 - content_actionability_score) * 0.45)
+        if local_surface_score >= 70.0:
+            longtail_score += 6.0
+        elif local_surface_score >= 55.0:
+            longtail_score += 3.0
+        if brand_intent_type in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}:
+            longtail_score -= 18.0
+        if review_surface_score >= 70.0:
+            longtail_score += 5.0
+        elif review_surface_score >= 55.0:
+            longtail_score += 3.0
+        if reputation_risk_score >= 70.0:
+            longtail_score -= 12.0
+        if profile_action_signal >= 60.0:
+            longtail_score += 6.0
+        elif profile_action_signal >= 35.0:
+            longtail_score += 3.0
+        if availability_intent_score >= 70.0:
+            longtail_score += 6.0
+        elif availability_intent_score >= 55.0:
+            longtail_score += 3.0
+        if payment_coverage_score >= 70.0:
+            longtail_score += 6.0
+        elif payment_coverage_score >= 55.0:
+            longtail_score += 3.0
+        if access_convenience_score >= 70.0:
+            longtail_score += 5.0
+        elif access_convenience_score >= 55.0:
+            longtail_score += 3.0
         longtail_score = round(max(0.0, min(100.0, longtail_score)), 2)
 
         high_value_longtail = (
@@ -2025,6 +3982,19 @@ class PathfinderLegion:
             and has_region
             and (business_core or has_direct_anchor)
             and not low_reason
+            and service_fit_score >= 65.0
+            and not service_fit_profile["hard_negative"]
+            and (
+                content_actionability_score >= 58.0
+                or local_surface_score >= 70.0
+                or review_surface_score >= 70.0
+                or profile_action_signal >= 60.0
+                or availability_intent_score >= 70.0
+                or payment_coverage_score >= 70.0
+                or access_convenience_score >= 70.0
+            )
+            and brand_intent_type in {"generic"}
+            and reputation_risk_score < 70.0
             and longtail_score >= 68.0
             and business_value_score >= 65.0
             and (has_real_volume or source_signal_count >= 2)
@@ -2039,6 +4009,25 @@ class PathfinderLegion:
             "strong_decision_terms": strong_decision_terms,
             "has_direct_anchor": has_direct_anchor,
             "low_business_value_reason": low_reason,
+            "service_fit_score": service_fit_score,
+            "negative_intent_flags": negative_intent_flags,
+            "hard_negative_intent": bool(service_fit_profile["hard_negative"]),
+            "content_actionability_score": float(content_actionability_score),
+            "local_surface_score": float(local_surface_score),
+            "brand_intent_type": brand_intent_type,
+            "competitor_brand_risk_score": float(competitor_brand_risk_score or 0.0),
+            "review_surface_score": float(review_surface_score or 0.0),
+            "reputation_risk_score": float(reputation_risk_score or 0.0),
+            "review_intent_type": review_intent_type or "none",
+            "profile_action_signal": float(profile_action_signal or 0.0),
+            "availability_intent_score": float(availability_intent_score or 0.0),
+            "availability_intent_type": availability_intent_type or "none",
+            "payment_coverage_score": float(payment_coverage_score or 0.0),
+            "payment_coverage_type": payment_coverage_type or "none",
+            "access_convenience_score": float(access_convenience_score or 0.0),
+            "access_convenience_type": access_convenience_type or "none",
+            "source_signal_count": source_signal_count,
+            "has_real_volume": has_real_volume,
         }
 
     def _promote_grade_for_high_value_longtail(
@@ -2056,16 +4045,71 @@ class PathfinderLegion:
         low_reason = value_profile.get("low_business_value_reason")
         if low_reason and low_reason not in flags:
             flags.append(str(low_reason))
+        for negative_flag in value_profile.get("negative_intent_flags") or []:
+            quality_flag = f"negative_intent:{negative_flag}"
+            if quality_flag not in flags:
+                flags.append(quality_flag)
+        brand_intent_type = str(value_profile.get("brand_intent_type") or "generic")
+        if brand_intent_type != "generic":
+            quality_flag = f"brand_intent:{brand_intent_type}"
+            if quality_flag not in flags:
+                flags.append(quality_flag)
+        review_surface_score = float(value_profile.get("review_surface_score", 0.0) or 0.0)
+        reputation_risk_score = float(value_profile.get("reputation_risk_score", 0.0) or 0.0)
+        profile_action_signal = float(value_profile.get("profile_action_signal", 0.0) or 0.0)
+        availability_intent_score = float(value_profile.get("availability_intent_score", 0.0) or 0.0)
+        payment_coverage_score = float(value_profile.get("payment_coverage_score", 0.0) or 0.0)
+        access_convenience_score = float(value_profile.get("access_convenience_score", 0.0) or 0.0)
+        if reputation_risk_score >= 70.0 and "reputation_high_risk_review" not in flags:
+            flags.append("reputation_high_risk_review")
 
         if not value_profile.get("high_value_longtail"):
             return grade, flags
-        if not value_profile.get("strong_decision_terms"):
+        if reputation_risk_score >= 70.0:
+            return grade, flags
+        if brand_intent_type != "generic":
+            return grade, flags
+        if bool(value_profile.get("hard_negative_intent")):
+            return grade, flags
+        if float(value_profile.get("service_fit_score", 0.0) or 0.0) < 65.0:
+            return grade, flags
+        if (
+            float(value_profile.get("content_actionability_score", 0.0) or 0.0) < 58.0
+            and float(value_profile.get("local_surface_score", 0.0) or 0.0) < 70.0
+            and review_surface_score < 70.0
+            and profile_action_signal < 60.0
+            and availability_intent_score < 70.0
+            and payment_coverage_score < 70.0
+            and access_convenience_score < 70.0
+        ):
+            return grade, flags
+        if (
+            not value_profile.get("strong_decision_terms")
+            and review_surface_score < 70.0
+            and availability_intent_score < 70.0
+            and payment_coverage_score < 70.0
+            and access_convenience_score < 70.0
+        ):
             return grade, flags
         if float(value_profile.get("longtail_score", 0.0) or 0.0) < 78.0:
             return grade, flags
         if float(value_profile.get("business_value_score", 0.0) or 0.0) < 75.0:
             return grade, flags
-        if not has_real_volume or search_volume < 10:
+
+        if not has_real_volume:
+            source_signal_count = int(value_profile.get("source_signal_count", 0) or 0)
+            if (
+                source_signal_count >= 2
+                and verification_score >= 55
+                and difficulty <= 35
+                and opportunity >= 80
+            ):
+                if "estimated_high_value_longtail" not in flags:
+                    flags.append("estimated_high_value_longtail")
+                return ("B" if grade == "C" else grade), flags
+            return grade, flags
+
+        if search_volume < 10:
             return grade, flags
         if search_volume < 20 and verification_score < 75:
             return grade, flags
@@ -2081,42 +4125,84 @@ class PathfinderLegion:
     def _build_high_value_longtail_variants(
         self,
         seed_keywords: List[str],
-        max_keywords: int = 240,
+        max_keywords: int = 360,
     ) -> Set[str]:
         """자동완성으로 잘 안 잡히는 지역+서비스+전환 의도 롱테일을 직접 생성."""
         collector = self._collector_or_default()
         variants: Set[str] = set()
         seen: Set[str] = set()
 
+        def add_variant(*parts: str) -> bool:
+            keyword = " ".join(part.strip() for part in parts if part and part.strip())
+            cleaned = " ".join(dict.fromkeys(keyword.split()))
+            norm = self._normalize_keyword_for_history(cleaned)
+            if not norm or norm in seen:
+                return False
+            seen.add(norm)
+            if not collector._is_valid_keyword(cleaned):
+                return False
+            category_for_cleaned = collector._detect_category(cleaned)
+            if not collector.is_focus_candidate(cleaned, category_for_cleaned):
+                return False
+            variants.add(cleaned)
+            return len(variants) >= max_keywords
+
+        category_order: List[str] = []
+        region_order: List[str] = []
         for seed in seed_keywords:
             category = collector._detect_category(seed)
-            services = self.CATEGORY_CANONICAL_SERVICES.get(category)
-            suffixes = self.HIGH_VALUE_LONGTAIL_SUFFIXES.get(category)
-            if not services or not suffixes:
-                continue
-
+            if category in self.CATEGORY_CANONICAL_SERVICES and category not in category_order:
+                category_order.append(category)
             region = self._extract_target_region(seed)
-            regions = [region]
-            if region != "청주":
-                regions.append("청주")
+            if region and region not in region_order:
+                region_order.append(region)
 
-            for region_item in regions:
-                for service in services[:2]:
-                    for suffix in suffixes[:4]:
-                        keyword = f"{region_item} {service} {suffix}"
-                        cleaned = " ".join(dict.fromkeys(keyword.split()))
-                        norm = self._normalize_keyword_for_history(cleaned)
-                        if not norm or norm in seen:
-                            continue
-                        seen.add(norm)
-                        if not collector._is_valid_keyword(cleaned):
-                            continue
-                        category_for_cleaned = collector._detect_category(cleaned)
-                        if not collector.is_focus_candidate(cleaned, category_for_cleaned):
-                            continue
-                        variants.add(cleaned)
-                        if len(variants) >= max_keywords:
+        for category in self.CATEGORY_CANONICAL_SERVICES:
+            if category not in category_order:
+                category_order.append(category)
+
+        for region in self.LONGTAIL_SCOUT_REGIONS:
+            if region not in region_order:
+                region_order.append(region)
+
+        # First pass: cover every focus category across priority regions before adding richer context variants.
+        for region_item in region_order[:3]:
+            for category in category_order:
+                services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
+                suffixes = self.HIGH_VALUE_LONGTAIL_SUFFIXES.get(category, ())
+                if not services or not suffixes:
+                    continue
+                for service in services[:3]:
+                    for suffix in suffixes[:3]:
+                        if add_variant(region_item, service, suffix):
                             return variants
+
+        # Second pass: question-form longtails capture high-intent searches that are often too sparse for autocomplete.
+        for region_item in region_order:
+            for category in category_order:
+                services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
+                if not services:
+                    continue
+                for service in services[:3]:
+                    for pattern in self.HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS:
+                        if add_variant(pattern.format(region=region_item, service=service)):
+                            return variants
+
+        # Third pass: add situational modifiers that autocomplete often misses.
+        for region_item in region_order:
+            for category in category_order:
+                services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
+                suffixes = self.HIGH_VALUE_LONGTAIL_SUFFIXES.get(category, ())
+                contexts = self.HIGH_VALUE_LONGTAIL_CONTEXTS.get(category, ())
+                if not services or not suffixes or not contexts:
+                    continue
+                for service in services[:3]:
+                    for context in contexts[:5]:
+                        for suffix in suffixes[:4]:
+                            if add_variant(region_item, context, service, suffix):
+                                return variants
+                            if add_variant(region_item, service, context, suffix):
+                                return variants
 
         return variants
 
@@ -2135,14 +4221,580 @@ class PathfinderLegion:
         if canonical and hasattr(self, "collected") and canonical in self.collected:
             self._sync_result_quality_fields(self.collected[canonical])
 
+    def _merge_ad_keyword_metrics(self, metrics: Optional[Dict[str, Dict[str, object]]]) -> None:
+        self._ensure_quality_tracking()
+        for keyword, data in (metrics or {}).items():
+            norm = self._normalize_keyword_for_history(keyword)
+            if norm and isinstance(data, dict):
+                self.keyword_ad_metrics[norm] = dict(data)
+
+    def _get_ad_keyword_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.keyword_ad_metrics:
+            return self.keyword_ad_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.keyword_ad_metrics.get(compact_norm, {})
+
+    def _get_inbound_query_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.inbound_query_metrics:
+            return self.inbound_query_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.inbound_query_metrics.get(compact_norm, {})
+
+    def _get_owned_rank_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.owned_rank_metrics:
+            return self.owned_rank_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.owned_rank_metrics.get(compact_norm, {})
+
+    def _get_community_keyword_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.community_keyword_metrics:
+            return self.community_keyword_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.community_keyword_metrics.get(compact_norm, {})
+
+    def _get_conversion_keyword_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.conversion_keyword_metrics:
+            return self.conversion_keyword_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.conversion_keyword_metrics.get(compact_norm, {})
+
+    def _get_profile_action_metrics(self, keyword: str) -> Dict[str, object]:
+        self._ensure_quality_tracking()
+        norm = self._normalize_keyword_for_history(keyword)
+        if norm in self.profile_action_metrics:
+            return self.profile_action_metrics[norm]
+        compact_norm = self._normalize_keyword_for_history((keyword or "").replace(" ", ""))
+        return self.profile_action_metrics.get(compact_norm, {})
+
+    @staticmethod
+    def _calculate_ad_value_signal(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+
+        def as_float(key: str) -> float:
+            try:
+                return float(metrics.get(key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        clicks = as_float("monthly_pc_clicks") + as_float("monthly_mobile_clicks")
+        ctr = max(as_float("monthly_pc_ctr"), as_float("monthly_mobile_ctr"))
+        ad_depth = as_float("avg_ad_depth")
+        competition = str(metrics.get("competition", "") or "").lower()
+
+        if clicks >= 100:
+            click_score = 30.0
+        elif clicks >= 30:
+            click_score = 22.0
+        elif clicks >= 10:
+            click_score = 14.0
+        elif clicks > 0:
+            click_score = 7.0
+        else:
+            click_score = 0.0
+
+        if ctr >= 3.0:
+            ctr_score = 25.0
+        elif ctr >= 1.0:
+            ctr_score = 18.0
+        elif ctr >= 0.3:
+            ctr_score = 10.0
+        elif ctr > 0:
+            ctr_score = 4.0
+        else:
+            ctr_score = 0.0
+
+        if "높" in competition or "high" in competition:
+            competition_score = 20.0
+        elif "중" in competition or "medium" in competition:
+            competition_score = 12.0
+        elif "낮" in competition or "low" in competition:
+            competition_score = 4.0
+        else:
+            competition_score = 0.0
+
+        depth_score = min(25.0, max(0.0, ad_depth) * 2.5)
+        return round(min(100.0, click_score + ctr_score + competition_score + depth_score), 2)
+
+    @staticmethod
+    def _calculate_mobile_share(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        try:
+            pc = float(metrics.get("monthly_pc_count", 0.0) or 0.0)
+            mobile = float(metrics.get("monthly_mobile_count", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        total = pc + mobile
+        return round(mobile / total, 4) if total > 0 else 0.0
+
+    @staticmethod
+    def _calculate_inbound_value_signal(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        impressions = int(metrics.get("impressions", 0) or 0)
+        clicks = int(metrics.get("clicks", 0) or 0)
+        ctr = float(metrics.get("ctr", 0.0) or 0.0)
+        position = float(metrics.get("position", 0.0) or 0.0)
+
+        impression_score = min(28.0, math.log1p(max(0, impressions)) * 5.0)
+        click_score = min(35.0, clicks * 8.0)
+        ctr_score = min(22.0, ctr * 180.0)
+        position_score = 0.0
+        if 0 < position <= 3:
+            position_score = 15.0
+        elif position <= 10:
+            position_score = 10.0
+        elif position <= 20:
+            position_score = 6.0
+        elif position <= 50:
+            position_score = 3.0
+        return round(min(100.0, impression_score + click_score + ctr_score + position_score), 2)
+
+    @staticmethod
+    def _rank_status_label(metrics: Optional[Dict[str, object]]) -> str:
+        if not metrics:
+            return "unknown"
+        status = str(metrics.get("status", "") or "").lower()
+        rank = int(metrics.get("rank", 0) or 0)
+        if status == "found" and rank > 0:
+            if rank <= 3:
+                return "owned_top3"
+            if rank <= 10:
+                return "striking_top10"
+            if rank <= 20:
+                return "striking_page2"
+            if rank <= 40:
+                return "visible_gap"
+            return "deep_gap"
+        if status in {"not_in_results", "no_results"}:
+            return status
+        return "unknown"
+
+    @classmethod
+    def _calculate_rank_gap_signal(cls, metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        status = str(metrics.get("status", "") or "").lower()
+        rank = int(metrics.get("rank", 0) or 0)
+        device = str(metrics.get("device", "") or "").lower()
+        if status != "found" or rank <= 0:
+            return 18.0 if status == "not_in_results" else 0.0
+        if rank <= 3:
+            score = 12.0
+        elif rank <= 10:
+            score = 78.0
+        elif rank <= 20:
+            score = 88.0
+        elif rank <= 40:
+            score = 62.0
+        else:
+            score = 35.0
+        if device == "mobile" and score >= 50.0:
+            score += 6.0
+        return round(min(100.0, score), 2)
+
+    @staticmethod
+    def _calculate_community_value_signal(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        mentions = int(metrics.get("mentions", 0) or 0)
+        platforms = metrics.get("platforms", []) or []
+        platform_count = len(platforms)
+        commentable = int(metrics.get("commentable", 0) or 0)
+        max_priority = float(metrics.get("max_priority", 0.0) or 0.0)
+        max_conversion_fit = float(metrics.get("max_conversion_fit", 0.0) or 0.0)
+        max_infiltration = float(metrics.get("max_infiltration", 0.0) or 0.0)
+
+        mention_score = min(24.0, math.log1p(max(0, mentions)) * 8.0)
+        platform_score = min(16.0, platform_count * 6.0)
+        commentable_score = min(10.0, commentable * 3.0)
+        conversion_score = min(28.0, max_conversion_fit * 0.28)
+        infiltration_score = min(14.0, max_infiltration * 0.14)
+        priority_score = min(8.0, max_priority * 0.05)
+        return round(
+            min(100.0, mention_score + platform_score + commentable_score + conversion_score + infiltration_score + priority_score),
+            2,
+        )
+
+    @staticmethod
+    def _calculate_conversion_value_signal(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        total_calls = int(metrics.get("total_calls", 0) or 0)
+        naver_calls = int(metrics.get("naver_search_calls", 0) or 0)
+        duration_seconds = int(metrics.get("duration_seconds", 0) or 0)
+        rows = int(metrics.get("rows", 0) or 0)
+
+        call_score = min(42.0, math.log1p(max(0, total_calls)) * 18.0)
+        naver_score = min(24.0, math.log1p(max(0, naver_calls)) * 12.0)
+        duration_score = min(18.0, math.log1p(max(0, duration_seconds) / 60.0) * 8.0)
+        repeat_score = min(16.0, rows * 4.0)
+        return round(min(100.0, call_score + naver_score + duration_score + repeat_score), 2)
+
+    @staticmethod
+    def _calculate_profile_action_value_signal(metrics: Optional[Dict[str, object]]) -> float:
+        if not metrics:
+            return 0.0
+        calls = int(metrics.get("calls", 0) or metrics.get("phone_clicks", 0) or 0)
+        directions = int(metrics.get("directions", 0) or metrics.get("direction_requests", 0) or 0)
+        website = int(metrics.get("website_clicks", 0) or metrics.get("website_actions", 0) or 0)
+        bookings = int(metrics.get("bookings", 0) or metrics.get("reservations", 0) or 0)
+        messages = int(metrics.get("messages", 0) or metrics.get("message_clicks", 0) or 0)
+        total_actions = calls + directions + website + bookings + messages
+
+        action_score = min(32.0, math.log1p(max(0, total_actions)) * 12.0)
+        direction_score = min(22.0, math.log1p(max(0, directions)) * 10.0)
+        booking_score = min(24.0, math.log1p(max(0, bookings)) * 14.0)
+        call_score = min(14.0, math.log1p(max(0, calls)) * 6.0)
+        website_score = min(8.0, math.log1p(max(0, website)) * 4.0)
+        message_score = min(8.0, math.log1p(max(0, messages)) * 5.0)
+        return round(
+            min(100.0, action_score + direction_score + booking_score + call_score + website_score + message_score),
+            2,
+        )
+
+    def _calculate_medical_ad_risk_profile(self, keyword: str, search_intent: Optional[str] = None) -> Dict[str, object]:
+        keyword = keyword or ""
+        compact = re.sub(r"\s+", "", keyword.lower())
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        flags: List[str] = []
+        score = 0.0
+
+        def matched_terms(terms: Tuple[str, ...]) -> List[str]:
+            return [term for term in terms if term.lower().replace(" ", "") in compact]
+
+        high_risk_terms = matched_terms(self.MEDICAL_AD_HIGH_RISK_TERMS)
+        testimonial_terms = matched_terms(self.MEDICAL_AD_TESTIMONIAL_RISK_TERMS)
+        claim_terms = matched_terms(self.MEDICAL_AD_CLAIM_RISK_TERMS)
+        comparison_terms = matched_terms(self.MEDICAL_AD_COMPARISON_RISK_TERMS)
+        safe_info_terms = matched_terms(self.MEDICAL_AD_SAFE_INFO_TERMS)
+
+        if high_risk_terms:
+            score += 42.0 + min(28.0, max(0, len(high_risk_terms) - 1) * 14.0)
+            flags.append("high_risk_claim")
+        if testimonial_terms:
+            score += 28.0
+            flags.append("testimonial_or_before_after")
+        if claim_terms:
+            score += 16.0
+            flags.append("treatment_effect_claim")
+        if comparison_terms:
+            score += 14.0
+            flags.append("comparative_claim")
+
+        is_safe_info = bool(safe_info_terms)
+        if is_safe_info:
+            flags.append("safe_info_possible")
+            if not any(flag in flags for flag in ("high_risk_claim", "testimonial_or_before_after")):
+                score = max(0.0, score - 12.0)
+
+        if search_intent in {"red_flag", "informational"} and not any(
+            flag in flags for flag in ("high_risk_claim", "testimonial_or_before_after")
+        ):
+            score = max(0.0, score - 8.0)
+
+        score = round(min(100.0, max(0.0, score)), 2)
+        if score >= 70.0:
+            risk_level = "high"
+        elif score >= 40.0:
+            risk_level = "review"
+        elif score > 0:
+            risk_level = "low"
+        else:
+            risk_level = "safe"
+
+        feasibility = round(max(0.0, min(100.0, 100.0 - score + (8.0 if is_safe_info else 0.0))), 2)
+        return {
+            "score": score,
+            "flags": flags,
+            "risk_level": risk_level,
+            "content_feasibility_score": feasibility,
+        }
+
+    def _content_cluster_key(self, keyword: str, category: Optional[str] = None, search_intent: Optional[str] = None) -> str:
+        keyword = keyword or ""
+        collector = self._collector_or_default()
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        region = self._extract_target_region(keyword)
+
+        aspect_map = (
+            ("price", ("가격", "비용", "얼마", "치료비", "보험", "실비", "자보", "자동차보험")),
+            ("review", ("후기", "추천", "잘하는", "괜찮은곳", "유명")),
+            ("consult", ("상담", "예약", "문의", "초진", "어디")),
+            ("effect", ("효과", "전후", "기간", "차이")),
+            ("risk", ("부작용", "통증", "재발", "주의")),
+            ("access", ("야간", "주말", "일요일", "근처", "입원")),
+        )
+        aspect = "general"
+        for key, terms in aspect_map:
+            if any(term in keyword for term in terms):
+                aspect = key
+                break
+
+        return "|".join([
+            region or "청주",
+            category or "unknown",
+            search_intent or "unknown",
+            aspect,
+        ])
+
+    @staticmethod
+    def _normalize_quality_flags(flags: Optional[List[str]], search_volume: int, document_count: int) -> List[str]:
+        cleaned: List[str] = []
+        for flag in flags or []:
+            if flag == "missing_document_count" and document_count > 0:
+                continue
+            if flag == "low_document_count" and document_count >= 10:
+                continue
+            if flag not in cleaned:
+                cleaned.append(flag)
+        return cleaned
+
     def _sync_result_quality_fields(self, result: KeywordResult) -> None:
         self._ensure_quality_tracking()
+        result.quality_flags = self._normalize_quality_flags(
+            result.quality_flags,
+            result.search_volume,
+            result.document_count,
+        )
         norm = self._normalize_keyword_for_history(result.keyword)
         signals = sorted(self.keyword_source_signals.get(norm, {result.source}))
         if result.source not in signals:
             signals.append(result.source)
             signals = sorted(set(signals))
+        ad_metrics = self._get_ad_keyword_metrics(result.keyword)
+        inbound_metrics = self._get_inbound_query_metrics(result.keyword)
+        inbound_value_signal = self._calculate_inbound_value_signal(inbound_metrics)
+        rank_metrics = self._get_owned_rank_metrics(result.keyword)
+        rank_gap_signal = float(rank_metrics.get("rank_gap_signal", 0.0) or 0.0)
+        community_metrics = self._get_community_keyword_metrics(result.keyword)
+        community_signal = float(community_metrics.get("community_signal", 0.0) or 0.0)
+        conversion_metrics = self._get_conversion_keyword_metrics(result.keyword)
+        conversion_signal = float(conversion_metrics.get("conversion_signal", 0.0) or 0.0)
+        profile_action_metrics = self._get_profile_action_metrics(result.keyword)
+        profile_action_signal = float(profile_action_metrics.get("profile_action_signal", 0.0) or 0.0)
+        mobile_share = self._calculate_mobile_share(ad_metrics)
+        if inbound_metrics and "inbound_query" not in signals:
+            signals = sorted(set(signals + ["inbound_query"]))
+        if rank_gap_signal >= 55.0 and "owned_rank_gap" not in signals:
+            signals = sorted(set(signals + ["owned_rank_gap"]))
+        if community_signal >= 40.0 and "community_demand" not in signals:
+            signals = sorted(set(signals + ["community_demand"]))
+        if conversion_signal >= 35.0 and "actual_call_conversion" not in signals:
+            signals = sorted(set(signals + ["actual_call_conversion"]))
+        if profile_action_signal >= 35.0 and "profile_action_conversion" not in signals:
+            signals = sorted(set(signals + ["profile_action_conversion"]))
         result.source_signals = signals
+        result.mobile_share = mobile_share
+        result.owned_rank = int(rank_metrics.get("rank", result.owned_rank) or 0)
+        result.owned_rank_device = str(rank_metrics.get("device", result.owned_rank_device) or "")
+        result.rank_gap_signal = rank_gap_signal
+        result.rank_status = str(rank_metrics.get("rank_status", result.rank_status) or "unknown")
+        result.community_mentions = int(community_metrics.get("mentions", result.community_mentions) or 0)
+        result.community_conversion_fit = float(community_metrics.get("max_conversion_fit", result.community_conversion_fit) or 0.0)
+        result.community_signal = community_signal
+        result.community_platforms = list(community_metrics.get("platforms", result.community_platforms) or [])
+        result.conversion_calls = int(conversion_metrics.get("total_calls", result.conversion_calls) or 0)
+        result.conversion_naver_calls = int(conversion_metrics.get("naver_search_calls", result.conversion_naver_calls) or 0)
+        result.conversion_duration_seconds = int(conversion_metrics.get("duration_seconds", result.conversion_duration_seconds) or 0)
+        result.conversion_signal = conversion_signal
+        result.profile_action_signal = profile_action_signal
+        result.profile_actions_total = int(profile_action_metrics.get("total_actions", result.profile_actions_total) or 0)
+        result.profile_direction_actions = int(profile_action_metrics.get("directions", result.profile_direction_actions) or 0)
+        result.profile_website_actions = int(profile_action_metrics.get("website_clicks", result.profile_website_actions) or 0)
+        result.profile_booking_actions = int(profile_action_metrics.get("bookings", result.profile_booking_actions) or 0)
+        result.profile_message_actions = int(profile_action_metrics.get("messages", result.profile_message_actions) or 0)
+        result.profile_action_sources = list(profile_action_metrics.get("sources", result.profile_action_sources) or [])
+        result.profile_action_flags = []
+        result.inbound_impressions = int(inbound_metrics.get("impressions", result.inbound_impressions) or 0)
+        result.inbound_clicks = int(inbound_metrics.get("clicks", result.inbound_clicks) or 0)
+        result.inbound_ctr = float(inbound_metrics.get("ctr", result.inbound_ctr) or 0.0)
+        result.inbound_position = float(inbound_metrics.get("position", result.inbound_position) or 0.0)
+        result.inbound_sources = list(inbound_metrics.get("sources", result.inbound_sources) or [])
+        result.content_cluster_key = self._content_cluster_key(result.keyword, result.category, result.search_intent)
+        medical_risk = self._calculate_medical_ad_risk_profile(result.keyword, result.search_intent)
+        result.medical_ad_risk_score = float(medical_risk["score"])
+        result.medical_ad_risk_flags = list(medical_risk["flags"])
+        result.content_feasibility_score = float(medical_risk["content_feasibility_score"])
+        service_fit = self._calculate_service_fit_profile(result.keyword, result.category, result.search_intent)
+        result.local_service_fit_score = float(service_fit["score"])
+        result.negative_intent_flags = list(service_fit["flags"])
+        content_action = self._calculate_content_actionability_profile(
+            result.keyword,
+            result.category,
+            result.search_intent,
+            medical_ad_risk_score=result.medical_ad_risk_score,
+            service_fit_score=result.local_service_fit_score,
+        )
+        result.content_actionability_score = float(content_action["score"])
+        result.recommended_content_type = str(content_action["recommended_content_type"])
+        result.content_action_flags = list(content_action["flags"])
+        local_surface = self._calculate_local_surface_profile(
+            result.keyword,
+            result.category,
+            result.search_intent,
+            mobile_share=mobile_share,
+            rank_gap_signal=rank_gap_signal,
+            conversion_signal=max(conversion_signal, profile_action_signal),
+            service_fit_score=result.local_service_fit_score,
+        )
+        result.local_surface_score = float(local_surface["score"])
+        result.preferred_search_surface = str(local_surface["preferred_search_surface"])
+        result.local_surface_flags = list(local_surface["flags"])
+        availability_profile = self._calculate_availability_intent_profile(
+            result.keyword,
+            result.category,
+            result.search_intent,
+            local_surface_score=result.local_surface_score,
+            profile_action_signal=result.profile_action_signal,
+            service_fit_score=result.local_service_fit_score,
+        )
+        result.availability_intent_score = float(availability_profile["availability_intent_score"])
+        result.availability_intent_type = str(availability_profile["availability_intent_type"])
+        result.availability_action_flags = list(availability_profile["flags"])
+        payment_profile = self._calculate_payment_coverage_profile(
+            result.keyword,
+            result.category,
+            result.search_intent,
+            service_fit_score=result.local_service_fit_score,
+            medical_ad_risk_score=result.medical_ad_risk_score,
+            local_surface_score=result.local_surface_score,
+            profile_action_signal=result.profile_action_signal,
+        )
+        result.payment_coverage_score = float(payment_profile["payment_coverage_score"])
+        result.payment_coverage_type = str(payment_profile["payment_coverage_type"])
+        result.payment_action_flags = list(payment_profile["flags"])
+        access_profile = self._calculate_access_convenience_profile(
+            result.keyword,
+            result.category,
+            result.search_intent,
+            service_fit_score=result.local_service_fit_score,
+            local_surface_score=result.local_surface_score,
+            profile_action_signal=result.profile_action_signal,
+            availability_intent_score=result.availability_intent_score,
+        )
+        result.access_convenience_score = float(access_profile["access_convenience_score"])
+        result.access_convenience_type = str(access_profile["access_convenience_type"])
+        result.access_convenience_flags = list(access_profile["flags"])
+        brand_profile = self._calculate_brand_intent_profile(result.keyword, result.search_intent)
+        result.brand_intent_type = str(brand_profile["brand_intent_type"])
+        result.brand_signal_score = float(brand_profile["brand_signal_score"])
+        result.brand_mentions = list(brand_profile["brand_mentions"])
+        result.competitor_brand_risk_score = float(brand_profile["competitor_brand_risk_score"])
+        result.brand_action_flags = list(brand_profile["flags"])
+        review_profile = self._calculate_review_reputation_profile(
+            result.keyword,
+            result.search_intent,
+            brand_intent_type=result.brand_intent_type,
+            community_signal=community_signal,
+            local_surface_score=result.local_surface_score,
+            medical_ad_risk_score=result.medical_ad_risk_score,
+        )
+        result.review_surface_score = float(review_profile["review_surface_score"])
+        result.reputation_risk_score = float(review_profile["reputation_risk_score"])
+        result.review_intent_type = str(review_profile["review_intent_type"])
+        result.review_action_flags = list(review_profile["flags"])
+        if result.local_service_fit_score < 35.0:
+            result.grade = self._cap_grade(result.grade, "C")
+            result.high_value_longtail = False
+            if "service_fit_block" not in result.quality_flags:
+                result.quality_flags.append("service_fit_block")
+        elif result.local_service_fit_score < 60.0 and "service_fit_review" not in result.quality_flags:
+            result.grade = self._cap_grade(result.grade, "B")
+            result.quality_flags.append("service_fit_review")
+        for negative_flag in result.negative_intent_flags:
+            quality_flag = f"negative_intent:{negative_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.content_actionability_score < 45.0:
+            result.grade = self._cap_grade(result.grade, "C")
+            result.high_value_longtail = False
+            if "content_low_actionability" not in result.quality_flags:
+                result.quality_flags.append("content_low_actionability")
+        elif result.content_actionability_score < 60.0 and "content_action_review" not in result.quality_flags:
+            result.grade = self._cap_grade(result.grade, "B")
+            result.quality_flags.append("content_action_review")
+        for action_flag in result.content_action_flags:
+            quality_flag = f"content_action:{action_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.local_surface_score >= 70.0 and "local_surface_high_value" not in result.quality_flags:
+            result.quality_flags.append("local_surface_high_value")
+        if result.profile_action_signal >= 60.0:
+            result.profile_action_flags.append("profile_action_high_value")
+            if "profile_action_high_value" not in result.quality_flags:
+                result.quality_flags.append("profile_action_high_value")
+        elif result.profile_action_signal >= 35.0:
+            result.profile_action_flags.append("profile_action_signal")
+            if "profile_action_signal" not in result.quality_flags:
+                result.quality_flags.append("profile_action_signal")
+        for availability_flag in result.availability_action_flags:
+            quality_flag = f"availability_action:{availability_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.availability_intent_score >= 70.0 and "availability_high_intent" not in result.quality_flags:
+            result.quality_flags.append("availability_high_intent")
+        elif result.availability_intent_score >= 55.0 and "availability_review" not in result.quality_flags:
+            result.quality_flags.append("availability_review")
+        for payment_flag in result.payment_action_flags:
+            quality_flag = f"payment_action:{payment_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.payment_coverage_score >= 70.0 and "payment_high_intent" not in result.quality_flags:
+            result.quality_flags.append("payment_high_intent")
+        elif result.payment_coverage_score >= 55.0 and "payment_review" not in result.quality_flags:
+            result.quality_flags.append("payment_review")
+        for access_flag in result.access_convenience_flags:
+            quality_flag = f"access_action:{access_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.access_convenience_score >= 70.0 and "access_high_intent" not in result.quality_flags:
+            result.quality_flags.append("access_high_intent")
+        elif result.access_convenience_score >= 55.0 and "access_review" not in result.quality_flags:
+            result.quality_flags.append("access_review")
+        for review_flag in result.review_action_flags:
+            quality_flag = f"review_action:{review_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.review_surface_score >= 70.0 and "review_surface_high_value" not in result.quality_flags:
+            result.quality_flags.append("review_surface_high_value")
+        if result.reputation_risk_score >= 70.0:
+            result.grade = self._cap_grade(result.grade, "B")
+            result.high_value_longtail = False
+            if "reputation_high_risk_review" not in result.quality_flags:
+                result.quality_flags.append("reputation_high_risk_review")
+        elif result.reputation_risk_score >= 40.0 and "reputation_review_required" not in result.quality_flags:
+            result.grade = self._cap_grade(result.grade, "B")
+            result.quality_flags.append("reputation_review_required")
+        for brand_flag in result.brand_action_flags:
+            quality_flag = f"brand_action:{brand_flag}"
+            if quality_flag not in result.quality_flags:
+                result.quality_flags.append(quality_flag)
+        if result.brand_intent_type in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}:
+            result.grade = self._cap_grade(result.grade, "B")
+            result.high_value_longtail = False
+            if "competitor_brand_review_required" not in result.quality_flags:
+                result.quality_flags.append("competitor_brand_review_required")
+        elif result.brand_intent_type == "own_brand_defense" and "own_brand_defense" not in result.quality_flags:
+            result.quality_flags.append("own_brand_defense")
+        if result.medical_ad_risk_score >= 70.0:
+            result.grade = self._cap_grade(result.grade, "B")
+            if "medical_ad_high_risk" not in result.quality_flags:
+                result.quality_flags.append("medical_ad_high_risk")
+        elif result.medical_ad_risk_score >= 40.0 and "medical_ad_review_required" not in result.quality_flags:
+            result.quality_flags.append("medical_ad_review_required")
         has_real_volume = result.search_volume > 0 and "missing_real_volume" not in (result.quality_flags or [])
         result.verification_score = self._calculate_verification_score(
             result.keyword,
@@ -2152,6 +4804,25 @@ class PathfinderLegion:
             has_real_volume,
             result.business_core,
         )
+        ad_value_signal = self._calculate_ad_value_signal(ad_metrics)
+        if ad_value_signal >= 65:
+            result.verification_score = min(100.0, result.verification_score + min(8.0, ad_value_signal / 12.0))
+        if inbound_value_signal >= 30:
+            result.verification_score = min(100.0, result.verification_score + min(14.0, inbound_value_signal / 7.0))
+        if rank_gap_signal >= 55.0:
+            result.verification_score = min(100.0, result.verification_score + min(10.0, rank_gap_signal / 10.0))
+        if community_signal >= 40.0:
+            result.verification_score = min(100.0, result.verification_score + min(12.0, community_signal / 8.0))
+        if conversion_signal >= 35.0:
+            result.verification_score = min(100.0, result.verification_score + min(18.0, conversion_signal / 5.5))
+        if profile_action_signal >= 35.0:
+            result.verification_score = min(100.0, result.verification_score + min(16.0, profile_action_signal / 5.0))
+        if result.availability_intent_score >= 55.0:
+            result.verification_score = min(100.0, result.verification_score + min(8.0, result.availability_intent_score / 12.0))
+        if result.payment_coverage_score >= 55.0:
+            result.verification_score = min(100.0, result.verification_score + min(9.0, result.payment_coverage_score / 11.0))
+        if result.access_convenience_score >= 55.0:
+            result.verification_score = min(100.0, result.verification_score + min(8.0, result.access_convenience_score / 12.0))
         value_profile = self._calculate_keyword_value_profile(
             result.keyword,
             category=result.category,
@@ -2163,10 +4834,77 @@ class PathfinderLegion:
             source_signal_count=len(signals),
             has_real_volume=has_real_volume,
             business_core=result.business_core,
+            medical_ad_risk_score=result.medical_ad_risk_score,
+            content_actionability_score=result.content_actionability_score,
+            local_surface_score=result.local_surface_score,
+            brand_intent_type=result.brand_intent_type,
+            competitor_brand_risk_score=result.competitor_brand_risk_score,
+            review_surface_score=result.review_surface_score,
+            reputation_risk_score=result.reputation_risk_score,
+            review_intent_type=result.review_intent_type,
+            profile_action_signal=result.profile_action_signal,
+            availability_intent_score=result.availability_intent_score,
+            availability_intent_type=result.availability_intent_type,
+            payment_coverage_score=result.payment_coverage_score,
+            payment_coverage_type=result.payment_coverage_type,
+            access_convenience_score=result.access_convenience_score,
+            access_convenience_type=result.access_convenience_type,
         )
+        if (
+            ad_value_signal >= 55 or inbound_value_signal >= 30 or mobile_share >= 0.65
+            or rank_gap_signal >= 55.0 or community_signal >= 40.0 or conversion_signal >= 35.0
+            or profile_action_signal >= 35.0 or result.availability_intent_score >= 55.0
+            or result.payment_coverage_score >= 55.0
+            or result.access_convenience_score >= 55.0
+        ):
+            value_profile = dict(value_profile)
+            ad_bonus = min(12.0, (ad_value_signal - 50.0) / 4.0) if ad_value_signal >= 55 else 0.0
+            inbound_bonus = min(14.0, inbound_value_signal / 7.0) if inbound_value_signal >= 30 else 0.0
+            mobile_bonus = 5.0 if mobile_share >= 0.65 and self._collector_or_default()._is_in_target_region(result.keyword) else 0.0
+            rank_bonus = min(10.0, rank_gap_signal / 12.0) if rank_gap_signal >= 55.0 else 0.0
+            community_bonus = min(14.0, community_signal / 7.0) if community_signal >= 40.0 else 0.0
+            conversion_bonus = min(20.0, conversion_signal / 4.5) if conversion_signal >= 35.0 else 0.0
+            profile_action_bonus = min(18.0, profile_action_signal / 4.5) if profile_action_signal >= 35.0 else 0.0
+            availability_bonus = min(12.0, result.availability_intent_score / 8.0) if result.availability_intent_score >= 55.0 else 0.0
+            payment_bonus = min(14.0, result.payment_coverage_score / 7.0) if result.payment_coverage_score >= 55.0 else 0.0
+            access_bonus = min(12.0, result.access_convenience_score / 8.0) if result.access_convenience_score >= 55.0 else 0.0
+            value_profile["business_value_score"] = min(
+                100.0,
+                float(value_profile["business_value_score"]) + ad_bonus + inbound_bonus + mobile_bonus + rank_bonus + community_bonus + conversion_bonus + profile_action_bonus + availability_bonus + payment_bonus + access_bonus,
+            )
+            if (
+                float(value_profile["longtail_score"]) >= 60.0
+                and float(value_profile["business_value_score"]) >= 75.0
+                and (
+                    ad_value_signal >= 55 or inbound_value_signal >= 30 or mobile_share >= 0.75
+                    or rank_gap_signal >= 70.0 or community_signal >= 60.0 or conversion_signal >= 45.0
+                    or profile_action_signal >= 60.0 or result.availability_intent_score >= 70.0
+                    or result.payment_coverage_score >= 70.0
+                    or result.access_convenience_score >= 70.0
+                )
+            ):
+                value_profile["high_value_longtail"] = True
         result.longtail_score = float(value_profile["longtail_score"])
         result.business_value_score = float(value_profile["business_value_score"])
         result.high_value_longtail = bool(value_profile["high_value_longtail"])
+        if result.local_service_fit_score < 65.0 or bool(service_fit["hard_negative"]):
+            result.high_value_longtail = False
+        if result.content_actionability_score < 58.0:
+            if (
+                result.local_surface_score < 70.0
+                and result.review_surface_score < 70.0
+                and result.profile_action_signal < 60.0
+                and result.availability_intent_score < 70.0
+                and result.payment_coverage_score < 70.0
+                and result.access_convenience_score < 70.0
+            ):
+                result.high_value_longtail = False
+        if result.medical_ad_risk_score >= 70.0:
+            result.high_value_longtail = False
+        if result.reputation_risk_score >= 70.0:
+            result.high_value_longtail = False
+        if result.brand_intent_type != "generic":
+            result.high_value_longtail = False
 
     @staticmethod
     def _calculate_verification_score(
@@ -2526,6 +5264,8 @@ class PathfinderLegion:
 
         try:
             related_volume_map = self.ad_manager.get_keyword_volumes(unique_seeds) or {}
+            if hasattr(self.ad_manager, "get_last_keyword_metrics"):
+                self._merge_ad_keyword_metrics(self.ad_manager.get_last_keyword_metrics())
         except Exception as e:
             print(f"   ⚠️ 검색광고 연관어 조회 실패: {e}")
             return []
@@ -2641,6 +5381,12 @@ class PathfinderLegion:
             score += 10
         if collector.low_business_value_reason(keyword, category):
             score -= 40
+        service_fit_score = float(
+            self._calculate_service_fit_profile(keyword, category).get("score", 0.0) or 0.0
+        )
+        score = (score * 0.75) + (service_fit_score * 0.25)
+        if service_fit_score < 45.0:
+            score = min(score, service_fit_score)
 
         return max(0.0, min(score, 100.0))
 
@@ -2653,7 +5399,13 @@ class PathfinderLegion:
                              business_core: Optional[bool] = None,
                              source_signal_count: int = 1,
                              longtail_score: Optional[float] = None,
-                             business_value_score: Optional[float] = None) -> float:
+                             business_value_score: Optional[float] = None,
+                             local_surface_score: Optional[float] = None,
+                             review_surface_score: Optional[float] = None,
+                             profile_action_signal: Optional[float] = None,
+                             availability_intent_score: Optional[float] = None,
+                             payment_coverage_score: Optional[float] = None,
+                             access_convenience_score: Optional[float] = None) -> float:
         """
         MF-KEI 5.0 점수 계산 (트렌드 + 계절성 + 비즈니스 관련도 반영)
 
@@ -2703,9 +5455,33 @@ class PathfinderLegion:
                 source_signal_count=source_signal_count,
                 has_real_volume=has_real_volume,
                 business_core=business_core,
+                local_surface_score=local_surface_score,
+                review_surface_score=review_surface_score,
+                profile_action_signal=profile_action_signal,
+                availability_intent_score=availability_intent_score,
+                payment_coverage_score=payment_coverage_score,
+                access_convenience_score=access_convenience_score,
             )
             longtail_score = float(value_profile["longtail_score"])
             business_value_score = float(value_profile["business_value_score"])
+            local_surface_score = float(value_profile.get("local_surface_score", local_surface_score or 0.0))
+            review_surface_score = float(value_profile.get("review_surface_score", review_surface_score or 0.0))
+            profile_action_signal = float(value_profile.get("profile_action_signal", profile_action_signal or 0.0))
+            availability_intent_score = float(value_profile.get("availability_intent_score", availability_intent_score or 0.0))
+            payment_coverage_score = float(value_profile.get("payment_coverage_score", payment_coverage_score or 0.0))
+            access_convenience_score = float(value_profile.get("access_convenience_score", access_convenience_score or 0.0))
+        if local_surface_score is None:
+            local_surface_score = 0.0
+        if review_surface_score is None:
+            review_surface_score = 0.0
+        if profile_action_signal is None:
+            profile_action_signal = 0.0
+        if availability_intent_score is None:
+            availability_intent_score = 0.0
+        if payment_coverage_score is None:
+            payment_coverage_score = 0.0
+        if access_convenience_score is None:
+            access_convenience_score = 0.0
 
         # 6. MF-KEI 5.5 가중 평균
         base_score = (
@@ -2715,8 +5491,14 @@ class PathfinderLegion:
             trend_score * 0.10 +
             seasonality_score * 0.08 +
             relevance_score * 0.08 +
-            float(business_value_score or 0.0) * 0.06 +
-            float(longtail_score or 0.0) * 0.06
+            float(business_value_score or 0.0) * 0.05 +
+            float(longtail_score or 0.0) * 0.05 +
+            float(local_surface_score or 0.0) * 0.02 +
+            float(review_surface_score or 0.0) * 0.02 +
+            float(profile_action_signal or 0.0) * 0.02 +
+            float(availability_intent_score or 0.0) * 0.02 +
+            float(payment_coverage_score or 0.0) * 0.02 +
+            float(access_convenience_score or 0.0) * 0.02
         )
 
         # 7. 검색 의도 가중치. 저검색량 롱테일도 전환 의도가 명확하면 반영한다.
@@ -2727,6 +5509,18 @@ class PathfinderLegion:
             intent_weight = 1.16
         if float(longtail_score or 0.0) >= 68 and float(business_value_score or 0.0) >= 65:
             intent_weight += 0.08
+        if float(local_surface_score or 0.0) >= 70:
+            intent_weight += 0.05
+        if float(review_surface_score or 0.0) >= 70:
+            intent_weight += 0.04
+        if float(profile_action_signal or 0.0) >= 60:
+            intent_weight += 0.05
+        if float(availability_intent_score or 0.0) >= 70:
+            intent_weight += 0.05
+        if float(payment_coverage_score or 0.0) >= 70:
+            intent_weight += 0.05
+        if float(access_convenience_score or 0.0) >= 70:
+            intent_weight += 0.04
         if has_real_volume is False and search_volume <= 30:
             intent_weight = min(intent_weight, 1.08)
 
@@ -2818,6 +5612,8 @@ class PathfinderLegion:
                 result = self.ad_manager.get_keyword_volumes(valid_keywords)
                 # None 방어 처리
                 volume_map = result if result is not None else {}
+                if hasattr(self.ad_manager, "get_last_keyword_metrics"):
+                    self._merge_ad_keyword_metrics(self.ad_manager.get_last_keyword_metrics())
                 if volume_map:
                     print(f"   📊 검색량 조회: {len(volume_map)}개")
             except Exception as e:
@@ -2913,6 +5709,31 @@ class PathfinderLegion:
             source_signals = sorted(self.keyword_source_signals.get(norm, {source}))
             if source not in source_signals:
                 source_signals = sorted(set(source_signals + [source]))
+            ad_metrics = self._get_ad_keyword_metrics(kw)
+            inbound_metrics = self._get_inbound_query_metrics(kw)
+            rank_metrics = self._get_owned_rank_metrics(kw)
+            community_metrics = self._get_community_keyword_metrics(kw)
+            conversion_metrics = self._get_conversion_keyword_metrics(kw)
+            profile_action_metrics = self._get_profile_action_metrics(kw)
+            ad_value_signal = self._calculate_ad_value_signal(ad_metrics)
+            inbound_value_signal = self._calculate_inbound_value_signal(inbound_metrics)
+            rank_gap_signal = float(rank_metrics.get("rank_gap_signal", 0.0) or 0.0)
+            community_signal = float(community_metrics.get("community_signal", 0.0) or 0.0)
+            conversion_signal = float(conversion_metrics.get("conversion_signal", 0.0) or 0.0)
+            profile_action_signal = float(profile_action_metrics.get("profile_action_signal", 0.0) or 0.0)
+            mobile_share = self._calculate_mobile_share(ad_metrics)
+            inbound_sources = list(inbound_metrics.get("sources", []) or [])
+            profile_action_sources = list(profile_action_metrics.get("sources", []) or [])
+            if inbound_metrics and "inbound_query" not in source_signals:
+                source_signals = sorted(set(source_signals + ["inbound_query"]))
+            if rank_gap_signal >= 55.0 and "owned_rank_gap" not in source_signals:
+                source_signals = sorted(set(source_signals + ["owned_rank_gap"]))
+            if community_signal >= 40.0 and "community_demand" not in source_signals:
+                source_signals = sorted(set(source_signals + ["community_demand"]))
+            if conversion_signal >= 35.0 and "actual_call_conversion" not in source_signals:
+                source_signals = sorted(set(source_signals + ["actual_call_conversion"]))
+            if profile_action_signal >= 35.0 and "profile_action_conversion" not in source_signals:
+                source_signals = sorted(set(source_signals + ["profile_action_conversion"]))
             verification_score = self._calculate_verification_score(
                 kw,
                 search_volume,
@@ -2921,6 +5742,18 @@ class PathfinderLegion:
                 has_real_volume,
                 business_core,
             )
+            if ad_value_signal >= 65:
+                verification_score = min(100.0, verification_score + min(8.0, ad_value_signal / 12.0))
+            if inbound_value_signal >= 30:
+                verification_score = min(100.0, verification_score + min(14.0, inbound_value_signal / 7.0))
+            if rank_gap_signal >= 55.0:
+                verification_score = min(100.0, verification_score + min(10.0, rank_gap_signal / 10.0))
+            if community_signal >= 40.0:
+                verification_score = min(100.0, verification_score + min(12.0, community_signal / 8.0))
+            if conversion_signal >= 35.0:
+                verification_score = min(100.0, verification_score + min(18.0, conversion_signal / 5.5))
+            if profile_action_signal >= 35.0:
+                verification_score = min(100.0, verification_score + min(16.0, profile_action_signal / 5.0))
             grade, kei_grade, quality_flags = self._apply_quality_grade_guard(
                 grade,
                 kei_grade,
@@ -2930,9 +5763,209 @@ class PathfinderLegion:
                 len(source_signals),
                 has_real_volume,
             )
+            if ad_value_signal >= 65 and "ad_value_signal" not in quality_flags:
+                quality_flags.append("ad_value_signal")
+            if inbound_value_signal >= 30 and "first_party_inbound_query" not in quality_flags:
+                quality_flags.append("first_party_inbound_query")
+            if mobile_share >= 0.65 and "mobile_local_signal" not in quality_flags:
+                quality_flags.append("mobile_local_signal")
+            rank_status = str(rank_metrics.get("rank_status", "unknown") or "unknown")
+            if rank_gap_signal >= 55.0 and "owned_rank_gap" not in quality_flags:
+                quality_flags.append("owned_rank_gap")
+            elif rank_status == "owned_top3" and "owned_top_rank" not in quality_flags:
+                quality_flags.append("owned_top_rank")
+            if community_signal >= 40.0 and "community_demand_signal" not in quality_flags:
+                quality_flags.append("community_demand_signal")
+            if conversion_signal >= 35.0 and "actual_call_conversion" not in quality_flags:
+                quality_flags.append("actual_call_conversion")
+            profile_action_flags: List[str] = []
+            if profile_action_signal >= 60.0:
+                profile_action_flags.append("profile_action_high_value")
+                if "profile_action_high_value" not in quality_flags:
+                    quality_flags.append("profile_action_high_value")
+            elif profile_action_signal >= 35.0:
+                profile_action_flags.append("profile_action_signal")
+                if "profile_action_signal" not in quality_flags:
+                    quality_flags.append("profile_action_signal")
 
             # 검색 의도 분류
             search_intent = SearchIntentClassifier.classify(kw)
+            medical_risk = self._calculate_medical_ad_risk_profile(kw, search_intent)
+            medical_ad_risk_score = float(medical_risk["score"])
+            medical_ad_risk_flags = list(medical_risk["flags"])
+            content_feasibility_score = float(medical_risk["content_feasibility_score"])
+            service_fit = self._calculate_service_fit_profile(kw, category, search_intent)
+            local_service_fit_score = float(service_fit["score"])
+            negative_intent_flags = list(service_fit["flags"])
+            content_action = self._calculate_content_actionability_profile(
+                kw,
+                category,
+                search_intent,
+                medical_ad_risk_score=medical_ad_risk_score,
+                service_fit_score=local_service_fit_score,
+            )
+            content_actionability_score = float(content_action["score"])
+            recommended_content_type = str(content_action["recommended_content_type"])
+            content_action_flags = list(content_action["flags"])
+            local_surface = self._calculate_local_surface_profile(
+                kw,
+                category,
+                search_intent,
+                mobile_share=mobile_share,
+                rank_gap_signal=rank_gap_signal,
+                conversion_signal=max(conversion_signal, profile_action_signal),
+                service_fit_score=local_service_fit_score,
+            )
+            local_surface_score = float(local_surface["score"])
+            preferred_search_surface = str(local_surface["preferred_search_surface"])
+            local_surface_flags = list(local_surface["flags"])
+            availability_profile = self._calculate_availability_intent_profile(
+                kw,
+                category,
+                search_intent,
+                local_surface_score=local_surface_score,
+                profile_action_signal=profile_action_signal,
+                service_fit_score=local_service_fit_score,
+            )
+            availability_intent_score = float(availability_profile["availability_intent_score"])
+            availability_intent_type = str(availability_profile["availability_intent_type"])
+            availability_action_flags = list(availability_profile["flags"])
+            if availability_intent_score >= 55.0:
+                verification_score = min(100.0, verification_score + min(8.0, availability_intent_score / 12.0))
+            payment_profile = self._calculate_payment_coverage_profile(
+                kw,
+                category,
+                search_intent,
+                service_fit_score=local_service_fit_score,
+                medical_ad_risk_score=medical_ad_risk_score,
+                local_surface_score=local_surface_score,
+                profile_action_signal=profile_action_signal,
+            )
+            payment_coverage_score = float(payment_profile["payment_coverage_score"])
+            payment_coverage_type = str(payment_profile["payment_coverage_type"])
+            payment_action_flags = list(payment_profile["flags"])
+            if payment_coverage_score >= 55.0:
+                verification_score = min(100.0, verification_score + min(9.0, payment_coverage_score / 11.0))
+            access_profile = self._calculate_access_convenience_profile(
+                kw,
+                category,
+                search_intent,
+                service_fit_score=local_service_fit_score,
+                local_surface_score=local_surface_score,
+                profile_action_signal=profile_action_signal,
+                availability_intent_score=availability_intent_score,
+            )
+            access_convenience_score = float(access_profile["access_convenience_score"])
+            access_convenience_type = str(access_profile["access_convenience_type"])
+            access_convenience_flags = list(access_profile["flags"])
+            if access_convenience_score >= 55.0:
+                verification_score = min(100.0, verification_score + min(8.0, access_convenience_score / 12.0))
+            brand_profile = self._calculate_brand_intent_profile(kw, search_intent)
+            brand_intent_type = str(brand_profile["brand_intent_type"])
+            brand_signal_score = float(brand_profile["brand_signal_score"])
+            brand_mentions = list(brand_profile["brand_mentions"])
+            competitor_brand_risk_score = float(brand_profile["competitor_brand_risk_score"])
+            brand_action_flags = list(brand_profile["flags"])
+            review_profile = self._calculate_review_reputation_profile(
+                kw,
+                search_intent,
+                brand_intent_type=brand_intent_type,
+                community_signal=community_signal,
+                local_surface_score=local_surface_score,
+                medical_ad_risk_score=medical_ad_risk_score,
+            )
+            review_surface_score = float(review_profile["review_surface_score"])
+            reputation_risk_score = float(review_profile["reputation_risk_score"])
+            review_intent_type = str(review_profile["review_intent_type"])
+            review_action_flags = list(review_profile["flags"])
+            if local_service_fit_score < 35.0:
+                grade = self._cap_grade(grade, "C")
+                kei_grade = self._cap_grade(kei_grade, "C")
+                if "service_fit_block" not in quality_flags:
+                    quality_flags.append("service_fit_block")
+            elif local_service_fit_score < 60.0:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "service_fit_review" not in quality_flags:
+                    quality_flags.append("service_fit_review")
+            for negative_flag in negative_intent_flags:
+                quality_flag = f"negative_intent:{negative_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if content_actionability_score < 45.0:
+                grade = self._cap_grade(grade, "C")
+                kei_grade = self._cap_grade(kei_grade, "C")
+                if "content_low_actionability" not in quality_flags:
+                    quality_flags.append("content_low_actionability")
+            elif content_actionability_score < 60.0:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "content_action_review" not in quality_flags:
+                    quality_flags.append("content_action_review")
+            for action_flag in content_action_flags:
+                quality_flag = f"content_action:{action_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if local_surface_score >= 70.0 and "local_surface_high_value" not in quality_flags:
+                quality_flags.append("local_surface_high_value")
+            for availability_flag in availability_action_flags:
+                quality_flag = f"availability_action:{availability_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if availability_intent_score >= 70.0 and "availability_high_intent" not in quality_flags:
+                quality_flags.append("availability_high_intent")
+            elif availability_intent_score >= 55.0 and "availability_review" not in quality_flags:
+                quality_flags.append("availability_review")
+            for payment_flag in payment_action_flags:
+                quality_flag = f"payment_action:{payment_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if payment_coverage_score >= 70.0 and "payment_high_intent" not in quality_flags:
+                quality_flags.append("payment_high_intent")
+            elif payment_coverage_score >= 55.0 and "payment_review" not in quality_flags:
+                quality_flags.append("payment_review")
+            for access_flag in access_convenience_flags:
+                quality_flag = f"access_action:{access_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if access_convenience_score >= 70.0 and "access_high_intent" not in quality_flags:
+                quality_flags.append("access_high_intent")
+            elif access_convenience_score >= 55.0 and "access_review" not in quality_flags:
+                quality_flags.append("access_review")
+            for review_flag in review_action_flags:
+                quality_flag = f"review_action:{review_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if review_surface_score >= 70.0 and "review_surface_high_value" not in quality_flags:
+                quality_flags.append("review_surface_high_value")
+            if reputation_risk_score >= 70.0:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "reputation_high_risk_review" not in quality_flags:
+                    quality_flags.append("reputation_high_risk_review")
+            elif reputation_risk_score >= 40.0:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "reputation_review_required" not in quality_flags:
+                    quality_flags.append("reputation_review_required")
+            for brand_flag in brand_action_flags:
+                quality_flag = f"brand_action:{brand_flag}"
+                if quality_flag not in quality_flags:
+                    quality_flags.append(quality_flag)
+            if brand_intent_type in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "competitor_brand_review_required" not in quality_flags:
+                    quality_flags.append("competitor_brand_review_required")
+            elif brand_intent_type == "own_brand_defense" and "own_brand_defense" not in quality_flags:
+                quality_flags.append("own_brand_defense")
+            if medical_ad_risk_score >= 70.0:
+                grade = self._cap_grade(grade, "B")
+                kei_grade = self._cap_grade(kei_grade, "B")
+                if "medical_ad_high_risk" not in quality_flags:
+                    quality_flags.append("medical_ad_high_risk")
+            elif medical_ad_risk_score >= 40.0 and "medical_ad_review_required" not in quality_flags:
+                quality_flags.append("medical_ad_review_required")
             value_profile = self._calculate_keyword_value_profile(
                 kw,
                 category=category,
@@ -2944,7 +5977,89 @@ class PathfinderLegion:
                 source_signal_count=len(source_signals),
                 has_real_volume=has_real_volume,
                 business_core=business_core,
+                medical_ad_risk_score=medical_ad_risk_score,
+                content_actionability_score=content_actionability_score,
+                local_surface_score=local_surface_score,
+                brand_intent_type=brand_intent_type,
+                competitor_brand_risk_score=competitor_brand_risk_score,
+                review_surface_score=review_surface_score,
+                reputation_risk_score=reputation_risk_score,
+                review_intent_type=review_intent_type,
+                profile_action_signal=profile_action_signal,
+                availability_intent_score=availability_intent_score,
+                availability_intent_type=availability_intent_type,
+                payment_coverage_score=payment_coverage_score,
+                payment_coverage_type=payment_coverage_type,
+                access_convenience_score=access_convenience_score,
+                access_convenience_type=access_convenience_type,
             )
+            if ad_value_signal >= 55:
+                value_profile = dict(value_profile)
+                value_profile["business_value_score"] = min(
+                    100.0,
+                    float(value_profile["business_value_score"]) + min(12.0, (ad_value_signal - 50.0) / 4.0),
+                )
+                if (
+                    float(value_profile["longtail_score"]) >= 60.0
+                    and float(value_profile["business_value_score"]) >= 75.0
+                ):
+                    value_profile["high_value_longtail"] = True
+            if (
+                inbound_value_signal >= 30 or mobile_share >= 0.65 or rank_gap_signal >= 55.0
+                or community_signal >= 40.0 or conversion_signal >= 35.0 or profile_action_signal >= 35.0
+                or availability_intent_score >= 55.0
+                or payment_coverage_score >= 55.0
+                or access_convenience_score >= 55.0
+            ):
+                value_profile = dict(value_profile)
+                inbound_bonus = min(14.0, inbound_value_signal / 7.0) if inbound_value_signal >= 30 else 0.0
+                mobile_bonus = 5.0 if mobile_share >= 0.65 and self.collector._is_in_target_region(kw) else 0.0
+                rank_bonus = min(10.0, rank_gap_signal / 12.0) if rank_gap_signal >= 55.0 else 0.0
+                community_bonus = min(14.0, community_signal / 7.0) if community_signal >= 40.0 else 0.0
+                conversion_bonus = min(20.0, conversion_signal / 4.5) if conversion_signal >= 35.0 else 0.0
+                profile_action_bonus = min(18.0, profile_action_signal / 4.5) if profile_action_signal >= 35.0 else 0.0
+                availability_bonus = min(12.0, availability_intent_score / 8.0) if availability_intent_score >= 55.0 else 0.0
+                payment_bonus = min(14.0, payment_coverage_score / 7.0) if payment_coverage_score >= 55.0 else 0.0
+                access_bonus = min(12.0, access_convenience_score / 8.0) if access_convenience_score >= 55.0 else 0.0
+                value_profile["business_value_score"] = min(
+                    100.0,
+                    float(value_profile["business_value_score"]) + inbound_bonus + mobile_bonus + rank_bonus + community_bonus + conversion_bonus + profile_action_bonus + availability_bonus + payment_bonus + access_bonus,
+                )
+                if (
+                    float(value_profile["longtail_score"]) >= 60.0
+                    and float(value_profile["business_value_score"]) >= 75.0
+                    and (
+                        inbound_value_signal >= 30 or mobile_share >= 0.75 or rank_gap_signal >= 70.0
+                        or community_signal >= 60.0 or conversion_signal >= 45.0 or profile_action_signal >= 60.0
+                        or availability_intent_score >= 70.0
+                        or payment_coverage_score >= 70.0
+                        or access_convenience_score >= 70.0
+                    )
+                ):
+                    value_profile["high_value_longtail"] = True
+            if medical_ad_risk_score >= 70.0:
+                value_profile = dict(value_profile)
+                value_profile["high_value_longtail"] = False
+            if local_service_fit_score < 65.0 or bool(service_fit["hard_negative"]):
+                value_profile = dict(value_profile)
+                value_profile["high_value_longtail"] = False
+            if content_actionability_score < 58.0:
+                if (
+                    local_surface_score < 70.0
+                    and review_surface_score < 70.0
+                    and profile_action_signal < 60.0
+                    and availability_intent_score < 70.0
+                    and payment_coverage_score < 70.0
+                    and access_convenience_score < 70.0
+                ):
+                    value_profile = dict(value_profile)
+                    value_profile["high_value_longtail"] = False
+            if reputation_risk_score >= 70.0:
+                value_profile = dict(value_profile)
+                value_profile["high_value_longtail"] = False
+            if brand_intent_type != "generic":
+                value_profile = dict(value_profile)
+                value_profile["high_value_longtail"] = False
             grade, quality_flags = self._promote_grade_for_high_value_longtail(
                 grade,
                 value_profile,
@@ -2970,9 +6085,80 @@ class PathfinderLegion:
                 source_signal_count=len(source_signals),
                 longtail_score=float(value_profile["longtail_score"]),
                 business_value_score=float(value_profile["business_value_score"]),
+                local_surface_score=local_surface_score,
+                review_surface_score=review_surface_score,
+                profile_action_signal=profile_action_signal,
+                availability_intent_score=availability_intent_score,
+                payment_coverage_score=payment_coverage_score,
+                access_convenience_score=access_convenience_score,
             )
+            if inbound_value_signal >= 30:
+                priority *= 1.0 + min(0.18, inbound_value_signal / 600.0)
+            if mobile_share >= 0.65 and self.collector._is_in_target_region(kw):
+                priority *= 1.04
+            if rank_gap_signal >= 55.0:
+                priority *= 1.0 + min(0.16, rank_gap_signal / 700.0)
+            elif rank_status == "owned_top3":
+                priority *= 0.92
+            if community_signal >= 40.0:
+                priority *= 1.0 + min(0.16, community_signal / 650.0)
+            if conversion_signal >= 35.0:
+                priority *= 1.0 + min(0.22, conversion_signal / 500.0)
+            if profile_action_signal >= 60.0:
+                priority *= 1.0 + min(0.18, profile_action_signal / 520.0)
+            elif profile_action_signal >= 35.0:
+                priority *= 1.05
+            if availability_intent_score >= 70.0:
+                priority *= 1.0 + min(0.14, availability_intent_score / 700.0)
+            elif availability_intent_score >= 55.0:
+                priority *= 1.04
+            if payment_coverage_score >= 70.0:
+                priority *= 1.0 + min(0.15, payment_coverage_score / 680.0)
+            elif payment_coverage_score >= 55.0:
+                priority *= 1.04
+            if access_convenience_score >= 70.0:
+                priority *= 1.0 + min(0.13, access_convenience_score / 720.0)
+            elif access_convenience_score >= 55.0:
+                priority *= 1.04
+            if medical_ad_risk_score >= 70.0:
+                priority *= 0.72
+            elif medical_ad_risk_score >= 40.0:
+                priority *= 0.86
+            elif medical_ad_risk_score > 0:
+                priority *= 0.95
+            if local_service_fit_score < 35.0:
+                priority *= 0.45
+            elif local_service_fit_score < 60.0:
+                priority *= 0.75
+            elif local_service_fit_score >= 85.0:
+                priority *= 1.04
+            if content_actionability_score < 45.0:
+                priority *= 0.58
+            elif content_actionability_score < 60.0:
+                priority *= 0.82
+            elif content_actionability_score >= 82.0:
+                priority *= 1.05
+            if local_surface_score >= 70.0:
+                priority *= 1.0 + min(0.14, local_surface_score / 700.0)
+            elif local_surface_score >= 55.0:
+                priority *= 1.04
+            if review_surface_score >= 70.0:
+                priority *= 1.0 + min(0.12, review_surface_score / 800.0)
+            elif review_surface_score >= 55.0:
+                priority *= 1.03
+            if reputation_risk_score >= 70.0:
+                priority *= 0.74
+            elif reputation_risk_score >= 40.0:
+                priority *= 0.88
+            if brand_intent_type == "own_brand_defense":
+                priority *= 0.96
+            elif competitor_brand_risk_score >= 70.0:
+                priority *= 0.68
+            elif competitor_brand_risk_score >= 50.0:
+                priority *= 0.82
             priority = self._apply_history_novelty_adjustment(kw, priority, category, search_intent)
             priority *= 0.75 + (min(verification_score, 100.0) / 400.0)
+            content_cluster_key = self._content_cluster_key(kw, category, search_intent)
 
             result = KeywordResult(
                 keyword=kw,
@@ -2994,6 +6180,62 @@ class PathfinderLegion:
                 longtail_score=float(value_profile["longtail_score"]),
                 business_value_score=float(value_profile["business_value_score"]),
                 high_value_longtail=bool(value_profile["high_value_longtail"]),
+                inbound_impressions=int(inbound_metrics.get("impressions", 0) or 0),
+                inbound_clicks=int(inbound_metrics.get("clicks", 0) or 0),
+                inbound_ctr=float(inbound_metrics.get("ctr", 0.0) or 0.0),
+                inbound_position=float(inbound_metrics.get("position", 0.0) or 0.0),
+                inbound_sources=inbound_sources,
+                mobile_share=mobile_share,
+                content_cluster_key=content_cluster_key,
+                owned_rank=int(rank_metrics.get("rank", 0) or 0),
+                owned_rank_device=str(rank_metrics.get("device", "") or ""),
+                rank_gap_signal=rank_gap_signal,
+                rank_status=rank_status,
+                community_mentions=int(community_metrics.get("mentions", 0) or 0),
+                community_conversion_fit=float(community_metrics.get("max_conversion_fit", 0.0) or 0.0),
+                community_signal=community_signal,
+                community_platforms=list(community_metrics.get("platforms", []) or []),
+                conversion_calls=int(conversion_metrics.get("total_calls", 0) or 0),
+                conversion_naver_calls=int(conversion_metrics.get("naver_search_calls", 0) or 0),
+                conversion_duration_seconds=int(conversion_metrics.get("duration_seconds", 0) or 0),
+                conversion_signal=conversion_signal,
+                profile_action_signal=profile_action_signal,
+                profile_actions_total=int(profile_action_metrics.get("total_actions", 0) or 0),
+                profile_direction_actions=int(profile_action_metrics.get("directions", 0) or 0),
+                profile_website_actions=int(profile_action_metrics.get("website_clicks", 0) or 0),
+                profile_booking_actions=int(profile_action_metrics.get("bookings", 0) or 0),
+                profile_message_actions=int(profile_action_metrics.get("messages", 0) or 0),
+                profile_action_sources=profile_action_sources,
+                profile_action_flags=profile_action_flags,
+                availability_intent_score=availability_intent_score,
+                availability_intent_type=availability_intent_type,
+                availability_action_flags=availability_action_flags,
+                payment_coverage_score=payment_coverage_score,
+                payment_coverage_type=payment_coverage_type,
+                payment_action_flags=payment_action_flags,
+                access_convenience_score=access_convenience_score,
+                access_convenience_type=access_convenience_type,
+                access_convenience_flags=access_convenience_flags,
+                medical_ad_risk_score=medical_ad_risk_score,
+                medical_ad_risk_flags=medical_ad_risk_flags,
+                content_feasibility_score=content_feasibility_score,
+                local_service_fit_score=local_service_fit_score,
+                negative_intent_flags=negative_intent_flags,
+                content_actionability_score=content_actionability_score,
+                recommended_content_type=recommended_content_type,
+                content_action_flags=content_action_flags,
+                local_surface_score=local_surface_score,
+                preferred_search_surface=preferred_search_surface,
+                local_surface_flags=local_surface_flags,
+                brand_intent_type=brand_intent_type,
+                brand_signal_score=brand_signal_score,
+                brand_mentions=brand_mentions,
+                competitor_brand_risk_score=competitor_brand_risk_score,
+                brand_action_flags=brand_action_flags,
+                review_surface_score=review_surface_score,
+                reputation_risk_score=reputation_risk_score,
+                review_intent_type=review_intent_type,
+                review_action_flags=review_action_flags,
             )
 
             self.collected[kw] = result
@@ -3079,6 +6321,19 @@ class PathfinderLegion:
                 total_sa += new_sa
                 print(f"   검색광고 연관어: {len(ad_related_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
+        if total_sa < target_sa and max_rounds > 1:
+            early_longtail_keywords = self._build_high_value_longtail_variants(
+                list(round1_keywords) + list(round1_seeds),
+                max_keywords=180,
+            )
+            if early_longtail_keywords:
+                new_sa = self._analyze_and_add(list(early_longtail_keywords), "round1_longtail_scout")
+                total_sa += new_sa
+                print(
+                    f"   고가치 롱테일 스카우트: {len(early_longtail_keywords)}개, "
+                    f"신규 S/A급: {new_sa}개, 누적: {total_sa}개"
+                )
+
         if total_sa >= target_sa:
             return self._finalize()
         if round_num >= max_rounds:
@@ -3116,6 +6371,8 @@ class PathfinderLegion:
 
         if total_sa >= target_sa:
             return self._finalize()
+        if round_num >= max_rounds:
+            return self._finalize()
 
         # ==========================================
         # Round 3: 지역 확장 (동네별)
@@ -3143,6 +6400,8 @@ class PathfinderLegion:
         print(f"   수집: {len(round3_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
         if total_sa >= target_sa:
+            return self._finalize()
+        if round_num >= max_rounds:
             return self._finalize()
 
         # ==========================================
@@ -3194,6 +6453,8 @@ class PathfinderLegion:
             )
 
         if total_sa >= target_sa:
+            return self._finalize()
+        if round_num >= max_rounds:
             return self._finalize()
 
         # ==========================================
@@ -3273,6 +6534,8 @@ class PathfinderLegion:
 
         if total_sa >= target_sa:
             return self._finalize()
+        if round_num >= max_rounds:
+            return self._finalize()
 
         # ==========================================
         # Round 6: 연관검색어 (확대 적용)
@@ -3307,6 +6570,8 @@ class PathfinderLegion:
 
         if total_sa >= target_sa:
             return self._finalize()
+        if round_num >= max_rounds:
+            return self._finalize()
 
         # ==========================================
         # Round 6.5: 블로그 제목 마이닝
@@ -3335,6 +6600,8 @@ class PathfinderLegion:
                 print(f"   수집: {len(blog_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
             if total_sa >= target_sa:
+                return self._finalize()
+            if round_num >= max_rounds:
                 return self._finalize()
 
         # ==========================================
@@ -3368,6 +6635,8 @@ class PathfinderLegion:
         print(f"   수집: {len(round7_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
 
         if total_sa >= target_sa:
+            return self._finalize()
+        if round_num >= max_rounds:
             return self._finalize()
 
         # ==========================================
@@ -3492,12 +6761,115 @@ class PathfinderLegion:
         category_counts = Counter(r.category or "unknown" for r in results)
         source_counts = Counter(r.source or "unknown" for r in results)
         intent_counts = Counter(r.search_intent or "unknown" for r in results)
+        cluster_counts = Counter(r.content_cluster_key or "unknown" for r in results)
         longtail_count = sum(1 for r in results if self._is_longtail_keyword(r.keyword or ""))
         high_value_longtail_count = sum(1 for r in results if getattr(r, "high_value_longtail", False))
+        inbound_query_count = sum(1 for r in results if int(getattr(r, "inbound_impressions", 0) or 0) > 0)
+        inbound_click_count = sum(1 for r in results if int(getattr(r, "inbound_clicks", 0) or 0) > 0)
+        mobile_local_signal_count = sum(1 for r in results if float(getattr(r, "mobile_share", 0.0) or 0.0) >= 0.65)
+        owned_rank_gap_count = sum(1 for r in results if float(getattr(r, "rank_gap_signal", 0.0) or 0.0) >= 55.0)
+        owned_top_rank_count = sum(1 for r in results if getattr(r, "rank_status", "") == "owned_top3")
+        community_signal_count = sum(1 for r in results if float(getattr(r, "community_signal", 0.0) or 0.0) >= 40.0)
+        community_multi_platform_count = sum(1 for r in results if len(getattr(r, "community_platforms", []) or []) >= 2)
+        conversion_signal_count = sum(1 for r in results if float(getattr(r, "conversion_signal", 0.0) or 0.0) >= 35.0)
+        conversion_call_total = sum(int(getattr(r, "conversion_calls", 0) or 0) for r in results)
+        profile_action_signal_count = sum(
+            1 for r in results if float(getattr(r, "profile_action_signal", 0.0) or 0.0) >= 35.0
+        )
+        profile_action_high_count = sum(
+            1 for r in results if float(getattr(r, "profile_action_signal", 0.0) or 0.0) >= 60.0
+        )
+        profile_action_total = sum(int(getattr(r, "profile_actions_total", 0) or 0) for r in results)
+        profile_direction_total = sum(int(getattr(r, "profile_direction_actions", 0) or 0) for r in results)
+        profile_booking_total = sum(int(getattr(r, "profile_booking_actions", 0) or 0) for r in results)
+        profile_action_scores = [float(getattr(r, "profile_action_signal", 0.0) or 0.0) for r in results]
+        availability_scores = [float(getattr(r, "availability_intent_score", 0.0) or 0.0) for r in results]
+        availability_high_count = sum(
+            1 for r in results if float(getattr(r, "availability_intent_score", 0.0) or 0.0) >= 70.0
+        )
+        availability_review_count = sum(
+            1 for r in results if 55.0 <= float(getattr(r, "availability_intent_score", 0.0) or 0.0) < 70.0
+        )
+        availability_intent_counts = Counter(getattr(r, "availability_intent_type", "") or "none" for r in results)
+        payment_scores = [float(getattr(r, "payment_coverage_score", 0.0) or 0.0) for r in results]
+        payment_high_count = sum(
+            1 for r in results if float(getattr(r, "payment_coverage_score", 0.0) or 0.0) >= 70.0
+        )
+        payment_review_count = sum(
+            1 for r in results if 55.0 <= float(getattr(r, "payment_coverage_score", 0.0) or 0.0) < 70.0
+        )
+        payment_type_counts = Counter(getattr(r, "payment_coverage_type", "") or "none" for r in results)
+        access_scores = [float(getattr(r, "access_convenience_score", 0.0) or 0.0) for r in results]
+        access_high_count = sum(
+            1 for r in results if float(getattr(r, "access_convenience_score", 0.0) or 0.0) >= 70.0
+        )
+        access_review_count = sum(
+            1 for r in results if 55.0 <= float(getattr(r, "access_convenience_score", 0.0) or 0.0) < 70.0
+        )
+        access_type_counts = Counter(getattr(r, "access_convenience_type", "") or "none" for r in results)
+        medical_ad_high_risk_count = sum(1 for r in results if float(getattr(r, "medical_ad_risk_score", 0.0) or 0.0) >= 70.0)
+        medical_ad_review_count = sum(1 for r in results if 40.0 <= float(getattr(r, "medical_ad_risk_score", 0.0) or 0.0) < 70.0)
+        feasibility_scores = [float(getattr(r, "content_feasibility_score", 100.0) or 0.0) for r in results]
+        service_fit_scores = [float(getattr(r, "local_service_fit_score", 0.0) or 0.0) for r in results]
+        service_fit_block_count = sum(
+            1 for r in results if float(getattr(r, "local_service_fit_score", 0.0) or 0.0) < 35.0
+        )
+        service_fit_review_count = sum(
+            1 for r in results if 35.0 <= float(getattr(r, "local_service_fit_score", 0.0) or 0.0) < 60.0
+        )
+        negative_intent_count = sum(1 for r in results if getattr(r, "negative_intent_flags", []) or [])
+        content_action_scores = [float(getattr(r, "content_actionability_score", 0.0) or 0.0) for r in results]
+        content_action_block_count = sum(
+            1 for r in results if float(getattr(r, "content_actionability_score", 0.0) or 0.0) < 45.0
+        )
+        content_action_review_count = sum(
+            1 for r in results if 45.0 <= float(getattr(r, "content_actionability_score", 0.0) or 0.0) < 60.0
+        )
+        recommended_content_counts = Counter(getattr(r, "recommended_content_type", "") or "unknown" for r in results)
+        local_surface_scores = [float(getattr(r, "local_surface_score", 0.0) or 0.0) for r in results]
+        local_surface_high_count = sum(
+            1 for r in results if float(getattr(r, "local_surface_score", 0.0) or 0.0) >= 70.0
+        )
+        local_surface_review_count = sum(
+            1 for r in results if 55.0 <= float(getattr(r, "local_surface_score", 0.0) or 0.0) < 70.0
+        )
+        preferred_surface_counts = Counter(getattr(r, "preferred_search_surface", "") or "unknown" for r in results)
+        brand_intent_counts = Counter(getattr(r, "brand_intent_type", "") or "generic" for r in results)
+        own_brand_count = sum(1 for r in results if getattr(r, "brand_intent_type", "") == "own_brand_defense")
+        competitor_brand_count = sum(
+            1 for r in results
+            if getattr(r, "brand_intent_type", "") in {"competitor_brand", "competitor_comparison", "own_vs_competitor"}
+        )
+        competitor_brand_high_risk_count = sum(
+            1 for r in results if float(getattr(r, "competitor_brand_risk_score", 0.0) or 0.0) >= 70.0
+        )
+        review_surface_scores = [float(getattr(r, "review_surface_score", 0.0) or 0.0) for r in results]
+        reputation_risk_scores = [float(getattr(r, "reputation_risk_score", 0.0) or 0.0) for r in results]
+        review_surface_high_count = sum(
+            1 for r in results if float(getattr(r, "review_surface_score", 0.0) or 0.0) >= 70.0
+        )
+        reputation_review_count = sum(
+            1 for r in results if 40.0 <= float(getattr(r, "reputation_risk_score", 0.0) or 0.0) < 70.0
+        )
+        reputation_high_risk_count = sum(
+            1 for r in results if float(getattr(r, "reputation_risk_score", 0.0) or 0.0) >= 70.0
+        )
+        review_intent_counts = Counter(getattr(r, "review_intent_type", "") or "none" for r in results)
         low_volume_high_value_longtail_count = sum(
             1
             for r in results
             if getattr(r, "high_value_longtail", False) and 0 < (r.search_volume or 0) <= 50
+        )
+        estimated_high_value_longtail_count = sum(
+            1
+            for r in results
+            if getattr(r, "high_value_longtail", False)
+            and "estimated_high_value_longtail" in (r.quality_flags or [])
+        )
+        high_value_longtail_sa_count = sum(
+            1
+            for r in results
+            if getattr(r, "high_value_longtail", False) and r.grade in ("S", "A")
         )
         business_value_scores = [float(getattr(r, "business_value_score", 0.0) or 0.0) for r in results]
         verified_count = sum(1 for r in results if r.verification_score >= 55)
@@ -3520,18 +6892,76 @@ class PathfinderLegion:
             "category_count": len(category_counts),
             "source_count": len(source_counts),
             "intent_count": len(intent_counts),
+            "content_cluster_count": len(cluster_counts),
             "category_entropy_norm": round(self._entropy_norm(category_counts), 4),
             "source_entropy_norm": round(self._entropy_norm(source_counts), 4),
             "intent_entropy_norm": round(self._entropy_norm(intent_counts), 4),
+            "content_cluster_entropy_norm": round(self._entropy_norm(cluster_counts), 4),
             "category_hhi": round(self._hhi(category_counts), 4),
             "source_hhi": round(self._hhi(source_counts), 4),
+            "content_cluster_hhi": round(self._hhi(cluster_counts), 4),
             "top_category_share": round(top_share(category_counts), 4),
             "top_source_share": round(top_share(source_counts), 4),
+            "top_content_cluster_share": round(top_share(cluster_counts), 4),
             "longtail_rate": round(longtail_count / max(1, total), 4),
             "longtail_4plus_rate": round(longtail_count / max(1, total), 4),
             "high_value_longtail_count": high_value_longtail_count,
             "high_value_longtail_rate": round(high_value_longtail_count / max(1, total), 4),
+            "high_value_longtail_sa_count": high_value_longtail_sa_count,
+            "high_value_longtail_sa_rate": round(high_value_longtail_sa_count / max(1, high_value_longtail_count), 4),
             "low_volume_high_value_longtail_count": low_volume_high_value_longtail_count,
+            "estimated_high_value_longtail_count": estimated_high_value_longtail_count,
+            "inbound_query_count": inbound_query_count,
+            "inbound_query_rate": round(inbound_query_count / max(1, total), 4),
+            "inbound_click_count": inbound_click_count,
+            "mobile_local_signal_count": mobile_local_signal_count,
+            "mobile_local_signal_rate": round(mobile_local_signal_count / max(1, total), 4),
+            "owned_rank_gap_count": owned_rank_gap_count,
+            "owned_rank_gap_rate": round(owned_rank_gap_count / max(1, total), 4),
+            "owned_top_rank_count": owned_top_rank_count,
+            "community_signal_count": community_signal_count,
+            "community_signal_rate": round(community_signal_count / max(1, total), 4),
+            "community_multi_platform_count": community_multi_platform_count,
+            "conversion_signal_count": conversion_signal_count,
+            "conversion_signal_rate": round(conversion_signal_count / max(1, total), 4),
+            "conversion_call_total": conversion_call_total,
+            "profile_action_signal_count": profile_action_signal_count,
+            "profile_action_signal_rate": round(profile_action_signal_count / max(1, total), 4),
+            "profile_action_high_count": profile_action_high_count,
+            "profile_action_total": profile_action_total,
+            "profile_direction_total": profile_direction_total,
+            "profile_booking_total": profile_booking_total,
+            "avg_profile_action_signal": round(sum(profile_action_scores) / max(1, len(profile_action_scores)), 2),
+            "availability_high_count": availability_high_count,
+            "availability_review_count": availability_review_count,
+            "avg_availability_intent_score": round(sum(availability_scores) / max(1, len(availability_scores)), 2),
+            "payment_high_count": payment_high_count,
+            "payment_review_count": payment_review_count,
+            "avg_payment_coverage_score": round(sum(payment_scores) / max(1, len(payment_scores)), 2),
+            "access_high_count": access_high_count,
+            "access_review_count": access_review_count,
+            "avg_access_convenience_score": round(sum(access_scores) / max(1, len(access_scores)), 2),
+            "medical_ad_high_risk_count": medical_ad_high_risk_count,
+            "medical_ad_review_count": medical_ad_review_count,
+            "avg_content_feasibility_score": round(sum(feasibility_scores) / max(1, len(feasibility_scores)), 2),
+            "service_fit_block_count": service_fit_block_count,
+            "service_fit_review_count": service_fit_review_count,
+            "negative_intent_count": negative_intent_count,
+            "avg_local_service_fit_score": round(sum(service_fit_scores) / max(1, len(service_fit_scores)), 2),
+            "content_action_block_count": content_action_block_count,
+            "content_action_review_count": content_action_review_count,
+            "avg_content_actionability_score": round(sum(content_action_scores) / max(1, len(content_action_scores)), 2),
+            "local_surface_high_count": local_surface_high_count,
+            "local_surface_review_count": local_surface_review_count,
+            "avg_local_surface_score": round(sum(local_surface_scores) / max(1, len(local_surface_scores)), 2),
+            "own_brand_count": own_brand_count,
+            "competitor_brand_count": competitor_brand_count,
+            "competitor_brand_high_risk_count": competitor_brand_high_risk_count,
+            "review_surface_high_count": review_surface_high_count,
+            "reputation_review_count": reputation_review_count,
+            "reputation_high_risk_count": reputation_high_risk_count,
+            "avg_review_surface_score": round(sum(review_surface_scores) / max(1, len(review_surface_scores)), 2),
+            "avg_reputation_risk_score": round(sum(reputation_risk_scores) / max(1, len(reputation_risk_scores)), 2),
             "avg_business_value_score": round(sum(business_value_scores) / max(1, total), 2),
             "verified_rate": round(verified_count / max(1, total), 4),
             "multi_source_verified_rate": round(multi_source_count / max(1, total), 4),
@@ -3539,6 +6969,14 @@ class PathfinderLegion:
             "category_counts": dict(category_counts),
             "source_counts": dict(source_counts),
             "intent_counts": dict(intent_counts),
+            "content_cluster_counts": dict(cluster_counts),
+            "recommended_content_counts": dict(recommended_content_counts),
+            "preferred_surface_counts": dict(preferred_surface_counts),
+            "brand_intent_counts": dict(brand_intent_counts),
+            "review_intent_counts": dict(review_intent_counts),
+            "availability_intent_counts": dict(availability_intent_counts),
+            "payment_type_counts": dict(payment_type_counts),
+            "access_type_counts": dict(access_type_counts),
             "input_by_source": dict(self.candidate_stats["input_by_source"]),
             "valid_by_source": dict(self.candidate_stats["valid_by_source"]),
             "accepted_by_source": dict(self.candidate_stats["accepted_by_source"]),
@@ -3559,6 +6997,12 @@ class PathfinderLegion:
             + grade_bonus.get(r.grade, 0.0)
             + min(12.0, float(getattr(r, "longtail_score", 0.0) or 0.0) * (0.12 if getattr(r, "high_value_longtail", False) else 0.04))
             + min(10.0, float(getattr(r, "business_value_score", 0.0) or 0.0) * 0.10)
+            + min(8.0, float(getattr(r, "local_surface_score", 0.0) or 0.0) * 0.08)
+            + min(6.0, float(getattr(r, "review_surface_score", 0.0) or 0.0) * 0.06)
+            + min(7.0, float(getattr(r, "profile_action_signal", 0.0) or 0.0) * 0.07)
+            + min(6.0, float(getattr(r, "availability_intent_score", 0.0) or 0.0) * 0.06)
+            + min(7.0, float(getattr(r, "payment_coverage_score", 0.0) or 0.0) * 0.07)
+            + min(6.0, float(getattr(r, "access_convenience_score", 0.0) or 0.0) * 0.06)
             for r in results
         ]
         max_quality = max(quality_values) or 1.0
@@ -3569,6 +7013,7 @@ class PathfinderLegion:
         category_counts: Counter = Counter()
         source_counts: Counter = Counter()
         intent_counts: Counter = Counter()
+        cluster_counts: Counter = Counter()
         token_map = {id(result): self._tokenize_keyword(result.keyword) for result in remaining}
         max_similarity_by_id = {id(result): 0.0 for result in remaining}
 
@@ -3587,6 +7032,8 @@ class PathfinderLegion:
                 aspect_bonus += 0.08
             if left.source and left.source == right.source:
                 aspect_bonus += 0.05
+            if left.content_cluster_key and left.content_cluster_key == right.content_cluster_key:
+                aspect_bonus += 0.25
             return min(1.0, token_similarity + aspect_bonus)
 
         while remaining:
@@ -3600,9 +7047,11 @@ class PathfinderLegion:
                 category_share = category_counts[candidate.category or "unknown"] / selected_count
                 source_share = source_counts[candidate.source or "unknown"] / selected_count
                 intent_share = intent_counts[candidate.search_intent or "unknown"] / selected_count
+                cluster_share = cluster_counts[candidate.content_cluster_key or "unknown"] / selected_count
                 balance_penalty = min(35.0, category_share * 28.0)
                 balance_penalty += min(25.0, source_share * 20.0)
                 balance_penalty += min(15.0, intent_share * 12.0)
+                balance_penalty += min(25.0, cluster_share * 24.0)
                 balance = max(0.0, 100.0 - balance_penalty)
                 score = (
                     quality_map[id(candidate)] * lambda_quality
@@ -3619,6 +7068,7 @@ class PathfinderLegion:
             category_counts[best.category or "unknown"] += 1
             source_counts[best.source or "unknown"] += 1
             intent_counts[best.search_intent or "unknown"] += 1
+            cluster_counts[best.content_cluster_key or "unknown"] += 1
 
             for candidate in remaining:
                 candidate_id = id(candidate)
@@ -3676,11 +7126,23 @@ class PathfinderLegion:
         results = list(self.collected.values())
         results.sort(key=lambda x: x.priority_score, reverse=True)
 
-        # S/A급 키워드 트렌드 분석
+        # S/A급 키워드와 고가치 롱테일 트렌드 분석
         if self.has_datalab and self.datalab:
-            sa_keywords = [r for r in results if r.grade in ['S', 'A']]
+            trend_targets = [
+                r for r in results
+                if r.grade in ['S', 'A'] or getattr(r, "high_value_longtail", False)
+            ]
+            trend_targets.sort(
+                key=lambda r: (
+                    r.grade in ['S', 'A'],
+                    float(getattr(r, "business_value_score", 0.0) or 0.0),
+                    float(getattr(r, "priority_score", 0.0) or 0.0),
+                ),
+                reverse=True,
+            )
+            sa_keywords = trend_targets[: self.TREND_ANALYSIS_LIMIT]
             if sa_keywords:
-                print(f"\n[트렌드 분석] S/A급 {len(sa_keywords)}개 키워드 분석 중...")
+                print(f"\n[트렌드 분석] S/A급 + 고가치 롱테일 {len(sa_keywords)}개 키워드 분석 중...")
                 analyzed = 0
                 for r in sa_keywords:
                     try:
@@ -3716,6 +7178,7 @@ class PathfinderLegion:
                             source_signal_count=len(r.source_signals or []),
                             longtail_score=r.longtail_score,
                             business_value_score=r.business_value_score,
+                            local_surface_score=r.local_surface_score,
                         )
                         recalculated_priority = self._apply_history_novelty_adjustment(
                             r.keyword, recalculated_priority, r.category, r.search_intent
@@ -3750,6 +7213,11 @@ class PathfinderLegion:
                 source_signal_count=len(result.source_signals or []),
                 has_real_volume=has_real_volume,
                 business_core=result.business_core,
+                medical_ad_risk_score=result.medical_ad_risk_score,
+                content_actionability_score=result.content_actionability_score,
+                local_surface_score=result.local_surface_score,
+                brand_intent_type=result.brand_intent_type,
+                competitor_brand_risk_score=result.competitor_brand_risk_score,
             )
             result.grade, result.quality_flags = self._promote_grade_for_high_value_longtail(
                 result.grade,
@@ -3826,8 +7294,46 @@ class PathfinderLegion:
             print(f"   소스 엔트로피: {metrics.get('source_entropy_norm', 0):.3f}")
             print(f"   의도 엔트로피: {metrics.get('intent_entropy_norm', 0):.3f}")
             print(f"   단일 소스 최대 비중: {metrics.get('top_source_share', 0) * 100:.1f}%")
+            print(f"   콘텐츠 클러스터 수: {metrics.get('content_cluster_count', 0)}개")
+            print(f"   단일 클러스터 최대 비중: {metrics.get('top_content_cluster_share', 0) * 100:.1f}%")
             print(f"   롱테일 비율: {metrics.get('longtail_rate', 0) * 100:.1f}%")
             print(f"   고가치 롱테일 비율: {metrics.get('high_value_longtail_rate', 0) * 100:.1f}%")
+            print(f"   고가치 롱테일 S/A 비율: {metrics.get('high_value_longtail_sa_rate', 0) * 100:.1f}%")
+            print(f"   추정 고가치 롱테일: {metrics.get('estimated_high_value_longtail_count', 0)}개")
+            print(f"   실제 유입 쿼리 반영: {metrics.get('inbound_query_count', 0)}개")
+            print(f"   모바일 로컬 신호: {metrics.get('mobile_local_signal_count', 0)}개")
+            print(f"   자체 순위 갭 후보: {metrics.get('owned_rank_gap_count', 0)}개")
+            print(f"   자체 Top3 유지 후보: {metrics.get('owned_top_rank_count', 0)}개")
+            print(f"   커뮤니티 수요 신호: {metrics.get('community_signal_count', 0)}개")
+            print(f"   실제 전화 전환 신호: {metrics.get('conversion_signal_count', 0)}개")
+            print(f"   프로필 액션 전환 신호: {metrics.get('profile_action_signal_count', 0)}개")
+            print(f"   프로필 액션 고가치: {metrics.get('profile_action_high_count', 0)}개")
+            print(f"   프로필 총 액션: {metrics.get('profile_action_total', 0)}회")
+            print(f"   시간/예약 가용성 고의도: {metrics.get('availability_high_count', 0)}개")
+            print(f"   시간/예약 가용성 검토: {metrics.get('availability_review_count', 0)}개")
+            print(f"   비용/보험 고의도: {metrics.get('payment_high_count', 0)}개")
+            print(f"   비용/보험 검토: {metrics.get('payment_review_count', 0)}개")
+            print(f"   방문 편의/접근성 고의도: {metrics.get('access_high_count', 0)}개")
+            print(f"   방문 편의/접근성 검토: {metrics.get('access_review_count', 0)}개")
+            print(f"   의료광고 고위험: {metrics.get('medical_ad_high_risk_count', 0)}개")
+            print(f"   의료광고 검토필요: {metrics.get('medical_ad_review_count', 0)}개")
+            print(f"   서비스 적합도 차단: {metrics.get('service_fit_block_count', 0)}개")
+            print(f"   서비스 적합도 검토: {metrics.get('service_fit_review_count', 0)}개")
+            print(f"   제외 의도 플래그: {metrics.get('negative_intent_count', 0)}개")
+            print(f"   평균 서비스 적합도: {metrics.get('avg_local_service_fit_score', 0):.1f}")
+            print(f"   콘텐츠 실행 차단: {metrics.get('content_action_block_count', 0)}개")
+            print(f"   콘텐츠 실행 검토: {metrics.get('content_action_review_count', 0)}개")
+            print(f"   평균 콘텐츠 실행가능성: {metrics.get('avg_content_actionability_score', 0):.1f}")
+            print(f"   로컬/플레이스 표면 고가치: {metrics.get('local_surface_high_count', 0)}개")
+            print(f"   로컬/플레이스 표면 검토: {metrics.get('local_surface_review_count', 0)}개")
+            print(f"   평균 로컬 표면 점수: {metrics.get('avg_local_surface_score', 0):.1f}")
+            print(f"   자사 브랜드 방어: {metrics.get('own_brand_count', 0)}개")
+            print(f"   경쟁사 브랜드 검토: {metrics.get('competitor_brand_count', 0)}개")
+            print(f"   경쟁사 브랜드 고위험: {metrics.get('competitor_brand_high_risk_count', 0)}개")
+            print(f"   리뷰/평판 표면 고가치: {metrics.get('review_surface_high_count', 0)}개")
+            print(f"   평판 검토 필요: {metrics.get('reputation_review_count', 0)}개")
+            print(f"   평판 고위험: {metrics.get('reputation_high_risk_count', 0)}개")
+            print(f"   평균 리뷰 표면 점수: {metrics.get('avg_review_surface_score', 0):.1f}")
             print(f"   평균 사업가치 점수: {metrics.get('avg_business_value_score', 0):.1f}")
             print(f"   다중 소스 검증 비율: {metrics.get('multi_source_verified_rate', 0) * 100:.1f}%")
             print(f"   품질 플래그 비율: {metrics.get('quality_flag_rate', 0) * 100:.1f}%")
@@ -3846,7 +7352,27 @@ class PathfinderLegion:
                 'document_count', 'kei', 'kei_grade', 'business_core',
                 'source_signals', 'verification_score', 'novelty_score',
                 'diversity_rank', 'quality_flags',
-                'longtail_score', 'business_value_score', 'high_value_longtail'
+                'longtail_score', 'business_value_score', 'high_value_longtail',
+                'inbound_impressions', 'inbound_clicks', 'inbound_ctr', 'inbound_position',
+                'inbound_sources', 'mobile_share', 'content_cluster_key',
+                'owned_rank', 'owned_rank_device', 'rank_gap_signal', 'rank_status',
+                'community_mentions', 'community_conversion_fit', 'community_signal',
+                'community_platforms', 'conversion_calls', 'conversion_naver_calls',
+                'conversion_duration_seconds', 'conversion_signal',
+                'profile_action_signal', 'profile_actions_total', 'profile_direction_actions',
+                'profile_website_actions', 'profile_booking_actions', 'profile_message_actions',
+                'profile_action_sources', 'profile_action_flags',
+                'availability_intent_score', 'availability_intent_type', 'availability_action_flags',
+                'payment_coverage_score', 'payment_coverage_type', 'payment_action_flags',
+                'access_convenience_score', 'access_convenience_type', 'access_convenience_flags',
+                'medical_ad_risk_score', 'medical_ad_risk_flags', 'content_feasibility_score',
+                'local_service_fit_score', 'negative_intent_flags',
+                'content_actionability_score', 'recommended_content_type', 'content_action_flags',
+                'local_surface_score', 'preferred_search_surface', 'local_surface_flags',
+                'brand_intent_type', 'brand_signal_score', 'brand_mentions',
+                'competitor_brand_risk_score', 'brand_action_flags',
+                'review_surface_score', 'reputation_risk_score',
+                'review_intent_type', 'review_action_flags'
             ])
             writer.writeheader()
             for r in results:
@@ -3854,6 +7380,20 @@ class PathfinderLegion:
                 row.pop('merged_from', None)  # merged_from은 CSV에서 제외
                 row['source_signals'] = json.dumps(row.get('source_signals') or [], ensure_ascii=False)
                 row['quality_flags'] = json.dumps(row.get('quality_flags') or [], ensure_ascii=False)
+                row['inbound_sources'] = json.dumps(row.get('inbound_sources') or [], ensure_ascii=False)
+                row['community_platforms'] = json.dumps(row.get('community_platforms') or [], ensure_ascii=False)
+                row['profile_action_sources'] = json.dumps(row.get('profile_action_sources') or [], ensure_ascii=False)
+                row['profile_action_flags'] = json.dumps(row.get('profile_action_flags') or [], ensure_ascii=False)
+                row['availability_action_flags'] = json.dumps(row.get('availability_action_flags') or [], ensure_ascii=False)
+                row['payment_action_flags'] = json.dumps(row.get('payment_action_flags') or [], ensure_ascii=False)
+                row['access_convenience_flags'] = json.dumps(row.get('access_convenience_flags') or [], ensure_ascii=False)
+                row['medical_ad_risk_flags'] = json.dumps(row.get('medical_ad_risk_flags') or [], ensure_ascii=False)
+                row['negative_intent_flags'] = json.dumps(row.get('negative_intent_flags') or [], ensure_ascii=False)
+                row['content_action_flags'] = json.dumps(row.get('content_action_flags') or [], ensure_ascii=False)
+                row['local_surface_flags'] = json.dumps(row.get('local_surface_flags') or [], ensure_ascii=False)
+                row['brand_mentions'] = json.dumps(row.get('brand_mentions') or [], ensure_ascii=False)
+                row['brand_action_flags'] = json.dumps(row.get('brand_action_flags') or [], ensure_ascii=False)
+                row['review_action_flags'] = json.dumps(row.get('review_action_flags') or [], ensure_ascii=False)
                 writer.writerow(row)
 
         print(f"\n📁 결과 저장: {filename}")
@@ -3964,7 +7504,63 @@ class PathfinderLegion:
                            ("quality_flags_json", "TEXT DEFAULT '[]'"),
                            ("longtail_score", "REAL DEFAULT 0"),
                            ("business_value_score", "REAL DEFAULT 0"),
-                           ("high_value_longtail", "INTEGER DEFAULT 0")]:
+                           ("high_value_longtail", "INTEGER DEFAULT 0"),
+                           ("inbound_impressions", "INTEGER DEFAULT 0"),
+                           ("inbound_clicks", "INTEGER DEFAULT 0"),
+                           ("inbound_ctr", "REAL DEFAULT 0"),
+                           ("inbound_position", "REAL DEFAULT 0"),
+                           ("inbound_sources_json", "TEXT DEFAULT '[]'"),
+                           ("mobile_share", "REAL DEFAULT 0"),
+                           ("content_cluster_key", "TEXT DEFAULT ''"),
+                           ("owned_rank", "INTEGER DEFAULT 0"),
+                           ("owned_rank_device", "TEXT DEFAULT ''"),
+                           ("rank_gap_signal", "REAL DEFAULT 0"),
+                           ("rank_status", "TEXT DEFAULT 'unknown'"),
+                           ("community_mentions", "INTEGER DEFAULT 0"),
+                           ("community_conversion_fit", "REAL DEFAULT 0"),
+                           ("community_signal", "REAL DEFAULT 0"),
+                           ("community_platforms_json", "TEXT DEFAULT '[]'"),
+                           ("conversion_calls", "INTEGER DEFAULT 0"),
+                           ("conversion_naver_calls", "INTEGER DEFAULT 0"),
+                           ("conversion_duration_seconds", "INTEGER DEFAULT 0"),
+                           ("conversion_signal", "REAL DEFAULT 0"),
+                           ("profile_action_signal", "REAL DEFAULT 0"),
+                           ("profile_actions_total", "INTEGER DEFAULT 0"),
+                           ("profile_direction_actions", "INTEGER DEFAULT 0"),
+                           ("profile_website_actions", "INTEGER DEFAULT 0"),
+                           ("profile_booking_actions", "INTEGER DEFAULT 0"),
+                           ("profile_message_actions", "INTEGER DEFAULT 0"),
+                           ("profile_action_sources_json", "TEXT DEFAULT '[]'"),
+                           ("profile_action_flags_json", "TEXT DEFAULT '[]'"),
+                           ("availability_intent_score", "REAL DEFAULT 0"),
+                           ("availability_intent_type", "TEXT DEFAULT 'none'"),
+                           ("availability_action_flags_json", "TEXT DEFAULT '[]'"),
+                           ("payment_coverage_score", "REAL DEFAULT 0"),
+                           ("payment_coverage_type", "TEXT DEFAULT 'none'"),
+                           ("payment_action_flags_json", "TEXT DEFAULT '[]'"),
+                           ("access_convenience_score", "REAL DEFAULT 0"),
+                           ("access_convenience_type", "TEXT DEFAULT 'none'"),
+                           ("access_convenience_flags_json", "TEXT DEFAULT '[]'"),
+                           ("medical_ad_risk_score", "REAL DEFAULT 0"),
+                           ("medical_ad_risk_flags_json", "TEXT DEFAULT '[]'"),
+                           ("content_feasibility_score", "REAL DEFAULT 100"),
+                           ("local_service_fit_score", "REAL DEFAULT 0"),
+                           ("negative_intent_flags_json", "TEXT DEFAULT '[]'"),
+                           ("content_actionability_score", "REAL DEFAULT 0"),
+                           ("recommended_content_type", "TEXT DEFAULT ''"),
+                           ("content_action_flags_json", "TEXT DEFAULT '[]'"),
+                           ("local_surface_score", "REAL DEFAULT 0"),
+                           ("preferred_search_surface", "TEXT DEFAULT ''"),
+                           ("local_surface_flags_json", "TEXT DEFAULT '[]'"),
+                           ("brand_intent_type", "TEXT DEFAULT 'generic'"),
+                           ("brand_signal_score", "REAL DEFAULT 0"),
+                           ("brand_mentions_json", "TEXT DEFAULT '[]'"),
+                           ("competitor_brand_risk_score", "REAL DEFAULT 0"),
+                           ("brand_action_flags_json", "TEXT DEFAULT '[]'"),
+                           ("review_surface_score", "REAL DEFAULT 0"),
+                           ("reputation_risk_score", "REAL DEFAULT 0"),
+                           ("review_intent_type", "TEXT DEFAULT 'none'"),
+                           ("review_action_flags_json", "TEXT DEFAULT '[]'")]:
             try:
                 cursor.execute(f"ALTER TABLE keyword_insights ADD COLUMN {col} {ctype}")
             except Exception:
@@ -4005,8 +7601,36 @@ class PathfinderLegion:
                         scan_run_id, last_scan_run_id, business_core,
                         source_signals_json, verification_score, novelty_score,
                         diversity_rank, quality_flags_json,
-                        longtail_score, business_value_score, high_value_longtail
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        longtail_score, business_value_score, high_value_longtail,
+                        inbound_impressions, inbound_clicks, inbound_ctr,
+                        inbound_position, inbound_sources_json,
+                        mobile_share, content_cluster_key,
+                        owned_rank, owned_rank_device, rank_gap_signal, rank_status,
+                        community_mentions, community_conversion_fit,
+                        community_signal, community_platforms_json,
+                        conversion_calls, conversion_naver_calls,
+                        conversion_duration_seconds, conversion_signal,
+                        profile_action_signal, profile_actions_total,
+                        profile_direction_actions, profile_website_actions,
+                        profile_booking_actions, profile_message_actions,
+                        profile_action_sources_json, profile_action_flags_json,
+                        availability_intent_score, availability_intent_type,
+                        availability_action_flags_json,
+                        payment_coverage_score, payment_coverage_type,
+                        payment_action_flags_json,
+                        access_convenience_score, access_convenience_type,
+                        access_convenience_flags_json,
+                        medical_ad_risk_score, medical_ad_risk_flags_json,
+                        content_feasibility_score, local_service_fit_score,
+                        negative_intent_flags_json, content_actionability_score,
+                        recommended_content_type, content_action_flags_json,
+                        local_surface_score, preferred_search_surface,
+                        local_surface_flags_json, brand_intent_type,
+                        brand_signal_score, brand_mentions_json,
+                        competitor_brand_risk_score, brand_action_flags_json,
+                        review_surface_score, reputation_risk_score,
+                        review_intent_type, review_action_flags_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(keyword) DO UPDATE SET
                         difficulty=excluded.difficulty,
                         opportunity=excluded.opportunity,
@@ -4032,7 +7656,63 @@ class PathfinderLegion:
                         quality_flags_json=excluded.quality_flags_json,
                         longtail_score=excluded.longtail_score,
                         business_value_score=excluded.business_value_score,
-                        high_value_longtail=excluded.high_value_longtail
+                        high_value_longtail=excluded.high_value_longtail,
+                        inbound_impressions=excluded.inbound_impressions,
+                        inbound_clicks=excluded.inbound_clicks,
+                        inbound_ctr=excluded.inbound_ctr,
+                        inbound_position=excluded.inbound_position,
+                        inbound_sources_json=excluded.inbound_sources_json,
+                        mobile_share=excluded.mobile_share,
+                        content_cluster_key=excluded.content_cluster_key,
+                        owned_rank=excluded.owned_rank,
+                        owned_rank_device=excluded.owned_rank_device,
+                        rank_gap_signal=excluded.rank_gap_signal,
+                        rank_status=excluded.rank_status,
+                        community_mentions=excluded.community_mentions,
+                        community_conversion_fit=excluded.community_conversion_fit,
+                        community_signal=excluded.community_signal,
+                        community_platforms_json=excluded.community_platforms_json,
+                        conversion_calls=excluded.conversion_calls,
+                        conversion_naver_calls=excluded.conversion_naver_calls,
+                        conversion_duration_seconds=excluded.conversion_duration_seconds,
+                        conversion_signal=excluded.conversion_signal,
+                        profile_action_signal=excluded.profile_action_signal,
+                        profile_actions_total=excluded.profile_actions_total,
+                        profile_direction_actions=excluded.profile_direction_actions,
+                        profile_website_actions=excluded.profile_website_actions,
+                        profile_booking_actions=excluded.profile_booking_actions,
+                        profile_message_actions=excluded.profile_message_actions,
+                        profile_action_sources_json=excluded.profile_action_sources_json,
+                        profile_action_flags_json=excluded.profile_action_flags_json,
+                        availability_intent_score=excluded.availability_intent_score,
+                        availability_intent_type=excluded.availability_intent_type,
+                        availability_action_flags_json=excluded.availability_action_flags_json,
+                        payment_coverage_score=excluded.payment_coverage_score,
+                        payment_coverage_type=excluded.payment_coverage_type,
+                        payment_action_flags_json=excluded.payment_action_flags_json,
+                        access_convenience_score=excluded.access_convenience_score,
+                        access_convenience_type=excluded.access_convenience_type,
+                        access_convenience_flags_json=excluded.access_convenience_flags_json,
+                        medical_ad_risk_score=excluded.medical_ad_risk_score,
+                        medical_ad_risk_flags_json=excluded.medical_ad_risk_flags_json,
+                        content_feasibility_score=excluded.content_feasibility_score,
+                        local_service_fit_score=excluded.local_service_fit_score,
+                        negative_intent_flags_json=excluded.negative_intent_flags_json,
+                        content_actionability_score=excluded.content_actionability_score,
+                        recommended_content_type=excluded.recommended_content_type,
+                        content_action_flags_json=excluded.content_action_flags_json,
+                        local_surface_score=excluded.local_surface_score,
+                        preferred_search_surface=excluded.preferred_search_surface,
+                        local_surface_flags_json=excluded.local_surface_flags_json,
+                        brand_intent_type=excluded.brand_intent_type,
+                        brand_signal_score=excluded.brand_signal_score,
+                        brand_mentions_json=excluded.brand_mentions_json,
+                        competitor_brand_risk_score=excluded.competitor_brand_risk_score,
+                        brand_action_flags_json=excluded.brand_action_flags_json,
+                        review_surface_score=excluded.review_surface_score,
+                        reputation_risk_score=excluded.reputation_risk_score,
+                        review_intent_type=excluded.review_intent_type,
+                        review_action_flags_json=excluded.review_action_flags_json
                 ''', (
                     r.keyword, 0, "Low" if r.difficulty < 50 else "High",
                     r.priority_score, tag, now,
@@ -4044,7 +7724,52 @@ class PathfinderLegion:
                     json.dumps(r.source_signals or [], ensure_ascii=False),
                     r.verification_score, r.novelty_score, r.diversity_rank,
                     json.dumps(r.quality_flags or [], ensure_ascii=False),
-                    r.longtail_score, r.business_value_score, 1 if r.high_value_longtail else 0
+                    r.longtail_score, r.business_value_score, 1 if r.high_value_longtail else 0,
+                    r.inbound_impressions, r.inbound_clicks, r.inbound_ctr,
+                    r.inbound_position, json.dumps(r.inbound_sources or [], ensure_ascii=False),
+                    r.mobile_share, r.content_cluster_key,
+                    r.owned_rank, r.owned_rank_device, r.rank_gap_signal, r.rank_status,
+                    r.community_mentions, r.community_conversion_fit, r.community_signal,
+                    json.dumps(r.community_platforms or [], ensure_ascii=False),
+                    r.conversion_calls, r.conversion_naver_calls,
+                    r.conversion_duration_seconds, r.conversion_signal,
+                    r.profile_action_signal,
+                    r.profile_actions_total,
+                    r.profile_direction_actions,
+                    r.profile_website_actions,
+                    r.profile_booking_actions,
+                    r.profile_message_actions,
+                    json.dumps(r.profile_action_sources or [], ensure_ascii=False),
+                    json.dumps(r.profile_action_flags or [], ensure_ascii=False),
+                    r.availability_intent_score,
+                    r.availability_intent_type,
+                    json.dumps(r.availability_action_flags or [], ensure_ascii=False),
+                    r.payment_coverage_score,
+                    r.payment_coverage_type,
+                    json.dumps(r.payment_action_flags or [], ensure_ascii=False),
+                    r.access_convenience_score,
+                    r.access_convenience_type,
+                    json.dumps(r.access_convenience_flags or [], ensure_ascii=False),
+                    r.medical_ad_risk_score,
+                    json.dumps(r.medical_ad_risk_flags or [], ensure_ascii=False),
+                    r.content_feasibility_score,
+                    r.local_service_fit_score,
+                    json.dumps(r.negative_intent_flags or [], ensure_ascii=False),
+                    r.content_actionability_score,
+                    r.recommended_content_type,
+                    json.dumps(r.content_action_flags or [], ensure_ascii=False),
+                    r.local_surface_score,
+                    r.preferred_search_surface,
+                    json.dumps(r.local_surface_flags or [], ensure_ascii=False),
+                    r.brand_intent_type,
+                    r.brand_signal_score,
+                    json.dumps(r.brand_mentions or [], ensure_ascii=False),
+                    r.competitor_brand_risk_score,
+                    json.dumps(r.brand_action_flags or [], ensure_ascii=False),
+                    r.review_surface_score,
+                    r.reputation_risk_score,
+                    r.review_intent_type,
+                    json.dumps(r.review_action_flags or [], ensure_ascii=False)
                 ))
                 saved += 1
                 if existed:
