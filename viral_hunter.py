@@ -30,8 +30,8 @@ import hashlib
 import logging
 import argparse
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Tuple
-from datetime import datetime
+from typing import Any, List, Optional, Dict, Tuple
+from datetime import datetime, timedelta
 from urllib.parse import quote, urljoin
 import requests
 from bs4 import BeautifulSoup
@@ -153,6 +153,10 @@ class ViralTarget:
     comment_count: int = 0
     view_count: int = 0
     comment_status: str = "pending"
+    discovered_at: str = ""
+    first_seen_at: str = ""
+    last_scanned_at: str = ""
+    scan_count: int = 0
     source_scan_run_id: int = 0
     matched_keyword_grade: str = ""
     matched_keyword_kei: float = 0.0
@@ -161,7 +165,7 @@ class ViralTarget:
     exposure_score: float = 0.0
     workability_score: float = 0.0
     conversion_fit_score: float = 0.0
-    score_breakdown: Dict[str, float] = field(default_factory=dict)
+    score_breakdown: Dict[str, Any] = field(default_factory=dict)
     search_sort: str = ""
     search_rank: int = 0
     search_start: int = 0
@@ -230,6 +234,10 @@ class ViralTarget:
             'comment_count': self.comment_count,
             'view_count': self.view_count,
             'comment_status': self.comment_status,
+            'discovered_at': self.discovered_at,
+            'first_seen_at': self.first_seen_at,
+            'last_scanned_at': self.last_scanned_at,
+            'scan_count': self.scan_count,
             'source_scan_run_id': self.source_scan_run_id,
             'matched_keyword_grade': self.matched_keyword_grade,
             'matched_keyword_kei': self.matched_keyword_kei,
@@ -1044,6 +1052,283 @@ class CommentableFilter:
         "부담없이 건강하게",
     ]
 
+    KIN_PROVIDER_ANSWER_PATTERNS = [
+        "닥톡-네이버 지식in 상담", "닥톡-네이버 지식iN 상담".lower(),
+        "상담한의사", "상담의사", "상담의", "대표원장입니다", "원장입니다",
+        "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
+        "[병원 위치]", "[진료 예약]", "[병원 홈페이지]", "[프로필 보기]",
+        "문의 전화", "병원 위치 | 진료 예약", "진료 예약 | 병원 홈페이지",
+        "답변에 도움이 되셨기를", "도움이 되셨길 바랍니다", "답변이 도움이",
+        "원장이었습니다", "대표원장 |", "프로필 보기",
+    ]
+
+    KIN_ANSWER_AD_PATTERNS = [
+        "질문자님", "질문하신", "질문하신 내용", "문의 주셨", "문의주셨",
+        "문의 해주신", "문의해주신", "말씀 주신", "말씀주신", "답변해드리",
+        "답변 드리", "답변드립니다", "의 순서로 답변", "안녕하세요, 닥톡",
+        "안녕하세요. 닥톡", "정확한 진단", "정확한 검사", "내원하셔서",
+        "가까운 한의원에 방문", "가까운 병원에 방문", "개개인의 체질",
+        "맞춤형으로 처방", "맞춤 처방", "단계별로 체계적인", "체계적인 감량",
+        "처방 한약을 통해", "한의원에서는", "치료법에 관심", "치료를 받아야",
+        "자동차보험 적용 대상", "개인비용 부담없이", "치료를 받을수가 있습니다",
+        "질문하신 청주교통사고병원에 대한", "믿을수 있는", "믿을 수 있는",
+        "약침으로 치료할 경우", "추나.보약.약침", "추나 보약 약침",
+        "치료할 경우", "약 6개월", "비용은 매월", "대부분이며 비용",
+        "치료 비용에서", "동일하게 치료", "치료를 처방 받을 수",
+        "알아보실때에는", "알아보실 때", "중요한 것은 바로", "내원하지",
+        "진단 받는것", "진단 받는 것", "정말 효과를 줄 수",
+        "식이 조절에 효과적", "부족한 영양을 보강", "치료 집중적으로 받으세요",
+        "클리닉도 따로", "체계적으로 치료 받기", "주로 하고 있는",
+        "부담없이 오세요", "외래환자", "실비받다가", "한도가 되서",
+        "상담문의 :", "상담 문의 :", "open.kakao.com", "카카오톡 오픈채팅",
+        "현재 할인가", "구입할수 있는 방법", "영양제 한눈에 보기", "필수 <다이어트>",
+        "운영 중인", "전문블로거", "결론부터", "연락주시",
+    ]
+
+    KIN_RECOMMENDATION_SPAM_PATTERNS = [
+        "후기 잘보고", "부작용없고 효과", "효과 좋은 곳", "꼭 가보시길",
+        "가격이 부담스럽지도", "무지 유명한 곳", "입소문난", "유명 다이어트한의원",
+        "확실하게 좋은 곳", "도움 받았다는", "도움을 받았다는", "관리좀 받으려",
+    ]
+
+    COMMERCIAL_CTA_PATTERNS = [
+        "진료 예약", "예약하기", "예약 문의", "상담 신청", "상담문의", "문의주세요",
+        "문의 주세요", "언제든 문의", "내원해보세요", "방문해보세요", "전화상담",
+        "홈페이지", "바로가기", "지금 바로", "상담 가능", "방문 상담 가능",
+        "카카오톡 상담", "네이버 예약", "온라인 예약",
+    ]
+
+    LOCAL_SEO_FOOTER_PATTERNS = [
+        "다양한 지역에서 문의", "다양한 지역에서 내원", "주변 지역에서도",
+        "인근 주변 지역", "근처 인근 주변", "등 다양한 지역", "전 지역 상담 가능",
+        "사직동", "사창동", "모충동", "산남동", "분평동", "수곡동", "복대동",
+    ]
+
+    BLOG_AD_STRUCTURAL_PATTERNS = [
+        "진료과목", "운영시간", "주차", "메뉴가격", "메뉴 가격", "리뷰 바로가기",
+        "출처 ogq", "출처 unsplash", "출처 pixabay", "©", "저희 병원", "저희 한의원",
+        "본원에서는", "본원은", "치료를 진행", "치료 프로그램", "맞춤 처방",
+        "회복을 위한", "관리가 가능한", "관리 가능한", "치료와 관리",
+        "치료와 후유증 관리", "전인적", "종합적 관리", "한의치료",
+    ]
+
+    MEDICAL_PROVIDER_TERMS = [
+        "병원", "한방병원", "한의원", "의원", "피부과", "클리닉",
+    ]
+
+    MEDICAL_PROMO_TITLE_PATTERNS = [
+        "회복을 위한", "관리를 위한", "관리 가능한", "관리가 가능한",
+        "치료와 관리", "통증치료", "통증 치료", "후유증 관리",
+        "한의치료", "맞춤치료", "맞춤 치료", "체계적인", "꼼꼼한",
+    ]
+
+    LEGAL_PROMO_PATTERNS = [
+        "교통사고변호사", "교통사고전문변호사", "변호사선임비용", "선임비용",
+        "무료법률상담", "무료 법률상담", "교통법률상담", "교통변호사",
+        "소송비용", "승소 사례", "합의금", "뺑소니합의금", "무보험사고",
+    ]
+
+    BRAND_PROMO_PATTERNS = [
+        "쥬비스", "인치 감량", "부작용없는", "업력", "최저가로 파는",
+        "처방병원", "비댓문의", "비댓 문의", "카페는 위고비", "나만의닥터",
+    ]
+
+    STRONG_USER_INQUIRY_PATTERNS = [
+        "아시는분", "아시는 분", "알려주세요", "추천해주세요", "추천 부탁",
+        "어디가", "어디로", "궁금해요", "궁금합니다", "가보신", "해보신",
+        "먹어도", "가야 하나", "가야할까요", "괜찮을까요", "괜찮은곳",
+        "찾고 있어요", "찾고있어요", "고민입니다", "고민이에요",
+    ]
+
+    MIN_VIRAL_NEED_SCORE = 35
+
+    RECOMMENDATION_REQUEST_PATTERNS = [
+        "추천해주세요", "추천 해주세요", "추천 부탁", "추천좀", "추천 좀",
+        "추천부탁", "추천드려요", "추천해주", "추천 해주", "추천받", "추천 받",
+        "아시는분", "아시는 분", "알려주세요", "알려 주세요", "소개해주세요",
+        "공유 부탁", "공유부탁", "부탁드려요", "부탁드립니다",
+        "괜찮은곳", "괜찮은 곳", "잘하는곳", "잘하는 곳", "어디가 좋",
+        "어디가 괜찮", "어디로 가", "어디 병원", "어디 한의원",
+        "병원추천", "병원 추천", "한의원추천", "한의원 추천",
+    ]
+
+    READY_TO_ACT_PATTERNS = [
+        "예약", "방문", "내원", "상담", "문의", "처방", "검사", "입원",
+        "치료받", "치료 받", "가보려", "먹어보려", "받아보려", "시작하려",
+        "오늘", "내일", "이번주", "이번 주", "급해", "빨리", "당장",
+    ]
+
+    COST_DECISION_PATTERNS = [
+        "비용", "가격", "얼마", "견적", "실비", "보험", "자동차보험", "자보",
+        "할인", "최저가", "저렴", "비싸", "부담",
+    ]
+
+    PAIN_URGENCY_PATTERNS = [
+        "힘들", "스트레스", "걱정", "불안", "고민", "불편", "아파", "통증",
+        "심해", "계속", "반복", "재발", "부작용", "효과 없", "낫지",
+        "살이", "빠지", "여드름", "흉터", "후유증", "불면", "두통",
+    ]
+
+    PROBLEM_INTENT_PATTERNS = [
+        "힘들", "스트레스", "걱정", "불안", "고민", "불편", "아파", "통증",
+        "심해", "계속", "반복", "재발", "부작용", "효과 없", "낫지",
+        "안 빠", "안빠", "불면", "두통",
+    ]
+
+    SERVICE_ACTION_PATTERNS = [
+        "치료", "병원", "한의원", "내원", "입원", "처방", "상담", "관리", "개선",
+    ]
+
+    CONDITION_TERMS = [
+        "여드름", "흉터", "후유증", "비만", "체중", "통증", "불면", "두통", "아토피",
+    ]
+
+    COMPARISON_EVALUATION_PATTERNS = [
+        "나을까요", "좋을까요", "괜찮을까요", "효과", "후기", "비교",
+        "피부과", "한의원", "병원", "한약", "양약", "보톡스", "위고비",
+        "마운자로", "삭센다", "vs", " or ", "아니면",
+    ]
+
+    LOW_ACTIONABILITY_PATTERNS = [
+        "뜻", "정의", "무엇인가요", "무엇인가", "왜 그런가요", "원인만",
+        "가능한가요?", "상식", "뉴스", "논문", "과제", "숙제",
+    ]
+
+    MIN_REPLY_OPPORTUNITY_SCORE = 32
+    MIN_TIMING_WINDOW_SCORE = 28
+    MIN_JOURNEY_FIT_SCORE = 35
+    MIN_QUALIFICATION_FIT_SCORE = 30
+
+    INTERROGATIVE_PATTERNS = [
+        "?", "어디", "어떻게", "어떤", "뭐", "무엇", "왜", "언제", "얼마",
+        "될까요", "되나요", "인가요", "나요", "까요", "맞나요",
+    ]
+
+    HELP_REQUEST_PATTERNS = [
+        "도와주세요", "도움", "알려주세요", "알려 주세요", "추천", "부탁",
+        "조언", "상담", "문의", "궁금", "고민", "찾고", "찾아보고",
+        "아시는분", "아시는 분", "해보신", "가보신",
+    ]
+
+    PERSONAL_CONTEXT_PATTERNS = [
+        "제가", "저는", "저희", "우리", "아이", "남편", "아내", "부모님",
+        "엄마", "아빠", "가족", "친구", "사고 후", "사고후", "출산 후",
+        "산후", "어제", "오늘", "내일", "며칠", "몇일", "개월", "년째",
+    ]
+
+    BROAD_RESEARCH_PATTERNS = [
+        "원리", "성분", "논문", "자료", "뉴스", "과제", "숙제", "정의",
+        "뜻", "무엇인가요", "무엇인가", "원인이 뭔가요", "왜 생기나요",
+        "원인 알려", "상식", "요약",
+    ]
+
+    RESOLVED_OR_CLOSED_PATTERNS = [
+        "해결했습니다", "해결됐", "해결되었", "다녀왔어요", "다녀왔습니다",
+        "결정했어요", "결정했습니다", "구했습니다", "마감", "완료",
+        "답변 채택", "채택된 답변", "답변완료", "후기입니다",
+    ]
+
+    LOW_COMMUNITY_FIT_PATTERNS = [
+        "잡담", "썰", "웃긴", "투표", "설문", "공유해요", "홍보합니다",
+        "정보 공유", "정보공유", "기사", "보도자료",
+    ]
+
+    ROUTE_NAVIGATION_PATTERNS = [
+        "어떻게 가나요", "어떻게가나요", "가는법", "가는 법", "교통편",
+        "버스", "지하철", "노선", "환승", "터미널", "기차", "고속버스",
+        "소요시간", "몇 분", "몇분", "길찾기", "길 찾기",
+    ]
+
+    SAME_DAY_ACTION_PATTERNS = [
+        "오늘", "금일", "지금", "바로", "당장", "급해", "급합니다",
+        "빨리", "내일", "이번주", "이번 주", "주말", "예약", "방문 예정",
+    ]
+
+    STALE_TIME_PATTERNS = [
+        "작년에", "몇 년 전", "몇년 전", "예전에", "오래전", "오래 전",
+        "이미", "현재는 괜찮", "지금은 괜찮", "나중에 후기",
+    ]
+
+    AWARENESS_STAGE_PATTERNS = [
+        "뜻", "정의", "원인", "왜 생", "왜 그런", "무엇인가", "뭔가요",
+        "차이", "종류", "성분", "원리", "논문", "자료", "뉴스", "상식",
+        "가능한가요", "되나요", "해야 하나요", "문제인가요",
+    ]
+
+    CONSIDERATION_STAGE_PATTERNS = [
+        "추천", "어디", "어느", "괜찮", "좋은 곳", "좋은곳", "잘하는 곳",
+        "잘하는곳", "후기", "경험", "해보신", "가보신", "비교", "vs",
+        "나을까요", "좋을까요", "피부과", "한의원", "병원", "클리닉",
+    ]
+
+    DECISION_STAGE_PATTERNS = [
+        "예약", "방문", "내원", "상담", "문의", "비용", "가격", "얼마",
+        "실비", "보험", "자보", "입원", "통원", "오늘", "내일", "이번주",
+        "당장", "빨리", "근처", "가까운", "전화", "처방", "받으려고",
+    ]
+
+    POST_SERVICE_STAGE_PATTERNS = [
+        "후기입니다", "후기 남", "다녀왔어요", "다녀왔습니다", "받고 왔",
+        "해결했습니다", "해결됐", "결정했어요", "결정했습니다", "공유해요",
+        "정보공유", "정보 공유", "내돈내산", "추천합니다",
+    ]
+
+    RESPONSE_PERMISSION_POSITIVE_PATTERNS = [
+        "댓글", "답변", "알려주세요", "부탁", "공유 부탁", "쪽지", "비댓",
+        "정보 부탁", "추천", "아시는분", "아시는 분", "도움",
+    ]
+
+    RESPONSE_PERMISSION_NEGATIVE_PATTERNS = [
+        "홍보 금지", "홍보금지", "광고 금지", "광고금지", "업체 사절",
+        "업체사절", "광고 사절", "광고사절", "쪽지 사절", "쪽지사절",
+        "댓글 사절", "댓글사절", "영업 사절", "영업사절",
+    ]
+
+    DECISION_ACTOR_PATTERNS = [
+        "제가", "저는", "제 ", "저희", "우리", "남편", "아내", "엄마", "아빠",
+        "어머니", "아버지", "부모님", "아이", "아들", "딸", "가족", "본인",
+    ]
+
+    QUALIFICATION_CONSTRAINT_PATTERNS = [
+        "직장", "학생", "육아", "출산", "산후", "시간", "야간", "주말",
+        "근처", "가까운", "거리", "통원", "입원", "실비", "보험", "자보",
+        "자동차보험", "비용", "가격", "부담", "예산", "할부", "부작용",
+    ]
+
+    JTBD_PROGRESS_PATTERNS = [
+        "빼고 싶", "감량", "체중", "낫고 싶", "나아지고", "개선", "치료하고",
+        "관리하고", "없애고", "줄이고", "회복", "복귀", "일상생활", "잠을 못",
+        "효과 보고", "효과있는", "효과 있는", "안 아프", "좋아지고",
+    ]
+
+    SWITCHING_TRIGGER_PATTERNS = [
+        "효과 없", "효과가 없", "안 나아", "낫지", "재발", "반복", "계속",
+        "다른 곳", "다른곳", "옮기", "바꿔", "실패", "포기", "더 심",
+        "약 먹어도", "해도 안", "관리해도", "병원 다녀도",
+    ]
+
+    LOW_QUALIFICATION_PATTERNS = [
+        "숙제", "과제", "리포트", "보고서", "논문", "자료 조사", "자료조사",
+        "뉴스", "기사", "정책", "통계", "단순 궁금", "그냥 궁금", "심심해서",
+        "잡지식", "검정고시", "자격증", "차체수리", "보수도장",
+        "변호사", "법률", "소송", "재판", "구속영장", "음주운전", "삼진아웃",
+        "합의금", "합의 및", "형사사건",
+        "예방법", "예방 법", "관리법", "운동법", "자가관리", "홈케어",
+    ]
+
+    QUALIFIED_SERVICE_LINE_PATTERNS = [
+        "한의원", "한방병원", "한약", "한방", "교통사고", "후유증", "입원치료",
+        "통원치료", "추나", "다이어트", "비만", "감량", "식욕억제",
+        "여드름", "흉터", "탈모", "비염", "체형교정", "골반교정",
+        "안면비대칭", "얼굴비대칭", "새살침", "리프팅", "피부", "통증",
+    ]
+
+    NON_SERVICE_BEAUTY_PATTERNS = [
+        "붙임머리", "남자파마", "파마잘하는", "미용실", "헤어샵", "헤어클리닉",
+        "펌 잘하는", "염색", "두피케어", "네일", "속눈썹", "왁싱",
+        "보톡스", "땀주사", "두피주사", "모발이식",
+    ]
+
     # NON_RELEVANT: 비관련 업종 - 무조건 제외
     NON_RELEVANT_EXCLUDE = [
         # 기존
@@ -1075,7 +1360,7 @@ class CommentableFilter:
         "cosmetic_clinic": [
             "피부과", "프락셀", "레이저", "레이저토닝", "토닝", "필러",
             "보톡스", "슈링크", "인모드", "울쎄라", "리쥬란", "스킨부스터",
-            "쥬베룩", "포텐자", "피코토닝",
+            "쥬베룩", "포텐자", "피코토닝", "두피주사", "땀주사",
         ],
         "fitness": [
             "홈트레이닝", "홈트", "pt", "퍼스널트레이닝", "헬스장", "헬스",
@@ -1084,7 +1369,7 @@ class CommentableFilter:
         ],
         "surgery": [
             "지방이식", "가슴성형", "눈성형", "코성형", "쌍수", "양악",
-            "성형외과", "지방흡입", "윤곽수술",
+            "성형외과", "지방흡입", "윤곽수술", "모발이식",
         ],
         "urology": [
             "전립선", "비뇨기", "요실금", "방광염", "발기부전", "prostate",
@@ -1130,6 +1415,22 @@ class CommentableFilter:
 
     # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
     MIN_CONTENT_LENGTH = 100
+
+    GENERIC_CATEGORY_NAMES = {"기타", "general", "unknown", "uncategorized", ""}
+    GENERIC_CATEGORY_PENALTY = -12
+
+    URGENT_MEDICAL_KEYWORDS = [
+        "응급", "119", "응급실", "구급차", "호흡곤란", "숨이 안", "흉통", "가슴통증",
+        "마비", "실신", "의식불명", "발작", "경련", "과다출혈", "피가 안 멈", "자살", "자해",
+    ]
+    SENSITIVE_MEDICAL_KEYWORDS = [
+        "임신", "수유", "소아", "아기", "영유아", "아이", "청소년", "약 부작용",
+        "부작용", "스테로이드", "항생제", "당뇨", "고혈압", "암", "간수치", "신장",
+        "신부전", "심장", "알레르기", "두드러기", "쇼크", "수술 후", "수술후",
+    ]
+    TESTIMONIAL_SENSITIVE_KEYWORDS = [
+        "후기", "경험담", "치료 경험", "효과", "완치", "보장", "전후", "비포애프터",
+    ]
 
     # 기존 호환용 (STRICT + NON_RELEVANT)
     AD_EXCLUDE = STRICT_AD_PATTERNS + NON_RELEVANT_EXCLUDE
@@ -1264,6 +1565,816 @@ class CommentableFilter:
     def _contains_any(text: str, patterns: List[str]) -> bool:
         return any(pattern in text for pattern in patterns)
 
+    @staticmethod
+    def _strip_internal_labels(text: str) -> str:
+        """Remove scanner-added leading labels so old queued rows are judged by real post text."""
+        return re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", text or "").strip()
+
+    @classmethod
+    def _user_need_text(cls, target: ViralTarget) -> str:
+        """Return the part most likely written by the person asking for help."""
+        body = cls._strip_internal_labels(target.content_preview or "")
+        platform = (target.platform or "").lower()
+        if platform in {"kin", "naver_kin"}:
+            split_markers = [
+                "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
+                "안녕하세요, 닥톡", "안녕하세요. 닥톡", "안녕하세요,",
+                "안녕하세요.", "답변드립니다", "답변 드립니다",
+            ]
+            cut_points = [body.lower().find(marker.lower()) for marker in split_markers]
+            cut_points = [idx for idx in cut_points if idx > 20]
+            if cut_points:
+                body = body[:min(cut_points)]
+        return f"{target.title or ''} {body}".strip()
+
+    @classmethod
+    def _assess_viral_need(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        is_inquiry: bool,
+        is_health: bool,
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether a post needs a helpful human reply now."""
+        user_text = cls._user_need_text(target).lower()
+        platform = (target.platform or "").lower()
+        score = 0
+        signals: List[str] = []
+
+        def has(patterns: List[str]) -> bool:
+            return any(pattern.lower() in user_text for pattern in patterns if pattern)
+
+        compact_recommendation = (
+            "추천" in user_text
+            and any(marker in user_text for marker in ["부탁", "해주", "좀", "병원", "한의원", "피부과"])
+        )
+        recommendation_request = has(cls.RECOMMENDATION_REQUEST_PATTERNS) or compact_recommendation
+        ready_to_act = has(cls.READY_TO_ACT_PATTERNS)
+        cost_decision = has(cls.COST_DECISION_PATTERNS)
+        pain_urgency = has(cls.PAIN_URGENCY_PATTERNS)
+        comparison_eval = has(cls.COMPARISON_EVALUATION_PATTERNS)
+        service_intent = recommendation_request or ready_to_act or cost_decision or comparison_eval
+        problem_intent = pain_urgency and (
+            has(cls.PROBLEM_INTENT_PATTERNS)
+            or (
+                cls._contains_any(user_text, cls.CONDITION_TERMS)
+                and cls._contains_any(user_text, cls.SERVICE_ACTION_PATTERNS)
+            )
+        )
+        high_intent = service_intent or problem_intent
+
+        if recommendation_request:
+            score += 32
+            signals.append("recommendation_request")
+        if ready_to_act:
+            score += 20
+            signals.append("ready_to_act")
+        if cost_decision:
+            score += 16
+            signals.append("cost_decision")
+        if pain_urgency:
+            score += 16
+            signals.append("pain_or_urgency")
+            if not problem_intent:
+                signals.append("condition_only")
+        if comparison_eval:
+            score += 12
+            signals.append("comparison_or_evaluation")
+        if is_inquiry:
+            score += 10
+            signals.append("explicit_question")
+        if is_health:
+            score += 6
+            signals.append("domain_health")
+        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+            score += 8
+            signals.append("local_fit")
+        if cls._has_domain_anchor(domain, user_text):
+            score += 8
+            signals.append("domain_fit")
+
+        if platform in {"kin", "naver_kin", "cafe", "naver_cafe"}:
+            score += 6
+            signals.append("reply_surface")
+        elif platform == "blog":
+            score -= 6
+            signals.append("blog_lower_reply_fit")
+
+        if "광고사절" in user_text or "업체 말고" in user_text:
+            score += 8
+            signals.append("anti_ad_request")
+
+        if len(user_text) < 80:
+            if high_intent:
+                score -= 6
+                signals.append("short_but_actionable")
+            else:
+                score -= 18
+                signals.append("thin_context")
+        if has(cls.LOW_ACTIONABILITY_PATTERNS) and not high_intent:
+            score -= 14
+            signals.append("low_actionability_question")
+        if (target.category or "").strip() in cls.GENERIC_CATEGORY_NAMES:
+            score -= 8
+            signals.append("generic_category")
+        if not high_intent and not (is_inquiry and cls._has_domain_anchor(domain, user_text)):
+            score -= 12
+            signals.append("no_clear_need")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "hot"
+        elif score >= 55:
+            tier = "warm"
+        elif score >= cls.MIN_VIRAL_NEED_SCORE:
+            tier = "monitor"
+        else:
+            tier = "low"
+        return score, tier, signals
+
+    @classmethod
+    def _assess_reply_opportunity(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        is_inquiry: bool,
+        is_health: bool,
+        viral_need_score: int,
+        viral_need_signals: List[str],
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether a public reply is likely to be useful and welcome."""
+        user_text = cls._user_need_text(target).lower()
+        platform = (target.platform or "").lower()
+        score = 0
+        signals: List[str] = []
+        need_signal_set = set(viral_need_signals or [])
+
+        def has(patterns: List[str]) -> bool:
+            return any(pattern.lower() in user_text for pattern in patterns if pattern)
+
+        decision_signal = bool(
+            need_signal_set
+            & {"recommendation_request", "ready_to_act", "cost_decision", "comparison_or_evaluation"}
+        )
+        problem_signal = "pain_or_urgency" in need_signal_set and "condition_only" not in need_signal_set
+
+        help_request = has(cls.HELP_REQUEST_PATTERNS)
+
+        if is_inquiry or has(cls.INTERROGATIVE_PATTERNS):
+            score += 12
+            signals.append("clear_question_shape")
+        if help_request:
+            score += 14
+            signals.append("help_request_language")
+        if decision_signal:
+            score += 18
+            signals.append("decision_or_service_task")
+        if problem_signal:
+            score += 12
+            signals.append("situational_problem")
+        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+            score += 10
+            signals.append("local_actionable")
+        if domain != "general" and cls._has_domain_anchor(domain, user_text):
+            score += 8
+            signals.append("service_match")
+        if is_health:
+            score += 6
+            signals.append("health_context")
+        if has(cls.PERSONAL_CONTEXT_PATTERNS):
+            score += 8
+            signals.append("personal_context")
+        if "광고사절" in user_text or "업체 말고" in user_text:
+            score += 8
+            signals.append("anti_ad_request")
+
+        if platform in {"kin", "naver_kin", "cafe", "naver_cafe"}:
+            score += 10
+            signals.append("public_reply_surface")
+            if getattr(target, "comment_count", 0) == 0:
+                score += 8
+                signals.append("unanswered_or_low_response")
+            elif getattr(target, "comment_count", 0) <= 2:
+                score += 3
+                signals.append("low_response_count")
+            elif getattr(target, "comment_count", 0) >= 8:
+                score -= 10
+                signals.append("crowded_thread")
+        elif platform == "blog":
+            score -= 12
+            signals.append("blog_low_reply_surface")
+        elif platform in {"instagram", "tiktok"}:
+            score -= 8
+            signals.append("feed_low_reply_surface")
+
+        if len(user_text) >= 80:
+            score += 6
+            signals.append("enough_context")
+        elif viral_need_score >= 55:
+            score += 4
+            signals.append("concise_actionable")
+        else:
+            score -= 12
+            signals.append("too_thin_to_answer")
+
+        if has(cls.BROAD_RESEARCH_PATTERNS) and not decision_signal and not help_request:
+            score -= 18
+            signals.append("research_only")
+        if has(cls.RESOLVED_OR_CLOSED_PATTERNS) and not help_request:
+            score -= 35
+            signals.append("already_resolved_or_closed")
+        if has(cls.LOW_COMMUNITY_FIT_PATTERNS) and not decision_signal and not help_request:
+            score -= 14
+            signals.append("low_community_fit")
+        if (target.category or "").strip() in cls.GENERIC_CATEGORY_NAMES and target.matched_keyword_grade not in {"S", "A"}:
+            score -= 6
+            signals.append("generic_category")
+        if not decision_signal and not problem_signal and not help_request:
+            score -= 10
+            signals.append("no_direct_ask")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "assist_now"
+        elif score >= 55:
+            tier = "good"
+        elif score >= cls.MIN_REPLY_OPPORTUNITY_SCORE:
+            tier = "watch"
+        else:
+            tier = "low"
+        return score, tier, signals
+
+    @staticmethod
+    def _parse_datetime(value: Any, now: Optional[datetime] = None) -> Optional[datetime]:
+        """Parse common Naver/API/SQLite date strings into a naive local datetime."""
+        if not value:
+            return None
+        now = now or datetime.now()
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        relative_patterns = [
+            (r"(\d+)\s*분\s*전", "minutes"),
+            (r"(\d+)\s*시간\s*전", "hours"),
+            (r"(\d+)\s*일\s*전", "days"),
+            (r"(\d+)\s*주\s*전", "weeks"),
+            (r"(\d+)\s*개월\s*전", "months"),
+            (r"(\d+)\s*달\s*전", "months"),
+            (r"(\d+)\s*년\s*전", "years"),
+        ]
+        if raw in {"방금", "방금 전", "방금전", "지금"}:
+            return now
+        if raw in {"어제", "어제 작성"}:
+            return now - timedelta(days=1)
+        for pattern, unit in relative_patterns:
+            match = re.search(pattern, raw)
+            if not match:
+                continue
+            amount = int(match.group(1))
+            if unit == "minutes":
+                return now - timedelta(minutes=amount)
+            if unit == "hours":
+                return now - timedelta(hours=amount)
+            if unit == "days":
+                return now - timedelta(days=amount)
+            if unit == "weeks":
+                return now - timedelta(weeks=amount)
+            if unit == "months":
+                return now - timedelta(days=amount * 30)
+            if unit == "years":
+                return now - timedelta(days=amount * 365)
+
+        compact = re.sub(r"\s+", " ", raw.replace("T", " ").replace("Z", "")).strip()
+        if re.fullmatch(r"\d{8}", compact):
+            try:
+                return datetime.strptime(compact, "%Y%m%d")
+            except ValueError:
+                return None
+        compact = compact.rstrip(".")
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%Y.%m.%d %H:%M:%S",
+            "%Y.%m.%d %H:%M",
+            "%Y.%m.%d",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%Y/%m/%d",
+        ):
+            try:
+                return datetime.strptime(compact, fmt)
+            except ValueError:
+                continue
+        try:
+            parsed = datetime.fromisoformat(compact)
+            return parsed.replace(tzinfo=None)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _hours_since(cls, value: Any, now: Optional[datetime] = None) -> Optional[float]:
+        now = now or datetime.now()
+        parsed = cls._parse_datetime(value, now)
+        if not parsed:
+            return None
+        return max(0.0, (now - parsed).total_seconds() / 3600.0)
+
+    @classmethod
+    def _assess_timing_window(
+        cls,
+        target: ViralTarget,
+        viral_need_signals: List[str],
+        reply_opportunity_signals: List[str],
+        now: Optional[datetime] = None,
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether the post is still inside a practical response window."""
+        now = now or datetime.now()
+        user_text = cls._user_need_text(target).lower()
+        platform = (target.platform or "").lower()
+        score = 35
+        signals: List[str] = []
+
+        posted_source = target.date_str or getattr(target, "posted_at", "") or ""
+        posted_hours = cls._hours_since(posted_source, now)
+        discovered_hours = cls._hours_since(target.discovered_at or target.first_seen_at, now)
+        last_scanned_hours = cls._hours_since(target.last_scanned_at, now)
+        comment_count = max(0, int(getattr(target, "comment_count", 0) or 0))
+        view_count = max(0, int(getattr(target, "view_count", 0) or 0))
+        scan_count = max(0, int(getattr(target, "scan_count", 0) or 0))
+        need_signal_set = set(viral_need_signals or [])
+        reply_signal_set = set(reply_opportunity_signals or [])
+
+        if posted_hours is None:
+            signals.append("no_post_date")
+            if discovered_hours is not None and discovered_hours <= 24:
+                score += 8
+                signals.append("recently_discovered_no_postdate")
+            else:
+                score -= 6
+        elif posted_hours <= 6:
+            score += 28
+            signals.append("posted_under_6h")
+        elif posted_hours <= 24:
+            score += 22
+            signals.append("posted_under_24h")
+        elif posted_hours <= 72:
+            score += 14
+            signals.append("posted_under_3d")
+        elif posted_hours <= 168:
+            score += 6
+            signals.append("posted_under_7d")
+        elif posted_hours <= 336:
+            score -= 8
+            signals.append("posted_7_14d")
+        elif posted_hours <= 720:
+            score -= 18
+            signals.append("posted_14_30d")
+        else:
+            score -= 34
+            signals.append("posted_over_30d")
+
+        if discovered_hours is not None:
+            if discovered_hours <= 12:
+                score += 8
+                signals.append("freshly_discovered")
+            elif discovered_hours <= 72:
+                score += 4
+                signals.append("recently_discovered")
+            elif discovered_hours > 720:
+                score -= 8
+                signals.append("old_in_queue")
+
+        if last_scanned_hours is not None and last_scanned_hours <= 24:
+            score += 3
+            signals.append("recently_rescanned")
+
+        if comment_count == 0:
+            score += 18
+            signals.append("unanswered_gap")
+        elif comment_count <= 2:
+            score += 9
+            signals.append("low_answer_count")
+        elif comment_count <= 6:
+            score += 1
+            signals.append("moderate_answer_count")
+        elif comment_count <= 12:
+            score -= 10
+            signals.append("crowded_answers")
+        else:
+            score -= 18
+            signals.append("saturated_answers")
+
+        if view_count >= 100 and comment_count <= 1:
+            score += 8
+            signals.append("visible_unanswered")
+        elif view_count >= 500 and comment_count >= 8:
+            score -= 6
+            signals.append("visible_but_saturated")
+
+        if scan_count <= 1:
+            score += 5
+            signals.append("newly_seen")
+        elif scan_count <= 4:
+            score += 3
+            signals.append("recurring_candidate")
+        elif scan_count >= 10:
+            score -= 6
+            signals.append("over_rescanned")
+
+        if cls._contains_any(user_text, cls.SAME_DAY_ACTION_PATTERNS):
+            score += 12
+            signals.append("time_sensitive_language")
+            if posted_hours is not None and posted_hours > 168:
+                score -= 18
+                signals.append("expired_time_phrase")
+        if cls._contains_any(user_text, cls.STALE_TIME_PATTERNS):
+            score -= 16
+            signals.append("stale_language")
+
+        if "ready_to_act" in need_signal_set:
+            score += 8
+            signals.append("ready_to_act_timing")
+        if "pain_or_urgency" in need_signal_set and "condition_only" not in need_signal_set:
+            score += 5
+            signals.append("problem_urgency_timing")
+        if "already_resolved_or_closed" in reply_signal_set:
+            score -= 18
+            signals.append("closed_thread_timing")
+
+        if platform == "blog":
+            score -= 8
+            signals.append("blog_slower_window")
+            if posted_hours is not None and posted_hours > 168:
+                score -= 10
+                signals.append("old_blog_window")
+        elif platform in {"kin", "naver_kin", "cafe", "naver_cafe"}:
+            score += 5
+            signals.append("qa_window_fit")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "now"
+        elif score >= 55:
+            tier = "fresh"
+        elif score >= cls.MIN_TIMING_WINDOW_SCORE:
+            tier = "aging"
+        else:
+            tier = "stale"
+        return score, tier, signals
+
+    @classmethod
+    def _assess_journey_fit(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        is_inquiry: bool,
+        viral_need_signals: List[str],
+        reply_opportunity_signals: List[str],
+        timing_window_score: int,
+    ) -> Tuple[int, str, List[str]]:
+        """Classify journey stage and score whether outreach is appropriate now."""
+        user_text = cls._user_need_text(target).lower()
+        platform = (target.platform or "").lower()
+        score = 0
+        signals: List[str] = []
+
+        def has(patterns: List[str]) -> bool:
+            return any(pattern.lower() in user_text for pattern in patterns if pattern)
+
+        awareness = has(cls.AWARENESS_STAGE_PATTERNS)
+        consideration = has(cls.CONSIDERATION_STAGE_PATTERNS)
+        decision = has(cls.DECISION_STAGE_PATTERNS)
+        post_service = has(cls.POST_SERVICE_STAGE_PATTERNS)
+        positive_permission = has(cls.RESPONSE_PERMISSION_POSITIVE_PATTERNS)
+        negative_permission = has(cls.RESPONSE_PERMISSION_NEGATIVE_PATTERNS)
+        need_signal_set = set(viral_need_signals or [])
+        reply_signal_set = set(reply_opportunity_signals or [])
+
+        if decision or ("ready_to_act" in need_signal_set) or ("cost_decision" in need_signal_set):
+            score += 38
+            signals.append("journey_decision")
+        if consideration or ("recommendation_request" in need_signal_set) or ("comparison_or_evaluation" in need_signal_set):
+            score += 28
+            signals.append("journey_consideration")
+        if awareness and not (consideration or decision):
+            score -= 22
+            signals.append("journey_awareness_only")
+        elif awareness:
+            score += 4
+            signals.append("journey_education_plus_consideration")
+        if post_service and not positive_permission:
+            score -= 28
+            signals.append("journey_post_service_closed")
+
+        if "situational_problem" in reply_signal_set:
+            score += 12
+            signals.append("problem_context")
+        if "local_actionable" in reply_signal_set:
+            score += 10
+            signals.append("local_service_path")
+        if "service_match" in reply_signal_set:
+            score += 8
+            signals.append("matched_service_path")
+        if is_inquiry:
+            score += 8
+            signals.append("ask_present")
+        if positive_permission:
+            score += 8
+            signals.append("response_permission_positive")
+        if negative_permission:
+            score -= 12
+            signals.append("response_permission_restrictive")
+            if positive_permission:
+                score += 5
+                signals.append("transparent_help_possible")
+
+        if timing_window_score >= 75:
+            score += 8
+            signals.append("journey_window_now")
+        elif timing_window_score < 40:
+            score -= 10
+            signals.append("journey_window_weak")
+
+        if platform in {"kin", "naver_kin", "cafe", "naver_cafe"}:
+            score += 6
+            signals.append("journey_reply_surface")
+        elif platform == "blog":
+            score -= 10
+            signals.append("journey_blog_lower_fit")
+
+        if (target.category or "").strip() in cls.GENERIC_CATEGORY_NAMES and domain == "general":
+            score -= 8
+            signals.append("journey_generic_match")
+
+        if not any(s in signals for s in ("journey_decision", "journey_consideration", "problem_context")):
+            score -= 12
+            signals.append("journey_no_action_stage")
+
+        score = max(0, min(100, score))
+        if "journey_post_service_closed" in signals and score < 55:
+            stage = "post_service"
+        elif "journey_decision" in signals:
+            stage = "decision"
+        elif "journey_consideration" in signals:
+            stage = "consideration"
+        elif "journey_awareness_only" in signals:
+            stage = "awareness"
+        else:
+            stage = "unknown"
+        return score, stage, signals
+
+    @classmethod
+    def _assess_qualification_fit(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        is_health: bool,
+        viral_need_signals: List[str],
+        reply_opportunity_signals: List[str],
+        timing_window_score: int,
+        journey_fit_score: int,
+        journey_stage: str,
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether the mention is a qualified, actionable lead."""
+        user_text = cls._user_need_text(target).lower()
+        platform = (target.platform or "").lower()
+        score = 0
+        signals: List[str] = []
+        need_signal_set = set(viral_need_signals or [])
+        reply_signal_set = set(reply_opportunity_signals or [])
+
+        def has(patterns: List[str]) -> bool:
+            return any(pattern.lower() in user_text for pattern in patterns if pattern)
+
+        local_fit = cls._contains_any(user_text, cls.REGION_KEYWORDS)
+        service_line_context = cls._contains_any(user_text, cls.QUALIFIED_SERVICE_LINE_PATTERNS)
+        service_fit = (domain != "general" and cls._has_domain_anchor(domain, user_text)) or service_line_context
+        actor_context = has(cls.DECISION_ACTOR_PATTERNS) or bool(
+            re.search(r"(10대|20대|30대|40대|50대|60대|남성|여성|남 |여 |/남|/여)", user_text)
+        )
+        challenge_signal = (
+            "situational_problem" in reply_signal_set
+            or ("pain_or_urgency" in need_signal_set and "condition_only" not in need_signal_set)
+            or has(cls.SWITCHING_TRIGGER_PATTERNS)
+        )
+        intent_signal = bool(
+            need_signal_set
+            & {"recommendation_request", "ready_to_act", "cost_decision", "comparison_or_evaluation"}
+        )
+        budget_signal = has(cls.COST_DECISION_PATTERNS) or has(["실비", "보험", "자보", "자동차보험", "비용", "가격"])
+        timing_signal = timing_window_score >= 55 or has(cls.SAME_DAY_ACTION_PATTERNS)
+        constraint_signal = has(cls.QUALIFICATION_CONSTRAINT_PATTERNS)
+        progress_signal = has(cls.JTBD_PROGRESS_PATTERNS)
+        switching_signal = has(cls.SWITCHING_TRIGGER_PATTERNS)
+        low_quality_signal = has(cls.LOW_QUALIFICATION_PATTERNS)
+        non_service_beauty = has(cls.NON_SERVICE_BEAUTY_PATTERNS)
+
+        if local_fit:
+            score += 14
+            signals.append("qualified_local_fit")
+        if service_fit:
+            score += 14
+            signals.append("qualified_service_fit")
+        if actor_context:
+            score += 10
+            signals.append("decision_actor_context")
+        elif local_fit and service_line_context and intent_signal:
+            score += 4
+            signals.append("community_decision_proxy")
+        else:
+            score -= 8
+            signals.append("no_actor_context")
+        if challenge_signal:
+            score += 16
+            signals.append("clear_challenge")
+        if intent_signal:
+            score += 14
+            signals.append("qualified_intent")
+        if budget_signal:
+            score += 10
+            signals.append("budget_or_coverage_signal")
+        if timing_signal:
+            score += 8
+            signals.append("qualified_timing")
+        if constraint_signal:
+            score += 8
+            signals.append("constraint_signal")
+        if progress_signal:
+            score += 8
+            signals.append("jtbd_progress")
+        if switching_signal:
+            score += 8
+            signals.append("switching_trigger")
+        if is_health:
+            score += 4
+            signals.append("health_service_context")
+        if platform in {"kin", "naver_kin", "cafe", "naver_cafe"}:
+            score += 4
+            signals.append("reachable_surface")
+        elif platform == "blog":
+            score -= 8
+            signals.append("qualification_blog_lower_fit")
+
+        if journey_stage == "decision":
+            score += 10
+            signals.append("journey_decision_qualified")
+        elif journey_stage == "consideration":
+            score += 5
+            signals.append("journey_consideration_qualified")
+        elif journey_stage in {"awareness", "post_service"}:
+            score -= 16
+            signals.append("journey_low_qualification")
+
+        if journey_fit_score < 45:
+            score -= 8
+            signals.append("weak_journey_fit")
+        if timing_window_score < 40:
+            score -= 8
+            signals.append("weak_timing_fit")
+        if low_quality_signal:
+            score -= 20
+            signals.append("research_or_school_task")
+            if not (challenge_signal or budget_signal or progress_signal):
+                score -= 40
+                signals.append("hard_unqualified_context")
+        if non_service_beauty:
+            score -= 24
+            signals.append("non_service_beauty")
+        if not local_fit and not service_fit:
+            score -= 12
+            signals.append("missing_fit_core")
+        if not challenge_signal and not intent_signal and not progress_signal:
+            score -= 14
+            signals.append("missing_need_or_job")
+        if not any(s in signals for s in ("budget_or_coverage_signal", "constraint_signal", "qualified_timing", "decision_actor_context")):
+            score -= 6
+            signals.append("thin_qualification_context")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "qualified_hot"
+        elif score >= 55:
+            tier = "qualified"
+        elif score >= cls.MIN_QUALIFICATION_FIT_SCORE:
+            tier = "light"
+        else:
+            tier = "unqualified"
+        return score, tier, signals
+
+    @classmethod
+    def _detect_advertorial(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str], int]:
+        """Detect provider/SEO/brand ads that imitate question or review posts."""
+        platform = (target.platform or "").lower()
+        signals: List[str] = []
+        score = 0
+
+        def matched(patterns: List[str]) -> List[str]:
+            return [pattern for pattern in patterns if pattern and pattern.lower() in text]
+
+        clean_body = cls._strip_internal_labels(target.content_preview or "").lower()
+        title_text = (target.title or "").lower()
+        strong_inquiry = matched(cls.STRONG_USER_INQUIRY_PATTERNS)
+
+        kin_provider = matched(cls.KIN_PROVIDER_ANSWER_PATTERNS)
+        if platform == "kin" and kin_provider:
+            signals.append("kin_provider_answer")
+            score += 6
+
+        kin_answer_ad = matched(cls.KIN_ANSWER_AD_PATTERNS)
+        if platform == "kin" and kin_answer_ad:
+            signals.append("kin_answer_ad_copy")
+            score += 3 + min(5, len(kin_answer_ad))
+
+        kin_answer_transition = False
+        if platform == "kin":
+            hello_at = clean_body.find("안녕하세요")
+            if hello_at > 20:
+                signals.append("kin_answer_transition")
+                kin_answer_transition = True
+                score += 4
+
+        kin_recommendation_spam = matched(cls.KIN_RECOMMENDATION_SPAM_PATTERNS)
+        if platform == "kin" and kin_recommendation_spam:
+            signals.append("kin_recommendation_spam")
+            score += 3 + min(3, len(kin_recommendation_spam))
+
+        if platform in {"blog", "cafe", "naver_cafe"}:
+            provider_bracket_title = bool(
+                re.search(r"[\[\(【][^\]\)】]{0,30}(?:병원|한방병원|한의원|의원|피부과|클리닉)[^\]\)】]{0,30}[\]\)】]", title_text)
+            )
+            if provider_bracket_title:
+                signals.append("provider_bracket_title")
+                score += 2 if strong_inquiry else 5
+
+            local_provider_promo_title = (
+                cls._contains_any(title_text, cls.REGION_KEYWORDS)
+                and cls._contains_any(title_text, cls.MEDICAL_PROVIDER_TERMS)
+                and cls._contains_any(title_text, cls.MEDICAL_PROMO_TITLE_PATTERNS)
+            )
+            if local_provider_promo_title:
+                signals.append("local_provider_promo_title")
+                score += 2 if strong_inquiry else 5
+
+        legal = matched(cls.LEGAL_PROMO_PATTERNS)
+        if legal:
+            signals.append("legal_promo")
+            score += 6
+
+        brand = matched(cls.BRAND_PROMO_PATTERNS)
+        if brand:
+            signals.append("brand_promo")
+            score += 4
+
+        cta = matched(cls.COMMERCIAL_CTA_PATTERNS)
+        if cta:
+            signals.append("commercial_cta")
+            score += 2 + min(3, len(cta))
+
+        medical_promo = matched(cls.PROMOTIONAL_MEDICAL_PATTERNS)
+        if medical_promo:
+            signals.append("medical_promo_copy")
+            score += 2 + min(2, len(medical_promo))
+
+        blog_structural = matched(cls.BLOG_AD_STRUCTURAL_PATTERNS)
+        if blog_structural:
+            signals.append("blog_ad_structure")
+            score += 2 + min(3, len(blog_structural))
+
+        local_footer_hits = matched(cls.LOCAL_SEO_FOOTER_PATTERNS)
+        local_area_hits = [hit for hit in local_footer_hits if hit in cls.REGION_KEYWORDS]
+        local_phrase_hits = [hit for hit in local_footer_hits if hit not in cls.REGION_KEYWORDS]
+        if local_phrase_hits or len(set(local_area_hits)) >= 4:
+            signals.append("local_seo_footer")
+            score += 4
+
+        kin_answer_like = platform == "kin" and (
+            bool(kin_provider) or bool(kin_answer_ad) or bool(kin_recommendation_spam) or kin_answer_transition
+        )
+        if strong_inquiry and not kin_answer_like:
+            score -= 2
+        if platform == "kin" and ("광고사절" in text or "업체 말고" in text) and not kin_answer_like:
+            score -= 2
+
+        if platform == "blog" and not strong_inquiry:
+            score += 1
+        if platform == "cafe" and (legal or brand):
+            score += 2
+
+        threshold = 5
+        if platform == "blog":
+            threshold = 4
+        if platform == "kin" and kin_provider:
+            threshold = 4
+        if platform == "kin" and (kin_answer_ad or kin_recommendation_spam or kin_answer_transition):
+            threshold = 4
+        if legal:
+            threshold = 4
+
+        return score >= threshold, signals, score
+
     @classmethod
     def _has_domain_anchor(cls, domain: str, text: str) -> bool:
         """'교정'처럼 넓은 단어만으로 통과하지 않도록 핵심 맥락을 요구한다."""
@@ -1295,17 +2406,33 @@ class CommentableFilter:
         return False
 
     @classmethod
+    def _is_route_navigation(cls, text: str) -> bool:
+        """Exclude public transit/directions posts that pollute traffic-accident searches."""
+        route_shape = "에서" in text and "까지" in text
+        route_terms = cls._contains_any(text, cls.ROUTE_NAVIGATION_PATTERNS)
+        accident_or_health_context = cls._contains_any(text, [
+            "교통사고", "차사고", "자동차사고", "후유증", "입원", "통원",
+            "통증", "치료", "병원", "한의원", "보험", "자보",
+        ])
+        return bool(route_terms and route_shape and not accident_or_health_context)
+
+    @classmethod
     def final_reject_reason(cls, target: ViralTarget) -> Optional[str]:
         """AI 적합 판정 이후 DB 저장 직전의 마지막 품질 게이트."""
         title = (target.title or "").lower()
-        body = (target.content_preview or "").lower()
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
         domain = cls._keyword_domain(target.matched_keywords)
 
         if cls._is_off_domain(domain, text):
             return "off_domain"
+        if cls._is_route_navigation(text):
+            return "route_navigation"
         if cls._contains_any(text, cls.NON_RELEVANT_EXCLUDE):
             return "non_relevant"
+        is_advertorial, _, _ = cls._detect_advertorial(target, text)
+        if is_advertorial:
+            return "advertorial"
         if not cls._has_domain_anchor(domain, text):
             return "domain_mismatch"
         if cls._contains_any(text, cls.STRICT_MEDICAL_PROMO_PATTERNS):
@@ -1350,6 +2477,34 @@ class CommentableFilter:
             return True
         return False
 
+    @classmethod
+    def _assess_reply_risk(cls, text: str, target: 'ViralTarget') -> Tuple[int, List[str], bool]:
+        """Return score penalty, audit flags, and whether the target must be human-only."""
+        flags: List[str] = []
+        penalty = 0
+
+        urgent_matches = [kw for kw in cls.URGENT_MEDICAL_KEYWORDS if kw in text]
+        if urgent_matches:
+            flags.append("urgent_medical")
+            penalty -= 60
+
+        sensitive_matches = [kw for kw in cls.SENSITIVE_MEDICAL_KEYWORDS if kw in text]
+        if sensitive_matches:
+            flags.append("sensitive_medical")
+            penalty -= 22
+
+        testimonial_matches = [kw for kw in cls.TESTIMONIAL_SENSITIVE_KEYWORDS if kw in text]
+        if testimonial_matches:
+            flags.append("testimonial_sensitive")
+            penalty -= 10
+
+        category = (target.category or "").strip()
+        if category in cls.GENERIC_CATEGORY_NAMES and target.matched_keyword_grade not in {"S", "A"}:
+            flags.append("generic_category")
+            penalty += cls.GENERIC_CATEGORY_PENALTY
+
+        return penalty, flags, bool(urgent_matches)
+
     @staticmethod
     def _fallback_exposure_score(target: ViralTarget) -> float:
         engagement = (
@@ -1390,7 +2545,9 @@ class CommentableFilter:
         filtered = []
         stats = {'self_excluded': 0, 'ad': 0, 'non_relevant': 0, 'too_short': 0,
                  'no_region': 0, 'title_only': 0, 'domain_mismatch': 0,
-                 'off_domain': 0, 'not_inquiry_health': 0}
+                 'off_domain': 0, 'not_inquiry_health': 0, 'medical_risk': 0,
+                 'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
+                 'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
@@ -1400,7 +2557,8 @@ class CommentableFilter:
                 continue
 
             title_lower = (target.title or '').lower()
-            body_lower = (target.content_preview or '').lower()
+            body_clean = self._strip_internal_labels(target.content_preview or '')
+            body_lower = body_clean.lower()
             text = f"{title_lower} {body_lower}"
             domain = self._keyword_domain(target.matched_keywords)
             early_is_inquiry = any(pat in text for pat in self.REAL_INQUIRY_PATTERNS)
@@ -1415,15 +2573,41 @@ class CommentableFilter:
             if not early_is_inquiry and any(ad in text for ad in self.PROMOTIONAL_MEDICAL_PATTERNS):
                 stats['ad'] += 1
                 continue
+            is_advertorial, ad_signals, ad_signal_score = self._detect_advertorial(target, text)
+            if is_advertorial:
+                stats['advertorial'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_ad"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ad_signal_score": float(ad_signal_score),
+                    "ad_signals": ",".join(ad_signals),
+                }
+                continue
             if any(ad in text for ad in self.NON_RELEVANT_EXCLUDE):
                 stats['non_relevant'] += 1
                 continue
             if self._is_off_domain(domain, text):
                 stats['off_domain'] += 1
                 continue
+            if self._is_route_navigation(text):
+                stats['non_relevant'] += 1
+                continue
+
+            early_is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
+            early_viral_need_score, early_viral_need_tier, early_viral_need_signals = self._assess_viral_need(
+                target, domain, early_is_inquiry, early_is_health
+            )
+            short_actionable = (
+                early_viral_need_score >= 55
+                and any(
+                    signal in early_viral_need_signals
+                    for signal in ("recommendation_request", "ready_to_act", "cost_decision")
+                )
+            )
 
             # 2. 본문 최소 길이
-            if len(target.content_preview or '') < self.MIN_CONTENT_LENGTH:
+            if len(body_clean) < self.MIN_CONTENT_LENGTH and not short_actionable:
                 stats['too_short'] += 1
                 continue
 
@@ -1438,25 +2622,165 @@ class CommentableFilter:
                 # 키워드 토큰화 (공백 기준)하여 주요 토큰 하나라도 본문에 있으면 통과
                 tokens = [t for t in base_kw.split() if len(t) >= 2]
                 if tokens and not any(tok in body_lower for tok in tokens):
-                    stats['title_only'] += 1
-                    continue
+                    if not (short_actionable and any(tok in title_lower for tok in tokens)):
+                        stats['title_only'] += 1
+                        continue
                 if not self._has_domain_anchor(domain, text):
                     stats['domain_mismatch'] += 1
                     continue
 
-            # SOFT 광고 키워드는 감점만
+            # SOFT 광고 키워드와 약한 advertorial 신호는 감점만
             soft_ad_penalty = sum(-5 for kw in self.SOFT_AD_INDICATORS if kw in text)
+            if ad_signal_score > 0:
+                soft_ad_penalty -= min(25, ad_signal_score * 4)
 
             # 5. 질문글 여부
             is_inquiry = early_is_inquiry
 
             # 6. 건강 관련 여부
-            is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
+            is_health = early_is_health
 
             # 7. 댓글 가능 여부 결정
             if not (is_inquiry or is_health):
                 stats['not_inquiry_health'] += 1
                 target.is_commentable = False
+                continue
+
+            risk_penalty, risk_flags, human_only = self._assess_reply_risk(text, target)
+            if human_only:
+                stats['medical_risk'] += 1
+                target.is_commentable = False
+                target.comment_status = "manual_review"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "reply_risk_penalty": float(risk_penalty),
+                    "manual_review": 1.0,
+                    "reply_risk_flags": ",".join(risk_flags),
+                }
+                continue
+
+            viral_need_score = early_viral_need_score
+            viral_need_tier = early_viral_need_tier
+            viral_need_signals = early_viral_need_signals
+            if viral_need_score < self.MIN_VIRAL_NEED_SCORE:
+                stats['low_intent'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_low_intent"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                }
+                continue
+
+            reply_opportunity_score, reply_opportunity_tier, reply_opportunity_signals = self._assess_reply_opportunity(
+                target,
+                domain,
+                is_inquiry,
+                is_health,
+                viral_need_score,
+                viral_need_signals,
+            )
+            if reply_opportunity_score < self.MIN_REPLY_OPPORTUNITY_SCORE:
+                stats['low_opportunity'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_low_opportunity"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                }
+                continue
+
+            timing_window_score, timing_window_tier, timing_window_signals = self._assess_timing_window(
+                target,
+                viral_need_signals,
+                reply_opportunity_signals,
+            )
+            if timing_window_score < self.MIN_TIMING_WINDOW_SCORE:
+                stats['stale_window'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_stale_window"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                }
+                continue
+
+            journey_fit_score, journey_stage, journey_signals = self._assess_journey_fit(
+                target,
+                domain,
+                is_inquiry,
+                viral_need_signals,
+                reply_opportunity_signals,
+                timing_window_score,
+            )
+            if journey_fit_score < self.MIN_JOURNEY_FIT_SCORE:
+                stats['journey_mismatch'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_journey_mismatch"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                }
+                continue
+
+            qualification_fit_score, qualification_tier, qualification_signals = self._assess_qualification_fit(
+                target,
+                domain,
+                is_health,
+                viral_need_signals,
+                reply_opportunity_signals,
+                timing_window_score,
+                journey_fit_score,
+                journey_stage,
+            )
+            if qualification_fit_score < self.MIN_QUALIFICATION_FIT_SCORE:
+                stats['unqualified'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_unqualified_lead"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                    "qualification_fit_score": float(qualification_fit_score),
+                    "qualification_tier": qualification_tier,
+                    "qualification_signals": ",".join(qualification_signals),
+                }
                 continue
 
             # 5. 우선순위 점수 계산 (개선됨: 150점 캡, 세분화된 가중치)
@@ -1513,12 +2837,32 @@ class CommentableFilter:
             score += keyword_bonus
 
             # [Phase 2] SOFT 광고 키워드 감점 적용
+            viral_need_bonus = min(35, viral_need_score * 0.35)
+            reply_opportunity_adjustment = max(-18, min(18, (reply_opportunity_score - 50) * 0.35))
+            timing_window_adjustment = max(-20, min(18, (timing_window_score - 50) * 0.35))
+            journey_fit_adjustment = max(-16, min(10, (journey_fit_score - 50) * 0.22))
+            qualification_fit_adjustment = max(-18, min(12, (qualification_fit_score - 50) * 0.24))
             score += soft_ad_penalty  # 음수 값이므로 감점됨
+            score += risk_penalty
+            score += viral_need_bonus
+            score += reply_opportunity_adjustment
+            score += timing_window_adjustment
+            score += journey_fit_adjustment
+            score += qualification_fit_adjustment
+
+            if reply_opportunity_score >= 75:
+                tags.append("🎯도움")
+            if timing_window_score >= 75:
+                tags.append("⏱️신속")
+            if journey_stage == "decision":
+                tags.append("🧭결정")
+            if qualification_fit_score >= 75:
+                tags.append("✅자격")
 
             # 태그 정보 저장 (content_preview 앞에 추가)
             if tags:
                 tag_str = " ".join(tags)
-                target.content_preview = f"[{tag_str}] {target.content_preview}"
+                target.content_preview = f"[{tag_str}] {body_clean}"
 
             # Workability is the operational "can we comment here?" score.
             target.workability_score = max(0, min(score, 150))
@@ -1537,6 +2881,13 @@ class CommentableFilter:
             conversion_fit += min(50, keyword_bonus * 1.25)
             if target.matched_keyword_grade in {"S", "A"}:
                 conversion_fit += 20
+            if risk_penalty:
+                conversion_fit += max(-45, risk_penalty * 0.6)
+            conversion_fit += min(40, viral_need_score * 0.40)
+            conversion_fit += min(30, reply_opportunity_score * 0.30)
+            conversion_fit += min(24, timing_window_score * 0.24)
+            conversion_fit += min(14, journey_fit_score * 0.14)
+            conversion_fit += min(22, qualification_fit_score * 0.22)
             target.conversion_fit_score = max(0, min(conversion_fit, 150))
 
             target.score_breakdown = {
@@ -1546,12 +2897,70 @@ class CommentableFilter:
                 "conversion_fit": target.conversion_fit_score,
                 "keyword_bonus": float(keyword_bonus),
                 "soft_ad_penalty": float(soft_ad_penalty),
+                "ad_signal_score": float(ad_signal_score),
+                "ad_signals": ",".join(ad_signals),
+                "viral_need_score": float(viral_need_score),
+                "viral_need_tier": viral_need_tier,
+                "viral_need_signals": ",".join(viral_need_signals),
+                "reply_opportunity_score": float(reply_opportunity_score),
+                "reply_opportunity_tier": reply_opportunity_tier,
+                "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                "reply_opportunity_adjustment": float(reply_opportunity_adjustment),
+                "timing_window_score": float(timing_window_score),
+                "timing_window_tier": timing_window_tier,
+                "timing_window_signals": ",".join(timing_window_signals),
+                "timing_window_adjustment": float(timing_window_adjustment),
+                "journey_fit_score": float(journey_fit_score),
+                "journey_stage": journey_stage,
+                "journey_signals": ",".join(journey_signals),
+                "journey_fit_adjustment": float(journey_fit_adjustment),
+                "qualification_fit_score": float(qualification_fit_score),
+                "qualification_tier": qualification_tier,
+                "qualification_signals": ",".join(qualification_signals),
+                "qualification_fit_adjustment": float(qualification_fit_adjustment),
+                "reply_risk_penalty": float(risk_penalty),
+                "manual_review": 1.0 if risk_flags else 0.0,
+                "reply_risk_flags": ",".join(risk_flags),
             }
             target.priority_score = self._compose_priority_score(
                 target.exposure_score,
                 target.workability_score,
                 target.conversion_fit_score,
             )
+            if timing_window_score < 55:
+                timing_priority_adjustment = -min(22.0, (55 - timing_window_score) * 0.75)
+            elif timing_window_score >= 75:
+                timing_priority_adjustment = min(8.0, (timing_window_score - 75) * 0.25)
+            else:
+                timing_priority_adjustment = 0.0
+            if journey_fit_score < 55:
+                journey_priority_adjustment = -min(18.0, (55 - journey_fit_score) * 0.55)
+            elif journey_stage == "decision":
+                journey_priority_adjustment = min(4.0, (journey_fit_score - 70) * 0.12)
+            else:
+                journey_priority_adjustment = 0.0
+            if qualification_fit_score < 55:
+                qualification_priority_adjustment = -min(16.0, (55 - qualification_fit_score) * 0.50)
+            elif qualification_fit_score >= 75:
+                qualification_priority_adjustment = min(5.0, (qualification_fit_score - 75) * 0.16)
+            else:
+                qualification_priority_adjustment = 0.0
+            target.priority_score = round(
+                max(
+                    0.0,
+                    min(
+                        150.0,
+                        target.priority_score
+                        + timing_priority_adjustment
+                        + journey_priority_adjustment
+                        + qualification_priority_adjustment,
+                    ),
+                ),
+                2,
+            )
+            target.score_breakdown["timing_priority_adjustment"] = float(timing_priority_adjustment)
+            target.score_breakdown["journey_priority_adjustment"] = float(journey_priority_adjustment)
+            target.score_breakdown["qualification_priority_adjustment"] = float(qualification_priority_adjustment)
             target.is_commentable = True
             filtered.append(target)
 
@@ -1563,7 +2972,11 @@ class CommentableFilter:
             f"[제외: 광고 {stats['ad']}, 비관련 {stats['non_relevant']}, "
             f"단문 {stats['too_short']}, 지역외 {stats['no_region']}, "
             f"제목만 {stats['title_only']}, 축불일치 {stats['domain_mismatch']}, "
-            f"오프도메인 {stats['off_domain']}, 무관 {stats['not_inquiry_health']}]"
+            f"오프도메인 {stats['off_domain']}, 무관 {stats['not_inquiry_health']}, "
+            f"의료주의 {stats['medical_risk']}, 광고성 {stats['advertorial']}, "
+            f"저의도 {stats['low_intent']}, 저응답적합 {stats['low_opportunity']}, "
+            f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
+            f"자격부족 {stats['unqualified']}]"
         )
         return filtered
 
@@ -1590,6 +3003,22 @@ class AICommentGenerator:
             return prompts.get('viral_hunter', {})
         except Exception:
             return {}
+
+    @staticmethod
+    def _compliance_guardrail(target: ViralTarget) -> str:
+        risk_flags = ""
+        if target.score_breakdown:
+            risk_flags = str(target.score_breakdown.get("reply_risk_flags", ""))
+        return f"""
+[필수 운영 원칙]
+- 댓글은 도움이 되는 정보성 답변이어야 하며 광고, 후기 가장, 잠입, 사칭처럼 보이면 안 됩니다.
+- 본인 또는 지인의 치료 경험, 방문 경험, 효과 경험을 지어내지 마세요.
+- 병원/의원/한의원 이름을 숨기기 위해 초성, 은어, 모호한 표현을 쓰지 마세요.
+- 의료 효능 보장, 완치, 전후 비교, 최상급/비교 우위, 가격 유인, 이벤트성 문구를 쓰지 마세요.
+- 진단·처방처럼 단정하지 말고, 증상이 있으면 자격 있는 전문가 상담을 권하세요.
+- 댓글은 1~2문장으로 짧게 쓰고, 필요하면 "AI 보조로 작성된 정보성 댓글입니다."라는 투명성 문구를 포함하세요.
+- 민감 신호: {risk_flags or "없음"}
+"""
 
     def generate(self, target: ViralTarget, style: str = "default") -> str:
         """
@@ -1649,10 +3078,16 @@ class AICommentGenerator:
             if style_suffix:
                 prompt += style_suffix
 
+            guardrail = self._compliance_guardrail(target)
+            prompt = (
+                f"{guardrail}\n{prompt}\n"
+                "[최종 확인] 위 필수 운영 원칙을 우선 적용하고, 허위 경험담/사칭/은폐성 광고는 절대 작성하지 마세요."
+            )
             comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800, task="viral_comment")
 
             # 댓글 정제
             comment = comment.replace("댓글:", "").strip()
+            comment = comment.replace("답변:", "").strip()
             comment = comment.replace("```", "").strip()
 
             return comment
@@ -2612,6 +4047,10 @@ class ViralHunter:
             author=d.get('author', ''),
             date_str=d.get('date_str', ''),
             comment_status=d.get('comment_status', 'pending') or 'pending',
+            discovered_at=d.get('discovered_at', '') or '',
+            first_seen_at=d.get('first_seen_at', '') or '',
+            last_scanned_at=d.get('last_scanned_at', '') or '',
+            scan_count=d.get('scan_count', 0) or 0,
             source_scan_run_id=d.get('source_scan_run_id', 0) or 0,
             matched_keyword_grade=d.get('matched_keyword_grade', '') or '',
             matched_keyword_kei=d.get('matched_keyword_kei', 0.0) or 0.0,
@@ -2673,6 +4112,10 @@ class ViralHunter:
             author=row["author"] or "",
             date_str=row["posted_at"] or "",
             comment_status=row["comment_status"] or "pending",
+            discovered_at=row_value("discovered_at", "") or "",
+            first_seen_at=row_value("first_seen_at", "") or "",
+            last_scanned_at=row_value("last_scanned_at", "") or "",
+            scan_count=row_value("scan_count", 0) or 0,
             source_scan_run_id=row["source_scan_run_id"] or 0,
             matched_keyword_grade=row["matched_keyword_grade"] or "",
             matched_keyword_kei=row["matched_keyword_kei"] or 0.0,
@@ -3200,11 +4643,17 @@ class ViralHunter:
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    'rank', 'platform', 'title', 'score', 'exposure_score',
-                    'workability_score', 'conversion_fit_score', 'search_sort',
-                    'search_rank', 'keyword', 'url'
+                    'rank', 'platform', 'title', 'priority_score', 'exposure_score',
+                    'workability_score', 'conversion_fit_score', 'viral_need_score',
+                    'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
+                    'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
+                    'timing_window_tier', 'timing_window_signals', 'journey_fit_score',
+                    'journey_stage', 'journey_signals', 'qualification_fit_score',
+                    'qualification_tier', 'qualification_signals', 'manual_review',
+                    'reply_risk_flags', 'search_sort', 'search_rank', 'keyword', 'url'
                 ])
                 for i, t in enumerate(filtered, 1):
+                    breakdown = t.score_breakdown or {}
                     writer.writerow([
                         i,
                         t.platform,
@@ -3213,6 +4662,23 @@ class ViralHunter:
                         t.exposure_score,
                         t.workability_score,
                         t.conversion_fit_score,
+                        breakdown.get('viral_need_score', 0),
+                        breakdown.get('viral_need_tier', ''),
+                        breakdown.get('viral_need_signals', ''),
+                        breakdown.get('reply_opportunity_score', 0),
+                        breakdown.get('reply_opportunity_tier', ''),
+                        breakdown.get('reply_opportunity_signals', ''),
+                        breakdown.get('timing_window_score', 0),
+                        breakdown.get('timing_window_tier', ''),
+                        breakdown.get('timing_window_signals', ''),
+                        breakdown.get('journey_fit_score', 0),
+                        breakdown.get('journey_stage', ''),
+                        breakdown.get('journey_signals', ''),
+                        breakdown.get('qualification_fit_score', 0),
+                        breakdown.get('qualification_tier', ''),
+                        breakdown.get('qualification_signals', ''),
+                        breakdown.get('manual_review', 0),
+                        breakdown.get('reply_risk_flags', ''),
                         t.search_sort,
                         t.search_rank,
                         ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '',
@@ -3435,11 +4901,18 @@ def main():
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    'rank', 'platform', 'title', 'url', 'score', 'exposure_score',
-                    'workability_score', 'conversion_fit_score', 'search_sort',
-                    'search_rank', 'keywords', 'is_competitor', 'counter_score'
+                    'rank', 'platform', 'title', 'url', 'priority_score', 'exposure_score',
+                    'workability_score', 'conversion_fit_score', 'viral_need_score',
+                    'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
+                    'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
+                    'timing_window_tier', 'timing_window_signals', 'journey_fit_score',
+                    'journey_stage', 'journey_signals', 'qualification_fit_score',
+                    'qualification_tier', 'qualification_signals', 'manual_review',
+                    'reply_risk_flags', 'search_sort', 'search_rank', 'keywords',
+                    'is_competitor', 'counter_score'
                 ])
                 for i, t in enumerate(filtered, 1):
+                    breakdown = t.score_breakdown or {}
                     writer.writerow([
                         i,
                         t.platform,
@@ -3449,6 +4922,23 @@ def main():
                         t.exposure_score,
                         t.workability_score,
                         t.conversion_fit_score,
+                        breakdown.get('viral_need_score', 0),
+                        breakdown.get('viral_need_tier', ''),
+                        breakdown.get('viral_need_signals', ''),
+                        breakdown.get('reply_opportunity_score', 0),
+                        breakdown.get('reply_opportunity_tier', ''),
+                        breakdown.get('reply_opportunity_signals', ''),
+                        breakdown.get('timing_window_score', 0),
+                        breakdown.get('timing_window_tier', ''),
+                        breakdown.get('timing_window_signals', ''),
+                        breakdown.get('journey_fit_score', 0),
+                        breakdown.get('journey_stage', ''),
+                        breakdown.get('journey_signals', ''),
+                        breakdown.get('qualification_fit_score', 0),
+                        breakdown.get('qualification_tier', ''),
+                        breakdown.get('qualification_signals', ''),
+                        breakdown.get('manual_review', 0),
+                        breakdown.get('reply_risk_flags', ''),
                         t.search_sort,
                         t.search_rank,
                         ', '.join(t.matched_keywords) if t.matched_keywords else '',

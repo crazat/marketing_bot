@@ -321,6 +321,9 @@ class KeywordResult:
     novelty_score: float = 0.0
     diversity_rank: int = 0
     quality_flags: List[str] = None
+    longtail_score: float = 0.0
+    business_value_score: float = 0.0
+    high_value_longtail: bool = False
 
     def __post_init__(self):
         if self.merged_from is None:
@@ -361,12 +364,16 @@ class SearchIntentClassifier:
             # 구매/예약 의도
             '가격', '비용', '할인', '이벤트', '예약', '상담',
             '무료', '체험', '프로모션', '쿠폰',
+            '보험', '실비', '자보', '자동차보험', '치료비', '입원',
+            '초진', '진료시간', '야간진료', '주말진료', '일요일진료',
+            '당일', '가능', '얼마',
         ],
         'commercial': [
             # 검토/추천 의도 (validation·comparison와 분리됨)
             '추천', '순위', '랭킹', '베스트', '인기',
             '후기', '리뷰', '평가', '잘하는', '유명한', '좋은',
             '전문', '1위', 'top', '맛집',
+            '어디', '근처', '내돈내산',
         ],
         'informational': [
             # 정보 탐색 (red_flag/comparison 패턴은 위로 분리됨)
@@ -621,6 +628,9 @@ class KeywordMerger:
                 for flag in (results[k].quality_flags or [])
             })
             best_result.verification_score = max(results[k].verification_score for k in group)
+            best_result.longtail_score = max(results[k].longtail_score for k in group)
+            best_result.business_value_score = max(results[k].business_value_score for k in group)
+            best_result.high_value_longtail = any(results[k].high_value_longtail for k in group)
 
             # 검색량 합산 (옵션)
             total_volume = sum(results[k].search_volume for k in group)
@@ -773,6 +783,7 @@ class LegionCollector:
             "교통사고", "자동차사고", "후유증", "입원",
             "여드름", "여드름흉터", "새살침", "흉터", "아토피",
             "다이어트", "비만", "살빼", "체중",
+            "리프팅", "매선", "매선리프팅", "한방리프팅", "침리프팅",
             "통증", "디스크", "허리", "어깨", "무릎",
             "갱년기", "생리", "산후", "불임",
             "불면", "두통", "어지럼",
@@ -876,6 +887,37 @@ class LegionCollector:
             "여드름", "여드름흉터", "여드름자국", "새살침",
             "흉터", "패인흉터", "모공흉터", "흉터치료",
         )
+        self.direct_service_anchors = {
+            "다이어트": (
+                "한의원", "한방", "한약", "다이어트한약", "비만한의원",
+                "비만클리닉", "식욕억제", "체질", "상담",
+            ),
+            "교통사고": (
+                "한의원", "한방병원", "입원", "후유증", "자보",
+                "자동차보험", "보험", "치료", "치료비",
+            ),
+            "피부/여드름": (
+                "한의원", "한방", "새살침", "흉터치료", "패인흉터",
+                "모공흉터", "여드름흉터", "여드름자국",
+            ),
+            "안면비대칭": ("한의원", "교정", "안면교정", "얼굴교정", "턱관절"),
+            "체형교정": ("한의원", "교정", "골반교정", "자세교정", "척추교정", "추나"),
+            "리프팅/탄력": ("한의원", "한방", "매선", "매선리프팅", "한방리프팅", "침리프팅"),
+        }
+        self.low_business_value_terms = {
+            "다이어트": (
+                "다이어트댄스", "다이어트 댄스", "댄스", "줌바", "요가",
+                "필라테스", "헬스", "pt", "피티", "홈트", "운동", "식단",
+                "도시락", "쉐이크", "보조제", "챌린지", "캠프", "학원",
+            ),
+            "피부/여드름": (
+                "화장품", "폼클렌징", "클렌징", "연고", "패치", "압출기",
+                "마스크팩", "올리브영",
+            ),
+            "안면비대칭": ("셀프", "마사지", "운동", "유튜브", "홈케어"),
+            "체형교정": ("셀프", "운동", "유튜브", "홈트", "필라테스", "요가"),
+            "리프팅/탄력": ("화장품", "팩", "마사지", "홈케어"),
+        }
 
     def _rate_limit(self):
         elapsed = time.time() - self._last_call
@@ -946,6 +988,28 @@ class LegionCollector:
         """실제 유입 핵심인 여드름/흉터/새살침 계열만 피부 핵심군으로 본다."""
         return any(token in keyword for token in self.business_core_skin_tokens)
 
+    def _has_direct_service_anchor(self, keyword: str, category: Optional[str] = None) -> bool:
+        """검색어가 한의원 서비스로 직접 이어지는 표현을 포함하는지 확인."""
+        if category is None:
+            category = self._detect_category(keyword)
+        anchors = self.direct_service_anchors.get(category, ())
+        return any(anchor in keyword for anchor in anchors)
+
+    def low_business_value_reason(self, keyword: str, category: Optional[str] = None) -> Optional[str]:
+        """진료/상담 의도보다 활동·상품·자가관리 의도가 강한 누수 키워드 판정."""
+        if category is None:
+            category = self._detect_category(keyword)
+        kw_lower = (keyword or "").lower()
+        terms = self.low_business_value_terms.get(category, ())
+        matched = next((term for term in terms if term.lower() in kw_lower), None)
+        if not matched:
+            return None
+
+        # 직접 진료 앵커가 있으면 완전 제외하지 않고 점수 단계에서만 보수적으로 다룬다.
+        if self._has_direct_service_anchor(keyword, category):
+            return None
+        return f"low_business_value_{category}:{matched}"
+
     def is_business_core_keyword(self, keyword: str, category: Optional[str] = None) -> bool:
         """등급과 별개로 사업상 실제 유입 핵심군인지 판정."""
         if category is None:
@@ -961,6 +1025,9 @@ class LegionCollector:
         """규림 기본 Legion 타깃: 미용 한의원 + 교통사고 입원실 중심."""
         if category is None:
             category = self._detect_category(keyword)
+
+        if self.low_business_value_reason(keyword, category):
+            return False
 
         focus_categories = {
             "다이어트", "안면비대칭", "체형교정",
@@ -1630,6 +1697,40 @@ def assign_kei_grade(kei: float) -> str:
 class PathfinderLegion:
     """Pathfinder V3 LEGION MODE"""
 
+    HIGH_INTENT_TERMS = (
+        "가격", "비용", "예약", "상담", "추천", "후기", "잘하는곳", "잘하는",
+        "보험", "실비", "자보", "자동차보험", "치료비", "입원", "초진",
+        "진료시간", "야간진료", "주말진료", "일요일진료", "당일", "근처",
+        "솔직", "진짜", "비교", "차이", "부작용", "전후", "효과", "기간",
+    )
+    STRONG_DECISION_TERMS = (
+        "가격", "비용", "예약", "상담", "보험", "실비", "자보", "자동차보험",
+        "치료비", "입원", "초진", "진료시간", "야간진료", "주말진료",
+        "일요일진료", "당일",
+    )
+    HIGH_VALUE_INTENTS = {"transactional", "comparison", "validation", "red_flag"}
+    LONGTAIL_REGION_TERMS = (
+        "복대동", "가경동", "분평동", "봉명동", "사창동", "산남동", "수곡동",
+        "모충동", "용암동", "금천동", "율량동", "사직동", "성화동", "내덕동",
+        "우암동", "오창", "오송", "율량", "복대", "가경", "분평", "봉명",
+    )
+    CATEGORY_CANONICAL_SERVICES = {
+        "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원"),
+        "교통사고": ("교통사고 한의원", "교통사고 입원", "교통사고 후유증"),
+        "피부/여드름": ("여드름 한의원", "여드름흉터 한의원", "새살침"),
+        "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원"),
+        "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원"),
+        "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅"),
+    }
+    HIGH_VALUE_LONGTAIL_SUFFIXES = {
+        "다이어트": ("비용", "후기", "상담", "추천", "가격"),
+        "교통사고": ("입원", "자보", "자동차보험", "후유증 치료", "치료비"),
+        "피부/여드름": ("비용", "후기", "추천", "상담", "부작용"),
+        "안면비대칭": ("비용", "후기", "교정 상담", "추천", "효과"),
+        "체형교정": ("비용", "후기", "교정 상담", "추천", "효과"),
+        "리프팅/탄력": ("비용", "후기", "추천", "상담", "효과"),
+    }
+
     def __init__(self):
         self.collector = LegionCollector(delay=0.2, use_google=True)  # Multi-Source 수집
         self.serp = SERPAnalyzer(delay=0.3, max_workers=10)  # 병렬 처리 강화
@@ -1782,6 +1883,243 @@ class PathfinderLegion:
         if not hasattr(self, "diversity_metrics"):
             self.diversity_metrics = {}
 
+    def _collector_or_default(self) -> LegionCollector:
+        if not hasattr(self, "collector") or self.collector is None:
+            self.collector = LegionCollector(delay=0.0, use_google=False)
+        return self.collector
+
+    @staticmethod
+    def _keyword_terms(keyword: str) -> List[str]:
+        return re.findall(r"[0-9A-Za-z가-힣]+", (keyword or "").lower())
+
+    @staticmethod
+    def _compact_keyword(keyword: str) -> str:
+        return re.sub(r"\s+", "", (keyword or "").strip().lower())
+
+    def _extract_target_region(self, keyword: str) -> str:
+        collector = self._collector_or_default()
+        for region in list(collector.neighborhoods) + list(collector.cheongju_regions):
+            if region and region in (keyword or ""):
+                return region
+        return "청주"
+
+    def _is_longtail_keyword(self, keyword: str) -> bool:
+        terms = self._keyword_terms(keyword)
+        compact = self._compact_keyword(keyword)
+        return (
+            len(terms) >= 3
+            or len(compact) >= 10
+            or any(term in keyword for term in self.HIGH_INTENT_TERMS)
+            or any(region in keyword for region in self.LONGTAIL_REGION_TERMS)
+        )
+
+    def _calculate_keyword_value_profile(
+        self,
+        keyword: str,
+        category: Optional[str] = None,
+        search_intent: Optional[str] = None,
+        search_volume: int = 0,
+        difficulty: int = 50,
+        opportunity: int = 50,
+        document_count: int = 0,
+        source_signal_count: int = 1,
+        has_real_volume: Optional[bool] = None,
+        business_core: Optional[bool] = None,
+    ) -> Dict[str, object]:
+        """검색량이 작은 롱테일도 사업 전환 가치가 있으면 보존하기 위한 별도 프로필."""
+        collector = self._collector_or_default()
+        keyword = keyword or ""
+        category = category or collector._detect_category(keyword)
+        search_intent = search_intent or SearchIntentClassifier.classify(keyword)
+        if has_real_volume is None:
+            has_real_volume = search_volume > 0
+        if business_core is None:
+            business_core = collector.is_business_core_keyword(keyword, category)
+
+        terms = self._keyword_terms(keyword)
+        compact = self._compact_keyword(keyword)
+        matched_intents = [term for term in self.HIGH_INTENT_TERMS if term in keyword]
+        strong_decision_terms = [term for term in self.STRONG_DECISION_TERMS if term in keyword]
+        has_region = collector._is_in_target_region(keyword)
+        has_neighborhood = any(region in keyword for region in self.LONGTAIL_REGION_TERMS)
+        has_direct_anchor = collector._has_direct_service_anchor(keyword, category)
+        category_terms = collector.category_patterns.get(category, ())
+        category_term_count = sum(1 for term in category_terms if term in keyword)
+        low_reason = collector.low_business_value_reason(keyword, category)
+
+        is_longtail = self._is_longtail_keyword(keyword)
+        intent_is_valuable = search_intent in self.HIGH_VALUE_INTENTS or bool(matched_intents)
+
+        business_value_score = 0.0
+        if has_region:
+            business_value_score += 20.0
+        if has_neighborhood:
+            business_value_score += 7.0
+        if business_core:
+            business_value_score += 25.0
+        elif collector.is_focus_candidate(keyword, category):
+            business_value_score += 15.0
+        if has_direct_anchor:
+            business_value_score += 18.0
+        elif category_term_count:
+            business_value_score += 10.0
+        if intent_is_valuable:
+            business_value_score += 17.0
+        if document_count > 0:
+            business_value_score += 5.0
+        if low_reason:
+            business_value_score -= 45.0
+        if collector._is_medical_general(keyword):
+            business_value_score -= 60.0
+        business_value_score = round(max(0.0, min(100.0, business_value_score)), 2)
+
+        longtail_score = 0.0
+        if is_longtail:
+            longtail_score += 18.0
+        if len(terms) >= 3:
+            longtail_score += 8.0
+        if len(terms) >= 4:
+            longtail_score += 5.0
+        if len(compact) >= 10:
+            longtail_score += 5.0
+        if len(compact) >= 14:
+            longtail_score += 4.0
+        if has_neighborhood:
+            longtail_score += 12.0
+        elif has_region:
+            longtail_score += 7.0
+        if category_term_count:
+            longtail_score += min(14.0, 8.0 + category_term_count * 1.5)
+        if has_direct_anchor:
+            longtail_score += 12.0
+        if matched_intents:
+            longtail_score += min(22.0, 10.0 + len(matched_intents) * 4.0)
+        if search_intent in self.HIGH_VALUE_INTENTS:
+            longtail_score += 8.0
+        if business_core:
+            longtail_score += 8.0
+        if has_real_volume:
+            if 10 <= search_volume <= 300:
+                longtail_score += 8.0
+            elif search_volume < 10:
+                longtail_score += 3.0
+            elif search_volume <= 1000:
+                longtail_score += 4.0
+        if difficulty <= 35:
+            longtail_score += 7.0
+        elif difficulty <= 55:
+            longtail_score += 4.0
+        if opportunity >= 75:
+            longtail_score += 7.0
+        elif opportunity >= 60:
+            longtail_score += 4.0
+        if source_signal_count >= 2:
+            longtail_score += 6.0
+        if low_reason:
+            longtail_score -= 35.0
+        longtail_score = round(max(0.0, min(100.0, longtail_score)), 2)
+
+        high_value_longtail = (
+            is_longtail
+            and intent_is_valuable
+            and has_region
+            and (business_core or has_direct_anchor)
+            and not low_reason
+            and longtail_score >= 68.0
+            and business_value_score >= 65.0
+            and (has_real_volume or source_signal_count >= 2)
+        )
+
+        return {
+            "is_longtail": is_longtail,
+            "high_value_longtail": high_value_longtail,
+            "longtail_score": longtail_score,
+            "business_value_score": business_value_score,
+            "matched_intents": matched_intents,
+            "strong_decision_terms": strong_decision_terms,
+            "has_direct_anchor": has_direct_anchor,
+            "low_business_value_reason": low_reason,
+        }
+
+    def _promote_grade_for_high_value_longtail(
+        self,
+        grade: str,
+        value_profile: Dict[str, object],
+        has_real_volume: bool,
+        search_volume: int,
+        difficulty: int,
+        opportunity: int,
+        verification_score: float,
+        quality_flags: Optional[List[str]] = None,
+    ) -> Tuple[str, List[str]]:
+        flags = list(quality_flags or [])
+        low_reason = value_profile.get("low_business_value_reason")
+        if low_reason and low_reason not in flags:
+            flags.append(str(low_reason))
+
+        if not value_profile.get("high_value_longtail"):
+            return grade, flags
+        if not value_profile.get("strong_decision_terms"):
+            return grade, flags
+        if float(value_profile.get("longtail_score", 0.0) or 0.0) < 78.0:
+            return grade, flags
+        if float(value_profile.get("business_value_score", 0.0) or 0.0) < 75.0:
+            return grade, flags
+        if not has_real_volume or search_volume < 10:
+            return grade, flags
+        if search_volume < 20 and verification_score < 75:
+            return grade, flags
+        if verification_score < 65 or difficulty > 35 or opportunity < 75:
+            return grade, flags
+
+        if grade == "B":
+            return "A", flags
+        if grade == "C" and verification_score >= 65 and difficulty <= 30 and opportunity >= 80:
+            return "B", flags
+        return grade, flags
+
+    def _build_high_value_longtail_variants(
+        self,
+        seed_keywords: List[str],
+        max_keywords: int = 240,
+    ) -> Set[str]:
+        """자동완성으로 잘 안 잡히는 지역+서비스+전환 의도 롱테일을 직접 생성."""
+        collector = self._collector_or_default()
+        variants: Set[str] = set()
+        seen: Set[str] = set()
+
+        for seed in seed_keywords:
+            category = collector._detect_category(seed)
+            services = self.CATEGORY_CANONICAL_SERVICES.get(category)
+            suffixes = self.HIGH_VALUE_LONGTAIL_SUFFIXES.get(category)
+            if not services or not suffixes:
+                continue
+
+            region = self._extract_target_region(seed)
+            regions = [region]
+            if region != "청주":
+                regions.append("청주")
+
+            for region_item in regions:
+                for service in services[:2]:
+                    for suffix in suffixes[:4]:
+                        keyword = f"{region_item} {service} {suffix}"
+                        cleaned = " ".join(dict.fromkeys(keyword.split()))
+                        norm = self._normalize_keyword_for_history(cleaned)
+                        if not norm or norm in seen:
+                            continue
+                        seen.add(norm)
+                        if not collector._is_valid_keyword(cleaned):
+                            continue
+                        category_for_cleaned = collector._detect_category(cleaned)
+                        if not collector.is_focus_candidate(cleaned, category_for_cleaned):
+                            continue
+                        variants.add(cleaned)
+                        if len(variants) >= max_keywords:
+                            return variants
+
+        return variants
+
     def _record_rejection(self, source: str, reason: str, count: int = 1) -> None:
         self._ensure_quality_tracking()
         self.candidate_stats["rejected_by_source"][source][reason] += count
@@ -1814,6 +2152,21 @@ class PathfinderLegion:
             has_real_volume,
             result.business_core,
         )
+        value_profile = self._calculate_keyword_value_profile(
+            result.keyword,
+            category=result.category,
+            search_intent=result.search_intent,
+            search_volume=result.search_volume,
+            difficulty=result.difficulty,
+            opportunity=result.opportunity,
+            document_count=result.document_count,
+            source_signal_count=len(signals),
+            has_real_volume=has_real_volume,
+            business_core=result.business_core,
+        )
+        result.longtail_score = float(value_profile["longtail_score"])
+        result.business_value_score = float(value_profile["business_value_score"])
+        result.high_value_longtail = bool(value_profile["high_value_longtail"])
 
     @staticmethod
     def _calculate_verification_score(
@@ -2051,6 +2404,9 @@ class PathfinderLegion:
             norm = self._normalize_keyword_for_history(seed)
             if not norm or norm in seen or norm in keyword_norms:
                 return
+            category = self.collector._detect_category(seed)
+            if self.collector.low_business_value_reason(seed, category):
+                return
             if not self.collector._is_valid_keyword(seed) and not self.collector.is_focus_candidate(seed):
                 return
             seen.add(norm)
@@ -2113,7 +2469,15 @@ class PathfinderLegion:
         max_per_category: int = 12,
     ) -> List[str]:
         candidates = [r for r in self.collected.values() if r.grade in grades]
-        candidates.sort(key=lambda r: r.priority_score, reverse=True)
+        candidates.sort(
+            key=lambda r: (
+                1 if getattr(r, "high_value_longtail", False) else 0,
+                float(getattr(r, "business_value_score", 0.0) or 0.0),
+                float(getattr(r, "longtail_score", 0.0) or 0.0),
+                float(r.priority_score or 0.0),
+            ),
+            reverse=True,
+        )
 
         selected: List[KeywordResult] = []
         deferred: List[KeywordResult] = []
@@ -2245,6 +2609,7 @@ class PathfinderLegion:
 
     def _calculate_business_relevance(self, keyword: str) -> float:
         """비즈니스 관련도 점수 (0-100)"""
+        collector = self._collector_or_default()
         keyword_lower = keyword.lower()
         score = 0.0
 
@@ -2263,20 +2628,36 @@ class PathfinderLegion:
         if any(t in keyword_lower for t in tier3):
             score += 20
 
-        # Tier 4: 전환 의도 (+10)
-        tier4 = ['가격', '비용', '후기', '추천', '예약', '잘하는']
+        # Tier 4: 전환 의도 (+15)
+        tier4 = [
+            '가격', '비용', '후기', '추천', '예약', '잘하는', '상담',
+            '보험', '실비', '자보', '자동차보험', '입원', '치료비',
+        ]
         if any(t in keyword_lower for t in tier4):
-            score += 10
+            score += 15
 
-        return min(score, 100.0)
+        category = collector._detect_category(keyword)
+        if collector._has_direct_service_anchor(keyword, category):
+            score += 10
+        if collector.low_business_value_reason(keyword, category):
+            score -= 40
+
+        return max(0.0, min(score, 100.0))
 
     def _calculate_priority(self, difficulty: int, opportunity: int, keyword: str,
                              search_volume: int = 0, kei: float = 0.0,
-                             trend_slope: float = 0.0) -> float:
+                             trend_slope: float = 0.0,
+                             category: Optional[str] = None,
+                             search_intent: Optional[str] = None,
+                             has_real_volume: Optional[bool] = None,
+                             business_core: Optional[bool] = None,
+                             source_signal_count: int = 1,
+                             longtail_score: Optional[float] = None,
+                             business_value_score: Optional[float] = None) -> float:
         """
         MF-KEI 5.0 점수 계산 (트렌드 + 계절성 + 비즈니스 관련도 반영)
 
-        공식: KEI 30% + 기회 25% + 난이도 20% + 트렌드 15% + 계절성/관련도 10%
+        공식: KEI + 기회 + 난이도 + 트렌드 + 계절성 + 관련도 + 고가치 롱테일
 
         Args:
             difficulty: SERP 난이도 (0-100)
@@ -2308,27 +2689,46 @@ class PathfinderLegion:
         trend_score = 50 + (trend_slope * 50)  # -1.0→0, 0→50, +1.0→100
         trend_score = max(0, min(100, trend_score))
 
-        # 5. 계절성 + 비즈니스 관련도 점수
+        # 5. 계절성 + 비즈니스 관련도 + 롱테일 가치 점수
         seasonality_score = self._calculate_seasonality_score(keyword)
         relevance_score = self._calculate_business_relevance(keyword)
-        combined_score = (seasonality_score * 0.5) + (relevance_score * 0.5)
+        if longtail_score is None or business_value_score is None:
+            value_profile = self._calculate_keyword_value_profile(
+                keyword,
+                category=category,
+                search_intent=search_intent,
+                search_volume=search_volume,
+                difficulty=difficulty,
+                opportunity=opportunity,
+                source_signal_count=source_signal_count,
+                has_real_volume=has_real_volume,
+                business_core=business_core,
+            )
+            longtail_score = float(value_profile["longtail_score"])
+            business_value_score = float(value_profile["business_value_score"])
 
-        # 6. MF-KEI 5.0 가중 평균
+        # 6. MF-KEI 5.5 가중 평균
         base_score = (
-            kei_score * 0.30 +
-            opportunity_score * 0.25 +
-            difficulty_score * 0.20 +
-            trend_score * 0.15 +
-            combined_score * 0.10
+            kei_score * 0.22 +
+            opportunity_score * 0.22 +
+            difficulty_score * 0.18 +
+            trend_score * 0.10 +
+            seasonality_score * 0.08 +
+            relevance_score * 0.08 +
+            float(business_value_score or 0.0) * 0.06 +
+            float(longtail_score or 0.0) * 0.06
         )
 
-        # 7. 검색 의도 가중치 (검색량 50 이상만 적용)
+        # 7. 검색 의도 가중치. 저검색량 롱테일도 전환 의도가 명확하면 반영한다.
         intent_weight = 1.0
-        if search_volume >= 50:
-            if any(w in keyword for w in ["가격", "비용", "예약"]):
-                intent_weight = 1.5
-            elif any(w in keyword for w in ["후기", "추천"]):
-                intent_weight = 1.3
+        if any(w in keyword for w in ["가격", "비용", "예약", "상담", "보험", "실비", "자보", "입원"]):
+            intent_weight = 1.28
+        elif any(w in keyword for w in ["후기", "추천", "잘하는", "솔직", "진짜", "비교"]):
+            intent_weight = 1.16
+        if float(longtail_score or 0.0) >= 68 and float(business_value_score or 0.0) >= 65:
+            intent_weight += 0.08
+        if has_real_volume is False and search_volume <= 30:
+            intent_weight = min(intent_weight, 1.08)
 
         # 최종 점수 (최대 300)
         return base_score * intent_weight
@@ -2376,11 +2776,28 @@ class PathfinderLegion:
                 self._record_rejection(source, f"quality_{reason}")
             valid_keywords = passed
 
+        # 진료/상담으로 이어지기 어려운 활동·상품성 롱테일은 SERP 분석 전에 제외한다.
+        business_value_keywords = []
+        low_value_count = 0
+        for kw in valid_keywords:
+            category = self.collector._detect_category(kw)
+            low_value_reason = self.collector.low_business_value_reason(kw, category)
+            if low_value_reason:
+                low_value_count += 1
+                self._record_rejection(source, low_value_reason)
+                continue
+            business_value_keywords.append(kw)
+
+        if low_value_count:
+            print(f"   🧭 사업가치 필터: 저전환 롱테일 {low_value_count}개 제외")
+        valid_keywords = business_value_keywords
+
         # 기본 Legion은 미용/흉터/비대칭/다이어트/교통사고 입원실에 집중한다.
         focus_keywords = []
         non_focus_count = 0
         for kw in valid_keywords:
-            if self.collector.is_focus_candidate(kw):
+            category = self.collector._detect_category(kw)
+            if self.collector.is_focus_candidate(kw, category):
                 focus_keywords.append(kw)
             else:
                 non_focus_count += 1
@@ -2516,9 +2933,44 @@ class PathfinderLegion:
 
             # 검색 의도 분류
             search_intent = SearchIntentClassifier.classify(kw)
+            value_profile = self._calculate_keyword_value_profile(
+                kw,
+                category=category,
+                search_intent=search_intent,
+                search_volume=search_volume,
+                difficulty=difficulty,
+                opportunity=opportunity,
+                document_count=document_count,
+                source_signal_count=len(source_signals),
+                has_real_volume=has_real_volume,
+                business_core=business_core,
+            )
+            grade, quality_flags = self._promote_grade_for_high_value_longtail(
+                grade,
+                value_profile,
+                has_real_volume,
+                search_volume,
+                difficulty,
+                opportunity,
+                verification_score,
+                quality_flags,
+            )
 
             # 우선순위 점수 계산 (KEI 포함) + 히스토리 기반 신규성 보정
-            priority = self._calculate_priority(difficulty, opportunity, kw, search_volume, kei)
+            priority = self._calculate_priority(
+                difficulty,
+                opportunity,
+                kw,
+                search_volume,
+                kei,
+                category=category,
+                search_intent=search_intent,
+                has_real_volume=has_real_volume,
+                business_core=business_core,
+                source_signal_count=len(source_signals),
+                longtail_score=float(value_profile["longtail_score"]),
+                business_value_score=float(value_profile["business_value_score"]),
+            )
             priority = self._apply_history_novelty_adjustment(kw, priority, category, search_intent)
             priority *= 0.75 + (min(verification_score, 100.0) / 400.0)
 
@@ -2539,6 +2991,9 @@ class PathfinderLegion:
                 source_signals=source_signals,
                 verification_score=verification_score,
                 quality_flags=quality_flags,
+                longtail_score=float(value_profile["longtail_score"]),
+                business_value_score=float(value_profile["business_value_score"]),
+                high_value_longtail=bool(value_profile["high_value_longtail"]),
             )
 
             self.collected[kw] = result
@@ -2728,6 +3183,15 @@ class PathfinderLegion:
         new_sa = self._analyze_and_add(list(round4_keywords), "round4_intent")
         total_sa += new_sa
         print(f"   수집: {len(round4_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
+
+        round4_longtail_keywords = self._build_high_value_longtail_variants(good_keywords)
+        if round4_longtail_keywords:
+            new_sa = self._analyze_and_add(list(round4_longtail_keywords), "round4_longtail")
+            total_sa += new_sa
+            print(
+                f"   고가치 롱테일 템플릿: {len(round4_longtail_keywords)}개, "
+                f"신규 S/A급: {new_sa}개, 누적: {total_sa}개"
+            )
 
         if total_sa >= target_sa:
             return self._finalize()
@@ -3028,7 +3492,14 @@ class PathfinderLegion:
         category_counts = Counter(r.category or "unknown" for r in results)
         source_counts = Counter(r.source or "unknown" for r in results)
         intent_counts = Counter(r.search_intent or "unknown" for r in results)
-        longtail_count = sum(1 for r in results if len((r.keyword or "").split()) >= 4)
+        longtail_count = sum(1 for r in results if self._is_longtail_keyword(r.keyword or ""))
+        high_value_longtail_count = sum(1 for r in results if getattr(r, "high_value_longtail", False))
+        low_volume_high_value_longtail_count = sum(
+            1
+            for r in results
+            if getattr(r, "high_value_longtail", False) and 0 < (r.search_volume or 0) <= 50
+        )
+        business_value_scores = [float(getattr(r, "business_value_score", 0.0) or 0.0) for r in results]
         verified_count = sum(1 for r in results if r.verification_score >= 55)
         multi_source_count = sum(1 for r in results if len(r.source_signals or []) >= 2)
         risk_flag_count = sum(1 for r in results if r.quality_flags)
@@ -3056,7 +3527,12 @@ class PathfinderLegion:
             "source_hhi": round(self._hhi(source_counts), 4),
             "top_category_share": round(top_share(category_counts), 4),
             "top_source_share": round(top_share(source_counts), 4),
+            "longtail_rate": round(longtail_count / max(1, total), 4),
             "longtail_4plus_rate": round(longtail_count / max(1, total), 4),
+            "high_value_longtail_count": high_value_longtail_count,
+            "high_value_longtail_rate": round(high_value_longtail_count / max(1, total), 4),
+            "low_volume_high_value_longtail_count": low_volume_high_value_longtail_count,
+            "avg_business_value_score": round(sum(business_value_scores) / max(1, total), 2),
             "verified_rate": round(verified_count / max(1, total), 4),
             "multi_source_verified_rate": round(multi_source_count / max(1, total), 4),
             "quality_flag_rate": round(risk_flag_count / max(1, total), 4),
@@ -3079,7 +3555,10 @@ class PathfinderLegion:
 
         grade_bonus = {"S": 35.0, "A": 22.0, "B": 7.0, "C": 0.0}
         quality_values = [
-            max(0.0, float(r.priority_score or 0.0)) + grade_bonus.get(r.grade, 0.0)
+            max(0.0, float(r.priority_score or 0.0))
+            + grade_bonus.get(r.grade, 0.0)
+            + min(12.0, float(getattr(r, "longtail_score", 0.0) or 0.0) * (0.12 if getattr(r, "high_value_longtail", False) else 0.04))
+            + min(10.0, float(getattr(r, "business_value_score", 0.0) or 0.0) * 0.10)
             for r in results
         ]
         max_quality = max(quality_values) or 1.0
@@ -3229,7 +3708,14 @@ class PathfinderLegion:
                     if r.trend_slope != 0.0:
                         recalculated_priority = self._calculate_priority(
                             r.difficulty, r.opportunity, r.keyword,
-                            r.search_volume, r.kei, r.trend_slope
+                            r.search_volume, r.kei, r.trend_slope,
+                            category=r.category,
+                            search_intent=r.search_intent,
+                            has_real_volume="missing_real_volume" not in (r.quality_flags or []),
+                            business_core=r.business_core,
+                            source_signal_count=len(r.source_signals or []),
+                            longtail_score=r.longtail_score,
+                            business_value_score=r.business_value_score,
                         )
                         recalculated_priority = self._apply_history_novelty_adjustment(
                             r.keyword, recalculated_priority, r.category, r.search_intent
@@ -3252,6 +3738,29 @@ class PathfinderLegion:
 
         for result in results:
             self._sync_result_quality_fields(result)
+            has_real_volume = result.search_volume > 0 and "missing_real_volume" not in (result.quality_flags or [])
+            value_profile = self._calculate_keyword_value_profile(
+                result.keyword,
+                category=result.category,
+                search_intent=result.search_intent,
+                search_volume=result.search_volume,
+                difficulty=result.difficulty,
+                opportunity=result.opportunity,
+                document_count=result.document_count,
+                source_signal_count=len(result.source_signals or []),
+                has_real_volume=has_real_volume,
+                business_core=result.business_core,
+            )
+            result.grade, result.quality_flags = self._promote_grade_for_high_value_longtail(
+                result.grade,
+                value_profile,
+                has_real_volume,
+                result.search_volume,
+                result.difficulty,
+                result.opportunity,
+                result.verification_score,
+                result.quality_flags,
+            )
         results = self._rerank_for_diversity(results)
         self.diversity_metrics = self._calculate_diversity_metrics(results)
 
@@ -3317,6 +3826,9 @@ class PathfinderLegion:
             print(f"   소스 엔트로피: {metrics.get('source_entropy_norm', 0):.3f}")
             print(f"   의도 엔트로피: {metrics.get('intent_entropy_norm', 0):.3f}")
             print(f"   단일 소스 최대 비중: {metrics.get('top_source_share', 0) * 100:.1f}%")
+            print(f"   롱테일 비율: {metrics.get('longtail_rate', 0) * 100:.1f}%")
+            print(f"   고가치 롱테일 비율: {metrics.get('high_value_longtail_rate', 0) * 100:.1f}%")
+            print(f"   평균 사업가치 점수: {metrics.get('avg_business_value_score', 0):.1f}")
             print(f"   다중 소스 검증 비율: {metrics.get('multi_source_verified_rate', 0) * 100:.1f}%")
             print(f"   품질 플래그 비율: {metrics.get('quality_flag_rate', 0) * 100:.1f}%")
 
@@ -3333,7 +3845,8 @@ class PathfinderLegion:
                 'trend_slope', 'trend_status', 'search_intent',
                 'document_count', 'kei', 'kei_grade', 'business_core',
                 'source_signals', 'verification_score', 'novelty_score',
-                'diversity_rank', 'quality_flags'
+                'diversity_rank', 'quality_flags',
+                'longtail_score', 'business_value_score', 'high_value_longtail'
             ])
             writer.writeheader()
             for r in results:
@@ -3448,7 +3961,10 @@ class PathfinderLegion:
                            ("verification_score", "REAL DEFAULT 0"),
                            ("novelty_score", "REAL DEFAULT 0"),
                            ("diversity_rank", "INTEGER DEFAULT 0"),
-                           ("quality_flags_json", "TEXT DEFAULT '[]'")]:
+                           ("quality_flags_json", "TEXT DEFAULT '[]'"),
+                           ("longtail_score", "REAL DEFAULT 0"),
+                           ("business_value_score", "REAL DEFAULT 0"),
+                           ("high_value_longtail", "INTEGER DEFAULT 0")]:
             try:
                 cursor.execute(f"ALTER TABLE keyword_insights ADD COLUMN {col} {ctype}")
             except Exception:
@@ -3488,8 +4004,9 @@ class PathfinderLegion:
                         document_count, kei, kei_grade,
                         scan_run_id, last_scan_run_id, business_core,
                         source_signals_json, verification_score, novelty_score,
-                        diversity_rank, quality_flags_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        diversity_rank, quality_flags_json,
+                        longtail_score, business_value_score, high_value_longtail
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(keyword) DO UPDATE SET
                         difficulty=excluded.difficulty,
                         opportunity=excluded.opportunity,
@@ -3512,7 +4029,10 @@ class PathfinderLegion:
                         verification_score=excluded.verification_score,
                         novelty_score=excluded.novelty_score,
                         diversity_rank=excluded.diversity_rank,
-                        quality_flags_json=excluded.quality_flags_json
+                        quality_flags_json=excluded.quality_flags_json,
+                        longtail_score=excluded.longtail_score,
+                        business_value_score=excluded.business_value_score,
+                        high_value_longtail=excluded.high_value_longtail
                 ''', (
                     r.keyword, 0, "Low" if r.difficulty < 50 else "High",
                     r.priority_score, tag, now,
@@ -3523,7 +4043,8 @@ class PathfinderLegion:
                     scan_run_id, scan_run_id, 1 if r.business_core else 0,
                     json.dumps(r.source_signals or [], ensure_ascii=False),
                     r.verification_score, r.novelty_score, r.diversity_rank,
-                    json.dumps(r.quality_flags or [], ensure_ascii=False)
+                    json.dumps(r.quality_flags or [], ensure_ascii=False),
+                    r.longtail_score, r.business_value_score, 1 if r.high_value_longtail else 0
                 ))
                 saved += 1
                 if existed:

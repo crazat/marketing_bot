@@ -501,6 +501,7 @@ class DatabaseManager:
                 generated_comment TEXT,
                 priority_score REAL DEFAULT 0,
                 discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 first_seen_at TIMESTAMP,
                 last_scanned_at TIMESTAMP,
                 scan_count INTEGER DEFAULT 1,
@@ -527,6 +528,11 @@ class DatabaseManager:
         ''')
 
         # 기존 테이블에 컬럼 추가 (마이그레이션)
+        try:
+            self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN updated_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+
         try:
             self.cursor.execute("ALTER TABLE viral_targets ADD COLUMN last_scanned_at TIMESTAMP")
         except sqlite3.OperationalError:

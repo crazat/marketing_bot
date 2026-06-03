@@ -27,6 +27,9 @@ DEFAULT_CATEGORY_QUOTAS: Dict[str, int] = {
 DEFAULT_EXCLUDE_PATTERNS = [
     "전후",
     "다이어트댄스",
+    "다이어트 댄스",
+    "줌바",
+    "댄스학원",
     "엔도",
     "내과",
     "자보 다이어트",
@@ -56,6 +59,9 @@ class ViralSeed:
     novelty_score: float = 0.0
     historical_target_count: int = 0
     historical_revisit_rate: float = 0.0
+    longtail_score: float = 0.0
+    business_value_score: float = 0.0
+    high_value_longtail: bool = False
 
     def to_context(self) -> dict:
         return asdict(self)
@@ -106,10 +112,28 @@ class ViralSeedBuilder:
             status_clause = ""
             if self._table_has_column(conn, "keyword_insights", "status"):
                 status_clause = "AND COALESCE(status, 'active') = 'active'"
+            high_value_expr = (
+                "COALESCE(high_value_longtail, 0) AS high_value_longtail"
+                if self._table_has_column(conn, "keyword_insights", "high_value_longtail")
+                else "0 AS high_value_longtail"
+            )
+            longtail_expr = (
+                "COALESCE(longtail_score, 0) AS longtail_score"
+                if self._table_has_column(conn, "keyword_insights", "longtail_score")
+                else "0 AS longtail_score"
+            )
+            business_value_expr = (
+                "COALESCE(business_value_score, 0) AS business_value_score"
+                if self._table_has_column(conn, "keyword_insights", "business_value_score")
+                else "0 AS business_value_score"
+            )
             rows = conn.execute(
                 f"""
                 SELECT keyword, category, grade, search_volume, document_count,
-                       kei, priority_v3, search_intent
+                       kei, priority_v3, search_intent,
+                       {high_value_expr},
+                       {longtail_expr},
+                       {business_value_expr}
                 FROM keyword_insights
                 WHERE last_scan_run_id = ?
                   AND grade IN ({placeholders})
@@ -156,6 +180,9 @@ class ViralSeedBuilder:
         scored_rows.sort(
             key=lambda item: (
                 {"S": 0, "A": 1, "B": 2}.get(item["row"]["grade"], 3),
+                -int(item["row"]["high_value_longtail"] or 0),
+                -float(item["row"]["business_value_score"] or 0),
+                -float(item["row"]["longtail_score"] or 0),
                 -item["adjusted_priority"],
                 -item["novelty_score"],
                 -float(item["row"]["kei"] or 0),
@@ -196,6 +223,9 @@ class ViralSeedBuilder:
                         novelty_score=float(item["novelty_score"] or 0),
                         historical_target_count=int(fb.get("total_count", 0) or 0),
                         historical_revisit_rate=float(fb.get("revisit_rate", 0.0) or 0.0),
+                        longtail_score=float(row["longtail_score"] or 0),
+                        business_value_score=float(row["business_value_score"] or 0),
+                        high_value_longtail=bool(row["high_value_longtail"] or 0),
                     )
                 )
                 seen.add(keyword)

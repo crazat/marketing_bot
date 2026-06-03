@@ -1,5 +1,20 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-03 Memory: Viral Hunter Ad Filtering and Legion Longtail Upgrade
+
+- Viral Hunter/KIN filtering was hardened after the 2026-06-02 UI timeout and ad-like target review. The filter now scores actual user need, reply opportunity, timing window, journey fit, and qualification fit separately, with explicit KIN provider-answer/ad-answer/recommendation-spam patterns and stronger blog/brand/legal promo suppression. Keep this distinction: do not treat polished provider answers or covert recommendation ads as commentable user questions.
+- `viral_targets.updated_at` is now part of the DB schema/migration path in `db/database.py` and `marketing_bot_web/backend/services/db_init.py`, so refreshed existing URLs can track update time separately from first discovery.
+- Frontend Viral Hunter comment generation uses `longRunningApi` for single and batch generation to avoid the previous `timeout of 30000ms exceeded` failure on slower AI comment calls.
+- Legion now evaluates `longtail_score`, `business_value_score`, and `high_value_longtail` per keyword. High-value longtail classification requires local intent, service/category fit, direct service anchors, and no low-business-value leakage; search volume alone should not decide priority.
+- Legion filters low-conversion activity/product leakage before SERP work, including `다이어트댄스`, `다이어트 댄스`, `줌바`, and unrelated exercise/product terms unless a direct clinic-service anchor is present. This specifically addresses prior top-ranking noise such as `분평동 다이어트 댄스 추천`.
+- Legion Round 4 now adds a `round4_longtail` template expansion path for local service + decision-intent combinations such as neighborhood/service/cost, consultation, insurance, admission, and treatment-cost variants. Preserve this source when reviewing diversity; it is designed to catch high-intent longtails that autocomplete may miss.
+- `keyword_insights` gains `longtail_score`, `business_value_score`, and `high_value_longtail`; `core_services/viral_seed_builder.py` reads these columns when present and ranks high-value longtail seeds ahead of generic B-grade keywords while remaining backward-compatible with older DBs.
+- Latest focused verification for this upgrade:
+  - `python -m py_compile pathfinder_v3_legion.py core_services/viral_seed_builder.py tests/test_pathfinder_viral_stability.py`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q` -> 26 passed.
+  - `python pathfinder_v3_legion.py --smoke` completed without DB/CSV writes and printed the new longtail/business-value metrics.
+- Read-only audit of the latest local Legion DB snapshot found 26 low-business-value diet/activity keywords that the new filter would remove and identified stricter B->A high-value longtail promotion candidates. No full production Legion rescan/save was run during this upgrade.
+
 ## 2026-06-02 Codex CLI Runtime Lock
 
 - All LLM calls now route through `marketing_bot_web/backend/services/ai_client.py` and `codex_cli_client.py`.

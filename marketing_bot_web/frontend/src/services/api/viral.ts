@@ -2,7 +2,7 @@
  * Viral Hunter API - 바이럴 타겟 관련
  */
 
-import { api, ViralStats } from './base'
+import { api, longRunningApi, ViralStats } from './base'
 
 // 댓글 스타일 타입
 export interface CommentStyle {
@@ -341,7 +341,7 @@ export const viralApi = {
   },
 
   generateComment: async (target_id: string | number, style: string = 'default') => {
-    const response = await api.post('/viral/generate-comment', { target_id, style })
+    const response = await longRunningApi.post('/viral/generate-comment', { target_id, style })
     return response.data
   },
 
@@ -356,7 +356,7 @@ export const viralApi = {
     batch_size?: number
     prioritize_by?: 'priority_score' | 'freshness' | 'engagement'
   }) => {
-    const response = await api.post('/viral/generate-comments-batch', data)
+    const response = await longRunningApi.post('/viral/generate-comments-batch', data)
     return response.data
   },
 

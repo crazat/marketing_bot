@@ -74,6 +74,82 @@ def test_legion_business_core_filter_matches_actual_acquisition_categories():
         assert not collector.is_focus_candidate(keyword, category)
 
 
+def test_legion_filters_low_business_value_activity_keywords():
+    collector = LegionCollector(delay=0.0, use_google=False)
+
+    leakage = "분평동 다이어트 댄스 추천"
+    category = collector._detect_category(leakage)
+    assert collector.low_business_value_reason(leakage, category)
+    assert not collector.is_focus_candidate(leakage, category)
+
+    service_keyword = "청주 다이어트 한의원 비용"
+    service_category = collector._detect_category(service_keyword)
+    assert collector.low_business_value_reason(service_keyword, service_category) is None
+    assert collector.is_focus_candidate(service_keyword, service_category)
+
+
+def test_legion_high_value_longtail_is_promoted_without_large_volume_bias():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    profile = legion._calculate_keyword_value_profile(
+        "용암동 새살침 비용",
+        category="피부/여드름",
+        search_intent="transactional",
+        search_volume=20,
+        difficulty=18,
+        opportunity=88,
+        document_count=1200,
+        source_signal_count=1,
+        has_real_volume=True,
+        business_core=True,
+    )
+    assert profile["high_value_longtail"] is True
+    assert profile["longtail_score"] >= 68
+    assert profile["business_value_score"] >= 65
+
+    promoted, flags = legion._promote_grade_for_high_value_longtail(
+        "B",
+        profile,
+        has_real_volume=True,
+        search_volume=20,
+        difficulty=18,
+        opportunity=88,
+        verification_score=70,
+        quality_flags=[],
+    )
+    assert promoted == "A"
+    assert flags == []
+
+    longtail_priority = legion._calculate_priority(
+        18,
+        88,
+        "용암동 새살침 비용",
+        search_volume=20,
+        kei=0.4,
+        category="피부/여드름",
+        search_intent="transactional",
+        has_real_volume=True,
+        business_core=True,
+        longtail_score=profile["longtail_score"],
+        business_value_score=profile["business_value_score"],
+    )
+    generic_priority = legion._calculate_priority(
+        18,
+        88,
+        "청주 새살침",
+        search_volume=20,
+        kei=0.4,
+        category="피부/여드름",
+        search_intent="commercial",
+        has_real_volume=True,
+        business_core=True,
+        longtail_score=0,
+        business_value_score=60,
+    )
+    assert longtail_priority > generic_priority
+
+
 def test_viral_seed_builder_penalizes_revisited_keyword_history(tmp_path):
     db_path = tmp_path / "seed_builder.db"
     with sqlite3.connect(db_path) as conn:

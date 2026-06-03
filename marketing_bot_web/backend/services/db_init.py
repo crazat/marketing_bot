@@ -911,6 +911,10 @@ def _ensure_lead_response_tracking(cursor):
             cursor.execute("ALTER TABLE viral_targets ADD COLUMN post_region TEXT")
             logger.info("  - viral_targets: post_region 컬럼 추가됨")
 
+        if 'updated_at' not in columns:
+            cursor.execute("ALTER TABLE viral_targets ADD COLUMN updated_at TIMESTAMP")
+            logger.info("  - viral_targets: updated_at column added")
+
         viral_quality_columns = [
             ('exposure_score', 'REAL DEFAULT 0'),
             ('workability_score', 'REAL DEFAULT 0'),
