@@ -158,6 +158,7 @@ class GyulimKeywordProfile:
         "안면비대칭_교정": "안면비대칭",
         "안면비대칭교정": "안면비대칭",
         "비대칭_교정": "안면비대칭",
+        "비대칭/교정": "안면비대칭",
         "여드름_피부": "피부/여드름",
         "여드름/피부": "피부/여드름",
         "피부": "피부/여드름",
@@ -170,6 +171,31 @@ class GyulimKeywordProfile:
         "리프팅_탄력": "리프팅/탄력",
         "리프팅": "리프팅/탄력",
         "매선": "리프팅/탄력",
+        "두통_어지럼증": "두통/어지럼",
+        "두통/어지럼증": "두통/어지럼",
+        "어지럼증": "두통/어지럼",
+        "소화불량_위장": "소화/위장",
+        "소화기": "소화/위장",
+        "위장": "소화/위장",
+        "비염": "호흡기/알레르기",
+        "알레르기_아토피": "호흡기/알레르기",
+        "알레르기": "호흡기/알레르기",
+        "호흡기": "호흡기/알레르기",
+        "탈모": "탈모/두피",
+        "두피": "탈모/두피",
+        "갱년기_호르몬": "갱년기/여성",
+        "갱년기": "갱년기/여성",
+        "여성건강": "갱년기/여성",
+        "불면증_수면": "수면/피로",
+        "수면/스트레스": "수면/피로",
+        "자율신경_스트레스": "스트레스/자율신경",
+        "스트레스": "스트레스/자율신경",
+        "산후조리_여성": "여성/산후",
+        "다한증_냉증": "다한증/냉증",
+        "수험생_집중력": "수험생/집중력",
+        "수험생": "수험생/집중력",
+        "면역_보약": "면역/보약",
+        "보약": "면역/보약",
     }
 
     def __init__(self) -> None:
@@ -257,6 +283,9 @@ class GyulimKeywordProfile:
                     "새살침",
                     "패인흉터",
                     "모공흉터",
+                    "수두흉터",
+                    "흉터치료",
+                    "피부재생",
                     "여드름자국",
                     "피부 한의원",
                     "피부질환",
@@ -272,7 +301,12 @@ class GyulimKeywordProfile:
                     "흉터",
                     "패인흉터",
                     "모공흉터",
+                    "수두흉터",
+                    "흉터치료",
+                    "피부재생",
                     "색소침착",
+                    "붉은자국",
+                    "갈색자국",
                     "피부",
                     "피부질환",
                     "피부관리",
@@ -290,6 +324,8 @@ class GyulimKeywordProfile:
                     "흉터치료",
                     "패인흉터",
                     "모공흉터",
+                    "수두흉터",
+                    "피부재생",
                     "여드름흉터",
                     "여드름자국",
                     "피부질환",
@@ -302,6 +338,11 @@ class GyulimKeywordProfile:
                     "흉터",
                     "패인흉터",
                     "모공흉터",
+                    "수두흉터",
+                    "흉터치료",
+                    "피부재생",
+                    "색소침착",
+                    "붉은자국",
                     "피부질환",
                     "피부관리",
                     "아토피",
@@ -318,11 +359,12 @@ class GyulimKeywordProfile:
                     "마스크팩",
                     "올리브영",
                 ),
-                longtail_contexts=("흉터", "민감피부", "재발", "성인", "마스크", "압출후"),
+                longtail_suffixes=("비용", "상담", "치료기간", "예약", "후기", "추천", "부작용", "주의사항", "재발"),
+                longtail_contexts=("흉터", "패인흉터", "모공흉터", "수두흉터", "여드름자국", "민감피부", "재발", "성인", "마스크", "압출후"),
                 journey_suffixes={
                     "decision": ("비용", "상담", "예약", "추천"),
                     "access": ("주차", "야간", "주말", "진료시간"),
-                    "safety": ("부작용", "주의사항", "재발"),
+                    "safety": ("부작용", "주의사항", "재발", "치료기간"),
                 },
                 strategic_weight=1.25,
             ),
@@ -557,6 +599,412 @@ class GyulimKeywordProfile:
                 },
                 strategic_weight=0.9,
             ),
+            TreatmentCategoryProfile(
+                category="탈모/두피",
+                seed_terms=(
+                    "탈모",
+                    "탈모 한의원",
+                    "탈모 한약",
+                    "원형탈모",
+                    "정수리탈모",
+                    "M자탈모",
+                    "여성탈모",
+                    "두피관리",
+                ),
+                category_terms=(
+                    "탈모",
+                    "원형탈모",
+                    "정수리탈모",
+                    "m자탈모",
+                    "M자탈모",
+                    "여성탈모",
+                    "산후탈모",
+                    "두피",
+                    "두피관리",
+                    "머리숱",
+                    "발모",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "탈모한약", "치료", "상담", "두피관리"),
+                core_tokens=("탈모", "원형탈모", "정수리탈모", "M자탈모", "여성탈모", "산후탈모", "두피관리"),
+                low_business_value_terms=("샴푸", "토닉", "영양제", "미녹시딜", "가발", "두피문신"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("산후", "여성", "원형", "정수리", "스트레스", "환절기"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "재발"),
+                },
+                strategic_weight=0.8,
+            ),
+            TreatmentCategoryProfile(
+                category="두통/어지럼",
+                seed_terms=(
+                    "두통",
+                    "두통 한의원",
+                    "편두통",
+                    "만성두통",
+                    "긴장성두통",
+                    "어지럼증",
+                    "이명",
+                    "이석증",
+                ),
+                category_terms=(
+                    "두통",
+                    "편두통",
+                    "만성두통",
+                    "긴장성두통",
+                    "어지럼",
+                    "어지럼증",
+                    "현기증",
+                    "이명",
+                    "이석증",
+                    "목어깨두통",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "침", "추나", "치료", "상담"),
+                core_tokens=("두통", "편두통", "만성두통", "어지럼증", "이명", "이석증"),
+                low_business_value_terms=("진통제", "타이레놀", "카페인", "두통약", "영양제"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("직장인", "만성", "목어깨", "스트레스", "재발", "검사후"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "재발"),
+                },
+                strategic_weight=0.85,
+            ),
+            TreatmentCategoryProfile(
+                category="소화/위장",
+                seed_terms=(
+                    "소화불량",
+                    "소화불량 한의원",
+                    "위염",
+                    "역류성식도염",
+                    "담적",
+                    "과민성대장",
+                    "속쓰림",
+                    "변비",
+                ),
+                category_terms=(
+                    "소화불량",
+                    "소화",
+                    "위염",
+                    "역류성식도염",
+                    "역류",
+                    "담적",
+                    "위장",
+                    "속쓰림",
+                    "더부룩",
+                    "복부팽만",
+                    "과민성대장",
+                    "변비",
+                    "설사",
+                    "복통",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "침", "치료", "상담", "담적"),
+                core_tokens=("소화불량", "위염", "역류성식도염", "담적", "과민성대장", "변비"),
+                low_business_value_terms=("소화제", "유산균", "영양제", "음식", "식단", "배달"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("만성", "직장인", "스트레스", "식후", "재발", "검사후"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "재발"),
+                },
+                strategic_weight=0.8,
+            ),
+            TreatmentCategoryProfile(
+                category="호흡기/알레르기",
+                seed_terms=(
+                    "비염",
+                    "비염 한의원",
+                    "알레르기비염",
+                    "만성비염",
+                    "축농증",
+                    "코막힘",
+                    "후비루",
+                    "환절기 비염",
+                ),
+                category_terms=(
+                    "비염",
+                    "알레르기비염",
+                    "만성비염",
+                    "축농증",
+                    "부비동염",
+                    "코막힘",
+                    "콧물",
+                    "재채기",
+                    "후비루",
+                    "알레르기",
+                    "환절기",
+                    "기침",
+                    "천식",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "치료", "상담", "면역"),
+                core_tokens=("비염", "알레르기비염", "만성비염", "축농증", "코막힘", "후비루"),
+                low_business_value_terms=("스프레이", "마스크", "공기청정기", "영양제", "비염약"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("환절기", "아이", "성인", "만성", "재발", "면역"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "재발"),
+                },
+                strategic_weight=0.85,
+            ),
+            TreatmentCategoryProfile(
+                category="갱년기/여성",
+                seed_terms=(
+                    "갱년기",
+                    "갱년기 한의원",
+                    "갱년기 한약",
+                    "여성 갱년기",
+                    "남성 갱년기",
+                    "폐경 증상",
+                    "안면홍조",
+                    "식은땀",
+                ),
+                category_terms=(
+                    "갱년기",
+                    "폐경",
+                    "폐경기",
+                    "안면홍조",
+                    "식은땀",
+                    "열감",
+                    "여성호르몬",
+                    "남성갱년기",
+                    "여성건강",
+                    "생리통",
+                    "생리불순",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "보약", "치료", "상담"),
+                core_tokens=("갱년기", "갱년기한약", "안면홍조", "폐경", "생리통", "생리불순"),
+                low_business_value_terms=("영양제", "건강식품", "홍삼", "홈케어"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "주의사항"),
+                longtail_contexts=("40대", "50대", "열감", "불면", "식은땀", "체중증가"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("주의사항", "치료기간", "한약 상담"),
+                },
+                strategic_weight=0.85,
+            ),
+            TreatmentCategoryProfile(
+                category="수면/피로",
+                seed_terms=(
+                    "불면증",
+                    "불면증 한의원",
+                    "수면장애",
+                    "잠 안올때",
+                    "만성피로",
+                    "피로회복",
+                    "기력저하",
+                    "무기력증",
+                ),
+                category_terms=(
+                    "불면",
+                    "불면증",
+                    "수면장애",
+                    "수면",
+                    "잠안올때",
+                    "만성피로",
+                    "피로",
+                    "피로회복",
+                    "기력저하",
+                    "무기력",
+                    "번아웃",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "보약", "치료", "상담"),
+                core_tokens=("불면증", "수면장애", "만성피로", "기력저하", "번아웃"),
+                low_business_value_terms=("수면제", "영양제", "커피", "카페인", "수면앱"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("직장인", "스트레스", "갱년기", "야간", "만성", "번아웃"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "한약 상담"),
+                },
+                strategic_weight=0.8,
+            ),
+            TreatmentCategoryProfile(
+                category="스트레스/자율신경",
+                seed_terms=(
+                    "자율신경",
+                    "자율신경 한의원",
+                    "자율신경실조증",
+                    "스트레스 한의원",
+                    "화병",
+                    "공황장애 한의원",
+                    "불안장애",
+                    "가슴두근거림",
+                ),
+                category_terms=(
+                    "자율신경",
+                    "자율신경실조",
+                    "스트레스",
+                    "화병",
+                    "공황",
+                    "공황장애",
+                    "불안",
+                    "불안장애",
+                    "우울",
+                    "가슴두근거림",
+                    "손떨림",
+                    "긴장",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "침", "치료", "상담"),
+                core_tokens=("자율신경", "자율신경실조", "스트레스", "화병", "공황장애", "불안장애"),
+                low_business_value_terms=("상담센터", "심리상담", "명상", "앱", "영양제"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("직장인", "번아웃", "불면", "두근거림", "만성", "재발"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "한약 상담"),
+                },
+                strategic_weight=0.75,
+            ),
+            TreatmentCategoryProfile(
+                category="여성/산후",
+                seed_terms=(
+                    "산후보약",
+                    "산후조리 한의원",
+                    "산후풍",
+                    "출산후 보약",
+                    "유산후 관리",
+                    "임신준비 한의원",
+                    "난임 한의원",
+                    "여성한의원",
+                ),
+                category_terms=(
+                    "산후",
+                    "산후보약",
+                    "산후조리",
+                    "산후풍",
+                    "출산후",
+                    "유산후",
+                    "임신준비",
+                    "난임",
+                    "여성한의원",
+                    "여성질환",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "보약", "치료", "상담", "관리"),
+                core_tokens=("산후보약", "산후조리", "산후풍", "출산후", "유산후", "임신준비", "난임"),
+                low_business_value_terms=("산후도우미", "산후조리원", "마사지", "요가", "필라테스"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "주의사항"),
+                longtail_contexts=("출산후", "모유수유", "유산후", "기력회복", "산후풍", "붓기"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("주의사항", "복용 상담", "치료기간"),
+                },
+                strategic_weight=0.85,
+            ),
+            TreatmentCategoryProfile(
+                category="다한증/냉증",
+                seed_terms=(
+                    "다한증",
+                    "다한증 한의원",
+                    "수족냉증",
+                    "냉증 한의원",
+                    "손땀",
+                    "겨드랑이 땀",
+                    "손발 차가움",
+                    "식은땀",
+                ),
+                category_terms=(
+                    "다한증",
+                    "수족냉증",
+                    "냉증",
+                    "손땀",
+                    "발땀",
+                    "겨드랑이땀",
+                    "식은땀",
+                    "손발차가움",
+                    "하체냉증",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "침", "치료", "상담"),
+                core_tokens=("다한증", "수족냉증", "냉증", "손땀", "식은땀"),
+                low_business_value_terms=("데오드란트", "보톡스", "영양제", "패드", "양말"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "치료기간", "원인"),
+                longtail_contexts=("여름", "직장인", "긴장", "손발", "재발", "체질"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("원인", "주의사항", "치료기간", "체질 상담"),
+                },
+                strategic_weight=0.75,
+            ),
+            TreatmentCategoryProfile(
+                category="수험생/집중력",
+                seed_terms=(
+                    "수험생 한약",
+                    "총명탕",
+                    "집중력 한의원",
+                    "수능 한약",
+                    "학생 보약",
+                    "시험 불안",
+                    "집중력 저하",
+                    "기억력",
+                ),
+                category_terms=(
+                    "수험생",
+                    "총명탕",
+                    "집중력",
+                    "수능한약",
+                    "학생보약",
+                    "시험불안",
+                    "집중력저하",
+                    "기억력",
+                    "공부",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "보약", "총명탕", "상담"),
+                core_tokens=("수험생한약", "총명탕", "집중력", "수능한약", "학생보약", "시험불안"),
+                low_business_value_terms=("학원", "과외", "인강", "독서실", "스터디카페"),
+                longtail_suffixes=("비용", "상담", "예약", "추천", "복용기간", "주의사항"),
+                longtail_contexts=("고3", "중3", "수능", "시험전", "집중력", "체력"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("주의사항", "복용기간", "한약 상담"),
+                },
+                strategic_weight=0.75,
+            ),
+            TreatmentCategoryProfile(
+                category="면역/보약",
+                seed_terms=(
+                    "보약",
+                    "보약 한의원",
+                    "공진단",
+                    "경옥고",
+                    "면역력",
+                    "체력보강",
+                    "기력회복",
+                    "대상포진 후유증",
+                ),
+                category_terms=(
+                    "보약",
+                    "공진단",
+                    "경옥고",
+                    "면역",
+                    "면역력",
+                    "체력보강",
+                    "기력회복",
+                    "허약",
+                    "환절기감기",
+                    "대상포진후유증",
+                ),
+                direct_service_anchors=("한의원", "한방", "한약", "보약", "공진단", "경옥고", "상담"),
+                core_tokens=("보약", "공진단", "경옥고", "면역력", "체력보강", "기력회복"),
+                low_business_value_terms=("건강식품", "영양제", "홍삼", "비타민", "쇼핑"),
+                longtail_suffixes=("가격", "비용", "상담", "예약", "추천", "복용기간"),
+                longtail_contexts=("어르신", "직장인", "수험생", "환절기", "회복", "만성피로"),
+                journey_suffixes={
+                    "decision": ("가격", "비용", "상담", "예약"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("복용기간", "주의사항", "체질 상담"),
+                },
+                strategic_weight=0.75,
+            ),
         )
         self._profile_by_category: Dict[str, TreatmentCategoryProfile] = {
             profile.category: profile for profile in self.profiles
@@ -651,6 +1099,8 @@ class GyulimKeywordProfile:
             return any(_compact(token) in kw for token in profile.core_tokens)
         if category == "피부/여드름":
             return any(_compact(token) in kw for token in profile.core_tokens)
+        if profile.strategic_weight < 1.0:
+            return any(_compact(token) in kw for token in profile.core_tokens)
         return True
 
     def is_focus_candidate(self, keyword: str, category: Optional[str] = None) -> bool:
@@ -670,6 +1120,8 @@ class GyulimKeywordProfile:
             return any(_compact(token) in kw for token in profile.core_tokens)
         if category == "피부/여드름":
             return any(_compact(token) in kw for token in profile.core_tokens)
+        if profile.strategic_weight < 1.0:
+            return self.is_business_core_keyword(keyword, category) or self.has_direct_service_anchor(keyword, category)
         return True
 
     def business_relevance_score(
@@ -746,6 +1198,85 @@ class GyulimKeywordProfile:
 
         return _unique(seeds)
 
+    def build_exploration_seed_keywords(
+        self,
+        *,
+        categories: Optional[Iterable[str]] = None,
+        max_terms_per_category: int = 8,
+        max_suffixes_per_category: int = 6,
+        max_contexts_per_category: int = 5,
+        max_neighborhoods_per_category: int = 6,
+    ) -> List[str]:
+        """Build broad patient-journey seeds beyond autocomplete-friendly terms.
+
+        Autocomplete tends to over-represent short head terms.  These seeds force
+        Pathfinder to inspect problem, context, decision, access, and safety
+        searches that are sparse but high intent for a local clinic.
+        """
+        target_categories = {
+            self.normalize_category(category) for category in categories
+        } if categories else set(self.focus_categories)
+
+        regions = ("청주",) + self.neighborhoods[:max_neighborhoods_per_category]
+        universal_suffixes = (
+            "비용",
+            "상담",
+            "예약",
+            "추천",
+            "치료기간",
+            "부작용",
+            "주의사항",
+            "야간",
+            "주말",
+            "주차",
+            "잘하는곳",
+        )
+        question_patterns = (
+            "{region} {term} 비용 얼마",
+            "{region} {term} 한의원 어디",
+            "{region} {term} 상담 가능한곳",
+            "{region} {term} 야간 진료",
+            "{region} {term} 주차 편한 한의원",
+        )
+
+        seeds: List[str] = []
+        for profile in self.profiles:
+            if profile.category not in target_categories:
+                continue
+
+            terms = _unique(profile.seed_terms + profile.core_tokens)[:max_terms_per_category]
+            journey_suffixes: List[str] = []
+            for suffix_group in profile.journey_suffixes.values():
+                journey_suffixes.extend(suffix_group)
+            suffixes = _unique(
+                list(profile.longtail_suffixes)
+                + journey_suffixes
+                + list(universal_suffixes)
+            )[:max_suffixes_per_category]
+            contexts = profile.longtail_contexts[:max_contexts_per_category]
+
+            for term in terms:
+                for suffix in suffixes:
+                    seeds.append(f"청주 {term} {suffix}")
+                for context in contexts:
+                    seeds.append(f"청주 {context} {term}")
+                    seeds.append(f"청주 {term} {context}")
+
+            for region in regions:
+                for term in terms[:4]:
+                    seeds.append(f"{region} {term} 한의원")
+                    for suffix in suffixes[:6]:
+                        seeds.append(f"{region} {term} 한의원 {suffix}")
+                    for pattern in question_patterns[:3]:
+                        seeds.append(pattern.format(region=region, term=term))
+
+            for context in contexts:
+                for term in terms[:3]:
+                    for suffix in suffixes[:3]:
+                        seeds.append(f"청주 {context} {term} {suffix}")
+
+        return _unique(seeds)
+
     def coverage_audit(self, keywords: Iterable[str], min_per_category: int = 3) -> Dict[str, object]:
         counts: Dict[str, int] = {category: 0 for category in self.focus_categories}
         for keyword in keywords:
@@ -768,4 +1299,3 @@ class GyulimKeywordProfile:
 
 
 GYULIM_KEYWORD_PROFILE = GyulimKeywordProfile()
-

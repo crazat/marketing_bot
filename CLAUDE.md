@@ -1,5 +1,18 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-04 Memory: Pathfinder Discovery Audit and Campaign Blueprint
+
+- Pathfinder for Cheongju Gyulim now treats keyword extraction as a full discovery system, not a score-only picker. The current flow is broad treatment discovery -> portfolio-balanced selection -> treatment intelligence -> risk-adjusted execution frontier -> campaign blueprint -> discovery audit feedback.
+- `core_services/gyulim_keyword_profile.py` is the source of truth for Gyulim treatment surfaces. Keep scar/acne/skin, face asymmetry, diet, pain/disc, traffic accident, body correction, lifting/elasticity, and the expanded secondary axes centralized there. Use `build_exploration_seed_keywords()` for broad patient-journey seeds instead of ad hoc seed strings.
+- `core_services/pathfinder_insight_broker.py` now exposes `treatment_intelligence`, `execution_frontier`, `campaign_blueprint`, and `discovery_audit` in user briefs, Codex prompt context, deterministic synthesis, and agent handoffs.
+- `campaign_blueprint` groups selected keywords by treatment axis, chooses one `pillar_keyword`, attaches same-cluster `support_keywords`, creates content assets, and adds a cannibalization guardrail. Downstream agents should expand support keywords inside the pillar page/post/FAQ/short/SmartPlace alignment, not create duplicate standalone posts first.
+- `discovery_audit` is the new exploration-quality layer. It audits every Gyulim treatment profile for service-anchor coverage, core symptom/term coverage, patient journey stages, local-market spread, and source-signal diversity. Its `blind_spots` and `next_exploration_queue` should feed the next Pathfinder/Legion discovery pass before scaling weak categories.
+- Real local DB smoke on `db/marketing_data.db` showed 5 campaign clusters and prompt/task campaign context present. Static tests are necessary but not enough for "world-class" claims; live Naver/SearchAd-backed scans should still be reviewed for source quality, category balance, and blind-spot closure.
+- Focused verification for this layer:
+  - `python -m py_compile core_services\pathfinder_insight_broker.py tests\test_pathfinder_insight_broker.py`
+  - `python -m pytest tests\test_pathfinder_insight_broker.py -q`
+  - `python -m pytest tests\test_gyulim_keyword_profile.py tests\test_pathfinder_insight_broker.py tests\test_pathfinder_viral_stability.py -q`
+
 ## 2026-06-04 Memory: Gyulim Pathfinder Treatment Taxonomy
 
 - Pathfinder treatment discovery now has a shared Cheongju Gyulim taxonomy in `core_services/gyulim_keyword_profile.py`. Keep scar/acne/skin, face asymmetry, diet, pain/disc, traffic accident, body correction, and lifting/elasticity rules centralized there instead of copying treatment terms into each scanner.

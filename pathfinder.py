@@ -914,6 +914,15 @@ class Pathfinder:
             max_neighborhoods_per_category=8,
             include_contexts=True,
         )
+        seeds.extend(
+            GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+                max_terms_per_category=6,
+                max_suffixes_per_category=5,
+                max_contexts_per_category=4,
+                max_neighborhoods_per_category=6,
+            )
+        )
+        seeds = list(dict.fromkeys(seeds))
         unique_seeds = [
             (seed, GYULIM_KEYWORD_PROFILE.normalize_category(GYULIM_KEYWORD_PROFILE.detect_category(seed)))
             for seed in seeds

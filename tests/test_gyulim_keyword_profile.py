@@ -20,17 +20,38 @@ def test_gyulim_profile_seed_coverage_has_all_focus_categories():
     assert any("청주 다이어트 한약" in seed for seed in seeds)
 
 
+def test_gyulim_profile_exploration_seeds_cover_patient_journey_and_secondary_axes():
+    seeds = GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+        max_terms_per_category=8,
+        max_suffixes_per_category=10,
+        max_contexts_per_category=4,
+        max_neighborhoods_per_category=4,
+    )
+
+    assert any("복대동 허리통증 한의원 야간" in seed for seed in seeds)
+    assert any("청주 여드름흉터 부작용" in seed for seed in seeds)
+    assert any("청주 수두흉터 치료기간" in seed for seed in seeds)
+    assert any("청주 비염 한의원 비용" in seed for seed in seeds)
+    assert any("청주 불면증 한의원 상담" in seed for seed in seeds)
+    assert any("청주 보약 한의원 가격" in seed for seed in seeds)
+
+
 def test_legion_collector_focus_matches_gyulim_treatments():
     collector = LegionCollector(delay=0.0, use_google=False)
 
     expected = {
         "청주 여드름흉터 한의원 비용": "피부/여드름",
+        "청주 수두흉터 새살침 상담": "피부/여드름",
         "청주 피부관리 한의원 상담": "피부/여드름",
         "청주 안면비대칭 교정 후기": "안면비대칭",
         "청주 다이어트 한약 비용": "다이어트",
         "청주 허리통증 한의원 비용": "통증/디스크",
         "청주 목디스크 추나요법": "통증/디스크",
         "청주 교통사고 입원 자보": "교통사고",
+        "청주 비염 한의원 비용": "호흡기/알레르기",
+        "청주 불면증 한의원 상담": "수면/피로",
+        "청주 탈모 한의원 비용": "탈모/두피",
+        "청주 보약 한의원 가격": "면역/보약",
     }
 
     for keyword, category in expected.items():
@@ -55,6 +76,11 @@ def test_legion_collector_keeps_low_value_leakage_out():
     assert collector.low_business_value_reason(leakage, leakage_category)
     assert not collector.is_focus_candidate(leakage, leakage_category)
 
+    product_leakage = "청주 탈모 샴푸 추천"
+    product_category = collector._detect_category(product_leakage)
+    assert collector.low_business_value_reason(product_leakage, product_category)
+    assert not collector.is_focus_candidate(product_leakage, product_category)
+
     assert not collector._is_valid_keyword("서울 허리통증 한의원")
 
 
@@ -74,4 +100,5 @@ def test_legion_longtail_templates_include_pain_category():
     assert "통증/디스크" in PathfinderLegion.CATEGORY_CANONICAL_SERVICES
     assert "통증/디스크" in PathfinderLegion.HIGH_VALUE_LONGTAIL_SUFFIXES
     assert "통증/디스크" in PathfinderLegion.CATEGORY_SEARCH_JOURNEY_SUFFIXES
-
+    assert "호흡기/알레르기" in PathfinderLegion.CATEGORY_CANONICAL_SERVICES
+    assert "수면/피로" in PathfinderLegion.CATEGORY_SEARCH_JOURNEY_SUFFIXES

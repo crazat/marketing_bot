@@ -1,5 +1,6 @@
 import sqlite3
 
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 from core_services.pathfinder_insight_broker import PathfinderInsightBroker, load_pathfinder_prompt_context
 
 
@@ -201,14 +202,53 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert "decision_packet" in brief["delivery_contract"]["handoff_fields"]
     assert "measurement_plan" in brief["delivery_contract"]["handoff_fields"]
     assert "data_quality" in brief["delivery_contract"]["handoff_fields"]
+    assert "risk_adjusted_opportunity" in brief["delivery_contract"]["handoff_fields"]
+    assert "execution_frontier" in brief["delivery_contract"]["handoff_fields"]
+    assert "campaign_blueprint" in brief["delivery_contract"]["handoff_fields"]
+    assert "campaign_context" in brief["delivery_contract"]["handoff_fields"]
+    assert "discovery_audit" in brief["delivery_contract"]["handoff_fields"]
     assert "place_rank" in brief["delivery_contract"]["handoff_fields"]
     assert "place_rank_lift" in brief["delivery_contract"]["handoff_fields"]
     assert "place_value_loop" in brief["delivery_contract"]["handoff_fields"]
     assert "place_value_brief" in brief["delivery_contract"]["handoff_fields"]
     assert "place_lift_actions" in brief["delivery_contract"]["handoff_fields"]
+    assert "treatment_intelligence" in brief["delivery_contract"]["handoff_fields"]
     assert "place_lift_experiments" in brief["delivery_contract"]["handoff_fields"]
     assert "place_profile_audit" in brief["delivery_contract"]["handoff_fields"]
+    assert brief["treatment_intelligence"]["status"] == "ready"
+    assert brief["treatment_intelligence"]["coverage"]["total_focus_categories"] >= 18
+    assert brief["treatment_intelligence"]["coverage"]["covered_focus_categories"] == 1
+    assert "피부/여드름" in brief["treatment_intelligence"]["priority_gaps"]
+    assert brief["treatment_intelligence"]["journey_gap_matrix"]
+    assert "local_market_coverage" in brief["treatment_intelligence"]["coverage"]
+    assert brief["treatment_intelligence"]["local_market_matrix"]
+    accident_score = next(
+        item for item in brief["treatment_intelligence"]["category_scores"]
+        if item["category"] == "교통사고"
+    )
+    assert accident_score["journey_stage_coverage"]["missing_stages"]
+    assert brief["treatment_intelligence"]["next_exploration_seeds"]
+    assert brief["summary"]["treatment_coverage"]["covered_focus_categories"] == 1
+    assert brief["summary"]["execution_lane_counts"]
+    assert brief["summary"]["campaign_cluster_count"] >= 1
+    assert brief["summary"]["campaign_pillars"]
+    assert brief["summary"]["discovery_breadth_score"] >= 0
+    assert brief["summary"]["discovery_blind_spot_count"] >= 1
+    assert brief["discovery_audit"]["status"] == "ready"
+    assert brief["discovery_audit"]["coverage"]["analyzed_keyword_count"] >= len(brief["keyword_cards"])
+    assert brief["discovery_audit"]["coverage"]["blind_spot_count"] >= 1
+    assert brief["discovery_audit"]["category_surface_map"]
+    assert brief["discovery_audit"]["next_exploration_queue"]
+    assert brief["execution_frontier"]["status"] == "ready"
+    assert brief["execution_frontier"]["lane_counts"]
+    assert brief["campaign_blueprint"]["status"] == "ready"
+    assert brief["campaign_blueprint"]["cluster_count"] >= 1
+    first_cluster = brief["campaign_blueprint"]["clusters"][0]
+    assert first_cluster["pillar_keyword"]
+    assert first_cluster["content_assets"]
+    assert first_cluster["cannibalization_guardrail"]
     assert brief["metrics"]["place_tracked_count"] == 1
+    assert "selection_local_market_diversity_score" in brief["metrics"]
     assert brief["metrics"]["place_visible_count"] == 1
     assert brief["metrics"]["place_top3_count"] == 1
     assert brief["metrics"]["place_competitor_gap_count"] == 1
@@ -257,6 +297,10 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert card["decision_packet"]["state"] == "review"
     assert card["data_quality"]["status"] in {"fit_for_action", "fit_with_caveats"}
     assert card["measurement_plan"]["primary_metric"]
+    assert card["risk_adjusted_opportunity"]["adjusted_score"] > 0
+    assert card["risk_adjusted_opportunity"]["execution_lane"]
+    assert card["campaign_context"]["cluster_id"]
+    assert card["campaign_context"]["pillar_keyword"]
     assert card["place_rank"]["tracked"] is True
     assert card["place_rank"]["current"]["rank"] == 3
     assert card["place_rank"]["rank_delta"] == 2
@@ -277,6 +321,9 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert action["decision_packet"]["state"] == "review"
     assert action["measurement_plan"]["review_after_days"] in {14, 30}
     assert action["data_quality"]["score"] > 0
+    assert action["risk_adjusted_opportunity"]["adjusted_score"] > 0
+    assert action["execution_lane"]
+    assert action["campaign_context"]["cluster_id"] == card["campaign_context"]["cluster_id"]
     assert action["place_rank"]["current"]["rank"] == 3
     assert action["feedback_snapshot"]["counts"]["needs_review"] == 1
     assert lift["priority_actions"][0]["lever"] == "information_completeness"
@@ -290,6 +337,9 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert blog_task["decision_packet"]["state"] == "review"
     assert blog_task["measurement_plan"]["primary_metric"]
     assert blog_task["data_quality"]["score"] > 0
+    assert blog_task["risk_adjusted_opportunity"]["execution_lane"]
+    assert blog_task["campaign_context"]["cluster_id"] == card["campaign_context"]["cluster_id"]
+    assert any("campaign_context" in item for item in blog_task["success_criteria"])
     assert blog_task["feedback_snapshot"]["learning_status"] == "review"
     assert blog_task["place_lift_actions"][0]["keyword"] == card["keyword"]
     assert blog_task["place_lift_experiments"][0]["success_metric"]
@@ -309,6 +359,16 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert "Place tracking candidates:" in brief["codex_prompt_context"]
     assert "Place value:" in brief["codex_prompt_context"]
     assert "SmartPlace representative keyword candidates:" in brief["codex_prompt_context"]
+    assert "Treatment intelligence:" in brief["codex_prompt_context"]
+    assert "Campaign blueprint:" in brief["codex_prompt_context"]
+    assert "Campaign:" in brief["codex_prompt_context"]
+    assert "Discovery audit:" in brief["codex_prompt_context"]
+    assert "Discovery next queue:" in brief["codex_prompt_context"]
+    assert "Local market coverage:" in brief["codex_prompt_context"]
+    assert "Next exploration seeds:" in brief["codex_prompt_context"]
+    assert "Journey gaps:" in brief["codex_prompt_context"]
+    assert "Execution frontier:" in brief["codex_prompt_context"]
+    assert "Opportunity:" in brief["codex_prompt_context"]
     legacy_context = load_pathfinder_prompt_context(str(db_path), limit=5)
     assert "Place lift:" in legacy_context
     assert "Place tracking candidates:" in legacy_context
@@ -316,8 +376,19 @@ def test_pathfinder_insight_brief_builds_user_and_agent_handoff(tmp_path):
     assert brief["codex_synthesis"]["status"] == "not_requested"
     assert brief["codex_synthesis"]["place_rank_lift"]["priority_actions"]
     assert brief["codex_synthesis"]["place_value_loop"]["representative_keyword_candidates"]
+    assert brief["codex_synthesis"]["treatment_intelligence"]["priority_gaps"]
+    assert brief["codex_synthesis"]["treatment_intelligence"]["journey_gap_matrix"]
+    assert brief["codex_synthesis"]["treatment_intelligence"]["local_market_matrix"]
+    assert brief["codex_synthesis"]["execution_frontier"]["lane_counts"]
+    assert brief["codex_synthesis"]["campaign_blueprint"]["clusters"]
+    assert brief["codex_synthesis"]["discovery_audit"]["blind_spots"]
     assert brief["codex_synthesis"]["place_rank_lift"]["diagnostic_scores"]["overall_score"] > 0
+    assert any("Discovery audit breadth score" in insight for insight in brief["top_insights"])
     assert "청주" in brief["codex_synthesis"]["executive_summary"]
+    assert "진료축 커버리지" in brief["codex_synthesis"]["executive_summary"]
+    assert any("진료축 커버리지" in insight for insight in brief["top_insights"])
+    assert any("로컬 시장 커버리지" in insight for insight in brief["top_insights"])
+    assert any("환자 여정 공백" in insight for insight in brief["top_insights"])
     assert any("방문 편의" in insight for insight in brief["top_insights"])
 
 
@@ -514,6 +585,415 @@ def test_pathfinder_broker_latest_filter_uses_scan_run_id_when_last_scan_missing
     keywords = [card["keyword"] for card in brief["keyword_cards"]]
     assert keywords == ["latest scan keyword"]
     assert brief["keyword_cards"][0]["metrics"]["last_scan_run_id"] == 8
+
+
+def test_pathfinder_keyword_cards_are_portfolio_balanced_not_score_only(tmp_path):
+    db_path = tmp_path / "balanced_cards.db"
+    with sqlite3.connect(db_path) as conn:
+        _create_keyword_schema(conn)
+        rows = []
+        for idx in range(6):
+            rows.append(
+                (
+                    f"청주 다이어트 한약 비용 {idx}",
+                    "A",
+                    "다이어트",
+                    200 - idx,
+                    20,
+                    92,
+                    140 - idx,
+                    1000,
+                    1,
+                    1,
+                    "transactional",
+                    "stable",
+                    "[]",
+                    '["naver_ad", "serp"]',
+                    84,
+                    96 - idx,
+                    1,
+                )
+            )
+        rows.extend(
+            [
+                (
+                    "청주 여드름흉터 한의원 상담",
+                    "A",
+                    "피부/여드름",
+                    70,
+                    22,
+                    88,
+                    121,
+                    900,
+                    1,
+                    1,
+                    "transactional",
+                    "stable",
+                    "[]",
+                    '["serp", "blog_miner"]',
+                    80,
+                    90,
+                    1,
+                ),
+                (
+                    "청주 안면비대칭 교정 후기",
+                    "A",
+                    "안면비대칭",
+                    65,
+                    25,
+                    86,
+                    118,
+                    850,
+                    1,
+                    1,
+                    "validation",
+                    "stable",
+                    "[]",
+                    '["serp", "autocomplete"]',
+                    78,
+                    88,
+                    1,
+                ),
+                (
+                    "청주 허리통증 한의원 야간",
+                    "A",
+                    "통증/디스크",
+                    60,
+                    24,
+                    85,
+                    116,
+                    820,
+                    1,
+                    1,
+                    "transactional",
+                    "stable",
+                    "[]",
+                    '["serp", "autocomplete"]',
+                    76,
+                    86,
+                    1,
+                ),
+            ]
+        )
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights (
+                keyword, grade, category, search_volume, difficulty, opportunity,
+                priority_v3, document_count, business_core, last_scan_run_id,
+                search_intent, trend_status, quality_flags_json, source_signals_json,
+                longtail_score, business_value_score, high_value_longtail
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    cards = broker.keyword_cards(limit=4)
+    categories = [card["selection_context"]["portfolio_category"] for card in cards]
+
+    assert len(set(categories)) >= 3
+    assert categories[0] == "다이어트"
+    assert any(category in categories for category in ["피부/여드름", "안면비대칭", "통증/디스크"])
+    assert all(card["selection_context"]["strategy"] == "portfolio_balanced_mmr" for card in cards)
+    assert any(
+        card["selection_context"]["selection_reason"] == "new_treatment_axis"
+        or card["selection_context"]["selection_reason"] == "new_treatment_axis_and_intent_lens"
+        for card in cards[1:]
+    )
+
+    brief = broker.build_user_brief(limit=4)
+    assert brief["metrics"]["selection_balance_score"] > 0
+    assert "selection_context" in brief["delivery_contract"]["handoff_fields"]
+    assert "Selection:" in brief["codex_prompt_context"]
+
+
+def test_pathfinder_keyword_cards_prefer_semantic_angles_within_same_axis(tmp_path):
+    db_path = tmp_path / "semantic_cards.db"
+    with sqlite3.connect(db_path) as conn:
+        _create_keyword_schema(conn)
+        rows = [
+            ("청주 여드름흉터 한의원 비용", 150, 96),
+            ("복대동 여드름흉터 한의원 비용", 149, 95),
+            ("분평동 여드름흉터 한의원 비용", 148, 94),
+            ("청주 패인흉터 새살침 비용", 124, 90),
+            ("청주 수두흉터 한의원 비용", 121, 88),
+            ("청주 모공흉터 새살침 비용", 118, 87),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights (
+                keyword, grade, category, search_volume, difficulty, opportunity,
+                priority_v3, document_count, business_core, last_scan_run_id,
+                search_intent, trend_status, quality_flags_json, source_signals_json,
+                longtail_score, business_value_score, high_value_longtail,
+                payment_coverage_score, payment_coverage_type
+            )
+            VALUES (?, 'A', '피부/여드름', 80, 22, 88,
+                    ?, 850, 1, 1,
+                    'transactional', 'stable', '[]', '["serp", "autocomplete"]',
+                    84, ?, 1, 90, 'explicit_cost')
+            """,
+            rows,
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    cards = broker.keyword_cards(limit=3)
+    keywords = [card["keyword"] for card in cards]
+    signatures = [card["selection_context"]["semantic_signature"] for card in cards]
+
+    assert keywords[0] == "청주 여드름흉터 한의원 비용"
+    assert any("패인흉터" in keyword for keyword in keywords)
+    assert any("수두흉터" in keyword or "모공흉터" in keyword for keyword in keywords)
+    assert len(set(signatures)) == len(signatures)
+    assert all(card["selection_context"]["semantic_repeat_index"] == 1 for card in cards)
+    assert any(
+        card["selection_context"]["selection_reason"] == "new_keyword_angle_within_axis"
+        for card in cards[1:]
+    )
+
+    brief = broker.build_user_brief(limit=3)
+    assert brief["metrics"]["selection_semantic_diversity_score"] == 1.0
+    assert brief["metrics"]["selection_semantic_duplicate_count"] == 0
+    assert any("의미 다양성" in insight for insight in brief["top_insights"])
+
+
+def test_pathfinder_discovery_audit_scores_profile_surface_and_blind_spots(tmp_path):
+    broker = PathfinderInsightBroker(str(tmp_path / "discovery.db"))
+    profile = GYULIM_KEYWORD_PROFILE.profiles[0]
+    market = GYULIM_KEYWORD_PROFILE.neighborhoods[0]
+    service_term = (profile.direct_service_anchors or profile.seed_terms or profile.core_tokens)[0]
+    core_term = (profile.core_tokens or profile.seed_terms or profile.category_terms)[0]
+    keyword = f"{market} {service_term} {core_term}"
+    cards = [
+        {
+            "keyword": keyword,
+            "category": profile.category,
+            "handoff_id": "pf-discovery-a",
+            "source_signals": ["autocomplete", "serp"],
+            "metrics": {
+                "payment_coverage_score": 82,
+                "access_convenience_score": 76,
+            },
+            "signals": {},
+        }
+    ]
+
+    treatment = broker._treatment_intelligence(cards, selected_cards=cards)
+    audit = broker._discovery_audit(cards, selected_cards=cards, treatment_intelligence=treatment)
+    surface = next(item for item in audit["category_surface_map"] if item["category"] == profile.category)
+
+    assert audit["status"] == "ready"
+    assert audit["breadth_score"] >= 0
+    assert audit["source_diversity_score"] > 0
+    assert audit["coverage"]["blind_spot_count"] >= 1
+    assert audit["next_exploration_queue"]
+    assert surface["keyword_count"] == 1
+    assert surface["selected_card_count"] == 1
+    assert surface["service_anchor_coverage"]["covered_count"] >= 1
+    assert surface["core_term_coverage"]["covered_count"] >= 1
+    assert surface["source_diversity_score"] > 0
+
+
+def test_pathfinder_campaign_blueprint_keeps_support_keywords_in_cluster(tmp_path):
+    broker = PathfinderInsightBroker(str(tmp_path / "campaign.db"))
+    cards = [
+        {
+            "keyword": "cheongju scar clinic cost",
+            "category": "scar",
+            "insight_score": 96.0,
+            "handoff_id": "pf-campaign-a",
+            "metrics": {"payment_coverage_score": 92},
+            "signals": {},
+            "selection_context": {
+                "portfolio_category": "scar",
+                "semantic_signature": "scar|cost",
+                "semantic_terms": ["scar", "cost"],
+                "primary_local_market": "cheongju",
+            },
+            "risk_adjusted_opportunity": {
+                "adjusted_score": 95.0,
+                "execution_lane": "review_then_execute",
+                "primary_guardrails": ["medical claims review"],
+            },
+            "risks": [],
+        },
+        {
+            "keyword": "cheongju acne scar regeneration",
+            "category": "scar",
+            "insight_score": 88.0,
+            "handoff_id": "pf-campaign-b",
+            "metrics": {"review_surface_score": 80},
+            "signals": {},
+            "selection_context": {
+                "portfolio_category": "scar",
+                "semantic_signature": "scar|regeneration",
+                "semantic_terms": ["scar", "regeneration"],
+                "primary_local_market": "bungpyeong",
+            },
+            "risk_adjusted_opportunity": {
+                "adjusted_score": 88.0,
+                "execution_lane": "review_then_execute",
+                "primary_guardrails": [],
+            },
+            "risks": [],
+        },
+        {
+            "keyword": "cheongju chickenpox scar period",
+            "category": "scar",
+            "insight_score": 84.0,
+            "handoff_id": "pf-campaign-c",
+            "metrics": {"content_actionability_score": 78},
+            "signals": {},
+            "selection_context": {
+                "portfolio_category": "scar",
+                "semantic_signature": "scar|period",
+                "semantic_terms": ["scar", "period"],
+                "primary_local_market": "sannam",
+            },
+            "risk_adjusted_opportunity": {
+                "adjusted_score": 84.0,
+                "execution_lane": "review_then_execute",
+                "primary_guardrails": [],
+            },
+            "risks": [],
+        },
+    ]
+
+    blueprint = broker._campaign_blueprint(
+        cards,
+        treatment_intelligence={
+            "category_scores": [
+                {
+                    "category": "scar",
+                    "journey_stage_coverage": {"missing_stages": ["safety"]},
+                    "local_market_coverage": {"missing_priority_markets": ["bokdae"]},
+                }
+            ]
+        },
+        execution_frontier={"lane_counts": {"review_then_execute": 3}},
+    )
+
+    assert blueprint["cluster_count"] == 1
+    cluster = blueprint["clusters"][0]
+    assert cluster["pillar_keyword"] == "cheongju scar clinic cost"
+    assert cluster["support_keywords"] == [
+        "cheongju acne scar regeneration",
+        "cheongju chickenpox scar period",
+    ]
+    assert cluster["content_assets"]
+    assert cards[0]["campaign_context"]["role"] == "pillar"
+    assert cards[1]["campaign_context"]["role"] == "support"
+    assert broker._support_keywords(cards, cards[0]) == cluster["support_keywords"]
+    assert broker._support_keywords(cards, cards[1])[0] == cluster["pillar_keyword"]
+    task = broker._task_contract(cards[1], "blog_agent")
+    assert task["campaign_context"]["cluster_id"] == cluster["cluster_id"]
+    assert any("campaign_context" in item for item in task["success_criteria"])
+
+
+def test_pathfinder_keyword_cards_prefer_local_market_diversity(tmp_path):
+    db_path = tmp_path / "local_market_cards.db"
+    with sqlite3.connect(db_path) as conn:
+        _create_keyword_schema(conn)
+        rows = [
+            ("분평동 다이어트 한약 비용 1", 160, 96),
+            ("분평동 다이어트 한약 비용 2", 159, 95),
+            ("분평동 다이어트 한약 비용 3", 158, 94),
+            ("분평동 다이어트 한약 비용 4", 157, 93),
+            ("복대동 다이어트 한약 비용", 132, 89),
+            ("가경동 다이어트 한약 비용", 129, 88),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights (
+                keyword, grade, category, search_volume, difficulty, opportunity,
+                priority_v3, document_count, business_core, last_scan_run_id,
+                search_intent, trend_status, quality_flags_json, source_signals_json,
+                longtail_score, business_value_score, high_value_longtail,
+                payment_coverage_score, payment_coverage_type
+            )
+            VALUES (?, 'A', '다이어트', 90, 20, 90,
+                    ?, 900, 1, 1,
+                    'transactional', 'stable', '[]', '["serp", "naver_ad"]',
+                    86, ?, 1, 90, 'explicit_cost')
+            """,
+            rows,
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    cards = broker.keyword_cards(limit=3)
+    markets = [card["selection_context"]["primary_local_market"] for card in cards]
+
+    assert markets[0] == "분평동"
+    assert len(set(markets)) >= 2
+    assert any(market in markets for market in ["복대동", "가경동"])
+    assert all(card["selection_context"]["local_market_repeat_index"] == 1 for card in cards[:2])
+
+    brief = broker.build_user_brief(limit=3)
+    assert brief["metrics"]["selection_local_market_diversity_score"] >= 0.667
+    assert brief["treatment_intelligence"]["coverage"]["local_market_coverage"]["covered_target_market_count"] >= 3
+    assert any("로컬 시장 다양성" in insight for insight in brief["top_insights"])
+
+
+def test_pathfinder_execution_frontier_penalizes_guardrail_risk(tmp_path):
+    db_path = tmp_path / "frontier_cards.db"
+    with sqlite3.connect(db_path) as conn:
+        _create_keyword_schema(conn)
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights (
+                keyword, grade, category, search_volume, difficulty, opportunity,
+                priority_v3, document_count, business_core, last_scan_run_id,
+                search_intent, trend_status, quality_flags_json, source_signals_json,
+                longtail_score, business_value_score, high_value_longtail,
+                payment_coverage_score, payment_coverage_type,
+                medical_ad_risk_score, content_actionability_score, competitor_brand_risk_score
+            )
+            VALUES (?, 'A', '피부/여드름', 90, 18, 94,
+                    ?, 950, 1, 1,
+                    'transactional', 'stable', ?, '["serp", "naver_ad"]',
+                    88, ?, 1, 90, 'explicit_cost',
+                    ?, ?, ?)
+            """,
+            [
+                (
+                    "청주 패인흉터 새살침 비용",
+                    132,
+                    "[]",
+                    92,
+                    10,
+                    86,
+                    0,
+                ),
+                (
+                    "청주 여드름흉터 완치 보장 비용",
+                    134,
+                    '["medical_ad_high_risk"]',
+                    96,
+                    86,
+                    82,
+                    0,
+                ),
+            ],
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    brief = broker.build_user_brief(limit=2)
+    cards_by_keyword = {card["keyword"]: card for card in brief["keyword_cards"]}
+    safe = cards_by_keyword["청주 패인흉터 새살침 비용"]["risk_adjusted_opportunity"]
+    risky = cards_by_keyword["청주 여드름흉터 완치 보장 비용"]["risk_adjusted_opportunity"]
+
+    assert safe["adjusted_score"] > risky["adjusted_score"]
+    assert safe["execution_lane"] in {"ready_to_execute", "review_then_execute"}
+    assert risky["execution_lane"] == "operator_review_required"
+    assert "의료광고 표현 사전 검토" in risky["primary_guardrails"]
+    assert brief["execution_frontier"]["review_queue"][0]["keyword"] == "청주 여드름흉터 완치 보장 비용"
+    assert brief["execution_frontier"]["ready_queue"][0]["keyword"] == "청주 패인흉터 새살침 비용"
+    assert any("실행 레인" in insight for insight in brief["top_insights"])
 
 
 def test_pathfinder_codex_synthesis_falls_back_when_ai_unavailable(tmp_path, monkeypatch):

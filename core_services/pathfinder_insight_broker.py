@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 
 AGENT_ALIASES = {
@@ -84,6 +87,7 @@ class PathfinderInsightBroker:
     """Builds cross-agent insight contracts from Pathfinder output."""
 
     VERSION = "pathfinder.insight.v1"
+    JOURNEY_STAGE_ORDER = ("decision", "access", "coverage", "validation", "safety")
 
     TEXT_DEFAULTS: Dict[str, str] = {
         "keyword": "",
@@ -424,26 +428,58 @@ class PathfinderInsightBroker:
             business_core_only=business_core_only,
             latest_verified_only=latest_verified_only,
         )
+        market_cards = self._market_analysis_cards(
+            business_core_only=business_core_only,
+            latest_verified_only=latest_verified_only,
+        )
         metrics = self._brief_metrics(cards)
+        treatment_intelligence = self._treatment_intelligence(market_cards or cards, selected_cards=cards)
+        discovery_audit = self._discovery_audit(
+            market_cards or cards,
+            selected_cards=cards,
+            treatment_intelligence=treatment_intelligence,
+        )
         place_tracking = self._place_tracking_summary(cards, metrics)
         place_rank_lift = self._place_rank_lift_plan(cards, metrics, place_tracking)
         self._attach_place_lift_context(cards, place_rank_lift)
         place_value_loop = self._place_value_loop(cards, metrics, place_tracking, place_rank_lift)
         self._attach_place_value_context(cards, place_value_loop)
+        execution_frontier = self._execution_frontier(cards, treatment_intelligence=treatment_intelligence)
+        campaign_blueprint = self._campaign_blueprint(
+            cards,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+        )
         action_queue = self._build_action_queue(cards)
-        summary = self._build_summary(cards, metrics, place_tracking)
+        summary = self._build_summary(
+            cards,
+            metrics,
+            place_tracking,
+            treatment_intelligence,
+            execution_frontier,
+            campaign_blueprint,
+            discovery_audit,
+        )
         top_insights = self._build_top_insights(
             cards,
             metrics,
             place_tracking,
             place_rank_lift,
             place_value_loop,
+            treatment_intelligence,
+            execution_frontier,
+            campaign_blueprint,
+            discovery_audit,
         )
-        agent_handoffs = self.build_agent_handoffs(cards=cards)
+        agent_handoffs = self.build_agent_handoffs(cards=cards, campaign_blueprint=campaign_blueprint)
         prompt_context = self.format_prompt_context(
             cards=cards,
             agent="all",
             place_value_loop=place_value_loop,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+            campaign_blueprint=campaign_blueprint,
+            discovery_audit=discovery_audit,
         )
         codex_synthesis = self._codex_synthesis(
             cards=cards,
@@ -451,6 +487,10 @@ class PathfinderInsightBroker:
             place_tracking=place_tracking,
             place_rank_lift=place_rank_lift,
             place_value_loop=place_value_loop,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+            campaign_blueprint=campaign_blueprint,
+            discovery_audit=discovery_audit,
             action_queue=action_queue,
             requested=use_codex,
         )
@@ -475,6 +515,10 @@ class PathfinderInsightBroker:
             "place_tracking": place_tracking,
             "place_rank_lift": place_rank_lift,
             "place_value_loop": place_value_loop,
+            "treatment_intelligence": treatment_intelligence,
+            "discovery_audit": discovery_audit,
+            "execution_frontier": execution_frontier,
+            "campaign_blueprint": campaign_blueprint,
             "quality_gate": quality_gate,
             "feedback_summary": feedback_summary,
             "decision_overview": decision_overview,
@@ -491,6 +535,7 @@ class PathfinderInsightBroker:
         self,
         *,
         cards: Optional[List[Dict[str, Any]]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
         agent: str = "all",
         limit: int = 8,
         business_core_only: bool = True,
@@ -505,6 +550,13 @@ class PathfinderInsightBroker:
         selected = cards[:limit]
         place_rank_lift = self._ensure_place_lift_context(selected)
         self._ensure_place_value_context(selected, place_rank_lift=place_rank_lift)
+        treatment_intelligence = self._treatment_intelligence(selected, selected_cards=selected)
+        execution_frontier = self._execution_frontier(selected, treatment_intelligence=treatment_intelligence)
+        campaign_blueprint = campaign_blueprint or self._campaign_blueprint(
+            selected,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+        )
         requested = AGENT_ALIASES.get(agent, agent)
         packets = {
             "blog_agent": self._blog_packet(selected),
@@ -521,6 +573,9 @@ class PathfinderInsightBroker:
             "agent": requested,
             "feedback_summary": self._feedback_summary(selected),
             "decision_overview": self._decision_overview(selected),
+            "treatment_intelligence": treatment_intelligence,
+            "execution_frontier": execution_frontier,
+            "campaign_blueprint": campaign_blueprint,
             "packets": packets,
         }
 
@@ -538,17 +593,278 @@ class PathfinderInsightBroker:
         business_core_only: bool = True,
         latest_verified_only: bool = True,
     ) -> List[Dict[str, Any]]:
+        requested_limit = max(1, min(int(limit), 100))
+        pool_limit = max(requested_limit, min(500, max(requested_limit * 25, len(GYULIM_KEYWORD_PROFILE.focus_categories) * 16)))
         rows = self._fetch_keywords(
-            limit=max(1, min(int(limit), 100)),
+            limit=pool_limit,
             business_core_only=business_core_only,
             latest_verified_only=latest_verified_only,
         )
         cards = [self._row_to_card(row) for row in rows]
         cards.sort(key=lambda item: item["insight_score"], reverse=True)
-        selected = cards[:limit]
+        selected = self._portfolio_balanced_selection(cards, requested_limit)
         self._attach_place_rank_snapshots(selected)
         self._attach_feedback_snapshots(selected)
         return selected
+
+    def _card_focus_category(self, card: Dict[str, Any]) -> str:
+        raw_category = str(card.get("category") or "기타")
+        normalized = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        return normalized if normalized in GYULIM_KEYWORD_PROFILE.focus_categories else raw_category
+
+    def _selection_reason(
+        self,
+        card: Dict[str, Any],
+        category_seen_before: int,
+        new_lenses: Sequence[str],
+        semantic_seen_before: int = 0,
+    ) -> str:
+        if category_seen_before == 0 and new_lenses:
+            return "new_treatment_axis_and_intent_lens"
+        if category_seen_before == 0:
+            return "new_treatment_axis"
+        if semantic_seen_before == 0:
+            return "new_keyword_angle_within_axis"
+        if new_lenses:
+            return "new_intent_lens_within_existing_axis"
+        if (card.get("signals") or {}).get("high_value_longtail"):
+            return "high_value_longtail_depth"
+        return "highest_remaining_score"
+
+    def _semantic_terms(self, card: Dict[str, Any], limit: int = 3) -> List[str]:
+        keyword = str(card.get("keyword") or "")
+        keyword_compact = re.sub(r"\s+", "", keyword).lower()
+        category = self._card_focus_category(card)
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return [category]
+
+        stop_terms = {
+            "한의원",
+            "한방",
+            "한약",
+            "상담",
+            "예약",
+            "후기",
+            "추천",
+            "비용",
+            "가격",
+            "주차",
+            "야간",
+            "주말",
+            "진료시간",
+            "치료",
+            "치료비",
+        }
+        stop_terms.update(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+        stop_terms.update(GYULIM_KEYWORD_PROFILE.neighborhoods)
+        weighted_candidates: List[tuple[int, str]] = []
+        for priority, terms in enumerate((profile.core_tokens + profile.category_terms, profile.seed_terms)):
+            for term in terms:
+                weighted_candidates.append((priority, term))
+        candidates = [
+            term
+            for _, term in sorted(
+                set(weighted_candidates),
+                key=lambda item: (item[0], -len(re.sub(r"\s+", "", item[1]))),
+            )
+        ]
+        terms: List[str] = []
+        for term in candidates:
+            compact = re.sub(r"\s+", "", term).lower()
+            if not compact or term in stop_terms or len(compact) < 2:
+                continue
+            if compact not in keyword_compact:
+                continue
+            existing_compacts = [re.sub(r"\s+", "", existing).lower() for existing in terms]
+            if any(compact in existing or existing in compact for existing in existing_compacts):
+                continue
+            if any(anchor in term for anchor in ("한의원", "한방", "치료")) and existing_compacts:
+                continue
+            if compact in keyword_compact:
+                terms.append(term)
+            if len(terms) >= limit:
+                break
+        return terms or [category]
+
+    def _semantic_signature(self, card: Dict[str, Any]) -> str:
+        category = self._card_focus_category(card)
+        terms = self._semantic_terms(card, limit=2)
+        lenses = [
+            lens
+            for lens in self._keyword_lenses(card)
+            if lens not in {"high_value_longtail", "local_surface"}
+        ]
+        lens_key = "+".join(lenses[:2] or ["general"])
+        return "|".join([category, "+".join(terms), lens_key])
+
+    def _keyword_local_markets(self, card: Dict[str, Any]) -> List[str]:
+        keyword = str(card.get("keyword") or "")
+        ordered_regions = list(
+            dict.fromkeys(
+                GYULIM_KEYWORD_PROFILE.neighborhoods
+                + GYULIM_KEYWORD_PROFILE.cheongju_regions
+                + GYULIM_KEYWORD_PROFILE.nearby_regions
+            )
+        )
+        matches = [region for region in ordered_regions if region and region in keyword]
+        if len(matches) > 1:
+            matches = [
+                region for region in matches
+                if not any(region != other and region in other for other in matches)
+            ]
+        if len(matches) > 1:
+            specific_matches = [
+                region for region in matches
+                if region not in {"청주", "청주시"} and not region.endswith(("구", "시", "군"))
+            ]
+            if specific_matches:
+                matches = specific_matches
+        return list(dict.fromkeys(matches))[:3] or ["청주-wide"]
+
+    def _primary_local_market(self, card: Dict[str, Any]) -> str:
+        return self._keyword_local_markets(card)[0]
+
+    def _portfolio_balanced_selection(
+        self,
+        cards: Sequence[Dict[str, Any]],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        if not cards:
+            return []
+        if len(cards) <= limit:
+            selected = list(cards)
+        else:
+            max_score = max(float(card.get("insight_score", 0.0) or 0.0) for card in cards) or 1.0
+            remaining = list(cards)
+            selected = []
+            category_counts: Counter = Counter()
+            lens_counts: Counter = Counter()
+            signature_counts: Counter = Counter()
+            topic_counts: Counter = Counter()
+            local_market_counts: Counter = Counter()
+            category_market_counts: Counter = Counter()
+
+            while remaining and len(selected) < limit:
+                best_idx = 0
+                best_score = -1.0
+                for idx, card in enumerate(remaining):
+                    category = self._card_focus_category(card)
+                    lenses = self._keyword_lenses(card)
+                    semantic_terms = self._semantic_terms(card)
+                    signature = self._semantic_signature(card)
+                    topic_key = (category, semantic_terms[0] if semantic_terms else category)
+                    primary_market = self._primary_local_market(card)
+                    category_market_key = (category, primary_market)
+                    quality = float(card.get("insight_score", 0.0) or 0.0) / max_score
+                    category_novelty = 1.0 / (1.0 + category_counts[category])
+                    lens_novelty = (
+                        sum(1 for lens in lenses if lens_counts[lens] == 0) / max(1, len(lenses))
+                    )
+                    semantic_novelty = 1.0 / (1.0 + signature_counts[signature])
+                    local_market_novelty = 1.0 / (1.0 + local_market_counts[primary_market])
+                    unseen_signature_bonus = 0.08 if signature_counts[signature] == 0 else 0.0
+                    high_value_bonus = 0.06 if (card.get("signals") or {}).get("high_value_longtail") else 0.0
+                    confidence_bonus = min(0.05, float(card.get("confidence", 0.0) or 0.0) * 0.05)
+                    review_penalty = 0.05 if (card.get("human_review") or {}).get("required") else 0.0
+                    repeat_penalty = min(0.30, category_counts[category] * 0.075)
+                    semantic_penalty = min(
+                        0.28,
+                        signature_counts[signature] * 0.16 + topic_counts[topic_key] * 0.04,
+                    )
+                    local_market_penalty = min(
+                        0.18,
+                        local_market_counts[primary_market] * 0.045
+                        + category_market_counts[category_market_key] * 0.035,
+                    )
+                    score = (
+                        quality * 0.49
+                        + category_novelty * 0.26
+                        + lens_novelty * 0.08
+                        + semantic_novelty * 0.10
+                        + local_market_novelty * 0.06
+                        + unseen_signature_bonus
+                        + high_value_bonus
+                        + confidence_bonus
+                        - review_penalty
+                        - repeat_penalty
+                        - semantic_penalty
+                        - local_market_penalty
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_idx = idx
+                card = remaining.pop(best_idx)
+                category = self._card_focus_category(card)
+                lenses = self._keyword_lenses(card)
+                semantic_terms = self._semantic_terms(card)
+                signature = self._semantic_signature(card)
+                local_markets = self._keyword_local_markets(card)
+                primary_market = local_markets[0]
+                new_lenses = [lens for lens in lenses if lens_counts[lens] == 0]
+                card["selection_context"] = {
+                    "selection_rank": len(selected) + 1,
+                    "selection_score": round(best_score, 4),
+                    "selection_reason": self._selection_reason(
+                        card,
+                        category_counts[category],
+                        new_lenses,
+                        signature_counts[signature],
+                    ),
+                    "portfolio_category": category,
+                    "category_repeat_index": category_counts[category] + 1,
+                    "intent_lenses": lenses,
+                    "new_intent_lenses": new_lenses,
+                    "semantic_terms": semantic_terms,
+                    "semantic_signature": signature,
+                    "semantic_repeat_index": signature_counts[signature] + 1,
+                    "local_markets": local_markets,
+                    "primary_local_market": primary_market,
+                    "local_market_repeat_index": local_market_counts[primary_market] + 1,
+                    "strategy": "portfolio_balanced_mmr",
+                }
+                selected.append(card)
+                category_counts[category] += 1
+                lens_counts.update(lenses)
+                signature_counts[signature] += 1
+                topic_counts[(category, semantic_terms[0] if semantic_terms else category)] += 1
+                local_market_counts[primary_market] += 1
+                category_market_counts[(category, primary_market)] += 1
+
+        for idx, card in enumerate(selected, 1):
+            card.setdefault("selection_context", {
+                "selection_rank": idx,
+                "selection_score": round(float(card.get("insight_score", 0.0) or 0.0), 4),
+                "selection_reason": "within_requested_limit",
+                "portfolio_category": self._card_focus_category(card),
+                "category_repeat_index": 1,
+                "intent_lenses": self._keyword_lenses(card),
+                "new_intent_lenses": self._keyword_lenses(card),
+                "semantic_terms": self._semantic_terms(card),
+                "semantic_signature": self._semantic_signature(card),
+                "semantic_repeat_index": 1,
+                "local_markets": self._keyword_local_markets(card),
+                "primary_local_market": self._primary_local_market(card),
+                "local_market_repeat_index": 1,
+                "strategy": "score_order",
+            })
+        return selected
+
+    def _market_analysis_cards(
+        self,
+        *,
+        business_core_only: bool,
+        latest_verified_only: bool,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        rows = self._fetch_keywords(
+            limit=max(1, min(int(limit), 500)),
+            business_core_only=business_core_only,
+            latest_verified_only=latest_verified_only,
+        )
+        cards = [self._row_to_card(row) for row in rows]
+        cards.sort(key=lambda item: item["insight_score"], reverse=True)
+        return cards
 
     def format_prompt_context(
         self,
@@ -558,6 +874,10 @@ class PathfinderInsightBroker:
         topic: Optional[str] = None,
         limit: int = 5,
         place_value_loop: Optional[Dict[str, Any]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
+        discovery_audit: Optional[Dict[str, Any]] = None,
     ) -> str:
         if cards is None:
             cards = self.keyword_cards(limit=limit)
@@ -567,12 +887,81 @@ class PathfinderInsightBroker:
             selected,
             place_rank_lift=place_rank_lift,
         )
+        treatment_intelligence = treatment_intelligence or self._treatment_intelligence(selected, selected_cards=selected)
+        execution_frontier = execution_frontier or self._execution_frontier(
+            selected,
+            treatment_intelligence=treatment_intelligence,
+        )
+        campaign_blueprint = campaign_blueprint or self._campaign_blueprint(
+            selected,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+        )
+        discovery_audit = discovery_audit or self._discovery_audit(
+            selected,
+            selected_cards=selected,
+            treatment_intelligence=treatment_intelligence,
+        )
         lines = [
             "[Pathfinder Insight Handoff]",
             f"- Agent: {agent}",
             f"- Topic filter: {topic or 'none'}",
             "- Use these as evidence-backed campaign inputs, not as generic keyword stuffing.",
         ]
+        if campaign_blueprint:
+            lines.append(
+                f"- Campaign blueprint: clusters={campaign_blueprint.get('cluster_count', 0)} | "
+                f"pillar_keywords={', '.join(item.get('pillar_keyword', '') for item in (campaign_blueprint.get('clusters') or [])[:3])}"
+            )
+        if discovery_audit:
+            coverage = discovery_audit.get("coverage") or {}
+            lines.append(
+                f"- Discovery audit: breadth={discovery_audit.get('breadth_score', 0)} | "
+                f"term_coverage={discovery_audit.get('profile_term_coverage_score', 0)} | "
+                f"sources={discovery_audit.get('source_diversity_score', 0)} | "
+                f"blind_spots={coverage.get('blind_spot_count', 0)}"
+            )
+            queue = discovery_audit.get("next_exploration_queue") or []
+            if queue:
+                lines.append("- Discovery next queue: " + ", ".join(queue[:6]))
+        if execution_frontier:
+            lanes = execution_frontier.get("lane_counts") or {}
+            lines.append(
+                "- Execution frontier: "
+                + ", ".join(f"{lane}={count}" for lane, count in lanes.items())
+                + f" | avg_adjusted={execution_frontier.get('avg_adjusted_score', 0)}"
+            )
+        if treatment_intelligence:
+            coverage = treatment_intelligence.get("coverage") or {}
+            leaders = treatment_intelligence.get("portfolio_leaders") or []
+            gaps = treatment_intelligence.get("priority_gaps") or []
+            lines.append(
+                f"- Treatment intelligence: covered={coverage.get('covered_focus_categories', 0)}/"
+                f"{coverage.get('total_focus_categories', 0)} | "
+                f"balance={coverage.get('balance_score', 0)} | "
+                f"leaders={', '.join(item.get('category', '') for item in leaders[:3]) or 'none'} | "
+                f"gaps={', '.join(gaps[:4]) or 'none'}"
+            )
+            local_coverage = coverage.get("local_market_coverage") or {}
+            if local_coverage:
+                lines.append(
+                    f"- Local market coverage: covered={local_coverage.get('covered_target_market_count', 0)}/"
+                    f"{local_coverage.get('target_market_count', 0)} | "
+                    f"balance={local_coverage.get('balance_score', 0)} | "
+                    f"missing={', '.join((local_coverage.get('missing_target_markets') or [])[:5]) or 'none'}"
+                )
+            next_seeds = treatment_intelligence.get("next_exploration_seeds") or []
+            if next_seeds:
+                lines.append("- Next exploration seeds: " + ", ".join(next_seeds[:6]))
+            journey_gaps = treatment_intelligence.get("journey_gap_matrix") or []
+            if journey_gaps:
+                lines.append(
+                    "- Journey gaps: "
+                    + "; ".join(
+                        f"{item.get('category')}={','.join(item.get('missing_stages') or [])}"
+                        for item in journey_gaps[:4]
+                    )
+                )
         if place_rank_lift:
             expansion = place_rank_lift.get("tracking_expansion") or {}
             candidates = expansion.get("candidate_keywords") or []
@@ -606,6 +995,34 @@ class PathfinderInsightBroker:
                 f"business={metrics['business_value_score']:.0f} | volume={metrics['search_volume']} | "
                 f"intent={card['search_intent']} | reasons={', '.join(card['why_it_matters'][:4])}"
             )
+            selection = card.get("selection_context") or {}
+            if selection:
+                lines.append(
+                    f"   - Selection: {selection.get('strategy')} | "
+                    f"rank={selection.get('selection_rank')} | "
+                    f"category={selection.get('portfolio_category')} | "
+                    f"reason={selection.get('selection_reason')} | "
+                    f"lenses={', '.join(selection.get('intent_lenses') or [])} | "
+                    f"semantic={selection.get('semantic_signature', '')} | "
+                    f"market={selection.get('primary_local_market', '')}"
+                )
+            campaign = card.get("campaign_context") or {}
+            if campaign:
+                support = campaign.get("support_keywords") or []
+                lines.append(
+                    f"   - Campaign: cluster={campaign.get('cluster_id')} | "
+                    f"role={campaign.get('role')} | "
+                    f"pillar={campaign.get('pillar_keyword')} | "
+                    f"support={', '.join(support[:4])}"
+                )
+            opportunity = card.get("risk_adjusted_opportunity") or {}
+            if opportunity:
+                lines.append(
+                    f"   - Opportunity: lane={opportunity.get('execution_lane')} | "
+                    f"adjusted={opportunity.get('adjusted_score')} | "
+                    f"risk_penalty={opportunity.get('risk_penalty')} | "
+                    f"guardrails={', '.join(opportunity.get('primary_guardrails') or []) or 'standard'}"
+                )
             evidence = [
                 f"{item.get('signal')}={item.get('value')}"
                 for item in card.get("evidence_trace", [])[:4]
@@ -1096,6 +1513,13 @@ class PathfinderInsightBroker:
         data_quality = self._data_quality_snapshot(row, evidence_trace, quality_flags, source_signals)
         decision_packet = self._decision_packet(row, confidence, human_review, data_quality, risks)
         measurement_plan = self._measurement_plan(row, decision_packet)
+        risk_adjusted_opportunity = self._risk_adjusted_opportunity(
+            row,
+            confidence=confidence,
+            risks=risks,
+            data_quality=data_quality,
+            decision_packet=decision_packet,
+        )
         handoff_id = self._handoff_id(row, evidence_trace)
         agent_notes = self._agent_notes(row, reasons, risks)
         actions = self._keyword_actions(row, reasons, risks)
@@ -1126,6 +1550,7 @@ class PathfinderInsightBroker:
             "data_quality": data_quality,
             "decision_packet": decision_packet,
             "measurement_plan": measurement_plan,
+            "risk_adjusted_opportunity": risk_adjusted_opportunity,
             "quality_flags": quality_flags,
             "source_signals": source_signals,
             "provenance": {
@@ -1395,6 +1820,99 @@ class PathfinderInsightBroker:
             "publish_policy": publish_policy,
             "reason_codes": list(dict.fromkeys(reasons)),
             "primary_decision": self._primary_decision(row),
+        }
+
+    def _risk_adjusted_opportunity(
+        self,
+        row: Dict[str, Any],
+        *,
+        confidence: float,
+        risks: Sequence[str],
+        data_quality: Dict[str, Any],
+        decision_packet: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        intent_surface = max(
+            _as_float(row.get("local_surface_score")),
+            _as_float(row.get("availability_intent_score")),
+            _as_float(row.get("payment_coverage_score")),
+            _as_float(row.get("access_convenience_score")),
+            _as_float(row.get("review_surface_score")),
+        )
+        raw_score = (
+            _as_float(row.get("business_value_score")) * 0.30
+            + _as_float(row.get("longtail_score")) * 0.18
+            + max(_as_float(row.get("priority_v3")), _as_float(row.get("opportunity"))) * 0.22
+            + intent_surface * 0.16
+            + min(100.0, _as_float(row.get("verification_score"))) * 0.08
+            + confidence * 100.0 * 0.06
+        )
+        if _as_int(row.get("high_value_longtail")):
+            raw_score += 5.0
+
+        medical_risk = _as_float(row.get("medical_ad_risk_score"))
+        competitor_risk = _as_float(row.get("competitor_brand_risk_score"))
+        reputation_risk = _as_float(row.get("reputation_risk_score"))
+        content_actionability = _as_float(row.get("content_actionability_score"))
+        content_penalty = max(0.0, 60.0 - content_actionability) * 0.18 if content_actionability else 0.0
+        data_penalty = 0.0
+        if data_quality.get("status") == "thin":
+            data_penalty += 14.0
+        elif data_quality.get("warnings"):
+            data_penalty += 6.0
+        review_penalty = 8.0 if decision_packet.get("state") == "review" else 0.0
+        hold_penalty = 22.0 if decision_packet.get("state") == "hold" else 0.0
+        risk_penalty = (
+            min(18.0, medical_risk * 0.18)
+            + min(14.0, competitor_risk * 0.14)
+            + min(12.0, reputation_risk * 0.12)
+            + min(14.0, len(risks) * 3.5)
+            + content_penalty
+            + data_penalty
+            + review_penalty
+            + hold_penalty
+        )
+        adjusted_score = round(max(0.0, min(100.0, raw_score - risk_penalty)), 2)
+
+        if decision_packet.get("state") == "hold" or adjusted_score < 40:
+            lane = "hold_or_research"
+        elif content_actionability and content_actionability < 45:
+            lane = "research_before_content"
+        elif risks or medical_risk >= 50 or competitor_risk >= 50 or reputation_risk >= 50:
+            lane = "operator_review_required"
+        elif adjusted_score >= 78 and decision_packet.get("state") == "go":
+            lane = "ready_to_execute"
+        elif adjusted_score >= 62:
+            lane = "review_then_execute"
+        else:
+            lane = "validate_before_scaling"
+
+        primary_guardrails = list(risks)
+        if medical_risk >= 50 and "의료광고 표현 사전 검토" not in primary_guardrails:
+            primary_guardrails.append("의료광고 표현 사전 검토")
+        if competitor_risk >= 50 and "경쟁사 직접 비교 금지" not in primary_guardrails:
+            primary_guardrails.append("경쟁사 직접 비교 금지")
+        if reputation_risk >= 50 and "후기/평판 조작 오해 방지" not in primary_guardrails:
+            primary_guardrails.append("후기/평판 조작 오해 방지")
+
+        return {
+            "raw_score": round(raw_score, 2),
+            "adjusted_score": adjusted_score,
+            "execution_lane": lane,
+            "risk_penalty": round(risk_penalty, 2),
+            "content_actionability_score": round(content_actionability, 2),
+            "intent_surface_score": round(intent_surface, 2),
+            "primary_guardrails": list(dict.fromkeys(primary_guardrails))[:6],
+            "components": {
+                "business_value_score": _as_float(row.get("business_value_score")),
+                "longtail_score": _as_float(row.get("longtail_score")),
+                "priority_or_opportunity": max(_as_float(row.get("priority_v3")), _as_float(row.get("opportunity"))),
+                "confidence_score": round(confidence * 100.0, 2),
+                "medical_ad_risk_score": medical_risk,
+                "competitor_brand_risk_score": competitor_risk,
+                "reputation_risk_score": reputation_risk,
+                "data_quality_status": data_quality.get("status"),
+                "decision_state": decision_packet.get("state"),
+            },
         }
 
     def _primary_decision(self, row: Dict[str, Any]) -> str:
@@ -1826,6 +2344,45 @@ class PathfinderInsightBroker:
             if (snap.get("current") or {}).get("status") == "found" and _as_int((snap.get("current") or {}).get("rank")) > 0
         ]
         place_ranks = [_as_int((snap.get("current") or {}).get("rank")) for snap in visible_place]
+        selection_categories = Counter(
+            (card.get("selection_context") or {}).get("portfolio_category") or card["category"]
+            for card in cards
+        )
+        selection_signatures = Counter(
+            (card.get("selection_context") or {}).get("semantic_signature") or self._semantic_signature(card)
+            for card in cards
+        )
+        selection_local_markets = Counter(
+            (card.get("selection_context") or {}).get("primary_local_market") or self._primary_local_market(card)
+            for card in cards
+        )
+        execution_lanes = Counter(
+            (card.get("risk_adjusted_opportunity") or {}).get("execution_lane") or "unknown"
+            for card in cards
+        )
+        adjusted_scores = [
+            float((card.get("risk_adjusted_opportunity") or {}).get("adjusted_score") or 0.0)
+            for card in cards
+        ]
+        if cards and len(GYULIM_KEYWORD_PROFILE.focus_categories) > 1:
+            selection_entropy = -sum(
+                (count / len(cards)) * math.log(count / len(cards))
+                for count in selection_categories.values()
+                if count > 0
+            )
+            selection_balance = round(selection_entropy / math.log(len(GYULIM_KEYWORD_PROFILE.focus_categories)), 3)
+        else:
+            selection_balance = 0.0
+        if cards:
+            semantic_diversity = round(len(selection_signatures) / len(cards), 3)
+            semantic_duplicate_count = sum(max(0, count - 1) for count in selection_signatures.values())
+            local_market_diversity = round(len(selection_local_markets) / len(cards), 3)
+            local_market_duplicate_count = sum(max(0, count - 1) for count in selection_local_markets.values())
+        else:
+            semantic_diversity = 0.0
+            semantic_duplicate_count = 0
+            local_market_diversity = 0.0
+            local_market_duplicate_count = 0
         return {
             "total_keywords": len(cards),
             "high_value_longtail_count": sum(1 for card in cards if card["signals"]["high_value_longtail"]),
@@ -1857,7 +2414,881 @@ class PathfinderInsightBroker:
             ),
             "avg_current_place_rank": round(sum(place_ranks) / len(place_ranks), 2) if place_ranks else None,
             "category_counts": dict(categories),
+            "selection_category_counts": dict(selection_categories),
+            "selection_balance_score": selection_balance,
+            "selection_semantic_signature_counts": dict(selection_signatures),
+            "selection_semantic_diversity_score": semantic_diversity,
+            "selection_semantic_duplicate_count": semantic_duplicate_count,
+            "selection_local_market_counts": dict(selection_local_markets),
+            "selection_local_market_diversity_score": local_market_diversity,
+            "selection_local_market_duplicate_count": local_market_duplicate_count,
+            "execution_lane_counts": dict(execution_lanes),
+            "avg_risk_adjusted_opportunity": round(sum(adjusted_scores) / len(adjusted_scores), 2) if adjusted_scores else 0.0,
         }
+
+    def _execution_frontier(
+        self,
+        cards: Sequence[Dict[str, Any]],
+        *,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        lane_order = (
+            "ready_to_execute",
+            "review_then_execute",
+            "operator_review_required",
+            "research_before_content",
+            "validate_before_scaling",
+            "hold_or_research",
+        )
+        lane_rank = {lane: idx for idx, lane in enumerate(lane_order)}
+        lane_counts: Counter = Counter()
+        rows: List[Dict[str, Any]] = []
+        for card in cards:
+            opportunity = card.get("risk_adjusted_opportunity") or {}
+            lane = str(opportunity.get("execution_lane") or "unknown")
+            lane_counts[lane] += 1
+            rows.append({
+                "handoff_id": card.get("handoff_id"),
+                "keyword": card.get("keyword"),
+                "category": (card.get("selection_context") or {}).get("portfolio_category") or card.get("category"),
+                "semantic_signature": (card.get("selection_context") or {}).get("semantic_signature"),
+                "execution_lane": lane,
+                "adjusted_score": float(opportunity.get("adjusted_score") or 0.0),
+                "risk_penalty": float(opportunity.get("risk_penalty") or 0.0),
+                "decision_state": (card.get("decision_packet") or {}).get("state"),
+                "confidence_band": card.get("confidence_band"),
+                "primary_guardrails": opportunity.get("primary_guardrails") or card.get("risks") or [],
+                "measurement_metric": (card.get("measurement_plan") or {}).get("primary_metric"),
+            })
+        rows.sort(
+            key=lambda item: (
+                lane_rank.get(str(item.get("execution_lane")), 99),
+                -float(item.get("adjusted_score") or 0.0),
+                str(item.get("keyword") or ""),
+            )
+        )
+        adjusted_scores = [float(item.get("adjusted_score") or 0.0) for item in rows]
+        journey_gaps = (treatment_intelligence or {}).get("journey_gap_matrix") or []
+        frontier_gaps = [
+            {
+                "category": item.get("category"),
+                "missing_stages": item.get("missing_stages") or [],
+                "gap_seed_examples": item.get("gap_seed_examples") or [],
+            }
+            for item in journey_gaps[:5]
+        ]
+        return {
+            "status": "ready" if rows else "empty",
+            "lane_order": list(lane_order),
+            "lane_counts": {lane: lane_counts.get(lane, 0) for lane in lane_order if lane_counts.get(lane, 0)},
+            "avg_adjusted_score": round(sum(adjusted_scores) / len(adjusted_scores), 2) if adjusted_scores else 0.0,
+            "ready_queue": [
+                item for item in rows
+                if item.get("execution_lane") in {"ready_to_execute", "review_then_execute"}
+            ][:6],
+            "review_queue": [
+                item for item in rows
+                if item.get("execution_lane") == "operator_review_required"
+            ][:6],
+            "research_queue": [
+                item for item in rows
+                if item.get("execution_lane") in {"research_before_content", "validate_before_scaling", "hold_or_research"}
+            ][:6],
+            "journey_gap_followups": frontier_gaps,
+            "operating_rule": (
+                "ready/review 레인만 콘텐츠 초안으로 넘기고, operator_review_required는 의료광고·경쟁사·평판 가드레일을 "
+                "확정한 뒤 실행한다. research/hold 레인은 추가 탐색 seed와 데이터 보강을 먼저 수행한다."
+            ),
+        }
+
+    def _campaign_blueprint(
+        self,
+        cards: Sequence[Dict[str, Any]],
+        *,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not cards:
+            return {
+                "status": "empty",
+                "cluster_count": 0,
+                "clusters": [],
+                "operating_rule": "검증된 카드가 생긴 뒤 대표 키워드와 지원 키워드를 묶어 콘텐츠 중복을 방지한다.",
+            }
+
+        category_scores = {
+            item.get("category"): item
+            for item in (treatment_intelligence or {}).get("category_scores", [])
+        }
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for card in cards:
+            category = (card.get("selection_context") or {}).get("portfolio_category") or self._card_focus_category(card)
+            grouped.setdefault(str(category), []).append(card)
+
+        clusters: List[Dict[str, Any]] = []
+        for category, items in grouped.items():
+            ordered = sorted(
+                items,
+                key=lambda card: (
+                    -float((card.get("risk_adjusted_opportunity") or {}).get("adjusted_score") or 0.0),
+                    -float(card.get("insight_score") or 0.0),
+                    str(card.get("keyword") or ""),
+                ),
+            )
+            pillar = ordered[0]
+            support = ordered[1:6]
+            signatures = list(dict.fromkeys(
+                (card.get("selection_context") or {}).get("semantic_signature") or self._semantic_signature(card)
+                for card in ordered
+            ))
+            semantic_angles = list(dict.fromkeys(
+                term
+                for card in ordered
+                for term in ((card.get("selection_context") or {}).get("semantic_terms") or self._semantic_terms(card))
+            ))[:8]
+            market_counts = Counter(
+                (card.get("selection_context") or {}).get("primary_local_market") or self._primary_local_market(card)
+                for card in ordered
+            )
+            stage_counts: Counter = Counter()
+            lane_counts: Counter = Counter()
+            guardrails: List[str] = []
+            for card in ordered:
+                stage_counts.update(self._keyword_journey_stages(card, category))
+                lane_counts[(card.get("risk_adjusted_opportunity") or {}).get("execution_lane") or "unknown"] += 1
+                guardrails.extend((card.get("risk_adjusted_opportunity") or {}).get("primary_guardrails") or card.get("risks") or [])
+
+            category_score = category_scores.get(category, {})
+            journey_coverage = category_score.get("journey_stage_coverage") or {}
+            local_coverage = category_score.get("local_market_coverage") or {}
+            cluster_id_payload = f"{category}|{pillar.get('keyword')}|{signatures[:3]}"
+            cluster_id = "camp-" + hashlib.sha1(cluster_id_payload.encode("utf-8")).hexdigest()[:10]
+            support_keywords = [card.get("keyword") for card in support if card.get("keyword")]
+            content_assets = self._campaign_content_assets(
+                category=category,
+                pillar=pillar,
+                support=support,
+                stage_counts=stage_counts,
+                missing_stages=journey_coverage.get("missing_stages") or [],
+                local_markets=list(market_counts.keys()),
+                lane_counts=lane_counts,
+            )
+            cluster = {
+                "cluster_id": cluster_id,
+                "category": category,
+                "pillar_keyword": pillar.get("keyword"),
+                "pillar_handoff_id": pillar.get("handoff_id"),
+                "support_keywords": support_keywords,
+                "semantic_angles": semantic_angles,
+                "semantic_signatures": signatures[:8],
+                "local_markets": [
+                    {"market": market, "count": count}
+                    for market, count in market_counts.most_common()
+                ],
+                "journey_stages": [
+                    {"stage": stage, "count": count}
+                    for stage, count in stage_counts.most_common()
+                ],
+                "missing_journey_stages": journey_coverage.get("missing_stages") or [],
+                "missing_priority_markets": local_coverage.get("missing_priority_markets") or [],
+                "execution_lane_counts": dict(lane_counts),
+                "best_adjusted_score": max(
+                    float((card.get("risk_adjusted_opportunity") or {}).get("adjusted_score") or 0.0)
+                    for card in ordered
+                ),
+                "content_assets": content_assets,
+                "guardrails": list(dict.fromkeys(guardrails))[:6],
+                "cannibalization_guardrail": (
+                    "support_keywords는 별도 랜딩을 먼저 만들지 말고 pillar_keyword 글의 H2, FAQ, 쇼츠 훅, "
+                    "플레이스 FAQ/대표키워드 보강에 배치한다."
+                ),
+            }
+            clusters.append(cluster)
+
+            for card in ordered:
+                role = "pillar" if card is pillar else "support"
+                card["campaign_context"] = {
+                    "cluster_id": cluster_id,
+                    "role": role,
+                    "pillar_keyword": pillar.get("keyword"),
+                    "support_keywords": support_keywords,
+                    "content_assets": content_assets,
+                    "cannibalization_guardrail": cluster["cannibalization_guardrail"],
+                }
+
+        clusters.sort(
+            key=lambda item: (
+                -float(item.get("best_adjusted_score") or 0.0),
+                str(item.get("category") or ""),
+            )
+        )
+        return {
+            "status": "ready",
+            "cluster_count": len(clusters),
+            "clusters": clusters[:10],
+            "frontier_lane_counts": (execution_frontier or {}).get("lane_counts", {}),
+            "operating_rule": (
+                "각 진료축은 pillar_keyword 1개를 먼저 만들고, support_keywords는 같은 콘텐츠의 섹션/FAQ/쇼츠/플레이스 보강으로 "
+                "묶어 키워드 카니발라이제이션을 막는다."
+            ),
+        }
+
+    def _campaign_content_assets(
+        self,
+        *,
+        category: str,
+        pillar: Dict[str, Any],
+        support: Sequence[Dict[str, Any]],
+        stage_counts: Counter,
+        missing_stages: Sequence[str],
+        local_markets: Sequence[str],
+        lane_counts: Counter,
+    ) -> List[Dict[str, Any]]:
+        assets: List[Dict[str, Any]] = [
+            {
+                "type": "pillar_blog",
+                "owner": "blog_agent",
+                "keyword": pillar.get("keyword"),
+                "purpose": "대표 키워드 의도를 한 글에서 설명하고 지원 키워드는 섹션/FAQ로 흡수",
+            }
+        ]
+        if stage_counts.get("coverage") or "coverage" in missing_stages:
+            assets.append({
+                "type": "faq_block",
+                "owner": "blog_agent",
+                "keyword": pillar.get("keyword"),
+                "purpose": "비용, 보험, 치료비, 상담 전 확인사항을 단정 없이 정리",
+            })
+        if stage_counts.get("access") or len(local_markets) >= 2:
+            assets.append({
+                "type": "local_access_short",
+                "owner": "shorts_studio_agent",
+                "keyword": pillar.get("keyword"),
+                "purpose": "동네별 방문 전 체크, 주차, 예약, 동선을 짧게 전달",
+            })
+        if stage_counts.get("validation"):
+            assets.append({
+                "type": "selection_criteria_post",
+                "owner": "blog_agent",
+                "keyword": pillar.get("keyword"),
+                "purpose": "후기 조작 대신 선택 기준과 확인 포인트로 검증 의도 대응",
+            })
+        if stage_counts.get("safety") or "safety" in missing_stages:
+            assets.append({
+                "type": "safety_note",
+                "owner": "blog_agent",
+                "keyword": pillar.get("keyword"),
+                "purpose": "부작용, 주의사항, 치료기간 질문을 의료광고 가드레일 안에서 설명",
+            })
+        if support:
+            assets.append({
+                "type": "smartplace_alignment",
+                "owner": "pathfinder_operator",
+                "keyword": pillar.get("keyword"),
+                "purpose": "대표키워드, FAQ, 사진, 찾아오는 길을 pillar와 같은 의도로 정렬",
+            })
+        if lane_counts.get("ready_to_execute") or lane_counts.get("review_then_execute"):
+            assets.append({
+                "type": "measurement_plan",
+                "owner": "pathfinder_operator",
+                "keyword": pillar.get("keyword"),
+                "purpose": "handoff_id, rank_history, 문의/예약 반응으로 클러스터 단위 성과 측정",
+            })
+        return assets[:7]
+
+    def _keyword_lenses(self, card: Dict[str, Any]) -> List[str]:
+        keyword = str(card.get("keyword") or "")
+        metrics = card.get("metrics") or {}
+        signals = card.get("signals") or {}
+        lenses: List[str] = []
+
+        def has_any(terms: Sequence[str]) -> bool:
+            return any(term in keyword for term in terms)
+
+        if metrics.get("payment_coverage_score", 0) >= 70 or has_any(("비용", "가격", "실비", "보험", "자보", "치료비")):
+            lenses.append("cost_coverage")
+        if metrics.get("availability_intent_score", 0) >= 70 or has_any(("예약", "당일", "오늘", "야간", "주말", "일요일", "진료시간")):
+            lenses.append("availability")
+        if metrics.get("access_convenience_score", 0) >= 70 or has_any(("주차", "길찾기", "위치", "근처", "가까운", "엘리베이터")):
+            lenses.append("access")
+        if metrics.get("review_surface_score", 0) >= 70 or has_any(("후기", "추천", "잘하는", "잘하는곳", "비교", "진짜", "솔직")):
+            lenses.append("validation")
+        if has_any(("부작용", "주의사항", "원인", "치료기간", "재발", "비수술", "안전")):
+            lenses.append("safety_learning")
+        if metrics.get("local_surface_score", 0) >= 70 or signals.get("preferred_search_surface") in {"local_pack", "profile_action"}:
+            lenses.append("local_surface")
+        if signals.get("high_value_longtail") or metrics.get("longtail_score", 0) >= 70:
+            lenses.append("high_value_longtail")
+
+        return list(dict.fromkeys(lenses or ["general_discovery"]))
+
+    def _journey_stage_seed_examples(
+        self,
+        category: str,
+        stages: Sequence[str],
+        *,
+        max_examples: int = 5,
+    ) -> List[str]:
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return []
+        default_suffixes = {
+            "decision": ("비용", "상담", "예약"),
+            "access": ("주차", "야간", "주말"),
+            "coverage": ("치료비", "보험", "실비"),
+            "validation": ("후기", "추천", "잘하는곳"),
+            "safety": ("부작용", "주의사항", "치료기간"),
+        }
+        terms = list(dict.fromkeys(list(profile.seed_terms[:3]) + list(profile.core_tokens[:3])))
+        regions = ("청주",) + GYULIM_KEYWORD_PROFILE.neighborhoods[:2]
+        examples: List[str] = []
+        for stage in stages:
+            suffixes = profile.journey_suffixes.get(stage) or default_suffixes.get(stage, ())
+            for term in terms[:2]:
+                for suffix in suffixes[:2]:
+                    for region in regions[:2]:
+                        examples.append(f"{region} {term} {suffix}")
+                        if len(examples) >= max_examples:
+                            return list(dict.fromkeys(examples))
+        return list(dict.fromkeys(examples))[:max_examples]
+
+    def _keyword_journey_stages(self, card: Dict[str, Any], category: Optional[str] = None) -> List[str]:
+        keyword = str(card.get("keyword") or "")
+        metrics = card.get("metrics") or {}
+        category = category or self._card_focus_category(card)
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        stage_terms = {
+            "decision": {"비용", "가격", "상담", "예약", "추천", "잘하는곳"},
+            "access": {"주차", "야간", "주말", "일요일", "진료시간", "근처", "당일"},
+            "coverage": {"치료비", "보험", "실비", "자보", "자동차보험", "한약 비용", "복용"},
+            "validation": {"후기", "추천", "잘하는", "잘하는곳", "비교", "솔직"},
+            "safety": {"부작용", "주의사항", "치료기간", "재발", "통증", "비수술", "원인", "안전"},
+        }
+        if profile:
+            for stage, suffixes in profile.journey_suffixes.items():
+                stage_terms.setdefault(stage, set()).update(suffixes)
+
+        stages = set()
+        for stage, terms in stage_terms.items():
+            if any(term and term in keyword for term in terms):
+                stages.add(stage)
+
+        if metrics.get("payment_coverage_score", 0) >= 70:
+            stages.add("coverage")
+            stages.add("decision")
+        if metrics.get("availability_intent_score", 0) >= 70:
+            stages.add("access")
+        if metrics.get("access_convenience_score", 0) >= 70:
+            stages.add("access")
+        if metrics.get("review_surface_score", 0) >= 70:
+            stages.add("validation")
+
+        return [stage for stage in self.JOURNEY_STAGE_ORDER if stage in stages] or ["decision"]
+
+    def _treatment_intelligence(
+        self,
+        cards: Sequence[Dict[str, Any]],
+        *,
+        selected_cards: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        focus_categories = list(GYULIM_KEYWORD_PROFILE.focus_categories)
+        grouped: Dict[str, List[Dict[str, Any]]] = {category: [] for category in focus_categories}
+        extra_categories: Counter = Counter()
+        lens_counts: Counter = Counter()
+        lens_categories: Dict[str, Counter] = {}
+        local_market_counts: Counter = Counter()
+        local_market_categories: Dict[str, Counter] = {}
+
+        for card in cards:
+            raw_category = str(card.get("category") or "기타")
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+            if category in grouped:
+                grouped[category].append(card)
+            else:
+                extra_categories[raw_category] += 1
+            for lens in self._keyword_lenses(card):
+                lens_counts[lens] += 1
+                lens_categories.setdefault(lens, Counter())[category] += 1
+            for market in self._keyword_local_markets(card):
+                local_market_counts[market] += 1
+                local_market_categories.setdefault(market, Counter())[category] += 1
+
+        selected_ids = {
+            str(card.get("handoff_id") or "")
+            for card in (selected_cards or [])
+            if card.get("handoff_id")
+        }
+        selected_local_market_counts: Counter = Counter()
+        for card in selected_cards or []:
+            selected_local_market_counts.update(self._keyword_local_markets(card))
+        total_focus_cards = sum(len(items) for items in grouped.values())
+        category_counts = Counter({category: len(items) for category, items in grouped.items() if items})
+        if total_focus_cards > 0 and len(focus_categories) > 1:
+            entropy = -sum(
+                (count / total_focus_cards) * math.log(count / total_focus_cards)
+                for count in category_counts.values()
+                if count > 0
+            )
+            balance_score = round(entropy / math.log(len(focus_categories)), 3)
+        else:
+            balance_score = 0.0
+
+        category_scores: List[Dict[str, Any]] = []
+        for category in focus_categories:
+            items = sorted(grouped.get(category, []), key=lambda card: card.get("insight_score", 0), reverse=True)
+            count = len(items)
+            avg_business = round(
+                sum(float((card.get("metrics") or {}).get("business_value_score", 0)) for card in items) / count,
+                2,
+            ) if count else 0.0
+            avg_longtail = round(
+                sum(float((card.get("metrics") or {}).get("longtail_score", 0)) for card in items) / count,
+                2,
+            ) if count else 0.0
+            high_value_count = sum(1 for card in items if (card.get("signals") or {}).get("high_value_longtail"))
+            selected_count = sum(1 for card in items if str(card.get("handoff_id") or "") in selected_ids)
+            category_lenses = Counter()
+            category_journey_stages = Counter()
+            category_local_markets = Counter()
+            selected_category_local_markets = Counter()
+            for card in items:
+                category_lenses.update(self._keyword_lenses(card))
+                category_journey_stages.update(self._keyword_journey_stages(card, category))
+                category_local_markets.update(self._keyword_local_markets(card))
+                if str(card.get("handoff_id") or "") in selected_ids:
+                    selected_category_local_markets.update(self._keyword_local_markets(card))
+            required_journey_stages = list(self.JOURNEY_STAGE_ORDER)
+            covered_journey_stages = [
+                stage for stage in required_journey_stages if category_journey_stages.get(stage, 0) > 0
+            ]
+            missing_journey_stages = [
+                stage for stage in required_journey_stages if stage not in covered_journey_stages
+            ]
+            journey_coverage_score = round(
+                len(covered_journey_stages) / len(required_journey_stages),
+                3,
+            ) if required_journey_stages else 0.0
+
+            if count == 0:
+                status = "missing"
+                next_move = "기본/탐색형 시드를 투입해 수요 존재 여부부터 확인"
+            elif count < 3:
+                status = "undercovered"
+                next_move = "자동완성 밖의 질문형·상황형 롱테일을 추가 수집"
+            elif high_value_count >= 2 and avg_business >= 70:
+                status = "scale"
+                next_move = "대표 키워드, FAQ, 숏폼, 플레이스 정보를 같은 의도로 정렬"
+            elif avg_business >= 60 or high_value_count:
+                status = "activate"
+                next_move = "상위 키워드 1-2개를 콘텐츠/플레이스 실험으로 실행"
+            else:
+                status = "watch"
+                next_move = "노이즈와 낮은 전환 의도를 분리하며 재탐색"
+
+            category_scores.append({
+                "category": category,
+                "status": status,
+                "keyword_count": count,
+                "selected_card_count": selected_count,
+                "avg_business_value_score": avg_business,
+                "avg_longtail_score": avg_longtail,
+                "high_value_longtail_count": high_value_count,
+                "dominant_lenses": [
+                    {"lens": lens, "count": lens_count}
+                    for lens, lens_count in category_lenses.most_common(4)
+                ],
+                "journey_stage_coverage": {
+                    "required_stages": required_journey_stages,
+                    "covered_stages": covered_journey_stages,
+                    "missing_stages": missing_journey_stages,
+                    "stage_counts": dict(category_journey_stages),
+                    "coverage_score": journey_coverage_score,
+                    "gap_seed_examples": self._journey_stage_seed_examples(
+                        category,
+                        missing_journey_stages,
+                        max_examples=5,
+                    ),
+                },
+                "local_market_coverage": {
+                    "covered_markets": list(category_local_markets.keys())[:12],
+                    "selected_markets": list(selected_category_local_markets.keys())[:8],
+                    "market_counts": dict(category_local_markets.most_common(12)),
+                    "selected_market_counts": dict(selected_category_local_markets.most_common(8)),
+                    "coverage_score": round(
+                        min(1.0, len(category_local_markets) / max(1, min(8, len(GYULIM_KEYWORD_PROFILE.neighborhoods)))),
+                        3,
+                    ) if count else 0.0,
+                    "missing_priority_markets": [
+                        market for market in GYULIM_KEYWORD_PROFILE.neighborhoods[:8]
+                        if market not in category_local_markets
+                    ][:5],
+                },
+                "top_keywords": [
+                    {
+                        "keyword": card.get("keyword"),
+                        "grade": card.get("grade"),
+                        "handoff_id": card.get("handoff_id"),
+                        "insight_score": card.get("insight_score"),
+                    }
+                    for card in items[:3]
+                ],
+                "next_move": next_move,
+            })
+
+        priority_gaps = [
+            item["category"]
+            for item in category_scores
+            if item["status"] in {"missing", "undercovered"}
+        ]
+        leaders = sorted(
+            [item for item in category_scores if item["keyword_count"]],
+            key=lambda item: (
+                item["status"] != "scale",
+                -item["high_value_longtail_count"],
+                -item["avg_business_value_score"],
+                -item["keyword_count"],
+            ),
+        )[:6]
+        exploration_categories = priority_gaps[:6] or [item["category"] for item in leaders[:4]]
+        next_exploration_seeds = (
+            GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+                categories=exploration_categories,
+                max_terms_per_category=4,
+                max_suffixes_per_category=4,
+                max_contexts_per_category=2,
+                max_neighborhoods_per_category=3,
+            )[:24]
+            if exploration_categories
+            else []
+        )
+        lens_matrix = [
+            {
+                "lens": lens,
+                "count": count,
+                "top_categories": [
+                    {"category": category, "count": category_count}
+                    for category, category_count in lens_categories.get(lens, Counter()).most_common(4)
+                ],
+            }
+            for lens, count in lens_counts.most_common()
+        ]
+        target_markets = list(GYULIM_KEYWORD_PROFILE.neighborhoods[:10])
+        covered_target_markets = [market for market in target_markets if local_market_counts.get(market, 0)]
+        if total_focus_cards > 0 and target_markets:
+            local_entropy = -sum(
+                (count / total_focus_cards) * math.log(count / total_focus_cards)
+                for market, count in local_market_counts.items()
+                if count > 0 and market in target_markets
+            )
+            local_balance = round(local_entropy / math.log(len(target_markets)), 3) if len(target_markets) > 1 else 0.0
+        else:
+            local_balance = 0.0
+        local_market_matrix = [
+            {
+                "market": market,
+                "keyword_count": count,
+                "selected_keyword_count": selected_local_market_counts.get(market, 0),
+                "top_categories": [
+                    {"category": category, "count": category_count}
+                    for category, category_count in local_market_categories.get(market, Counter()).most_common(4)
+                ],
+            }
+            for market, count in local_market_counts.most_common(12)
+        ]
+        journey_gap_matrix = [
+            {
+                "category": item["category"],
+                "status": item["status"],
+                "keyword_count": item["keyword_count"],
+                "selected_card_count": item["selected_card_count"],
+                "missing_stages": (item.get("journey_stage_coverage") or {}).get("missing_stages", []),
+                "coverage_score": (item.get("journey_stage_coverage") or {}).get("coverage_score", 0.0),
+                "gap_seed_examples": (item.get("journey_stage_coverage") or {}).get("gap_seed_examples", [])[:5],
+            }
+            for item in category_scores
+            if item["keyword_count"] and (item.get("journey_stage_coverage") or {}).get("missing_stages")
+        ]
+        journey_gap_matrix.sort(
+            key=lambda item: (
+                -int(item.get("selected_card_count") or 0),
+                float(item.get("coverage_score") or 0.0),
+                -int(item.get("keyword_count") or 0),
+            )
+        )
+
+        return {
+            "status": "ready" if cards else "empty",
+            "coverage": {
+                "analyzed_keyword_count": len(cards),
+                "focus_keyword_count": total_focus_cards,
+                "total_focus_categories": len(focus_categories),
+                "covered_focus_categories": sum(1 for items in grouped.values() if items),
+                "missing_focus_categories": [category for category, items in grouped.items() if not items],
+                "undercovered_focus_categories": priority_gaps,
+                "balance_score": balance_score,
+                "local_market_coverage": {
+                    "target_market_count": len(target_markets),
+                    "covered_target_market_count": len(covered_target_markets),
+                    "covered_target_markets": covered_target_markets,
+                    "missing_target_markets": [market for market in target_markets if market not in covered_target_markets],
+                    "balance_score": local_balance,
+                    "top_market_counts": dict(local_market_counts.most_common(10)),
+                    "selected_market_counts": dict(selected_local_market_counts.most_common(10)),
+                },
+                "extra_category_counts": dict(extra_categories),
+            },
+            "portfolio_leaders": leaders,
+            "priority_gaps": priority_gaps,
+            "category_scores": category_scores,
+            "intent_lens_matrix": lens_matrix,
+            "local_market_matrix": local_market_matrix,
+            "journey_gap_matrix": journey_gap_matrix[:12],
+            "next_exploration_seeds": next_exploration_seeds,
+            "operating_rule": (
+                "각 진료축은 비용/상담, 예약/시간, 주차/접근, 후기/선택기준, "
+                "부작용/주의사항 중 최소 2개 렌즈를 확보한 뒤 콘텐츠와 플레이스 실험으로 넘긴다."
+            ),
+        }
+
+    def _discovery_audit(
+        self,
+        cards: Sequence[Dict[str, Any]],
+        *,
+        selected_cards: Optional[Sequence[Dict[str, Any]]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        focus_categories = list(GYULIM_KEYWORD_PROFILE.focus_categories)
+        if not cards:
+            return {
+                "status": "empty",
+                "breadth_score": 0.0,
+                "profile_term_coverage_score": 0.0,
+                "source_diversity_score": 0.0,
+                "coverage": {
+                    "analyzed_keyword_count": 0,
+                    "focus_category_count": len(focus_categories),
+                    "healthy_category_count": 0,
+                    "blind_spot_count": len(focus_categories),
+                },
+                "category_surface_map": [],
+                "blind_spots": [],
+                "next_exploration_queue": [],
+                "operating_rule": "Run broad discovery before scoring, then audit treatment, journey, local, and source coverage.",
+            }
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {category: [] for category in focus_categories}
+        source_counts: Counter = Counter()
+        selected_ids = {
+            str(card.get("handoff_id") or "")
+            for card in (selected_cards or [])
+            if card.get("handoff_id")
+        }
+        for card in cards:
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(card.get("category") or ""))
+            if category in grouped:
+                grouped[category].append(card)
+            for source in card.get("source_signals") or []:
+                source_counts[str(source)] += 1
+
+        score_by_category = {
+            item.get("category"): item
+            for item in (treatment_intelligence or {}).get("category_scores", [])
+        }
+        target_markets = list(GYULIM_KEYWORD_PROFILE.neighborhoods[:8])
+        category_surface_map: List[Dict[str, Any]] = []
+        blind_spots: List[Dict[str, Any]] = []
+        next_queue: List[str] = []
+        weighted_scores: List[tuple[float, float]] = []
+        term_scores: List[float] = []
+
+        for profile in GYULIM_KEYWORD_PROFILE.profiles:
+            category = profile.category
+            items = grouped.get(category, [])
+            keywords = [str(card.get("keyword") or "") for card in items]
+            selected_count = sum(
+                1 for card in items if str(card.get("handoff_id") or "") in selected_ids
+            )
+            source_mix = Counter(
+                source
+                for card in items
+                for source in (card.get("source_signals") or [])
+            )
+            service_terms = list(dict.fromkeys(profile.direct_service_anchors + profile.seed_terms))[:14]
+            core_terms = list(dict.fromkeys(profile.core_tokens + profile.category_terms))[:14]
+            service_coverage = self._term_coverage(keywords, service_terms)
+            core_coverage = self._term_coverage(keywords, core_terms)
+            category_score = score_by_category.get(category, {})
+            journey_coverage = category_score.get("journey_stage_coverage") or {}
+            if journey_coverage:
+                journey_score = float(journey_coverage.get("coverage_score") or 0.0)
+                missing_stages = list(journey_coverage.get("missing_stages") or [])
+            else:
+                stage_counts = Counter()
+                for card in items:
+                    stage_counts.update(self._keyword_journey_stages(card, category))
+                covered_stages = [stage for stage in self.JOURNEY_STAGE_ORDER if stage_counts.get(stage)]
+                missing_stages = [stage for stage in self.JOURNEY_STAGE_ORDER if stage not in covered_stages]
+                journey_score = round(len(covered_stages) / len(self.JOURNEY_STAGE_ORDER), 3) if self.JOURNEY_STAGE_ORDER else 0.0
+            local_markets = Counter(
+                market
+                for card in items
+                for market in self._keyword_local_markets(card)
+            )
+            covered_target_markets = [market for market in target_markets if local_markets.get(market)]
+            missing_target_markets = [market for market in target_markets if market not in covered_target_markets]
+            local_score = round(len(covered_target_markets) / len(target_markets), 3) if target_markets else 0.0
+            count_score = min(1.0, len(items) / 5)
+            source_score = min(1.0, len(source_mix) / 3) if items else 0.0
+            term_score = round(
+                (service_coverage["coverage_score"] + core_coverage["coverage_score"]) / 2,
+                3,
+            )
+            surface_score = round(
+                (
+                    count_score * 0.20
+                    + term_score * 0.25
+                    + journey_score * 0.20
+                    + local_score * 0.20
+                    + source_score * 0.15
+                ),
+                3,
+            )
+            if not items:
+                status = "missing"
+            elif surface_score < 0.45:
+                status = "thin"
+            elif surface_score < 0.70:
+                status = "partial"
+            else:
+                status = "healthy"
+
+            missing_terms = list(dict.fromkeys(
+                service_coverage["missing_terms"][:3] + core_coverage["missing_terms"][:3]
+            ))
+            seed_examples = self._discovery_gap_seed_examples(
+                profile,
+                missing_terms=missing_terms,
+                missing_stages=missing_stages,
+                missing_markets=missing_target_markets,
+                max_examples=8,
+            )
+            next_queue.extend(seed_examples)
+            surface = {
+                "category": category,
+                "status": status,
+                "keyword_count": len(items),
+                "selected_card_count": selected_count,
+                "surface_score": surface_score,
+                "service_anchor_coverage": service_coverage,
+                "core_term_coverage": core_coverage,
+                "journey_stage_coverage_score": journey_score,
+                "missing_journey_stages": missing_stages,
+                "local_market_coverage_score": local_score,
+                "missing_priority_markets": missing_target_markets[:5],
+                "source_diversity_score": round(source_score, 3),
+                "source_signal_counts": dict(source_mix.most_common(6)),
+                "sample_keywords": keywords[:3],
+                "next_seed_examples": seed_examples[:5],
+            }
+            category_surface_map.append(surface)
+            weight = max(0.25, float(getattr(profile, "strategic_weight", 1.0) or 1.0))
+            weighted_scores.append((surface_score, weight))
+            if service_coverage["target_count"] or core_coverage["target_count"]:
+                term_scores.append(term_score)
+            if status in {"missing", "thin", "partial"}:
+                blind_spots.append({
+                    "category": category,
+                    "status": status,
+                    "surface_score": surface_score,
+                    "keyword_count": len(items),
+                    "missing_terms": missing_terms[:5],
+                    "missing_journey_stages": missing_stages[:5],
+                    "missing_priority_markets": missing_target_markets[:5],
+                    "next_seed_examples": seed_examples[:5],
+                })
+
+        total_weight = sum(weight for _, weight in weighted_scores)
+        breadth_score = round(
+            sum(score * weight for score, weight in weighted_scores) / total_weight,
+            3,
+        ) if total_weight else 0.0
+        profile_term_score = round(sum(term_scores) / len(term_scores), 3) if term_scores else 0.0
+        source_diversity_score = round(min(1.0, len(source_counts) / 5), 3) if source_counts else 0.0
+        blind_spots.sort(key=lambda item: (float(item.get("surface_score") or 0.0), -int(item.get("keyword_count") or 0)))
+        category_surface_map.sort(key=lambda item: (float(item.get("surface_score") or 0.0), str(item.get("category") or "")))
+        next_queue = list(dict.fromkeys(seed for seed in next_queue if seed))[:36]
+        healthy_count = sum(1 for item in category_surface_map if item.get("status") == "healthy")
+        return {
+            "status": "ready",
+            "breadth_score": breadth_score,
+            "profile_term_coverage_score": profile_term_score,
+            "source_diversity_score": source_diversity_score,
+            "coverage": {
+                "analyzed_keyword_count": len(cards),
+                "focus_category_count": len(focus_categories),
+                "healthy_category_count": healthy_count,
+                "blind_spot_count": len(blind_spots),
+                "source_signal_counts": dict(source_counts.most_common(10)),
+            },
+            "category_surface_map": category_surface_map,
+            "blind_spots": blind_spots[:12],
+            "next_exploration_queue": next_queue,
+            "operating_rule": (
+                "Audit discovery before scaling: every priority treatment axis should have service, core symptom, journey-stage, local-market, and multi-source evidence coverage."
+            ),
+        }
+
+    def _term_coverage(self, keywords: Sequence[str], terms: Sequence[str], max_terms: int = 14) -> Dict[str, Any]:
+        targets = [
+            term for term in list(dict.fromkeys(str(term).strip() for term in terms if str(term).strip()))
+            if len(re.sub(r"\s+", "", term).lower()) >= 2
+        ][:max_terms]
+        compact_keywords = [re.sub(r"\s+", "", keyword).lower() for keyword in keywords]
+        covered: List[str] = []
+        for term in targets:
+            compact = re.sub(r"\s+", "", term).lower()
+            if compact and any(compact in keyword for keyword in compact_keywords):
+                covered.append(term)
+        missing = [term for term in targets if term not in covered]
+        return {
+            "target_count": len(targets),
+            "covered_count": len(covered),
+            "coverage_score": round(len(covered) / len(targets), 3) if targets else 0.0,
+            "covered_terms": covered[:8],
+            "missing_terms": missing[:8],
+        }
+
+    def _discovery_gap_seed_examples(
+        self,
+        profile: Any,
+        *,
+        missing_terms: Sequence[str],
+        missing_stages: Sequence[str],
+        missing_markets: Sequence[str],
+        max_examples: int = 8,
+    ) -> List[str]:
+        terms = list(dict.fromkeys(
+            [term for term in missing_terms if term]
+            + list(getattr(profile, "seed_terms", ()))[:3]
+            + list(getattr(profile, "core_tokens", ()))[:3]
+        ))[:4]
+        markets = list(dict.fromkeys(
+            [market for market in missing_markets if market]
+            + list(GYULIM_KEYWORD_PROFILE.cheongju_regions[:1])
+        ))[:3]
+        stages = list(dict.fromkeys([stage for stage in missing_stages if stage] + ["decision"]))[:3]
+        seeds: List[str] = []
+        for market in markets:
+            for term in terms:
+                for stage in stages:
+                    suffixes = list((getattr(profile, "journey_suffixes", {}) or {}).get(stage) or ())
+                    if not suffixes:
+                        suffixes = list(getattr(profile, "longtail_suffixes", ()))[:2]
+                    for suffix in suffixes[:2]:
+                        seeds.append(f"{market} {term} {suffix}")
+                        if len(seeds) >= max_examples:
+                            return list(dict.fromkeys(seeds))
+        return list(dict.fromkeys(seeds))[:max_examples]
 
     def _place_rows_from_snapshots(
         self,
@@ -2932,6 +4363,10 @@ class PathfinderInsightBroker:
         cards: Sequence[Dict[str, Any]],
         metrics: Dict[str, Any],
         place_tracking: Optional[Dict[str, Any]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
+        discovery_audit: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         top = cards[0] if cards else None
         if not top:
@@ -2963,7 +4398,17 @@ class PathfinderInsightBroker:
                 "human_review_required": metrics.get("human_review_required_count", 0),
             },
             "decision_counts": metrics.get("decision_counts", {}),
+            "execution_lane_counts": (execution_frontier or {}).get("lane_counts", {}),
+            "campaign_cluster_count": (campaign_blueprint or {}).get("cluster_count", 0),
+            "campaign_pillars": [
+                item.get("pillar_keyword")
+                for item in (campaign_blueprint or {}).get("clusters", [])[:5]
+                if item.get("pillar_keyword")
+            ],
+            "discovery_breadth_score": (discovery_audit or {}).get("breadth_score", 0.0),
+            "discovery_blind_spot_count": ((discovery_audit or {}).get("coverage") or {}).get("blind_spot_count", 0),
             "coverage": metrics,
+            "treatment_coverage": (treatment_intelligence or {}).get("coverage", {}),
         }
 
     def _build_top_insights(
@@ -2973,12 +4418,96 @@ class PathfinderInsightBroker:
         place_tracking: Optional[Dict[str, Any]] = None,
         place_rank_lift: Optional[Dict[str, Any]] = None,
         place_value_loop: Optional[Dict[str, Any]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
+        discovery_audit: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         if not cards:
             return ["최신 Pathfinder Legion 결과가 없어 인사이트 브리프를 만들 수 없습니다."]
         insights = [
             f"상위 {len(cards)}개 후보 중 고가치 롱테일은 {metrics['high_value_longtail_count']}개입니다.",
         ]
+        if "selection_balance_score" in metrics:
+            insights.append(
+                f"브리프 선택 균형 점수는 {metrics.get('selection_balance_score', 0)}이며, "
+                "상위 노출 키워드는 점수와 진료축 대표성을 함께 반영했습니다."
+            )
+        if "selection_semantic_diversity_score" in metrics:
+            insights.append(
+                f"선택 키워드의 의미 다양성 점수는 {metrics.get('selection_semantic_diversity_score', 0)}이며, "
+                f"중복 의미 조합은 {metrics.get('selection_semantic_duplicate_count', 0)}개입니다."
+            )
+        if "selection_local_market_diversity_score" in metrics:
+            insights.append(
+                f"선택 키워드의 로컬 시장 다양성 점수는 {metrics.get('selection_local_market_diversity_score', 0)}이며, "
+                f"반복 지역 조합은 {metrics.get('selection_local_market_duplicate_count', 0)}개입니다."
+            )
+        frontier = execution_frontier or {}
+        if frontier.get("lane_counts"):
+            insights.append(
+                "실행 레인은 "
+                + ", ".join(f"{lane} {count}개" for lane, count in (frontier.get("lane_counts") or {}).items())
+                + f"이며 평균 위험보정 기회 점수는 {frontier.get('avg_adjusted_score', 0)}입니다."
+            )
+        blueprint = campaign_blueprint or {}
+        if blueprint.get("cluster_count"):
+            pillars = [
+                item.get("pillar_keyword", "")
+                for item in (blueprint.get("clusters") or [])[:3]
+                if item.get("pillar_keyword")
+            ]
+            insights.append(
+                f"Campaign blueprint groups the selected keywords into {blueprint.get('cluster_count', 0)} clusters; "
+                f"pillar keywords: {', '.join(pillars) or 'none'}."
+            )
+        audit = discovery_audit or {}
+        if audit.get("status") == "ready":
+            coverage = audit.get("coverage") or {}
+            insights.append(
+                f"Discovery audit breadth score is {audit.get('breadth_score', 0)} with "
+                f"{coverage.get('blind_spot_count', 0)} treatment-surface blind spots and "
+                f"source diversity {audit.get('source_diversity_score', 0)}."
+            )
+        treatment = treatment_intelligence or {}
+        treatment_coverage = treatment.get("coverage") or {}
+        if treatment_coverage:
+            insights.append(
+                f"진료축 커버리지는 {treatment_coverage.get('covered_focus_categories', 0)}/"
+                f"{treatment_coverage.get('total_focus_categories', 0)}개이며 "
+                f"균형 점수는 {treatment_coverage.get('balance_score', 0)}입니다."
+            )
+            local_coverage = treatment_coverage.get("local_market_coverage") or {}
+            if local_coverage:
+                insights.append(
+                    f"로컬 시장 커버리지는 {local_coverage.get('covered_target_market_count', 0)}/"
+                    f"{local_coverage.get('target_market_count', 0)}개이며 "
+                    f"부족 권역은 {', '.join((local_coverage.get('missing_target_markets') or [])[:4]) or '없음'}입니다."
+                )
+        leaders = treatment.get("portfolio_leaders") or []
+        if leaders:
+            insights.append(
+                "현재 강한 진료축은 "
+                + ", ".join(item.get("category", "") for item in leaders[:3])
+                + "입니다."
+            )
+        gaps = treatment.get("priority_gaps") or []
+        if gaps:
+            insights.append(
+                "추가 탐색이 필요한 진료축은 "
+                + ", ".join(gaps[:5])
+                + "입니다."
+            )
+        journey_gaps = treatment.get("journey_gap_matrix") or []
+        if journey_gaps:
+            insights.append(
+                "환자 여정 공백은 "
+                + "; ".join(
+                    f"{item.get('category')}({', '.join(item.get('missing_stages') or [])})"
+                    for item in journey_gaps[:3]
+                )
+                + " 순으로 보강해야 합니다."
+            )
         if metrics["access_intent_count"]:
             insights.append(f"방문 편의/접근성 의도가 {metrics['access_intent_count']}개 있어 쇼츠와 플레이스형 콘텐츠에 적합합니다.")
         if metrics["payment_intent_count"]:
@@ -3042,7 +4571,7 @@ class PathfinderInsightBroker:
         top_categories = ", ".join(name for name, _ in Counter(metrics["category_counts"]).most_common(3))
         if top_categories:
             insights.append(f"우선 카테고리는 {top_categories}입니다.")
-        return insights[:7]
+        return insights[:14]
 
     def _build_provenance(
         self,
@@ -3166,6 +4695,12 @@ class PathfinderInsightBroker:
                 "decision_packet",
                 "measurement_plan",
                 "data_quality",
+                "risk_adjusted_opportunity",
+                "execution_frontier",
+                "campaign_blueprint",
+                "campaign_context",
+                "discovery_audit",
+                "selection_context",
                 "place_rank",
                 "place_rank_lift",
                 "place_value_loop",
@@ -3174,6 +4709,7 @@ class PathfinderInsightBroker:
                 "place_lift_experiments",
                 "place_tracking_candidates",
                 "place_profile_audit",
+                "treatment_intelligence",
                 "risk_guardrails",
                 "success_criteria",
             ],
@@ -3188,9 +4724,14 @@ class PathfinderInsightBroker:
                 "cite or restate the evidence_trace that justifies the angle",
                 "respect decision_packet.publish_policy before publishing",
                 "measure outcome using measurement_plan.primary_metric",
+                "route work by risk_adjusted_opportunity.execution_lane and execution_frontier before scaling",
+                "preserve selection_context so downstream agents know whether the card is a portfolio representative or depth candidate",
                 "when present, use place_rank to distinguish rank recovery, defense, and competitor-gap work",
                 "use place_rank_lift priority_actions only within listed prohibited_tactics guardrails",
                 "use place_value_loop to update SmartPlace fields only when the suggestion matches real services and evidence",
+                "use treatment_intelligence to balance treatment-axis coverage before scaling a single category",
+                "use campaign_blueprint and campaign_context to publish one pillar per cluster and avoid cannibalizing support keywords",
+                "use discovery_audit to feed blind spots back into exploration before scaling weak treatment surfaces",
                 "send low-confidence or risk-marked cards back to human review",
             ],
         }
@@ -3219,6 +4760,10 @@ class PathfinderInsightBroker:
         place_tracking: Optional[Dict[str, Any]] = None,
         place_rank_lift: Optional[Dict[str, Any]] = None,
         place_value_loop: Optional[Dict[str, Any]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
+        discovery_audit: Optional[Dict[str, Any]] = None,
         requested: bool,
     ) -> Dict[str, Any]:
         fallback = self._deterministic_synthesis(
@@ -3227,6 +4772,10 @@ class PathfinderInsightBroker:
             place_tracking=place_tracking,
             place_rank_lift=place_rank_lift,
             place_value_loop=place_value_loop,
+            treatment_intelligence=treatment_intelligence,
+            execution_frontier=execution_frontier,
+            campaign_blueprint=campaign_blueprint,
+            discovery_audit=discovery_audit,
             action_queue=action_queue,
         )
         if not requested:
@@ -3266,6 +4815,9 @@ class PathfinderInsightBroker:
                 "place_tracking_candidates": card.get("place_tracking_candidates", [])[:4],
                 "place_profile_audit": card.get("place_profile_audit", [])[:5],
                 "place_value_brief": card.get("place_value_brief", {}),
+                "selection_context": card.get("selection_context", {}),
+                "risk_adjusted_opportunity": card.get("risk_adjusted_opportunity", {}),
+                "campaign_context": card.get("campaign_context", {}),
                 "agent_notes": card["agent_notes"],
                 "signals": card["signals"],
                 "metrics": {
@@ -3310,6 +4862,18 @@ Place rank lift plan:
 Place value loop:
 {json.dumps(place_value_loop or {}, ensure_ascii=False)}
 
+Treatment intelligence:
+{json.dumps(treatment_intelligence or {}, ensure_ascii=False)}
+
+Execution frontier:
+{json.dumps(execution_frontier or {}, ensure_ascii=False)}
+
+Campaign blueprint:
+{json.dumps(campaign_blueprint or {}, ensure_ascii=False)}
+
+Discovery audit:
+{json.dumps(discovery_audit or {}, ensure_ascii=False)}
+
 Action queue:
 {json.dumps(list(action_queue)[:6], ensure_ascii=False)}
 
@@ -3352,6 +4916,10 @@ Keyword cards:
         place_tracking: Optional[Dict[str, Any]] = None,
         place_rank_lift: Optional[Dict[str, Any]] = None,
         place_value_loop: Optional[Dict[str, Any]] = None,
+        treatment_intelligence: Optional[Dict[str, Any]] = None,
+        execution_frontier: Optional[Dict[str, Any]] = None,
+        campaign_blueprint: Optional[Dict[str, Any]] = None,
+        discovery_audit: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not cards:
             return {
@@ -3360,6 +4928,10 @@ Keyword cards:
                 "confidence": 0.0,
                 "agent_routing": [],
                 "watchouts": [],
+                "treatment_intelligence": treatment_intelligence or {},
+                "execution_frontier": execution_frontier or {},
+                "campaign_blueprint": campaign_blueprint or {},
+                "discovery_audit": discovery_audit or {},
                 "why_this_is_not_generic": "실행 가능한 키워드 카드가 없어 일반적인 조언만 가능합니다.",
             }
 
@@ -3373,6 +4945,21 @@ Keyword cards:
             summary_parts.append("방문 편의/접근성 신호가 있어 쇼츠와 플레이스형 콘텐츠로도 전달 가치가 큽니다.")
         if metrics.get("payment_intent_count", 0):
             summary_parts.append("비용/보험 신호는 FAQ형 블로그로 풀어야 전환 설명력이 높아집니다.")
+        treatment = treatment_intelligence or {}
+        treatment_coverage = treatment.get("coverage") or {}
+        if treatment_coverage:
+            summary_parts.append(
+                f"진료축 커버리지는 {treatment_coverage.get('covered_focus_categories', 0)}/"
+                f"{treatment_coverage.get('total_focus_categories', 0)}개이며, "
+                f"균형 점수는 {treatment_coverage.get('balance_score', 0)}입니다."
+            )
+        frontier = execution_frontier or {}
+        if frontier.get("lane_counts"):
+            summary_parts.append(
+                "실행 레인은 "
+                + ", ".join(f"{lane} {count}개" for lane, count in frontier.get("lane_counts", {}).items())
+                + "로 분리했습니다."
+            )
         place = place_tracking or {}
         if place.get("declining_count", 0):
             summary_parts.append("플레이스 순위 하락 카드가 있어 복구 우선순위를 화면에서 바로 확인해야 합니다.")
@@ -3386,6 +4973,16 @@ Keyword cards:
             first_lift = lift["priority_actions"][0]
             summary_parts.append(
                 f"플레이스 리프트는 '{first_lift.get('title')}'를 우선 실행하고 조작성 수단은 차단합니다."
+            )
+        blueprint = campaign_blueprint or {}
+        if blueprint.get("cluster_count"):
+            summary_parts.append(
+                f"Campaign blueprint has {blueprint.get('cluster_count', 0)} clusters, so agents should expand support keywords inside the assigned pillar instead of publishing duplicate standalone posts."
+            )
+        audit = discovery_audit or {}
+        if audit.get("status") == "ready":
+            summary_parts.append(
+                f"Discovery audit breadth is {audit.get('breadth_score', 0)} with {((audit.get('coverage') or {}).get('blind_spot_count', 0))} blind spots to feed back into exploration."
             )
         value_loop = place_value_loop or {}
         rep_keywords = (
@@ -3430,6 +5027,38 @@ Keyword cards:
                 "smartplace_updates": ((place_value_loop or {}).get("pathfinder_to_place") or {}).get("smartplace_updates", [])[:3],
                 "import_signals": ((place_value_loop or {}).get("place_to_pathfinder") or {}).get("import_signals", [])[:3],
             },
+            "treatment_intelligence": {
+                "coverage": (treatment_intelligence or {}).get("coverage", {}),
+                "portfolio_leaders": (treatment_intelligence or {}).get("portfolio_leaders", [])[:5],
+                "priority_gaps": (treatment_intelligence or {}).get("priority_gaps", [])[:8],
+                "intent_lens_matrix": (treatment_intelligence or {}).get("intent_lens_matrix", [])[:6],
+                "local_market_matrix": (treatment_intelligence or {}).get("local_market_matrix", [])[:8],
+                "journey_gap_matrix": (treatment_intelligence or {}).get("journey_gap_matrix", [])[:8],
+                "next_exploration_seeds": (treatment_intelligence or {}).get("next_exploration_seeds", [])[:10],
+            },
+            "execution_frontier": {
+                "lane_counts": (execution_frontier or {}).get("lane_counts", {}),
+                "avg_adjusted_score": (execution_frontier or {}).get("avg_adjusted_score", 0),
+                "ready_queue": (execution_frontier or {}).get("ready_queue", [])[:4],
+                "review_queue": (execution_frontier or {}).get("review_queue", [])[:4],
+                "research_queue": (execution_frontier or {}).get("research_queue", [])[:4],
+                "journey_gap_followups": (execution_frontier or {}).get("journey_gap_followups", [])[:4],
+            },
+            "campaign_blueprint": {
+                "status": (campaign_blueprint or {}).get("status"),
+                "cluster_count": (campaign_blueprint or {}).get("cluster_count", 0),
+                "clusters": (campaign_blueprint or {}).get("clusters", [])[:6],
+                "frontier_lane_counts": (campaign_blueprint or {}).get("frontier_lane_counts", {}),
+            },
+            "discovery_audit": {
+                "status": (discovery_audit or {}).get("status"),
+                "breadth_score": (discovery_audit or {}).get("breadth_score", 0),
+                "profile_term_coverage_score": (discovery_audit or {}).get("profile_term_coverage_score", 0),
+                "source_diversity_score": (discovery_audit or {}).get("source_diversity_score", 0),
+                "coverage": (discovery_audit or {}).get("coverage", {}),
+                "blind_spots": (discovery_audit or {}).get("blind_spots", [])[:6],
+                "next_exploration_queue": (discovery_audit or {}).get("next_exploration_queue", [])[:10],
+            },
             "why_this_is_not_generic": "Pathfinder의 사업가치, 롱테일, 로컬/예약/비용/접근성/리뷰 신호와 가드레일을 함께 사용해 생성된 실행 브리프입니다.",
         }
 
@@ -3447,15 +5076,45 @@ Keyword cards:
                 item["decision_packet"] = card.get("decision_packet", {})
                 item["measurement_plan"] = card.get("measurement_plan", {})
                 item["data_quality"] = card.get("data_quality", {})
+                item["risk_adjusted_opportunity"] = card.get("risk_adjusted_opportunity", {})
+                item["execution_lane"] = (card.get("risk_adjusted_opportunity") or {}).get("execution_lane")
+                item["campaign_context"] = card.get("campaign_context", {})
                 item["place_rank"] = card.get("place_rank", {})
                 item["place_value_brief"] = card.get("place_value_brief", {})
+                item["selection_context"] = card.get("selection_context", {})
                 item["evidence_trace"] = card.get("evidence_trace", [])[:6]
                 item["rationale"] = card["why_it_matters"][:3]
                 queue.append(item)
-        queue.sort(key=lambda item: (item["priority"] != "high", -item["insight_score"]))
+        lane_rank = {
+            "ready_to_execute": 0,
+            "review_then_execute": 1,
+            "operator_review_required": 2,
+            "research_before_content": 3,
+            "validate_before_scaling": 4,
+            "hold_or_research": 5,
+        }
+        queue.sort(
+            key=lambda item: (
+                lane_rank.get(str(item.get("execution_lane")), 9),
+                item["priority"] != "high",
+                -float((item.get("risk_adjusted_opportunity") or {}).get("adjusted_score") or 0.0),
+                -float(item.get("insight_score") or 0.0),
+            )
+        )
         return queue[:10]
 
     def _support_keywords(self, cards: Sequence[Dict[str, Any]], card: Dict[str, Any]) -> List[str]:
+        campaign = card.get("campaign_context") or {}
+        if campaign.get("support_keywords"):
+            support = [
+                keyword
+                for keyword in campaign.get("support_keywords", [])
+                if keyword and keyword != card.get("keyword")
+            ]
+            pillar = campaign.get("pillar_keyword")
+            if campaign.get("role") == "support" and pillar and pillar != card.get("keyword"):
+                support.insert(0, pillar)
+            return list(dict.fromkeys(support))[:4]
         same_category = [
             other["keyword"]
             for other in cards
@@ -3473,12 +5132,15 @@ Keyword cards:
             "decision_packet": card.get("decision_packet", {}),
             "measurement_plan": card.get("measurement_plan", {}),
             "data_quality": card.get("data_quality", {}),
+            "risk_adjusted_opportunity": card.get("risk_adjusted_opportunity", {}),
+            "campaign_context": card.get("campaign_context", {}),
             "place_rank": card.get("place_rank", {}),
             "place_lift_actions": card.get("place_lift_actions", [])[:4],
             "place_lift_experiments": card.get("place_lift_experiments", [])[:2],
             "place_tracking_candidates": card.get("place_tracking_candidates", [])[:4],
             "place_profile_audit": card.get("place_profile_audit", [])[:5],
             "place_value_brief": card.get("place_value_brief", {}),
+            "selection_context": card.get("selection_context", {}),
             "evidence_trace": card.get("evidence_trace", [])[:8],
             "risk_guardrails": card.get("risks", []),
             "success_criteria": self._success_criteria(card, agent),
@@ -3492,6 +5154,11 @@ Keyword cards:
         ]
         if card.get("human_review", {}).get("required"):
             criteria.append("waits for human review before publishing or running ads")
+        opportunity = card.get("risk_adjusted_opportunity") or {}
+        if opportunity.get("execution_lane"):
+            criteria.append(f"routes execution according to {opportunity.get('execution_lane')} lane")
+        if card.get("campaign_context"):
+            criteria.append("follows campaign_context so support keywords reinforce the pillar instead of creating duplicate standalone posts")
         if card.get("place_lift_actions"):
             criteria.append("reflects place_lift_actions without click, booking, or review manipulation")
         if card.get("place_tracking_candidates"):

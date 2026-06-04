@@ -1058,10 +1058,8 @@ class LegionCollector:
             # 정신/스트레스
             "불면증", "만성피로", "번아웃", "자율신경실조", "공황장애"
         ]
-        for profile_category in ("통증/디스크", "피부/여드름", "안면비대칭", "다이어트"):
-            profile = GYULIM_KEYWORD_PROFILE.profile_for(profile_category)
-            if profile:
-                self.problem_keywords.extend(profile.core_tokens)
+        for profile in GYULIM_KEYWORD_PROFILE.profiles:
+            self.problem_keywords.extend(profile.core_tokens)
         self.problem_keywords = list(dict.fromkeys(self.problem_keywords))
 
         # 카테고리 패턴 (S/A급 0% 카테고리 추가)
@@ -1962,29 +1960,62 @@ class PathfinderLegion:
     CATEGORY_CANONICAL_SERVICES = {
         "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원"),
         "교통사고": ("교통사고 한의원", "교통사고 입원", "교통사고 후유증"),
-        "피부/여드름": ("여드름 한의원", "여드름흉터 한의원", "새살침"),
+        "피부/여드름": ("여드름흉터 한의원", "패인흉터 새살침", "수두흉터 한의원", "새살침"),
         "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원"),
         "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원"),
         "통증/디스크": ("허리통증 한의원", "디스크 한의원", "추나요법"),
         "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅"),
+        "탈모/두피": ("탈모 한의원", "탈모 한약", "두피관리 한의원"),
+        "두통/어지럼": ("두통 한의원", "편두통 한의원", "어지럼증 한의원"),
+        "소화/위장": ("소화불량 한의원", "담적 한의원", "역류성식도염 한의원"),
+        "호흡기/알레르기": ("비염 한의원", "알레르기비염 한의원", "축농증 한의원"),
+        "갱년기/여성": ("갱년기 한의원", "갱년기 한약", "안면홍조 한의원"),
+        "수면/피로": ("불면증 한의원", "수면장애 한의원", "만성피로 한의원"),
+        "스트레스/자율신경": ("자율신경 한의원", "화병 한의원", "공황장애 한의원"),
+        "여성/산후": ("산후보약", "산후조리 한의원", "산후풍 한의원"),
+        "다한증/냉증": ("다한증 한의원", "수족냉증 한의원", "냉증 한의원"),
+        "수험생/집중력": ("수험생 한약", "총명탕", "집중력 한의원"),
+        "면역/보약": ("보약 한의원", "공진단", "경옥고"),
     }
     HIGH_VALUE_LONGTAIL_SUFFIXES = {
         "다이어트": ("비용", "상담", "예약", "추천", "주차", "야간"),
         "교통사고": ("입원", "자보", "자동차보험", "치료비", "주말", "야간"),
-        "피부/여드름": ("비용", "상담", "예약", "추천", "주차", "부작용"),
+        "피부/여드름": ("비용", "상담", "치료기간", "추천", "예약", "부작용", "주의사항"),
         "안면비대칭": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
         "체형교정": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
         "통증/디스크": ("비용", "상담", "예약", "추천", "주차", "야간", "치료기간"),
         "리프팅/탄력": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
+        "탈모/두피": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "두통/어지럼": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "소화/위장": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "호흡기/알레르기": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "갱년기/여성": ("비용", "상담", "예약", "추천", "치료기간", "주의사항"),
+        "수면/피로": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "스트레스/자율신경": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "여성/산후": ("비용", "상담", "예약", "추천", "복용상담", "주의사항"),
+        "다한증/냉증": ("비용", "상담", "예약", "추천", "치료기간", "원인"),
+        "수험생/집중력": ("비용", "상담", "예약", "추천", "복용기간", "주의사항"),
+        "면역/보약": ("가격", "비용", "상담", "예약", "복용기간", "체질상담"),
     }
     HIGH_VALUE_LONGTAIL_CONTEXTS = {
         "다이어트": ("직장인", "산후", "출산후", "갱년기", "웨딩", "요요", "식욕억제"),
         "교통사고": ("입원 가능한", "야간", "주말", "목통증", "허리통증", "합의전"),
-        "피부/여드름": ("흉터", "민감피부", "재발", "성인", "마스크", "압출후"),
+        "피부/여드름": ("흉터", "패인흉터", "모공흉터", "수두흉터", "여드름자국", "민감피부", "재발", "성인", "압출후"),
         "안면비대칭": ("턱관절", "얼굴형", "사진", "교정 전후", "통증", "비수술"),
         "체형교정": ("골반", "라운드숄더", "거북목", "허리통증", "산후", "비수술"),
         "통증/디스크": ("직장인", "야간", "주말", "재발", "만성", "비수술"),
         "리프팅/탄력": ("팔자주름", "이중턱", "탄력", "웨딩", "자연스러운", "통증 적은"),
+        "탈모/두피": ("산후", "여성", "원형", "정수리", "스트레스", "환절기"),
+        "두통/어지럼": ("직장인", "만성", "목어깨", "스트레스", "재발", "검사후"),
+        "소화/위장": ("만성", "직장인", "스트레스", "식후", "재발", "검사후"),
+        "호흡기/알레르기": ("환절기", "아이", "성인", "만성", "재발", "면역"),
+        "갱년기/여성": ("40대", "50대", "열감", "불면", "식은땀", "체중증가"),
+        "수면/피로": ("직장인", "스트레스", "갱년기", "야간", "만성", "번아웃"),
+        "스트레스/자율신경": ("직장인", "번아웃", "불면", "두근거림", "만성", "재발"),
+        "여성/산후": ("출산후", "모유수유", "유산후", "기력회복", "산후풍", "붓기"),
+        "다한증/냉증": ("여름", "직장인", "긴장", "손발", "재발", "체질"),
+        "수험생/집중력": ("고3", "중3", "수능", "시험전", "집중력", "체력"),
+        "면역/보약": ("어르신", "직장인", "수험생", "환절기", "회복", "만성피로"),
     }
     HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS = (
         "{region} {service} 비용 얼마",
@@ -2009,10 +2040,10 @@ class PathfinderLegion:
             "safety": ("후유증", "합의전 상담", "주의사항"),
         },
         "피부/여드름": {
-            "decision": ("비용", "상담", "예약", "추천"),
+            "decision": ("비용", "상담", "예약", "추천", "후기"),
             "access": ("주차", "야간", "주말", "진료시간"),
-            "coverage": ("치료비", "상담"),
-            "safety": ("부작용", "주의사항", "재발"),
+            "coverage": ("치료비", "상담", "새살침 상담", "치료기간"),
+            "safety": ("부작용", "주의사항", "재발", "치료기간", "통증"),
         },
         "안면비대칭": {
             "decision": ("비용", "상담", "예약", "추천"),
@@ -2037,6 +2068,72 @@ class PathfinderLegion:
             "access": ("주차", "야간", "주말", "진료시간"),
             "coverage": ("상담", "치료비"),
             "safety": ("부작용", "주의사항", "통증"),
+        },
+        "탈모/두피": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "재발"),
+        },
+        "두통/어지럼": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "재발"),
+        },
+        "소화/위장": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "재발"),
+        },
+        "호흡기/알레르기": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "재발"),
+        },
+        "갱년기/여성": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("주의사항", "치료기간", "복용 상담"),
+        },
+        "수면/피로": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "복용 상담"),
+        },
+        "스트레스/자율신경": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "복용 상담"),
+        },
+        "여성/산후": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("주의사항", "복용 상담", "치료기간"),
+        },
+        "다한증/냉증": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("원인", "주의사항", "치료기간", "체질 상담"),
+        },
+        "수험생/집중력": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("한약 비용", "상담"),
+            "safety": ("주의사항", "복용기간", "한약 상담"),
+        },
+        "면역/보약": {
+            "decision": ("가격", "비용", "상담", "예약"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("보약 비용", "상담"),
+            "safety": ("복용기간", "주의사항", "체질 상담"),
         },
     }
     MEDICAL_AD_HIGH_RISK_TERMS = (
@@ -2254,6 +2351,14 @@ class PathfinderLegion:
             max_neighborhoods_per_category=5,
             include_contexts=True,
         )
+        profile_base_seeds.extend(
+            GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+                max_terms_per_category=7,
+                max_suffixes_per_category=5,
+                max_contexts_per_category=4,
+                max_neighborhoods_per_category=5,
+            )
+        )
         self.base_seeds = list(dict.fromkeys(profile_base_seeds + self.base_seeds))
         seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(self.base_seeds, min_per_category=8)
         if not seed_coverage["ok"]:
@@ -2275,7 +2380,7 @@ class PathfinderLegion:
         if seasonal_seeds:
             focused_seasonal = [
                 kw for kw, category in seasonal_seeds
-                if category in {"다이어트", "안면비대칭", "여드름", "교통사고", "리프팅"}
+                if GYULIM_KEYWORD_PROFILE.normalize_category(category) in GYULIM_KEYWORD_PROFILE.focus_categories
                    or self.collector.is_focus_candidate(kw)
             ]
             print(f"📅 시즌 키워드 추가: {len(focused_seasonal)}/{len(seasonal_seeds)}개 (현재: {datetime.now().month}월)")
@@ -4223,42 +4328,69 @@ class PathfinderLegion:
             if region not in region_order:
                 region_order.append(region)
 
+        first_pass_limit = min(max_keywords, max(90, int(max_keywords * 0.30)))
+        journey_limit = min(max_keywords, max(first_pass_limit, int(max_keywords * 0.62)))
+        question_limit = min(max_keywords, max(journey_limit, int(max_keywords * 0.82)))
+
         # First pass: cover every focus category across priority regions before adding richer context variants.
         for region_item in region_order[:3]:
+            if len(variants) >= first_pass_limit:
+                break
             for category in category_order:
+                if len(variants) >= first_pass_limit:
+                    break
                 services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
                 suffixes = self.HIGH_VALUE_LONGTAIL_SUFFIXES.get(category, ())
                 if not services or not suffixes:
                     continue
                 for service in services[:3]:
-                    for suffix in suffixes[:3]:
+                    if len(variants) >= first_pass_limit:
+                        break
+                    for suffix in suffixes[:4]:
                         if add_variant(region_item, service, suffix):
                             return variants
+                        if len(variants) >= first_pass_limit:
+                            break
 
         # Search journey pass: expand practical customer needs without multiplying every possible suffix.
         for region_item in region_order[:4]:
+            if len(variants) >= journey_limit:
+                break
             for category in category_order:
+                if len(variants) >= journey_limit:
+                    break
                 services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
                 journey_suffixes = self.CATEGORY_SEARCH_JOURNEY_SUFFIXES.get(category, {})
                 if not services or not journey_suffixes:
                     continue
                 for stage in self.SEARCH_JOURNEY_STAGES:
+                    if len(variants) >= journey_limit:
+                        break
                     suffixes = journey_suffixes.get(stage, ())
                     if not suffixes:
                         continue
                     for service in services[:2]:
-                        for suffix in suffixes[:2]:
+                        if len(variants) >= journey_limit:
+                            break
+                        for suffix in suffixes[:4]:
                             if add_variant(region_item, service, suffix):
                                 return variants
+                            if len(variants) >= journey_limit:
+                                break
 
         # Second pass: question-form longtails capture high-intent searches that are often too sparse for autocomplete.
-        question_limit = min(max_keywords, len(variants) + max(60, max_keywords // 4))
         for region_item in region_order:
+            if len(variants) >= question_limit:
+                break
             for category in category_order:
+                if len(variants) >= question_limit:
+                    break
                 services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
                 if not services:
                     continue
                 for service in services[:3]:
+                    if len(variants) >= question_limit:
+                        break
                     for pattern in self.HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS:
                         if add_variant(pattern.format(region=region_item, service=service)):
                             return variants
@@ -5181,13 +5313,14 @@ class PathfinderLegion:
         intent_counts: Counter = profile.get("intent_counts", Counter())
 
         category_terms = {
-            "다이어트": ["다이어트", "다이어트 한약", "비만 한의원", "식욕억제"],
-            "피부/여드름": ["여드름 흉터", "새살침", "패인흉터", "모공흉터"],
-            "안면비대칭": ["안면비대칭", "얼굴비대칭", "턱비대칭"],
-            "체형교정": ["체형교정", "골반교정", "자세교정"],
-            "교통사고": ["교통사고 입원", "교통사고 후유증", "자동차사고 한의원"],
-            "통증/디스크": ["허리통증 한의원", "목디스크", "추나요법", "어깨통증"],
-            "리프팅/탄력": ["한방리프팅", "매선리프팅", "팔자주름"],
+            profile.category: list(
+                dict.fromkeys(
+                    list(self.CATEGORY_CANONICAL_SERVICES.get(profile.category, ()))
+                    + list(profile.seed_terms[:4])
+                    + list(profile.core_tokens[:3])
+                )
+            )
+            for profile in GYULIM_KEYWORD_PROFILE.profiles
         }
         intent_suffixes = [
             ("transactional", "상담"),

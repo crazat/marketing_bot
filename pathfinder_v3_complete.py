@@ -1081,6 +1081,14 @@ class PathfinderV3:
             max_neighborhoods_per_category=4,
             include_contexts=True,
         )
+        profile_seeds.extend(
+            GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+                max_terms_per_category=6,
+                max_suffixes_per_category=4,
+                max_contexts_per_category=4,
+                max_neighborhoods_per_category=4,
+            )
+        )
         seeds = list(dict.fromkeys(profile_seeds + seeds))
         seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(seeds, min_per_category=6)
         print(f"🎯 규림 진료축 시드 커버리지: {seed_coverage['counts']}")

@@ -189,8 +189,12 @@ def test_legion_longtail_variant_builder_balances_categories_and_contexts():
     assert any("복대동" in kw and "다이어트 한약" in kw and "비용" in kw for kw in variants)
     assert any("교통사고 입원" in kw and "자보" in kw for kw in variants)
     assert any("여드름흉터 한의원" in kw and "추천" in kw for kw in variants)
+    assert any("패인흉터 새살침" in kw and "치료기간" in kw for kw in variants)
+    assert any("수두흉터 한의원" in kw and "치료기간" in kw for kw in variants)
     assert any("다이어트 한약" in kw and "비용 얼마" in kw for kw in variants)
     assert any("직장인" in kw and "다이어트 한약" in kw for kw in variants)
+    assert any("비염 한의원" in kw and "치료기간" in kw for kw in variants)
+    assert any("불면증 한의원" in kw and "상담" in kw for kw in variants)
 
 
 def test_legion_longtail_variant_builder_covers_customer_journey_actions():
