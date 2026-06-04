@@ -32,6 +32,7 @@ from typing import List, Dict, Set, Tuple, Optional
 from collections import Counter
 from pathlib import Path
 from utils.json_io import atomic_write_json
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 # 서비스 모듈 import
 try:
@@ -828,9 +829,15 @@ class PathfinderV3:
             "두통/어지럼": ["두통", "어지럼", "이명", "편두통"],
             "한의원일반": ["한의원", "한방", "한약", "침", "추나", "부항", "뜸"],
         }
+        for cat, terms in GYULIM_KEYWORD_PROFILE.category_patterns().items():
+            existing = self.category_patterns.get(cat, [])
+            self.category_patterns[cat] = list(dict.fromkeys(list(terms) + list(existing)))
 
     def _detect_category(self, keyword: str) -> str:
         kw = keyword.lower()
+        profile_category = GYULIM_KEYWORD_PROFILE.detect_category(keyword, default="")
+        if profile_category in GYULIM_KEYWORD_PROFILE.focus_categories:
+            return profile_category
         for cat, patterns in self.category_patterns.items():
             if any(p in kw for p in patterns):
                 return cat
@@ -883,28 +890,29 @@ class PathfinderV3:
             관련성 점수 (0.0: 무관, 1.0: 핵심)
         """
         kw_lower = keyword.lower()
+        profile_score = GYULIM_KEYWORD_PROFILE.business_relevance_score(keyword) / 100.0
 
         # Tier 1: 핵심 특화 (1.0)
         tier1 = ["안면비대칭", "얼굴비대칭", "체형교정", "골반교정", "새살침", "여드름흉터"]
         if any(t in kw_lower for t in tier1):
-            return 1.0
+            return max(1.0, profile_score)
 
         # Tier 2: 주력 서비스 (0.8)
         tier2 = ["교통사고", "입원", "다이어트", "한약", "여드름", "피부"]
         if any(t in kw_lower for t in tier2):
-            return 0.8
+            return max(0.8, profile_score)
 
         # Tier 3: 일반 진료 (0.6)
-        tier3 = ["통증", "디스크", "탈모", "비염", "갱년기"]
+        tier3 = ["통증", "디스크", "허리통증", "목디스크", "탈모", "비염", "갱년기"]
         if any(t in kw_lower for t in tier3):
-            return 0.6
+            return max(0.6, profile_score)
 
         # Tier 4: 한의원 일반 (0.4)
         tier4 = ["한의원", "한방", "침", "추나", "부항"]
         if any(t in kw_lower for t in tier4):
-            return 0.4
+            return max(0.4, profile_score)
 
-        return 0.2  # 기타
+        return max(0.2, profile_score)  # 기타
 
     def _calculate_priority(self, volume: int, difficulty: int, opportunity: int,
                             keyword: str, is_gap: bool = False,
@@ -1067,6 +1075,15 @@ class PathfinderV3:
             "청주 야간진료", "청주 한의원 야간", "청주 야간 한의원",
             "율량동 야간진료", "가경동 야간진료", "오창 야간진료",
         ]
+        profile_seeds = GYULIM_KEYWORD_PROFILE.build_seed_keywords(
+            max_terms_per_category=8,
+            max_suffixes_per_category=3,
+            max_neighborhoods_per_category=4,
+            include_contexts=True,
+        )
+        seeds = list(dict.fromkeys(profile_seeds + seeds))
+        seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(seeds, min_per_category=6)
+        print(f"🎯 규림 진료축 시드 커버리지: {seed_coverage['counts']}")
 
         # ========== 시즌 키워드 추가 (ULTRA 이식) ==========
         seasonal_seeds = SeasonalKeywordDB.get_current_seasonal_keywords()

@@ -1,5 +1,18 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-04 Memory: Gyulim Pathfinder Treatment Taxonomy
+
+- Pathfinder treatment discovery now has a shared Cheongju Gyulim taxonomy in `core_services/gyulim_keyword_profile.py`. Keep scar/acne/skin, face asymmetry, diet, pain/disc, traffic accident, body correction, and lifting/elasticity rules centralized there instead of copying treatment terms into each scanner.
+- Legion, Total War, and legacy Pathfinder paths now consume the shared profile for seed generation, category detection, business-core/focus filtering, low-business-value leakage checks, and treatment-aware relevance scoring. When changing treatment coverage, update the profile first, then wire any new category-specific logic through callers.
+- Pain/disc is a first-class Gyulim discovery axis now. Keywords such as `청주 허리통증 한의원 비용` and `청주 목디스크 추나요법` must pass focus/business-core checks, while bare technique or self-care leakage such as `청주 추나` or diet-dance/exercise/product terms should remain excluded unless a direct clinic-service anchor is present.
+- The quality filter uses the shared profile so pain, scar, acne, and skin keywords are not under-scored before SERP analysis. Backend Pathfinder fallback core-category filters include `통증/디스크` and `리프팅/탄력` for older DB rows without `business_core`.
+- Regression coverage lives in `tests/test_gyulim_keyword_profile.py`. Focused verification for this change:
+  - `python -m py_compile core_services\gyulim_keyword_profile.py core_services\keyword_filter.py pathfinder.py pathfinder_v3_complete.py pathfinder_v3_legion.py marketing_bot_web\backend\routers\pathfinder.py`
+  - `python -m pytest tests/test_gyulim_keyword_profile.py -q`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q`
+  - `python -m pytest tests/test_pathfinder_insight_broker.py -q`
+- Next live validation after code changes should be a Legion/API-backed Pathfinder run followed by category balance review across scar/skin, asymmetry, diet, pain/disc, traffic accident, and lifting/body-correction S/A/B distributions. Do not report “world-class” coverage from static tests alone; confirm live Naver/SearchAd output quality when credentials and scan budget allow.
+
 ## 2026-06-04 Memory: Pathfinder Place Rank and SmartPlace Value Loop
 
 - Pathfinder now exports a `place_rank_lift` and `place_value_loop` in `core_services/pathfinder_insight_broker.py`. Keep both together: `place_rank_lift` handles rank recovery/measurement, while `place_value_loop` turns Pathfinder insights into SmartPlace profile value and imports SmartPlace signals back into Pathfinder.

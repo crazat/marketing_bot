@@ -9,6 +9,7 @@ import urllib3
 import concurrent.futures
 import threading
 from scrapers.naver_autocomplete import NaverAutocompleteScraper
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -456,6 +457,9 @@ class Pathfinder:
         Ensures a keyword harvested under a parent category actually belongs there.
         """
         kw = keyword.replace(" ", "")
+        profile_category = GYULIM_KEYWORD_PROFILE.detect_category(keyword, default="")
+        if profile_category in GYULIM_KEYWORD_PROFILE.focus_categories:
+            return profile_category
         
         # Category signature terms
         category_vitals = {
@@ -683,52 +687,13 @@ class Pathfinder:
         - 청주 + 핵심 용어 + 의도 (3단어)
         - 총 ~100개 간결한 시드
         """
-        seeds = []
-
-        base_region = "청주"
-
-        # 카테고리별 핵심 용어 (각 3-5개로 제한)
-        category_terms = {
-            "다이어트": ["다이어트", "다이어트한약", "비만", "살빼기"],
-            "여드름_피부": ["여드름", "피부", "피부관리", "모공"],
-            "교통사고_입원": ["교통사고", "교통사고한의원", "자동차사고"],
-            "통증_디스크": ["허리통증", "목디스크", "어깨통증", "무릎통증"],
-            "안면비대칭_교정": ["안면비대칭", "얼굴비대칭", "턱관절", "체형교정"],
-            "리프팅_탄력": ["리프팅", "매선", "피부탄력", "주름"],
-            "갱년기_호르몬": ["갱년기", "폐경", "여성호르몬"],
-            "불면증_수면": ["불면증", "수면", "수면장애"],
-            "소화불량_위장": ["소화불량", "위장", "담적병", "역류성식도염"],
-            "두통_어지럼증": ["두통", "어지럼증", "편두통", "이명"],
-            "알레르기_아토피": ["비염", "아토피", "알레르기", "축농증"],
-            "산후조리_여성": ["산후조리", "산후비만", "여성질환"],
-            "탈모": ["탈모", "탈모치료", "원형탈모"],
-            "면역_보약": ["보약", "면역력", "공진단", "경옥고"],
-        }
-
-        # 구매 의도 수식어
-        intent_modifiers = ["가격", "후기", "추천", "잘하는곳", "효과"]
-
-        for category, terms in category_terms.items():
-            for term in terms:
-                # 기본 시드: "청주 다이어트"
-                seeds.append(f"{base_region} {term}")
-
-                # 의도 추가 시드 (첫 2개 의도만): "청주 다이어트 가격"
-                for intent in intent_modifiers[:2]:
-                    seeds.append(f"{base_region} {term} {intent}")
-
-        # 주요 동네별 시드 (상위 5개 동네만)
-        major_dongs = ["오창", "가경동", "복대동", "율량동", "분평동"]
-        core_terms = ["한의원", "다이어트", "교통사고"]
-
-        for dong in major_dongs:
-            for term in core_terms:
-                seeds.append(f"{dong} {term}")
-
-        # 중복 제거
-        seeds = list(set(seeds))
-        logger.info(f"V3 시드 생성 완료: {len(seeds)}개 (간결한 2-3단어)")
-
+        seeds = GYULIM_KEYWORD_PROFILE.build_seed_keywords(
+            max_terms_per_category=6,
+            max_suffixes_per_category=2,
+            max_neighborhoods_per_category=5,
+            include_contexts=False,
+        )
+        logger.info(f"V3 시드 생성 완료: {len(seeds)}개 (규림 진료축 프로필 기반)")
         return seeds
 
     def _detect_category_v3(self, keyword: str) -> str:
@@ -743,13 +708,11 @@ class Pathfinder:
         """
         kw = keyword.replace(" ", "").lower()
 
+        profile_category = GYULIM_KEYWORD_PROFILE.detect_category(keyword)
+        if profile_category != "기타":
+            return profile_category
+
         category_patterns = {
-            "다이어트": ["다이어트", "비만", "살빼", "체중", "감량"],
-            "여드름_피부": ["여드름", "피부", "모공", "흉터", "기미"],
-            "교통사고_입원": ["교통사고", "자동차사고", "후유증"],
-            "통증_디스크": ["통증", "디스크", "허리", "목", "어깨", "무릎", "관절"],
-            "안면비대칭_교정": ["안면비대칭", "비대칭", "턱관절", "교정", "체형"],
-            "리프팅_탄력": ["리프팅", "매선", "탄력", "주름"],
             "갱년기_호르몬": ["갱년기", "폐경", "호르몬", "여성"],
             "불면증_수면": ["불면증", "수면", "잠"],
             "소화불량_위장": ["소화", "위장", "담적", "역류", "변비"],
@@ -944,77 +907,20 @@ class Pathfinder:
         기존 문제: 47개 지역 × 10개 용어 × 9개 의도 × 5개 시설 = 21,150개/카테고리 (비현실적)
         개선: 청주 중심으로 간결하게 992개 시드 생성 (99.7% 감소)
         """
-        logger.info("🤖 청주 중심 Smart Seed 생성 중...")
-
-        # === 청주 중심 지역 설정 ===
-        base_region = "청주"
-
-        # 청주 4개 구
-        cheongju_districts = ["상당", "서원", "흥덕", "청원"]
-
-        # 주요 동네 (인구 많은 15개)
-        major_dongs = [
-            "복대동", "가경동", "분평동", "봉명동", "사창동",  # 흥덕구/서원구
-            "산남동", "수곡동", "모충동", "강서동", "내덕동",  # 서원구
-            "율량동", "성화동", "용암동", "금천동", "우암동"   # 청원구/상당구
+        logger.info("🤖 청주 규림 진료축 Smart Seed 생성 중...")
+        seeds = GYULIM_KEYWORD_PROFILE.build_seed_keywords(
+            max_terms_per_category=8,
+            max_suffixes_per_category=3,
+            max_neighborhoods_per_category=8,
+            include_contexts=True,
+        )
+        unique_seeds = [
+            (seed, GYULIM_KEYWORD_PROFILE.normalize_category(GYULIM_KEYWORD_PROFILE.detect_category(seed)))
+            for seed in seeds
         ]
-
-        # 카테고리별 핵심 용어 (각 5개 이하로 간소화)
-        category_terms = {
-            "다이어트": ["다이어트", "비만", "살빼기", "체중감량", "한약다이어트"],
-            "안면비대칭_교정": ["안면비대칭", "체형교정", "골반교정", "거북목", "턱관절"],
-            "여드름_피부": ["여드름", "피부", "흉터", "모공", "기미"],
-            "리프팅_탄력": ["리프팅", "주름", "탄력", "동안침", "매선"],
-            "교통사고_입원": ["교통사고", "입원", "후유증", "보험", "야간진료"],
-            "통증_디스크": ["허리디스크", "목디스크", "허리통증", "추나", "도수치료"],
-            "갱년기_호르몬": ["갱년기", "폐경", "여성호르몬", "안면홍조", "불면"],
-            "불면증_수면": ["불면증", "수면장애", "피로", "만성피로", "수면"],
-            "소화불량_위장": ["소화불량", "위염", "역류성식도염", "담적", "변비"],
-            "두통_어지럼증": ["두통", "편두통", "어지럼증", "이석증", "현기증"],
-            "알레르기_아토피": ["아토피", "비염", "알레르기", "축농증", "두드러기"],
-            "자율신경_스트레스": ["공황장애", "우울증", "불안장애", "스트레스", "화병"],
-            "산후조리_여성": ["산후조리", "산후보약", "생리통", "난임", "임신준비"],
-            "다한증_냉증": ["다한증", "손땀", "냉증", "수족냉증", "발냉증"],
-            "수험생_집중력": ["수험생", "총명탕", "집중력", "기억력", "수능한약"],
-            "면역_보약": ["공진단", "경옥고", "보약", "면역력", "대상포진"]
-        }
-
-        # 구매 의도 시그널 (3개만)
-        high_intent_signals = ["가격", "후기", "추천"]
-
-        generated_seeds = []
-
-        # === 간결한 시드 생성 로직 ===
-        for category, terms in category_terms.items():
-            # [레벨 1] 청주 + 핵심 용어 (5개)
-            for term in terms:
-                generated_seeds.append((f"{base_region} {term}", category))
-
-            # [레벨 2] 청주 + 4개 구 + 핵심 3개 (12개)
-            for district in cheongju_districts:
-                for term in terms[:3]:  # 핵심 3개만
-                    generated_seeds.append((f"{base_region} {district} {term}", category))
-
-            # [레벨 3] 주요 동네 + 핵심 2개 (30개)
-            for dong in major_dongs:
-                for term in terms[:2]:  # 핵심 2개만
-                    generated_seeds.append((f"{dong} {term}", category))
-
-            # [레벨 4] 청주 + 용어 + 의도 (15개)
-            for term in terms:
-                for intent in high_intent_signals:
-                    generated_seeds.append((f"{base_region} {term} {intent}", category))
-
-        # 중복 제거
-        seen = set()
-        unique_seeds = []
-        for seed in generated_seeds:
-            if seed[0] not in seen:
-                seen.add(seed[0])
-                unique_seeds.append(seed)
-
+        coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(seeds, min_per_category=6)
         logger.info(f"🎯 청주 중심 Smart Seed {len(unique_seeds):,}개 생성 완료!")
-        logger.info(f"   ✅ 기존 대비 99%+ 감소, 실제 검색되는 키워드 중심")
+        logger.info(f"   진료축 커버리지: {coverage['counts']}")
         return unique_seeds
     
     def _expand_via_ad_api(self, seeds):

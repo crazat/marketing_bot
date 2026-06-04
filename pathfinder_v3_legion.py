@@ -37,6 +37,7 @@ from contextlib import closing
 from pathlib import Path
 from functools import lru_cache
 from utils.json_io import atomic_write_json
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 # 품질 필터 (노이즈 제거)
 try:
@@ -1012,40 +1013,21 @@ class LegionCollector:
         else:
             self.google = None
 
-        # 청주 지역
-        self.cheongju_regions = [
-            "청주", "상당", "서원", "흥덕", "청원",
-            "복대", "가경", "율량", "오창", "오송",
-            "분평", "봉명", "산남", "용암", "금천"
-        ]
+        # 청주 지역/동네 기준은 공용 Gyulim profile을 따른다.
+        self.cheongju_regions = list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+        self.nearby_regions = list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        self.neighborhoods = list(GYULIM_KEYWORD_PROFILE.neighborhoods)
 
-        # 확장 지역 (인근 도시) - 보고서 분석 반영
-        self.nearby_regions = ["충주", "제천", "진천", "증평", "괴산", "음성", "세종"]
-
-        # 동네 (세부 지역)
-        self.neighborhoods = [
-            "복대동", "가경동", "분평동", "봉명동", "사창동",
-            "산남동", "수곡동", "모충동", "용암동", "금천동",
-            "율량동", "사직동", "성화동", "내덕동", "우암동"
-        ]
-
-        # 한의원 관련 키워드 (S/A급 0% 카테고리 키워드 추가)
-        self.hanbang_keywords = [
-            "한의원", "한방", "한약", "침", "추나", "부항", "뜸",
-            "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭",
-            "체형교정", "골반교정", "척추교정", "자세교정",
-            "교통사고", "자동차사고", "후유증", "입원",
-            "여드름", "여드름흉터", "새살침", "흉터", "아토피",
-            "다이어트", "비만", "살빼", "체중",
-            "리프팅", "매선", "매선리프팅", "한방리프팅", "침리프팅",
-            "통증", "디스크", "허리", "어깨", "무릎",
+        # 한의원/규림 진료축 관련 키워드. 공용 프로필 + 보조 진료군을 합친다.
+        self.hanbang_keywords = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords) + [
             "갱년기", "생리", "산후", "불임",
             "불면", "두통", "어지럼",
-            # 추가 (2026-01-31): S/A급 0% 카테고리
             "편두통", "만성두통", "어지럼증",
             "다한증", "냉증", "수족냉증", "땀",
-            "자율신경", "스트레스", "화병", "불안", "우울"
+            "자율신경", "스트레스", "화병", "불안", "우울",
+            "탈모", "비염", "축농증", "알레르기", "보약",
         ]
+        self.hanbang_keywords = list(dict.fromkeys(self.hanbang_keywords))
 
         # 의도 키워드 (Round 4용) - B: 의도 기반 롱테일 강화
         self.intent_suffixes = [
@@ -1076,6 +1058,11 @@ class LegionCollector:
             # 정신/스트레스
             "불면증", "만성피로", "번아웃", "자율신경실조", "공황장애"
         ]
+        for profile_category in ("통증/디스크", "피부/여드름", "안면비대칭", "다이어트"):
+            profile = GYULIM_KEYWORD_PROFILE.profile_for(profile_category)
+            if profile:
+                self.problem_keywords.extend(profile.core_tokens)
+        self.problem_keywords = list(dict.fromkeys(self.problem_keywords))
 
         # 카테고리 패턴 (S/A급 0% 카테고리 추가)
         self.category_patterns = {
@@ -1133,14 +1120,13 @@ class LegionCollector:
             "야간진료": ["야간진료", "야간한의원", "늦게까지", "저녁진료", "주말진료"],
             "한의원일반": ["한의원", "한방병원"],
         }
+        for cat, terms in GYULIM_KEYWORD_PROFILE.category_patterns().items():
+            existing = self.category_patterns.get(cat, [])
+            self.category_patterns[cat] = list(dict.fromkeys(list(terms) + list(existing)))
 
-        self.business_core_categories = {
-            "다이어트", "교통사고", "안면비대칭", "체형교정",
-        }
-        self.business_core_skin_tokens = (
-            "여드름", "여드름흉터", "여드름자국", "새살침",
-            "흉터", "패인흉터", "모공흉터", "흉터치료",
-        )
+        self.business_core_categories = set(GYULIM_KEYWORD_PROFILE.business_core_categories)
+        skin_profile = GYULIM_KEYWORD_PROFILE.profile_for("피부/여드름")
+        self.business_core_skin_tokens = tuple(skin_profile.core_tokens if skin_profile else ())
         self.direct_service_anchors = {
             "다이어트": (
                 "한의원", "한방", "한약", "다이어트한약", "비만한의원",
@@ -1158,6 +1144,9 @@ class LegionCollector:
             "체형교정": ("한의원", "교정", "골반교정", "자세교정", "척추교정", "추나"),
             "리프팅/탄력": ("한의원", "한방", "매선", "매선리프팅", "한방리프팅", "침리프팅"),
         }
+        for cat, anchors in GYULIM_KEYWORD_PROFILE.direct_service_anchors().items():
+            existing = self.direct_service_anchors.get(cat, ())
+            self.direct_service_anchors[cat] = tuple(dict.fromkeys(tuple(anchors) + tuple(existing)))
         self.low_business_value_terms = {
             "다이어트": (
                 "다이어트댄스", "다이어트 댄스", "댄스", "줌바", "요가",
@@ -1172,6 +1161,9 @@ class LegionCollector:
             "체형교정": ("셀프", "운동", "유튜브", "홈트", "필라테스", "요가"),
             "리프팅/탄력": ("화장품", "팩", "마사지", "홈케어"),
         }
+        for cat, terms in GYULIM_KEYWORD_PROFILE.low_business_value_terms().items():
+            existing = self.low_business_value_terms.get(cat, ())
+            self.low_business_value_terms[cat] = tuple(dict.fromkeys(tuple(terms) + tuple(existing)))
 
     def _rate_limit(self):
         elapsed = time.time() - self._last_call
@@ -1203,8 +1195,7 @@ class LegionCollector:
 
     def _is_in_target_region(self, keyword: str) -> bool:
         """본 사업영역(청주 행정구역) 매칭. 인접 시(충주/제천/세종 등)는 False."""
-        return any(r in keyword for r in self.cheongju_regions) or \
-               any(n in keyword for n in self.neighborhoods)
+        return GYULIM_KEYWORD_PROFILE.is_target_region(keyword)
 
     def apply_relevance_demotion(self, keyword: str, grade: str) -> Tuple[str, Optional[str]]:
         """
@@ -1229,6 +1220,9 @@ class LegionCollector:
 
     def _detect_category(self, keyword: str) -> str:
         kw = keyword.lower()
+        profile_category = GYULIM_KEYWORD_PROFILE.detect_category(keyword, default="")
+        if profile_category in GYULIM_KEYWORD_PROFILE.focus_categories:
+            return profile_category
         # 한방 indicator는 카테고리 매칭 우선 — "기타" fallback 누수 방지
         for cat, patterns in self.category_patterns.items():
             if any(p in kw for p in patterns):
@@ -1253,6 +1247,9 @@ class LegionCollector:
         """진료/상담 의도보다 활동·상품·자가관리 의도가 강한 누수 키워드 판정."""
         if category is None:
             category = self._detect_category(keyword)
+        profile_reason = GYULIM_KEYWORD_PROFILE.low_business_value_reason(keyword, category)
+        if profile_reason:
+            return profile_reason
         kw_lower = (keyword or "").lower()
         terms = self.low_business_value_terms.get(category, ())
         matched = next((term for term in terms if term.lower() in kw_lower), None)
@@ -1268,42 +1265,33 @@ class LegionCollector:
         """등급과 별개로 사업상 실제 유입 핵심군인지 판정."""
         if category is None:
             category = self._detect_category(keyword)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
 
-        if category in self.business_core_categories:
-            return True
-        if category == "피부/여드름":
-            return self._is_core_skin_keyword(keyword)
+        if category in GYULIM_KEYWORD_PROFILE.focus_categories:
+            return GYULIM_KEYWORD_PROFILE.is_business_core_keyword(keyword, category)
         return False
 
     def is_focus_candidate(self, keyword: str, category: Optional[str] = None) -> bool:
         """규림 기본 Legion 타깃: 미용 한의원 + 교통사고 입원실 중심."""
         if category is None:
             category = self._detect_category(keyword)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
 
         if self.low_business_value_reason(keyword, category):
             return False
-
-        focus_categories = {
-            "다이어트", "안면비대칭", "체형교정",
-            "리프팅/탄력", "교통사고",
-        }
-        if category in focus_categories:
-            return True
-        if category == "피부/여드름":
-            return self._is_core_skin_keyword(keyword)
-
-        accident_context = ("교통사고", "자동차사고", "사고", "입원", "자보", "자동차보험")
-        if category == "통증/디스크" and any(token in keyword for token in accident_context):
-            return True
+        if category in GYULIM_KEYWORD_PROFILE.focus_categories:
+            return GYULIM_KEYWORD_PROFILE.is_focus_candidate(keyword, category)
 
         return False
 
     def _is_valid_keyword(self, keyword: str) -> bool:
         """유효한 키워드인지 확인"""
         # 청주 또는 인근 지역 포함
-        has_region = any(r in keyword for r in self.cheongju_regions + self.nearby_regions + self.neighborhoods)
+        has_region = GYULIM_KEYWORD_PROFILE.is_target_region(keyword, include_nearby=True)
         # 한방 관련 키워드 포함
-        has_hanbang = any(h in keyword for h in self.hanbang_keywords)
+        has_hanbang = GYULIM_KEYWORD_PROFILE.has_hanbang_or_treatment_signal(keyword) or any(
+            h in keyword for h in self.hanbang_keywords
+        )
         return has_region and has_hanbang
 
     def _filter_blacklist(self, keywords: List[str]) -> List[str]:
@@ -1977,6 +1965,7 @@ class PathfinderLegion:
         "피부/여드름": ("여드름 한의원", "여드름흉터 한의원", "새살침"),
         "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원"),
         "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원"),
+        "통증/디스크": ("허리통증 한의원", "디스크 한의원", "추나요법"),
         "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅"),
     }
     HIGH_VALUE_LONGTAIL_SUFFIXES = {
@@ -1985,6 +1974,7 @@ class PathfinderLegion:
         "피부/여드름": ("비용", "상담", "예약", "추천", "주차", "부작용"),
         "안면비대칭": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
         "체형교정": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
+        "통증/디스크": ("비용", "상담", "예약", "추천", "주차", "야간", "치료기간"),
         "리프팅/탄력": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
     }
     HIGH_VALUE_LONGTAIL_CONTEXTS = {
@@ -1993,6 +1983,7 @@ class PathfinderLegion:
         "피부/여드름": ("흉터", "민감피부", "재발", "성인", "마스크", "압출후"),
         "안면비대칭": ("턱관절", "얼굴형", "사진", "교정 전후", "통증", "비수술"),
         "체형교정": ("골반", "라운드숄더", "거북목", "허리통증", "산후", "비수술"),
+        "통증/디스크": ("직장인", "야간", "주말", "재발", "만성", "비수술"),
         "리프팅/탄력": ("팔자주름", "이중턱", "탄력", "웨딩", "자연스러운", "통증 적은"),
     }
     HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS = (
@@ -2034,6 +2025,12 @@ class PathfinderLegion:
             "access": ("주차", "야간", "주말", "진료시간"),
             "coverage": ("치료비", "상담"),
             "safety": ("주의사항", "통증", "비수술"),
+        },
+        "통증/디스크": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("주의사항", "통증", "비수술", "치료기간"),
         },
         "리프팅/탄력": {
             "decision": ("비용", "상담", "예약", "추천"),
@@ -2251,6 +2248,27 @@ class PathfinderLegion:
             "청주 웨딩 다이어트", "청주 결혼준비 다이어트", "청주 웨딩 안면비대칭",
             "청주 한방리프팅", "청주 매선리프팅",
         ]
+        profile_base_seeds = GYULIM_KEYWORD_PROFILE.build_seed_keywords(
+            max_terms_per_category=10,
+            max_suffixes_per_category=3,
+            max_neighborhoods_per_category=5,
+            include_contexts=True,
+        )
+        self.base_seeds = list(dict.fromkeys(profile_base_seeds + self.base_seeds))
+        seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(self.base_seeds, min_per_category=8)
+        if not seed_coverage["ok"]:
+            repair_categories = list(seed_coverage["missing"]) + list(seed_coverage["undercovered"].keys())
+            self.base_seeds.extend(
+                GYULIM_KEYWORD_PROFILE.build_seed_keywords(
+                    categories=repair_categories,
+                    max_terms_per_category=8,
+                    max_suffixes_per_category=2,
+                    max_neighborhoods_per_category=3,
+                )
+            )
+            self.base_seeds = list(dict.fromkeys(self.base_seeds))
+            seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(self.base_seeds, min_per_category=8)
+        print(f"🎯 규림 진료축 시드 커버리지: {seed_coverage['counts']}")
 
         # ========== 시즌 키워드 추가 (ULTRA 이식) ==========
         seasonal_seeds = SeasonalKeywordDB.get_current_seasonal_keywords()
@@ -5168,6 +5186,7 @@ class PathfinderLegion:
             "안면비대칭": ["안면비대칭", "얼굴비대칭", "턱비대칭"],
             "체형교정": ["체형교정", "골반교정", "자세교정"],
             "교통사고": ["교통사고 입원", "교통사고 후유증", "자동차사고 한의원"],
+            "통증/디스크": ["허리통증 한의원", "목디스크", "추나요법", "어깨통증"],
             "리프팅/탄력": ["한방리프팅", "매선리프팅", "팔자주름"],
         }
         intent_suffixes = [
@@ -5417,6 +5436,8 @@ class PathfinderLegion:
         collector = self._collector_or_default()
         keyword_lower = keyword.lower()
         score = 0.0
+        category = collector._detect_category(keyword)
+        profile_score = GYULIM_KEYWORD_PROFILE.business_relevance_score(keyword, category)
 
         # Tier 1: 핵심 한방 키워드 (+40)
         tier1 = ['한의원', '한방', '한약', '침', '추나', '부항', '뜸']
@@ -5441,7 +5462,6 @@ class PathfinderLegion:
         if any(t in keyword_lower for t in tier4):
             score += 15
 
-        category = collector._detect_category(keyword)
         if collector._has_direct_service_anchor(keyword, category):
             score += 10
         if collector.low_business_value_reason(keyword, category):
@@ -5450,6 +5470,7 @@ class PathfinderLegion:
             self._calculate_service_fit_profile(keyword, category).get("score", 0.0) or 0.0
         )
         score = (score * 0.75) + (service_fit_score * 0.25)
+        score = max(score, profile_score)
         if service_fit_score < 45.0:
             score = min(score, service_fit_score)
 

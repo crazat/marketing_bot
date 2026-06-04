@@ -341,7 +341,10 @@ def _append_business_core_filter(
         filters.append(f"COALESCE({_qcol('business_core', alias)}, 0) = 1")
     else:
         filters.append(
-            f"{_qcol('category', alias)} IN ('다이어트', '교통사고', '안면비대칭', '피부/여드름', '체형교정')"
+            f"{_qcol('category', alias)} IN ("
+            "'다이어트', '교통사고', '안면비대칭', '피부/여드름', "
+            "'체형교정', '통증/디스크', '리프팅/탄력'"
+            ")"
         )
 
 

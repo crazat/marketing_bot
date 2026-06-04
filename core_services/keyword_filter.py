@@ -18,6 +18,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.json_io import atomic_write_json
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 
 @dataclass
@@ -48,14 +49,20 @@ class KeywordQualityFilter:
         ]
 
         # 핵심 비즈니스 키워드 (관련성 점수용)
+        profile_tier2 = []
+        for profile in GYULIM_KEYWORD_PROFILE.profiles:
+            profile_tier2.extend(profile.category_terms)
+            profile_tier2.extend(profile.core_tokens)
         self.core_keywords = {
-            'tier1': ['한의원', '한방', '한약', '침', '추나', '부항', '뜸'],
-            'tier2': [
-                '다이어트', '비만', '교통사고', '자동차사고', '입원',
-                '안면비대칭', '비대칭', '여드름', '여드름흉터', '흉터',
-                '새살침', '패인흉터', '모공흉터', '리프팅', '매선'
-            ],
-            'tier3': ['청주', '충북', '세종', '오창', '오송'],
+            'tier1': list(GYULIM_KEYWORD_PROFILE.hanbang_indicators),
+            'tier2': list(dict.fromkeys(profile_tier2)),
+            'tier3': list(
+                dict.fromkeys(
+                    GYULIM_KEYWORD_PROFILE.cheongju_regions
+                    + GYULIM_KEYWORD_PROFILE.neighborhoods
+                    + ("충북",)
+                )
+            ),
         }
 
         # 블랙리스트 로드
@@ -114,6 +121,7 @@ class KeywordQualityFilter:
         """관련성 점수 계산 (0.0 ~ 1.0)"""
         score = 0.0
         keyword_lower = keyword.lower()
+        profile_score = GYULIM_KEYWORD_PROFILE.business_relevance_score(keyword) / 100.0
 
         # Tier 1: 핵심 한방 키워드 (0.4)
         if any(term in keyword_lower for term in self.core_keywords['tier1']):
@@ -132,7 +140,7 @@ class KeywordQualityFilter:
         if any(term in keyword_lower for term in intent_keywords):
             score += 0.1
 
-        return min(score, 1.0)
+        return min(max(score, profile_score), 1.0)
 
     def filter_batch(self, keywords: List[str]) -> Tuple[List[str], List[Tuple[str, str]]]:
         """
