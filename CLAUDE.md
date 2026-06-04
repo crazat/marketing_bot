@@ -1,5 +1,22 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-04 Memory: Pathfinder Place Rank and SmartPlace Value Loop
+
+- Pathfinder now exports a `place_rank_lift` and `place_value_loop` in `core_services/pathfinder_insight_broker.py`. Keep both together: `place_rank_lift` handles rank recovery/measurement, while `place_value_loop` turns Pathfinder insights into SmartPlace profile value and imports SmartPlace signals back into Pathfinder.
+- `place_rank_lift` uses official Naver SmartPlace/Search Advisor references and explicitly blocks manipulative tactics: fake clicks/saves/shares, fake reservations, fake receipts/reviews, review reward or wording/star control, profile keyword stuffing, backlink/redirect/domain-forwarding SEO spam, competitor attacks, and report abuse.
+- `place_tracking_expansion.candidate_keywords` are measurement inputs only. They can be applied to tracking through `POST /pathfinder/place-tracking-candidates/apply`, which writes pending mobile/desktop rows through `DatabaseManager.add_keyword_to_tracking()` and updates `config/keywords.json`. Do not use these candidates as stuffing targets in SmartPlace descriptions or content.
+- Candidate generation now removes nested/duplicated local tokens and forces service-like phrases when a clinic term is present. Example desired representative candidates are service phrases such as `분평동 교통사고 입원 한의원`, not long pasted source keywords.
+- `place_value_loop.pathfinder_to_place` produces SmartPlace representative keyword candidates (max 5, actual service/menu terms only), SmartPlace update tasks for representative keywords, descriptions/FAQ, photos/images, reservation/TalkTalk/SmartCall/additional info, review responses, and AI briefing readiness.
+- `place_value_loop.place_to_pathfinder` defines the reverse loop: SmartPlace popular search terms, visitor review keywords, AI briefing text, image/review exposure state, reservation/order/TalkTalk/SmartCall action stats, and profile change history should feed future Pathfinder priorities and 14-day experiments.
+- Downstream handoffs and prompts must preserve `place_value_loop` and card-level `place_value_brief` alongside `place_rank`, `place_lift_actions`, `place_lift_experiments`, `place_tracking_candidates`, and `place_profile_audit`.
+- Frontend `InsightBriefPanel` now shows "SmartPlace 부가가치 루프" with representative keyword candidates, SmartPlace update tasks, and reverse Pathfinder import signals. The Pathfinder page also has a "추적 시작" action for top place tracking candidates.
+- Focused verification for this system:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py tests/test_pathfinder_insight_broker.py tests/test_pathfinder_place_tracking_apply.py tests/test_viral_target_repo.py -q` -> 86 passed.
+  - `npm --prefix marketing_bot_web/frontend run typecheck`
+  - `npm --prefix marketing_bot_web/frontend run lint`
+  - `npm --prefix marketing_bot_web/frontend run build`
+  - Read-only DB smoke should show `place_value_status=ready`, representative keyword candidates, `card_has_value=True`, and `prompt_has_value=True`.
+
 ## 2026-06-03 Memory: Pathfinder Insight Handoff System
 
 - Pathfinder now has a dedicated insight broker at `core_services/pathfinder_insight_broker.py`. It turns `keyword_insights` rows into user-facing briefs, Codex prompt context, and per-agent handoff packets for `blog_agent`, `shorts_studio_agent`, `viral_hunter_agent`, and `ad_agent`.

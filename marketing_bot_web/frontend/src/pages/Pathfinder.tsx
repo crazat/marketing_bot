@@ -232,6 +232,33 @@ export default function Pathfinder() {
     },
   })
 
+  const applyPlaceTrackingCandidates = useMutation({
+    mutationFn: (keywords: string[]) => pathfinderApi.applyPlaceTrackingCandidates({
+      keywords,
+      limit: Math.min(Math.max(keywords.length || 5, 1), 20),
+    }),
+    onSuccess: (data) => {
+      const addedCount = data?.added_count ?? 0
+      const skippedCount = data?.skipped_count ?? 0
+      const failedCount = data?.failed_count ?? 0
+
+      if (failedCount > 0) {
+        toast.warning(`플레이스 추적 ${addedCount}개 등록, ${failedCount}개 실패`)
+      } else if (addedCount > 0) {
+        toast.success(`플레이스 추적 키워드 ${addedCount}개 등록 완료`)
+      } else {
+        toast.info(`이미 추적 중인 후보 ${skippedCount}개를 건너뛰었습니다`)
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['pathfinder-insight-brief'] })
+      queryClient.invalidateQueries({ queryKey: ['pathfinder-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['pathfinder-keywords'] })
+    },
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(`플레이스 추적 등록 실패: ${error.response?.data?.detail || error.message}`)
+    },
+  })
+
   const handleInsightFeedback = useCallback((feedbackType: 'accepted' | 'needs_review') => {
     const action = insightBrief?.action_queue?.[0]
     if (!action?.handoff_id) {
@@ -252,6 +279,21 @@ export default function Pathfinder() {
   }, [insightBrief, submitInsightFeedback, toast])
 
   // [Phase 5.0] 키워드 검색 필터링
+  const handleTrackPlaceCandidates = useCallback((keywords: string[]) => {
+    const cleanKeywords = Array.from(new Set(
+      (keywords || [])
+        .map((keyword) => String(keyword || '').trim())
+        .filter(Boolean)
+    )).slice(0, 5)
+
+    if (!cleanKeywords.length) {
+      toast.warning('등록할 플레이스 추적 후보가 없습니다')
+      return
+    }
+
+    applyPlaceTrackingCandidates.mutate(cleanKeywords)
+  }, [applyPlaceTrackingCandidates, toast])
+
   const filteredKeywords = useMemo(() => {
     if (!keywords) return []
     if (!searchQuery.trim()) return keywords
@@ -508,6 +550,8 @@ export default function Pathfinder() {
           }
         }}
         onFeedback={handleInsightFeedback}
+        onTrackPlaceCandidates={handleTrackPlaceCandidates}
+        isTrackingCandidates={applyPlaceTrackingCandidates.isPending}
         onCopy={(message) => toast.info(message)}
       />
 

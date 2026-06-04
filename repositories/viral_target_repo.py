@@ -101,6 +101,7 @@ class ViralTargetRepository:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
+                table_columns = self._columns_for_conn(conn)
                 existing_id = None
                 storage_url = url
                 if canonical_url:
@@ -118,40 +119,70 @@ class ViralTargetRepository:
                     if row is not None:
                         existing_id = row["id"]
                         storage_url = row["url"] or url
+                matched_keywords = data.get("matched_keywords") or []
+                matched_keyword = (
+                    data.get("matched_keyword")
+                    or (matched_keywords[0] if isinstance(matched_keywords, list) and matched_keywords else None)
+                )
+                insert_values: Dict[str, Any] = {
+                    "id": data.get("id"),
+                    "platform": data.get("platform"),
+                    "url": storage_url,
+                    "canonical_url": canonical_url,
+                    "title": data.get("title"),
+                    "content_preview": data.get("content_preview", ""),
+                    "matched_keywords": keywords_json,
+                    "category": data.get("category", "기타"),
+                    "is_commentable": data.get("is_commentable", True),
+                    "comment_status": data.get("comment_status", "pending"),
+                    "generated_comment": data.get("generated_comment", ""),
+                    "priority_score": data.get("priority_score", 0),
+                    "discovered_at": now,
+                    "last_scanned_at": now,
+                    "scan_count": 1,
+                    "content_hash": content_hash,
+                    "matched_keyword": matched_keyword,
+                    "source_scan_run_id": data.get("source_scan_run_id", 0),
+                    "matched_keyword_grade": data.get("matched_keyword_grade"),
+                    "matched_keyword_kei": data.get("matched_keyword_kei", 0),
+                    "matched_keyword_priority": data.get("matched_keyword_priority", 0),
+                    "matched_keyword_category": data.get("matched_keyword_category"),
+                }
+                insert_columns = [
+                    column for column in insert_values
+                    if column in table_columns
+                ]
+                placeholders = ", ".join("?" for _ in insert_columns)
+                updates = [
+                    f"canonical_url = COALESCE(NULLIF(excluded.canonical_url, ''), {self.TABLE}.canonical_url)",
+                    "title = excluded.title",
+                    "matched_keywords = excluded.matched_keywords",
+                    "priority_score = excluded.priority_score",
+                    "last_scanned_at = excluded.last_scanned_at",
+                    f"scan_count = COALESCE({self.TABLE}.scan_count, 0) + 1",
+                    "content_hash = excluded.content_hash",
+                ]
+                optional_updates = {
+                    "matched_keyword": f"matched_keyword = COALESCE(excluded.matched_keyword, {self.TABLE}.matched_keyword)",
+                    "source_scan_run_id": f"source_scan_run_id = COALESCE(NULLIF(excluded.source_scan_run_id, 0), {self.TABLE}.source_scan_run_id)",
+                    "matched_keyword_grade": f"matched_keyword_grade = COALESCE(excluded.matched_keyword_grade, {self.TABLE}.matched_keyword_grade)",
+                    "matched_keyword_kei": f"matched_keyword_kei = COALESCE(NULLIF(excluded.matched_keyword_kei, 0), {self.TABLE}.matched_keyword_kei)",
+                    "matched_keyword_priority": f"matched_keyword_priority = COALESCE(NULLIF(excluded.matched_keyword_priority, 0), {self.TABLE}.matched_keyword_priority)",
+                    "matched_keyword_category": f"matched_keyword_category = COALESCE(excluded.matched_keyword_category, {self.TABLE}.matched_keyword_category)",
+                }
+                updates.extend(
+                    update_sql for column, update_sql in optional_updates.items()
+                    if column in table_columns
+                )
                 cur.execute(
                     f"""
                     INSERT INTO {self.TABLE}
-                    (id, platform, url, canonical_url, title, content_preview, matched_keywords,
-                     category, is_commentable, comment_status, generated_comment,
-                     priority_score, discovered_at, last_scanned_at, scan_count, content_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ({", ".join(insert_columns)})
+                    VALUES ({placeholders})
                     ON CONFLICT(url) DO UPDATE SET
-                        canonical_url = COALESCE(NULLIF(excluded.canonical_url, ''), {self.TABLE}.canonical_url),
-                        title = excluded.title,
-                        matched_keywords = excluded.matched_keywords,
-                        priority_score = excluded.priority_score,
-                        last_scanned_at = excluded.last_scanned_at,
-                        scan_count = COALESCE({self.TABLE}.scan_count, 0) + 1,
-                        content_hash = excluded.content_hash
+                        {", ".join(updates)}
                     """,
-                    (
-                        data.get("id"),
-                        data.get("platform"),
-                        storage_url,
-                        canonical_url,
-                        data.get("title"),
-                        data.get("content_preview", ""),
-                        keywords_json,
-                        data.get("category", "기타"),
-                        data.get("is_commentable", True),
-                        data.get("comment_status", "pending"),
-                        data.get("generated_comment", ""),
-                        data.get("priority_score", 0),
-                        now,
-                        now,
-                        1,
-                        content_hash,
-                    ),
+                    tuple(insert_values[column] for column in insert_columns),
                 )
                 # matched_keywords 정규화 테이블에도 반영
                 target_id = existing_id or data.get("id")
@@ -172,6 +203,8 @@ class ViralTargetRepository:
             "platform", "url", "canonical_url", "title", "content_preview", "matched_keywords",
             "category", "is_commentable", "comment_status", "generated_comment",
             "priority_score", "last_scanned_at", "scan_count",
+            "matched_keyword", "source_scan_run_id", "matched_keyword_grade",
+            "matched_keyword_kei", "matched_keyword_priority", "matched_keyword_category",
             "first_response_at", "response_time_hours", "posted_at",
             "exposure_score", "workability_score", "conversion_fit_score",
             "score_breakdown", "search_sort", "search_rank", "search_start",
@@ -180,17 +213,22 @@ class ViralTargetRepository:
             "ai_competitor_name",
         }
         safe_changes = {k: v for k, v in changes.items() if k in ALLOWED}
-        if not safe_changes:
-            return False
         # matched_keywords는 JSON 직렬화
         if "matched_keywords" in safe_changes and isinstance(safe_changes["matched_keywords"], list):
             safe_changes["matched_keywords"] = json.dumps(
                 safe_changes["matched_keywords"], ensure_ascii=False
             )
-        set_clause = ", ".join(f"{k} = ?" for k in safe_changes.keys())
-        params = list(safe_changes.values()) + [target_id]
         try:
             with self._conn() as conn:
+                table_columns = self._columns_for_conn(conn)
+                safe_changes = {
+                    key: value for key, value in safe_changes.items()
+                    if key in table_columns
+                }
+                if not safe_changes:
+                    return False
+                set_clause = ", ".join(f"{k} = ?" for k in safe_changes.keys())
+                params = list(safe_changes.values()) + [target_id]
                 cur = conn.cursor()
                 cur.execute(
                     f"UPDATE {self.TABLE} SET {set_clause} WHERE id = ?",
@@ -228,6 +266,13 @@ class ViralTargetRepository:
     def _content_hash(url: str, title: str, content: str) -> str:
         raw = f"{url}|{title}|{content[:500]}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _columns_for_conn(conn: sqlite3.Connection) -> set[str]:
+        try:
+            return {row[1] for row in conn.execute(f"PRAGMA table_info({ViralTargetRepository.TABLE})").fetchall()}
+        except sqlite3.Error:
+            return set()
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:

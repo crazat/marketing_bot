@@ -225,6 +225,57 @@ def test_insert_uses_canonical_url_for_naver_duplicates(tmp_db):
     assert row["canonical_url"] == "https://kin.naver.com/qna/detail.naver?docId=123"
 
 
+def test_insert_preserves_pathfinder_lineage_when_columns_exist(tmp_db):
+    with sqlite3.connect(tmp_db) as conn:
+        for col, ctype in [
+            ("matched_keyword", "TEXT"),
+            ("source_scan_run_id", "INTEGER DEFAULT 0"),
+            ("matched_keyword_grade", "TEXT"),
+            ("matched_keyword_kei", "REAL DEFAULT 0"),
+            ("matched_keyword_priority", "REAL DEFAULT 0"),
+            ("matched_keyword_category", "TEXT"),
+        ]:
+            conn.execute(f"ALTER TABLE viral_targets ADD COLUMN {col} {ctype}")
+        conn.commit()
+
+    repo = ViralTargetRepository(tmp_db)
+    assert repo.insert({
+        "id": "lineage-old",
+        "platform": "kin",
+        "url": "https://x/lineage",
+        "title": "lineage",
+        "matched_keywords": ["청주 여드름"],
+        "source_scan_run_id": 10,
+        "matched_keyword_grade": "B",
+        "matched_keyword_kei": 3.2,
+        "matched_keyword_priority": 71.0,
+        "matched_keyword_category": "피부/여드름",
+    })
+    assert repo.insert({
+        "id": "lineage-new",
+        "platform": "kin",
+        "url": "https://x/lineage",
+        "title": "lineage rediscovered",
+        "matched_keywords": ["청주 여드름 한의원"],
+        "source_scan_run_id": 11,
+        "matched_keyword_grade": "A",
+        "matched_keyword_kei": 5.1,
+        "matched_keyword_priority": 88.0,
+        "matched_keyword_category": "피부/여드름",
+    })
+
+    row = repo.get("lineage-old")
+
+    assert row is not None
+    assert row["scan_count"] == 2
+    assert row["matched_keyword"] == "청주 여드름 한의원"
+    assert row["source_scan_run_id"] == 11
+    assert row["matched_keyword_grade"] == "A"
+    assert row["matched_keyword_kei"] == 5.1
+    assert row["matched_keyword_priority"] == 88.0
+    assert row["matched_keyword_category"] == "피부/여드름"
+
+
 def test_insert_conflict_recovers_null_scan_count(tmp_db):
     repo = ViralTargetRepository(tmp_db)
     sample = {

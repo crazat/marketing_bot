@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Viral Hunter - 네이버 통합 검색 기반 바이럴 마케팅 침투 시스템
+Viral Hunter - 네이버 통합 검색 기반 커뮤니티 댓글 응대 시스템
 
 기능:
 - 네이버 카페 + 블로그 + 지식인 통합 검색
@@ -3015,11 +3015,60 @@ class AICommentGenerator:
 - 댓글은 도움이 되는 정보성 답변이어야 하며 광고, 후기 가장, 잠입, 사칭처럼 보이면 안 됩니다.
 - 본인 또는 지인의 치료 경험, 방문 경험, 효과 경험을 지어내지 마세요.
 - 병원/의원/한의원 이름을 숨기기 위해 초성, 은어, 모호한 표현을 쓰지 마세요.
+- 규림한의원을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
 - 의료 효능 보장, 완치, 전후 비교, 최상급/비교 우위, 가격 유인, 이벤트성 문구를 쓰지 마세요.
 - 진단·처방처럼 단정하지 말고, 증상이 있으면 자격 있는 전문가 상담을 권하세요.
-- 댓글은 1~2문장으로 짧게 쓰고, 필요하면 "AI 보조로 작성된 정보성 댓글입니다."라는 투명성 문구를 포함하세요.
+- 댓글은 1~2문장으로 짧게 쓰고, AI/광고 고지 문구는 생성 후 자동 첨부되므로 제거를 유도하지 마세요.
 - 민감 신호: {risk_flags or "없음"}
 """
+
+    @staticmethod
+    def _normalize_transparency_terms(comment: str) -> str:
+        """Replace old stealth-style clinic references with explicit naming."""
+        replacements = (
+            (r"성안길\s*ㄱㄹ\s*한의원", "규림한의원"),
+            (r"시내\s*ㄱㄹ\s*한의원", "규림한의원"),
+            (r"ㄱㄹ\s*한의원", "규림한의원"),
+            (r"성안길\s*ㄱㄹ", "규림한의원"),
+            (r"시내\s*ㄱㄹ", "규림한의원"),
+            (r"ㄱ으로\s*시작하는\s*한의원", "규림한의원"),
+            (r"ㄱ자\s*한의원", "규림한의원"),
+            (r"성안길\s*쪽\s*한의원", "규림한의원"),
+            (r"시내\s*그\s*한의원", "규림한의원"),
+            (r"(?<![가-힣A-Za-z0-9])ㄱㄹ(?![가-힣A-Za-z0-9])", "규림한의원"),
+        )
+        normalized = comment
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized)
+        normalized = re.sub(
+            r"(완전|진짜|적극|강력|강추)\s*추천(?:해요|합니다|드려요|드립니다|!)?",
+            "확인해보실 수 있어요",
+            normalized,
+        )
+        normalized = re.sub(
+            r"후회\s*안\s*하실\s*거예요",
+            "상담 기준을 확인해보시면 좋겠습니다",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(친구|지인|엄마|가족|언니|동생)[^.!?\n]{0,60}(빠졌|감량|좋아졌|나아졌|효과)[^.!?\n]*(?:[.!?]|$)",
+            "개인차가 있어서 상담 때 상태를 확인해보는 게 좋습니다.",
+            normalized,
+        )
+        normalized = re.sub(
+            r"확실히\s*(좋아졌어요|좋아졌|나아졌어요|나아졌|효과\s*봤어요|효과)",
+            "도움이 될 수 있습니다",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\d+\s*kg\s*(빠졌|감량)",
+            "체중 관리 방향을 확인",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        normalized = normalized.replace("도움이 될 수어요", "도움이 될 수 있습니다")
+        normalized = re.sub(r"(규림한의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
+        return normalized
 
     def generate(self, target: ViralTarget, style: str = "default") -> str:
         """
@@ -3044,8 +3093,7 @@ class AICommentGenerator:
 
         if not prompt_template:
             # 기본 프롬프트 (config/prompts.json 미로드 시 폴백)
-            prompt_template = """당신은 청주 시내(성안길) 거주민이 자기 경험을 공유하듯 댓글을 작성합니다.
-다음 게시글에 자연스럽고 도움이 되는 댓글을 작성해주세요.
+            prompt_template = """다음 게시글에 자연스럽고 도움이 되는 댓글 초안을 작성해주세요.
 
 [게시글 정보]
 플랫폼: {platform}
@@ -3053,17 +3101,11 @@ class AICommentGenerator:
 내용 미리보기: {content_preview}
 관련 키워드: {keywords}
 
-[중요 — 자연스러운 후기톤]
-- '규림한의원' 풀네임 사용 절대 금지 (광고로 의심받음)
-- 한의원 언급 시 'ㄱㄹ한의원', 'ㄱㄹ', '성안길 ㄱㄹ', '시내 그 한의원' 등 초성/모호 표현 사용
-- 위치는 성안길/시내만. 가경동·율량동·복대동 절대 X
-
 [댓글 작성 가이드]
-1. 진짜 시민이 경험 공유하듯 자연스럽게 (광고 톤 절대 X)
-2. 게시글 작성자 고민에 먼저 공감
-3. 본인/지인 경험담처럼 ('저도~', '엄마가~')
-4. 필요할 때만 자연스럽게 추천 (강제 X)
-5. 2-3문장으로 간결하게 (4문장 넘으면 광고 의심)
+1. 작성자 고민에 먼저 공감하고, 확인하면 좋은 기준을 한 가지만 알려주세요.
+2. 규림한의원을 언급할 때는 정식 명칭을 쓰고 소속을 숨긴 추천처럼 쓰지 마세요.
+3. 본인·가족·지인의 경험담이나 치료 효과를 꾸며내지 마세요.
+4. 효과를 단정하지 말고 가능성 표현으로 1~2문장만 작성하세요.
 
 댓글:"""
 
@@ -3096,12 +3138,19 @@ class AICommentGenerator:
                 f"\n[Pathfinder Insight Handoff]\n{pathfinder_context}\n"
                 "[최종 확인] 위 필수 운영 원칙을 우선 적용하고, 허위 경험담/사칭/은폐성 광고는 절대 작성하지 마세요."
             )
-            comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800, task="viral_comment")
+            comment = ai_generate_korean(
+                prompt,
+                temperature=0.6,
+                max_tokens=800,
+                task="viral_comment",
+                call_site="viral_hunter.generate",
+            )
 
             # 댓글 정제
             comment = comment.replace("댓글:", "").strip()
             comment = comment.replace("답변:", "").strip()
             comment = comment.replace("```", "").strip()
+            comment = self._normalize_transparency_terms(comment)
 
             return comment
 
@@ -3264,9 +3313,9 @@ POST_ID: {i}
 
     def evaluate_infiltration(self, targets: List[ViralTarget], batch_size: int = 10) -> List[ViralTarget]:
         """
-        AI 기반 침투적합도 평가 (배치 처리)
+        AI 기반 댓글 응대 적합도 평가 (배치 처리)
 
-        바이럴 댓글 침투에 적합한 글인지 평가:
+        투명한 댓글 응대에 적합한 글인지 평가:
         - 적합: 추천요청, 고민상담, 경험질문, 정보요청
         - 부적합: 홍보글, 후기글, 뉴스, 이미 해결된 글
 
@@ -3275,7 +3324,7 @@ POST_ID: {i}
             batch_size: 한 번에 분석할 개수
 
         Returns:
-            침투적합도가 평가된 타겟 리스트 (적합한 것만 반환)
+            댓글 응대 적합도가 평가된 타겟 리스트 (적합한 것만 반환)
         """
         prompts = self._load_prompts()
         eval_config = prompts.get('infiltration_evaluation', {})
@@ -3285,7 +3334,7 @@ POST_ID: {i}
             logger.warning("⚠️ infiltration_evaluation 프롬프트 없음")
             return targets
 
-        logger.info(f"🔍 AI 침투적합도 평가 시작: {len(targets)}개 타겟")
+        logger.info(f"🔍 AI 댓글 응대 적합도 평가 시작: {len(targets)}개 타겟")
 
         suitable_targets = []
         unsuitable_count = 0
@@ -3321,14 +3370,14 @@ POST_ID: {i}
                 time.sleep(1.0)
 
             except Exception as e:
-                logger.error(f"침투적합도 평가 배치 실패: {e}")
+                logger.error(f"댓글 응대 적합도 평가 배치 실패: {e}")
                 # 실패한 배치는 큐에 넣지 않고 재시도 대상으로 남긴다.
                 for target in batch:
                     target.comment_status = "needs_ai_retry"
                 continue
 
         # 결과 요약
-        logger.info(f"✅ 침투적합도 평가 완료: {len(targets)}개 → 적합 {len(suitable_targets)}개, 부적합 {unsuitable_count}개")
+        logger.info(f"✅ 댓글 응대 적합도 평가 완료: {len(targets)}개 → 적합 {len(suitable_targets)}개, 부적합 {unsuitable_count}개")
 
         # 적합한 타겟만 우선순위순 정렬
         suitable_targets.sort(key=lambda x: x.priority_score, reverse=True)
@@ -3337,7 +3386,7 @@ POST_ID: {i}
 
     def unified_analysis(self, targets: List[ViralTarget], batch_size: int = 25) -> List[ViralTarget]:
         """
-        통합 AI 분석 (경쟁사 탐지 + 침투적합도 평가를 하나로)
+        통합 AI 분석 (경쟁사 탐지 + 댓글 응대 적합도 평가를 하나로)
 
         기존: detect_competitors() + evaluate_infiltration() = API 2회
         통합: unified_analysis() = API 1회 (50% 감소)
@@ -3347,7 +3396,7 @@ POST_ID: {i}
             batch_size: 한 번에 분석할 개수 (기본 25개, 기존 10개에서 증가)
 
         Returns:
-            분석 완료된 타겟 리스트 (침투 적합한 것만)
+            분석 완료된 타겟 리스트 (댓글 응대에 적합한 것만)
         """
         # AI client is always available via centralized ai_client
 
@@ -3688,7 +3737,7 @@ POST_ID: {i}
 
     def _parse_infiltration_results(self, targets: List[ViralTarget], result_text: str) -> tuple:
         """
-        AI 침투적합도 평가 결과 파싱
+        AI 댓글 응대 적합도 평가 결과 파싱
 
         결과 형식:
         POST_ID: 1
@@ -3770,11 +3819,11 @@ POST_ID: {i}
                     target.content_preview = f"[{tag}] {target.content_preview}"
 
                 suitable.append(target)
-                logger.debug(f"✅ 침투적합: {target.title[:30]}... ({post_type}, 점수: {infiltration_score})")
+                logger.debug(f"✅ 응대적합: {target.title[:30]}... ({post_type}, 점수: {infiltration_score})")
             else:
                 # 부적합한 글: 제외
                 unsuitable_count += 1
-                logger.debug(f"❌ 침투부적합: {target.title[:30]}... ({post_type})")
+                logger.debug(f"❌ 응대부적합: {target.title[:30]}... ({post_type})")
 
         # 파싱되지 않은 타겟은 pending에 넣지 않는다.
         for i, target in enumerate(targets):
@@ -3978,8 +4027,18 @@ class ViralHunter:
 
         return list(keywords)
 
-    def _load_keyword_context(self):
-        """Load latest Legion context for provided/custom keyword runs."""
+    def _load_keyword_context(self, keywords: Optional[List[str]] = None):
+        """Load Pathfinder lineage for latest, legacy, or custom keyword runs."""
+        if keywords:
+            missing_keywords = [
+                keyword
+                for keyword in keywords
+                if keyword and keyword not in self.keyword_context
+            ]
+            if missing_keywords:
+                self.keyword_context.update(self.seed_builder.keyword_context_for(missing_keywords))
+            return
+
         if self.keyword_context:
             return
         seeds = self.seed_builder.build()
@@ -3989,7 +4048,18 @@ class ViralHunter:
         """Attach Pathfinder lineage to a search result before filtering/storage."""
         if not target.matched_keywords:
             return target
-        ctx = self.keyword_context.get(target.matched_keywords[0])
+
+        ctx = None
+        for keyword in target.matched_keywords:
+            ctx = self.keyword_context.get(keyword)
+            if ctx:
+                break
+        if not ctx:
+            self.keyword_context.update(self.seed_builder.keyword_context_for(target.matched_keywords))
+            for keyword in target.matched_keywords:
+                ctx = self.keyword_context.get(keyword)
+                if ctx:
+                    break
         if not ctx:
             return target
         target.source_scan_run_id = int(ctx.get("scan_run_id") or 0)
@@ -3997,6 +4067,8 @@ class ViralHunter:
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
         target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
         target.matched_keyword_category = ctx.get("category") or ""
+        if (not target.category or target.category == "기타") and target.matched_keyword_category:
+            target.category = target.matched_keyword_category
         return target
 
     # ── 체크포인트 유틸 ────────────────────────────────────────────────
@@ -4363,10 +4435,12 @@ class ViralHunter:
         if keywords is None:
             keywords = self._load_keywords(use_latest_legion=use_latest_legion)
         else:
-            self._load_keyword_context()
+            self._load_keyword_context(keywords)
 
         if limit_keywords:
             keywords = keywords[:limit_keywords]
+
+        self._load_keyword_context(keywords)
 
         # 키워드 세트 해시 (순서 무관)
         kw_hash = hashlib.md5(
@@ -4889,18 +4963,18 @@ def main():
         print(f"\n🔍 필터링 중...")
         filtered = filter_obj.filter(all_targets)
 
-        # AI 통합 분석 (경쟁사 탐지 + 침투적합도 평가를 하나로)
+        # AI 통합 분석 (경쟁사 탐지 + 댓글 응대 적합도 평가를 하나로)
         if filtered:
-            print(f"\n🔬 AI 통합 분석 중 (경쟁사 탐지 + 침투적합도)...")
+            print(f"\n🔬 AI 통합 분석 중 (경쟁사 탐지 + 댓글 응대 적합도)...")
             before_count = len(filtered)
             filtered = generator.unified_analysis(filtered, batch_size=25)
-            print(f"   통합 분석 완료: {before_count}개 → {len(filtered)}개 (침투적합)")
+            print(f"   통합 분석 완료: {before_count}개 → {len(filtered)}개 (응대적합)")
 
         # 결과 출력
         print(f"\n{'='*60}")
         print(f"✅ 스캔 완료!")
         print(f"   총 발견: {len(all_targets)}개")
-        print(f"   침투적합: {len(filtered)}개")
+        print(f"   응대적합: {len(filtered)}개")
         print(f"{'='*60}\n")
 
         # CSV 자동 저장

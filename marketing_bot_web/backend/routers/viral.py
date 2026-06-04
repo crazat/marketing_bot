@@ -98,12 +98,25 @@ def _normalize_work_scope(work_scope: Optional[str]) -> str:
 
 def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
     try:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_runs'")
+        if not cursor.fetchone():
+            return 0
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(scan_runs)").fetchall()}
+        lineage_filters = []
+        if "scan_type" in columns:
+            lineage_filters.append("scan_type = 'legion'")
+        if "mode" in columns:
+            lineage_filters.append("mode LIKE '%legion%'")
+        if not lineage_filters:
+            return 0
+        completed_order = "completed_at DESC, id DESC" if "completed_at" in columns else "id DESC"
         cursor.execute(
-            """
+            f"""
             SELECT id
             FROM scan_runs
-            WHERE mode LIKE '%legion%' AND status = 'completed'
-            ORDER BY completed_at DESC, id DESC
+            WHERE status = 'completed'
+              AND ({" OR ".join(lineage_filters)})
+            ORDER BY {completed_order}
             LIMIT 1
             """
         )
@@ -1300,14 +1313,91 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT id, url, author, category, scan_count, priority_score "
-            "FROM viral_targets WHERE id = ?",
+            """
+            SELECT id, url, author, category, scan_count, priority_score,
+                   source_scan_run_id, matched_keyword, matched_keywords,
+                   matched_keyword_grade, matched_keyword_kei,
+                   matched_keyword_priority, matched_keyword_category
+            FROM viral_targets
+            WHERE id = ?
+            """,
             (target_id,),
         )
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="타겟 없음")
         target = dict(row)
+
+        matched_keywords: List[str] = []
+        raw_keywords = target.get("matched_keywords")
+        if raw_keywords:
+            try:
+                parsed = json.loads(raw_keywords) if isinstance(raw_keywords, str) else raw_keywords
+                if isinstance(parsed, list):
+                    matched_keywords = [str(item) for item in parsed if item]
+            except Exception:
+                matched_keywords = [kw.strip() for kw in str(raw_keywords).split(",") if kw.strip()]
+
+        primary_keyword = target.get("matched_keyword") or (matched_keywords[0] if matched_keywords else "")
+        pathfinder_context: Dict[str, Any] = {
+            "keyword": primary_keyword,
+            "source_scan_run_id": target.get("source_scan_run_id") or 0,
+            "grade": target.get("matched_keyword_grade") or "",
+            "category": target.get("matched_keyword_category") or target.get("category") or "",
+            "kei": target.get("matched_keyword_kei") or 0,
+            "priority": target.get("matched_keyword_priority") or 0,
+            "lineage_status": "missing",
+        }
+
+        if primary_keyword:
+            try:
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='keyword_insights'")
+                if cursor.fetchone():
+                    keyword_columns = {
+                        info[1]
+                        for info in cursor.execute("PRAGMA table_info(keyword_insights)").fetchall()
+                    }
+                    select_parts = [
+                        "keyword",
+                        "grade" if "grade" in keyword_columns else "'' AS grade",
+                        "category" if "category" in keyword_columns else "'' AS category",
+                        "kei" if "kei" in keyword_columns else "0 AS kei",
+                        "priority_v3" if "priority_v3" in keyword_columns else "0 AS priority_v3",
+                    ]
+                    if "last_scan_run_id" in keyword_columns and "scan_run_id" in keyword_columns:
+                        select_parts.append("COALESCE(last_scan_run_id, scan_run_id, 0) AS scan_run_id")
+                    elif "last_scan_run_id" in keyword_columns:
+                        select_parts.append("COALESCE(last_scan_run_id, 0) AS scan_run_id")
+                    elif "scan_run_id" in keyword_columns:
+                        select_parts.append("COALESCE(scan_run_id, 0) AS scan_run_id")
+                    else:
+                        select_parts.append("0 AS scan_run_id")
+                    cursor.execute(
+                        f"""
+                        SELECT {", ".join(select_parts)}
+                        FROM keyword_insights
+                        WHERE keyword = ?
+                        LIMIT 1
+                        """,
+                        (primary_keyword,),
+                    )
+                    keyword_row = cursor.fetchone()
+                    if keyword_row:
+                        keyword_info = dict(keyword_row)
+                        pathfinder_context.update({
+                            "source_scan_run_id": pathfinder_context["source_scan_run_id"] or keyword_info.get("scan_run_id") or 0,
+                            "grade": pathfinder_context["grade"] or keyword_info.get("grade") or "",
+                            "category": pathfinder_context["category"] or keyword_info.get("category") or "",
+                            "kei": pathfinder_context["kei"] or keyword_info.get("kei") or 0,
+                            "priority": pathfinder_context["priority"] or keyword_info.get("priority_v3") or 0,
+                        })
+            except Exception as e:
+                logger.debug(f"[target context] pathfinder enrichment skipped: {e}")
+
+        if pathfinder_context["keyword"] and pathfinder_context["source_scan_run_id"]:
+            pathfinder_context["lineage_status"] = "linked"
+        elif pathfinder_context["keyword"]:
+            pathfinder_context["lineage_status"] = "partial"
 
         # 도메인 추출
         from urllib.parse import urlparse
@@ -1356,6 +1446,12 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
             )
 
         badges: List[Dict[str, str]] = []
+        if pathfinder_context["lineage_status"] == "linked":
+            badges.append({
+                "type": "pathfinder",
+                "label": f"Pathfinder #{pathfinder_context['source_scan_run_id']}",
+                "color": "blue",
+            })
         if target.get("category") == "경쟁사_역공략":
             badges.append({"type": "competitor", "label": "⚔️ 경쟁사 역공략", "color": "orange"})
         if (target.get("priority_score") or 0) >= 120:
@@ -1369,6 +1465,7 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
             "domain_recent_approved_7d": domain_recent_approved,
             "author_recent_approved_7d": author_recent_approved,
             "scan_count": target.get("scan_count") or 0,
+            "pathfinder": pathfinder_context,
             "badges": badges,
             "warnings": warnings,
         }

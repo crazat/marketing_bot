@@ -1980,12 +1980,12 @@ class PathfinderLegion:
         "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅"),
     }
     HIGH_VALUE_LONGTAIL_SUFFIXES = {
-        "다이어트": ("비용", "후기", "상담", "추천", "가격"),
-        "교통사고": ("입원", "자보", "자동차보험", "후유증 치료", "치료비"),
-        "피부/여드름": ("비용", "후기", "추천", "상담", "부작용"),
-        "안면비대칭": ("비용", "후기", "교정 상담", "추천", "효과"),
-        "체형교정": ("비용", "후기", "교정 상담", "추천", "효과"),
-        "리프팅/탄력": ("비용", "후기", "추천", "상담", "효과"),
+        "다이어트": ("비용", "상담", "예약", "추천", "주차", "야간"),
+        "교통사고": ("입원", "자보", "자동차보험", "치료비", "주말", "야간"),
+        "피부/여드름": ("비용", "상담", "예약", "추천", "주차", "부작용"),
+        "안면비대칭": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
+        "체형교정": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
+        "리프팅/탄력": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
     }
     HIGH_VALUE_LONGTAIL_CONTEXTS = {
         "다이어트": ("직장인", "산후", "출산후", "갱년기", "웨딩", "요요", "식욕억제"),
@@ -1997,11 +1997,51 @@ class PathfinderLegion:
     }
     HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS = (
         "{region} {service} 비용 얼마",
-        "{region} {service} 효과 있나요",
         "{region} {service} 후기 괜찮은곳",
         "{region} {service} 부작용 있나요",
+        "{region} {service} 주차 되나요",
+        "{region} {service} 야간 예약",
         "{region} {service} 상담 어디",
     )
+    SEARCH_JOURNEY_STAGES = ("decision", "access", "coverage", "safety")
+    CATEGORY_SEARCH_JOURNEY_SUFFIXES = {
+        "다이어트": {
+            "decision": ("비용", "상담", "예약", "가격"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("처방 상담", "한약 비용"),
+            "safety": ("부작용", "주의사항", "요요"),
+        },
+        "교통사고": {
+            "decision": ("입원", "상담", "예약", "치료비"),
+            "access": ("주말", "야간", "주차", "입원 가능"),
+            "coverage": ("자보", "자동차보험 서류", "치료비", "보험"),
+            "safety": ("후유증", "합의전 상담", "주의사항"),
+        },
+        "피부/여드름": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("부작용", "주의사항", "재발"),
+        },
+        "안면비대칭": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("주의사항", "통증", "비수술"),
+        },
+        "체형교정": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("치료비", "상담"),
+            "safety": ("주의사항", "통증", "비수술"),
+        },
+        "리프팅/탄력": {
+            "decision": ("비용", "상담", "예약", "추천"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("상담", "치료비"),
+            "safety": ("부작용", "주의사항", "통증"),
+        },
+    }
     MEDICAL_AD_HIGH_RISK_TERMS = (
         "100%", "완치", "보장", "확실", "무조건", "반드시", "부작용없", "부작용 없음",
         "안전보장", "즉시효과", "단기간완성", "1회완성", "유일", "최고", "1위",
@@ -4177,7 +4217,24 @@ class PathfinderLegion:
                         if add_variant(region_item, service, suffix):
                             return variants
 
+        # Search journey pass: expand practical customer needs without multiplying every possible suffix.
+        for region_item in region_order[:4]:
+            for category in category_order:
+                services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
+                journey_suffixes = self.CATEGORY_SEARCH_JOURNEY_SUFFIXES.get(category, {})
+                if not services or not journey_suffixes:
+                    continue
+                for stage in self.SEARCH_JOURNEY_STAGES:
+                    suffixes = journey_suffixes.get(stage, ())
+                    if not suffixes:
+                        continue
+                    for service in services[:2]:
+                        for suffix in suffixes[:2]:
+                            if add_variant(region_item, service, suffix):
+                                return variants
+
         # Second pass: question-form longtails capture high-intent searches that are often too sparse for autocomplete.
+        question_limit = min(max_keywords, len(variants) + max(60, max_keywords // 4))
         for region_item in region_order:
             for category in category_order:
                 services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
@@ -4187,6 +4244,14 @@ class PathfinderLegion:
                     for pattern in self.HIGH_VALUE_LONGTAIL_QUESTION_PATTERNS:
                         if add_variant(pattern.format(region=region_item, service=service)):
                             return variants
+                        if len(variants) >= question_limit:
+                            break
+                    if len(variants) >= question_limit:
+                        break
+                if len(variants) >= question_limit:
+                    break
+            if len(variants) >= question_limit:
+                break
 
         # Third pass: add situational modifiers that autocomplete often misses.
         for region_item in region_order:
@@ -6348,8 +6413,8 @@ class PathfinderLegion:
         sa_keywords = self._select_expansion_keywords({'S', 'A'}, limit=50, max_per_category=10)
         round2_keywords = set()
 
-        # 의도 suffix - Round 4와 다른 세트로 차별화
-        round2_suffixes = ["비용", "효과", "전후", "방법", "기간"]
+        # 의도 suffix - 고객 행동/확인 니즈 중심으로 확장하고 홍보성 claim 반복은 제외.
+        round2_suffixes = ["비용", "예약", "상담", "주차", "기간", "주의사항"]
 
         for kw in sa_keywords:
             # 1) 기본 자동완성
@@ -6860,6 +6925,11 @@ class PathfinderLegion:
             for r in results
             if getattr(r, "high_value_longtail", False) and 0 < (r.search_volume or 0) <= 50
         )
+        longtail_4plus_count = sum(
+            1
+            for r in results
+            if len(self._keyword_terms(getattr(r, "keyword", "") or "")) >= 4
+        )
         estimated_high_value_longtail_count = sum(
             1
             for r in results
@@ -6904,7 +6974,8 @@ class PathfinderLegion:
             "top_source_share": round(top_share(source_counts), 4),
             "top_content_cluster_share": round(top_share(cluster_counts), 4),
             "longtail_rate": round(longtail_count / max(1, total), 4),
-            "longtail_4plus_rate": round(longtail_count / max(1, total), 4),
+            "longtail_4plus_count": longtail_4plus_count,
+            "longtail_4plus_rate": round(longtail_4plus_count / max(1, total), 4),
             "high_value_longtail_count": high_value_longtail_count,
             "high_value_longtail_rate": round(high_value_longtail_count / max(1, total), 4),
             "high_value_longtail_sa_count": high_value_longtail_sa_count,

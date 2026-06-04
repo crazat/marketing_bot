@@ -77,17 +77,31 @@ class ViralSeedBuilder:
         self.db_path = db_path
 
     def latest_completed_legion_scan_id(self) -> Optional[int]:
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            row = conn.execute(
-                """
-                SELECT id
-                FROM scan_runs
-                WHERE status = 'completed'
-                  AND scan_type = 'legion'
-                ORDER BY completed_at DESC, id DESC
-                LIMIT 1
-                """
-            ).fetchone()
+        try:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                if not self._table_exists(conn, "scan_runs"):
+                    return None
+                columns = self._table_columns(conn, "scan_runs")
+                lineage_filters = []
+                if "scan_type" in columns:
+                    lineage_filters.append("scan_type = 'legion'")
+                if "mode" in columns:
+                    lineage_filters.append("mode LIKE '%legion%'")
+                if not lineage_filters:
+                    return None
+                completed_order = "completed_at DESC, id DESC" if "completed_at" in columns else "id DESC"
+                row = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM scan_runs
+                    WHERE status = 'completed'
+                      AND ({" OR ".join(lineage_filters)})
+                    ORDER BY {completed_order}
+                    LIMIT 1
+                    """
+                ).fetchone()
+        except sqlite3.Error:
+            return None
         return int(row[0]) if row else None
 
     def build(
@@ -106,48 +120,67 @@ class ViralSeedBuilder:
         excludes = list(exclude_patterns or DEFAULT_EXCLUDE_PATTERNS)
         grades = tuple(include_grades)
 
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            placeholders = ",".join("?" for _ in grades)
-            status_clause = ""
-            if self._table_has_column(conn, "keyword_insights", "status"):
-                status_clause = "AND COALESCE(status, 'active') = 'active'"
-            high_value_expr = (
-                "COALESCE(high_value_longtail, 0) AS high_value_longtail"
-                if self._table_has_column(conn, "keyword_insights", "high_value_longtail")
-                else "0 AS high_value_longtail"
-            )
-            longtail_expr = (
-                "COALESCE(longtail_score, 0) AS longtail_score"
-                if self._table_has_column(conn, "keyword_insights", "longtail_score")
-                else "0 AS longtail_score"
-            )
-            business_value_expr = (
-                "COALESCE(business_value_score, 0) AS business_value_score"
-                if self._table_has_column(conn, "keyword_insights", "business_value_score")
-                else "0 AS business_value_score"
-            )
-            rows = conn.execute(
-                f"""
-                SELECT keyword, category, grade, search_volume, document_count,
-                       kei, priority_v3, search_intent,
-                       {high_value_expr},
-                       {longtail_expr},
-                       {business_value_expr}
-                FROM keyword_insights
-                WHERE last_scan_run_id = ?
-                  AND grade IN ({placeholders})
-                  {status_clause}
-                  AND COALESCE(document_count, 0) > 0
-                  AND COALESCE(business_core, 0) = 1
-                ORDER BY
-                  CASE grade WHEN 'S' THEN 0 WHEN 'A' THEN 1 ELSE 2 END,
-                  priority_v3 DESC,
-                  kei DESC,
-                  search_volume DESC
-                """,
-                (scan_id, *grades),
-            ).fetchall()
+        try:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                if not self._table_exists(conn, "keyword_insights"):
+                    return []
+                columns = self._table_columns(conn, "keyword_insights")
+                placeholders = ",".join("?" for _ in grades)
+                grade_clause = f"AND grade IN ({placeholders})" if "grade" in columns else ""
+                grade_params = list(grades) if "grade" in columns else []
+                status_clause = "AND COALESCE(status, 'active') = 'active'" if "status" in columns else ""
+                document_clause = "AND COALESCE(document_count, 0) > 0" if "document_count" in columns else ""
+                business_core_clause = "AND COALESCE(business_core, 0) = 1" if "business_core" in columns else ""
+                scan_filter = "1=1"
+                scan_params: List[int] = []
+                if "last_scan_run_id" in columns and "scan_run_id" in columns:
+                    scan_filter = "COALESCE(last_scan_run_id, scan_run_id, 0) = ?"
+                    scan_params.append(scan_id)
+                elif "last_scan_run_id" in columns:
+                    scan_filter = "COALESCE(last_scan_run_id, 0) = ?"
+                    scan_params.append(scan_id)
+                elif "scan_run_id" in columns:
+                    scan_filter = "COALESCE(scan_run_id, 0) = ?"
+                    scan_params.append(scan_id)
+                select_cols = [
+                    self._select_expr(columns, "keyword", "''"),
+                    self._select_expr(columns, "category", "'기타'"),
+                    self._select_expr(columns, "grade", "'C'"),
+                    self._select_expr(columns, "search_volume", "0"),
+                    self._select_expr(columns, "document_count", "0"),
+                    self._select_expr(columns, "kei", "0"),
+                    self._select_expr(columns, "priority_v3", "0"),
+                    self._select_expr(columns, "search_intent", "'unknown'"),
+                ]
+                high_value_expr = self._select_expr(columns, "high_value_longtail", "0")
+                longtail_expr = self._select_expr(columns, "longtail_score", "0")
+                business_value_expr = self._select_expr(columns, "business_value_score", "0")
+                order_terms = []
+                if "grade" in columns:
+                    order_terms.append("CASE grade WHEN 'S' THEN 0 WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END")
+                for column in ("priority_v3", "kei", "search_volume"):
+                    if column in columns:
+                        order_terms.append(f"COALESCE({column}, 0) DESC")
+                order_clause = ", ".join(order_terms) or "keyword ASC"
+                rows = conn.execute(
+                    f"""
+                    SELECT {", ".join(select_cols)},
+                           {high_value_expr},
+                           {longtail_expr},
+                           {business_value_expr}
+                    FROM keyword_insights
+                    WHERE {scan_filter}
+                      {grade_clause}
+                      {status_clause}
+                      {document_clause}
+                      {business_core_clause}
+                    ORDER BY {order_clause}
+                    """,
+                    (*scan_params, *grade_params),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
 
         feedback = self._load_keyword_feedback()
         scored_rows = []
@@ -231,6 +264,119 @@ class ViralSeedBuilder:
                 seen.add(keyword)
 
         return selected
+
+    def keyword_context_for(self, keywords: Iterable[str]) -> Dict[str, dict]:
+        """Return Pathfinder lineage context for exact keywords.
+
+        This is used when Viral Hunter runs with legacy or custom keywords. The
+        default curated seed path already carries context, but the fallback path
+        still needs scan id, grade, KEI and category attached to discovered
+        targets so the queue remains traceable.
+        """
+        unique_keywords = [
+            keyword
+            for keyword in dict.fromkeys(str(item).strip() for item in keywords if item)
+            if keyword
+        ]
+        if not unique_keywords:
+            return {}
+
+        try:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                if not self._table_exists(conn, "keyword_insights"):
+                    return {}
+                columns = self._table_columns(conn, "keyword_insights")
+                status_clause = "AND COALESCE(status, 'active') != 'archived'" if "status" in columns else ""
+                scan_expr = self._scan_id_expr(columns)
+                select_cols = [
+                    self._select_expr(columns, "keyword", "''"),
+                    self._select_expr(columns, "category", "'기타'"),
+                    self._select_expr(columns, "grade", "'C'"),
+                    self._select_expr(columns, "search_volume", "0"),
+                    self._select_expr(columns, "document_count", "0"),
+                    self._select_expr(columns, "kei", "0"),
+                    self._select_expr(columns, "priority_v3", "0"),
+                    self._select_expr(columns, "search_intent", "'unknown'"),
+                    self._select_expr(columns, "longtail_score", "0"),
+                    self._select_expr(columns, "business_value_score", "0"),
+                    self._select_expr(columns, "high_value_longtail", "0"),
+                    scan_expr,
+                ]
+
+                rows: List[sqlite3.Row] = []
+                for start in range(0, len(unique_keywords), 500):
+                    chunk = unique_keywords[start:start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows.extend(
+                        conn.execute(
+                            f"""
+                            SELECT {", ".join(select_cols)}
+                            FROM keyword_insights
+                            WHERE keyword IN ({placeholders})
+                              {status_clause}
+                            """,
+                            chunk,
+                        ).fetchall()
+                    )
+        except sqlite3.Error:
+            return {}
+
+        context: Dict[str, dict] = {}
+        for row in rows:
+            keyword = row["keyword"]
+            if not keyword:
+                continue
+            context[keyword] = ViralSeed(
+                keyword=keyword,
+                scan_run_id=int(row["scan_run_id"] or 0),
+                category=row["category"] or "기타",
+                grade=row["grade"] or "C",
+                search_volume=int(row["search_volume"] or 0),
+                document_count=int(row["document_count"] or 0),
+                kei=float(row["kei"] or 0),
+                priority_v3=float(row["priority_v3"] or 0),
+                search_intent=row["search_intent"] or "unknown",
+                longtail_score=float(row["longtail_score"] or 0),
+                business_value_score=float(row["business_value_score"] or 0),
+                high_value_longtail=bool(row["high_value_longtail"] or 0),
+            ).to_context()
+        return context
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                (table_name,),
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+        try:
+            return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        except sqlite3.Error:
+            return set()
+
+    @staticmethod
+    def _select_expr(columns: set[str], column_name: str, default_sql: str, alias: Optional[str] = None) -> str:
+        output_name = alias or column_name
+        if column_name in columns:
+            return f"COALESCE({column_name}, {default_sql}) AS {output_name}"
+        return f"{default_sql} AS {output_name}"
+
+    @staticmethod
+    def _scan_id_expr(columns: set[str]) -> str:
+        if "last_scan_run_id" in columns and "scan_run_id" in columns:
+            return "COALESCE(last_scan_run_id, scan_run_id, 0) AS scan_run_id"
+        if "last_scan_run_id" in columns:
+            return "COALESCE(last_scan_run_id, 0) AS scan_run_id"
+        if "scan_run_id" in columns:
+            return "COALESCE(scan_run_id, 0) AS scan_run_id"
+        return "0 AS scan_run_id"
 
     @staticmethod
     def _table_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:

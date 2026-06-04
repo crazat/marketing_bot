@@ -193,6 +193,21 @@ def test_legion_longtail_variant_builder_balances_categories_and_contexts():
     assert any("직장인" in kw and "다이어트 한약" in kw for kw in variants)
 
 
+def test_legion_longtail_variant_builder_covers_customer_journey_actions():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+
+    variants = legion._build_high_value_longtail_variants(
+        ["청주 다이어트 한약", "청주 교통사고 입원"],
+        max_keywords=500,
+    )
+
+    assert "청주 다이어트 한약 주차" in variants
+    assert "청주 교통사고 입원 자동차보험 서류" in variants
+    assert "청주 교통사고 입원 주말" in variants
+    assert not any("다이어트 댄스" in kw for kw in variants)
+
+
 def test_legion_ad_keyword_metrics_create_business_value_signal():
     legion = PathfinderLegion.__new__(PathfinderLegion)
 
@@ -1052,6 +1067,35 @@ def test_legion_run_respects_max_rounds_after_fixed_rounds():
     assert analyzed_sources == ["round1_seed", "round2_expand"]
 
 
+def test_legion_round2_uses_customer_action_suffixes_not_claim_terms():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    legion.collector = LegionCollector(delay=0.0, use_google=False)
+    legion.base_seeds = ["청주 다이어트 한의원"]
+
+    analyzed = {}
+
+    def capture_keywords(keywords, source):
+        analyzed[source] = set(keywords)
+        return 0
+
+    legion._analyze_and_add = capture_keywords
+    legion._build_high_value_longtail_variants = lambda *args, **kwargs: set()
+    legion._collect_ad_related_keywords = lambda *args, **kwargs: []
+    legion._select_expansion_keywords = lambda *args, **kwargs: ["청주 다이어트 한약"]
+    legion._finalize = lambda: []
+    legion.collector.get_autocomplete_multi = lambda seed: set()
+    legion.collector.get_autocomplete = lambda keyword: []
+
+    legion.run(target_sa=99, max_rounds=2, skip_ad_related=True)
+
+    round2_keywords = analyzed["round2_expand"]
+    assert "청주 다이어트 한약 예약" in round2_keywords
+    assert "청주 다이어트 한약 주차" in round2_keywords
+    assert "청주 다이어트 한약 주의사항" in round2_keywords
+    assert "청주 다이어트 한약 전후" not in round2_keywords
+    assert "청주 다이어트 한약 효과" not in round2_keywords
+
+
 def test_viral_seed_builder_penalizes_revisited_keyword_history(tmp_path):
     db_path = tmp_path / "seed_builder.db"
     with sqlite3.connect(db_path) as conn:
@@ -1127,6 +1171,172 @@ def test_viral_seed_builder_penalizes_revisited_keyword_history(tmp_path):
 
     assert [seed.keyword for seed in seeds] == ["fresh transactional", "fresh informational"]
     assert all(seed.historical_target_count == 0 for seed in seeds)
+
+
+def test_viral_seed_builder_accepts_legion_mode_lineage(tmp_path):
+    db_path = tmp_path / "seed_builder_mode.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                mode TEXT,
+                status TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO scan_runs(id, scan_type, mode, status, completed_at)
+            VALUES (7, 'pathfinder', 'legion', 'completed', '2026-06-01')
+            """
+        )
+        conn.commit()
+
+    assert ViralSeedBuilder(str(db_path)).latest_completed_legion_scan_id() == 7
+
+
+def test_viral_seed_builder_builds_from_scan_run_id_only_schema(tmp_path):
+    db_path = tmp_path / "seed_builder_scan_run_only.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT,
+                comment_status TEXT,
+                generated_comment TEXT,
+                scan_count INTEGER
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO scan_runs(id, scan_type, status, completed_at) VALUES (8, 'legion', 'completed', '2026-06-01')"
+        )
+        conn.execute(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, scan_run_id, business_core, status
+            ) VALUES ('scan id only keyword', 'cat', 'A', 100, 1000, 10, 150, 'transactional', 8, 1, 'active')
+            """
+        )
+        conn.commit()
+
+    seeds = ViralSeedBuilder(str(db_path)).build(scan_run_id=8, quotas={"cat": 1})
+
+    assert len(seeds) == 1
+    assert seeds[0].keyword == "scan id only keyword"
+    assert seeds[0].scan_run_id == 8
+
+
+def test_viral_seed_builder_handles_thin_keyword_schema(tmp_path):
+    db_path = tmp_path / "seed_builder_thin.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                priority_v3 REAL,
+                scan_run_id INTEGER
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (9, 'legion', 'completed', '2026-06-02');
+            INSERT INTO keyword_insights(keyword, category, grade, priority_v3, scan_run_id)
+            VALUES ('thin schema keyword', 'cat', 'A', 77, 9);
+            """
+        )
+
+    seeds = ViralSeedBuilder(str(db_path)).build(scan_run_id=9, quotas={"cat": 1})
+
+    assert len(seeds) == 1
+    assert seeds[0].keyword == "thin schema keyword"
+    assert seeds[0].document_count == 0
+    assert seeds[0].search_intent == "unknown"
+
+
+def test_viral_hunter_applies_pathfinder_context_for_custom_keyword(tmp_path):
+    db_path = tmp_path / "custom_keyword_context.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                last_scan_run_id INTEGER,
+                status TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, last_scan_run_id, status
+            ) VALUES ('custom treatment keyword', 'custom category', 'A', 120, 900, 12.5, 88.0, 'transactional', 7, 'active')
+            """
+        )
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.seed_builder = ViralSeedBuilder(str(db_path))
+    hunter.keyword_context = {}
+
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/custom",
+        title="custom target",
+        matched_keywords=["secondary keyword", "custom treatment keyword"],
+        category="기타",
+    )
+
+    hunter._apply_keyword_context(target)
+
+    assert target.source_scan_run_id == 7
+    assert target.matched_keyword_grade == "A"
+    assert target.matched_keyword_kei == 12.5
+    assert target.matched_keyword_priority == 88.0
+    assert target.matched_keyword_category == "custom category"
+    assert target.category == "custom category"
 
 
 def test_legion_history_adjustment_rewards_fresh_keywords():
@@ -1206,6 +1416,47 @@ def test_legion_quality_guard_caps_low_confidence_kei_outlier():
     assert grade == "B"
     assert kei_grade == "B"
     assert "low_document_count" in flags
+
+
+def test_legion_diversity_metrics_counts_actual_four_plus_longtails():
+    legion = PathfinderLegion.__new__(PathfinderLegion)
+    results = [
+        KeywordResult(
+            keyword="청주 다이어트",
+            search_volume=100,
+            difficulty=20,
+            opportunity=80,
+            grade="B",
+            category="다이어트",
+            priority_score=80,
+            source="test",
+        ),
+        KeywordResult(
+            keyword="청주 다이어트 한약 비용",
+            search_volume=80,
+            difficulty=20,
+            opportunity=80,
+            grade="A",
+            category="다이어트",
+            priority_score=90,
+            source="test",
+        ),
+        KeywordResult(
+            keyword="청주 교통사고 입원 자동차보험 서류",
+            search_volume=60,
+            difficulty=20,
+            opportunity=80,
+            grade="A",
+            category="교통사고",
+            priority_score=95,
+            source="test",
+        ),
+    ]
+
+    metrics = legion._calculate_diversity_metrics(results)
+
+    assert metrics["longtail_4plus_count"] == 2
+    assert metrics["longtail_4plus_rate"] == round(2 / 3, 4)
 
 
 def test_legion_diversity_rerank_promotes_underrepresented_aspect():

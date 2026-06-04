@@ -548,8 +548,8 @@ def screen_korean_comment(
     final_text = text
     auto_modified = False
 
-    # 의료 콘텐츠인데 표기 누락 → 자동 #광고만 첨부
-    # (한의원 풀네임 해시태그는 자연 후기톤을 깨뜨리므로 본문에서만 ㄱㄹ로 처리)
+    # 의료 콘텐츠인데 표기 누락 → 자동 #광고만 첨부.
+    # 브랜드명은 댓글 생성기에서 정식 명칭을 유지하고, 초성/은어로 숨기지 않는다.
     if _is_medical_context(text) and require_disclosure and not _has_disclosure(text):
         if auto_append_disclosure:
             final_text = (text.rstrip() + "\n\n#광고").strip()

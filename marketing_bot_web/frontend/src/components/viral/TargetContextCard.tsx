@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Info } from 'lucide-react'
+import { AlertTriangle, GitBranch, Info } from 'lucide-react'
 import { viralApi } from '@/services/api'
 
 interface TargetContextCardProps {
@@ -13,6 +13,15 @@ interface TargetContextData {
   domain_recent_approved_7d: number
   author_recent_approved_7d: number
   scan_count: number
+  pathfinder?: {
+    keyword: string
+    source_scan_run_id: number
+    grade: string
+    category: string
+    kei: number
+    priority: number
+    lineage_status: 'linked' | 'partial' | 'missing'
+  }
   badges: Array<{ type: string; label: string; color: string }>
   warnings: string[]
 }
@@ -34,9 +43,19 @@ export default function TargetContextCard({ targetId, compact = false }: TargetC
 
   if (!targetId || isLoading || !data) return null
 
+  const pathfinder = data.pathfinder
+  const hasPathfinder = !!pathfinder?.keyword
+  const lineageLabel =
+    pathfinder?.lineage_status === 'linked'
+      ? '연결됨'
+      : pathfinder?.lineage_status === 'partial'
+        ? '일부 연결'
+        : '미연결'
+
   const hasContent =
     data.badges.length > 0 ||
     data.warnings.length > 0 ||
+    hasPathfinder ||
     data.scan_count > 1
 
   if (!hasContent) return null
@@ -54,6 +73,30 @@ export default function TargetContextCard({ targetId, compact = false }: TargetC
               {b.label}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* Pathfinder lineage */}
+      {hasPathfinder && pathfinder && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground pt-1">
+          <span className="flex items-center gap-1 text-foreground font-medium">
+            <GitBranch className="h-3.5 w-3.5" />
+            Pathfinder
+          </span>
+          <a
+            href={`/pathfinder?keyword=${encodeURIComponent(pathfinder.keyword)}`}
+            className="text-primary hover:underline"
+            title={`Pathfinder에서 "${pathfinder.keyword}" 보기`}
+          >
+            {pathfinder.keyword}
+          </a>
+          {pathfinder.source_scan_run_id > 0 && (
+            <span>scan #{pathfinder.source_scan_run_id}</span>
+          )}
+          {pathfinder.grade && <span>{pathfinder.grade}등급</span>}
+          {pathfinder.category && <span>{pathfinder.category}</span>}
+          {pathfinder.priority > 0 && <span>우선순위 {Math.round(pathfinder.priority)}</span>}
+          <span>{lineageLabel}</span>
         </div>
       )}
 

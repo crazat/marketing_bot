@@ -262,6 +262,15 @@ export const viralApi = {
       domain_recent_approved_7d: number
       author_recent_approved_7d: number
       scan_count: number
+      pathfinder?: {
+        keyword: string
+        source_scan_run_id: number
+        grade: string
+        category: string
+        kei: number
+        priority: number
+        lineage_status: 'linked' | 'partial' | 'missing'
+      }
       badges: Array<{ type: string; label: string; color: string }>
       warnings: string[]
     }

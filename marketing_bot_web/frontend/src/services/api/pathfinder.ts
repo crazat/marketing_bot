@@ -121,6 +121,16 @@ export const pathfinderApi = {
     return response.data
   },
 
+  applyPlaceTrackingCandidates: async (payload: {
+    keywords?: string[]
+    limit?: number
+    business_core_only?: boolean
+    latest_verified_only?: boolean
+  }) => {
+    const response = await api.post('/pathfinder/place-tracking-candidates/apply', payload)
+    return response.data
+  },
+
   submitInsightFeedback: async (payload: {
     handoff_id: string
     keyword?: string

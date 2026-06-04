@@ -16,6 +16,7 @@ import subprocess
 import json
 import sqlite3
 import logging
+import re
 from datetime import datetime
 
 # 로거 설정
@@ -398,6 +399,13 @@ class PathfinderInsightFeedbackRequest(BaseModel):
     feedback_type: str
     note: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+
+class PlaceTrackingCandidateApplyRequest(BaseModel):
+    keywords: Optional[List[str]] = None
+    limit: int = 5
+    business_core_only: bool = True
+    latest_verified_only: bool = True
 
 @router.get("/stats")
 @cached(ttl=300)
@@ -2263,6 +2271,93 @@ async def get_pathfinder_insight_brief(
         )
     except Exception as e:
         logger.error(f"[insight-brief] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _clean_place_tracking_keyword(keyword: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(keyword or "")).strip()
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", cleaned)
+    if len(cleaned) > 100:
+        cleaned = cleaned[:100].strip()
+    return cleaned
+
+
+@router.post("/place-tracking-candidates/apply")
+async def apply_place_tracking_candidates(
+    request: PlaceTrackingCandidateApplyRequest,
+) -> Dict[str, Any]:
+    """Pathfinder 리프트 플랜의 플레이스 추적 후보를 실제 rank_history/keywords.json 추적 대상으로 등록합니다."""
+    try:
+        from core_services.pathfinder_insight_broker import PathfinderInsightBroker
+
+        db = DatabaseManager()
+        limit = max(1, min(int(request.limit or 5), 20))
+
+        raw_keywords = request.keywords or []
+        if not raw_keywords:
+            broker = PathfinderInsightBroker(db.db_path)
+            brief = broker.build_user_brief(
+                limit=12,
+                business_core_only=request.business_core_only,
+                latest_verified_only=request.latest_verified_only,
+            )
+            raw_keywords = [
+                item.get("keyword", "")
+                for item in (
+                    (brief.get("place_rank_lift") or {})
+                    .get("tracking_expansion", {})
+                    .get("candidate_keywords", [])
+                )
+            ]
+
+        cleaned_keywords: List[str] = []
+        seen = set()
+        for raw in raw_keywords:
+            keyword = _clean_place_tracking_keyword(raw)
+            norm = keyword.replace(" ", "").lower()
+            if not keyword or norm in seen:
+                continue
+            seen.add(norm)
+            cleaned_keywords.append(keyword)
+            if len(cleaned_keywords) >= limit:
+                break
+
+        tracked = {
+            str(item.get("keyword") or "").replace(" ", "").lower()
+            for item in db.get_tracked_keywords()
+        }
+        added: List[str] = []
+        skipped: List[Dict[str, str]] = []
+        failed: List[str] = []
+
+        for keyword in cleaned_keywords:
+            norm = keyword.replace(" ", "").lower()
+            if norm in tracked:
+                skipped.append({"keyword": keyword, "reason": "already_tracked"})
+                continue
+            if db.add_keyword_to_tracking(keyword):
+                added.append(keyword)
+                tracked.add(norm)
+            else:
+                failed.append(keyword)
+
+        return {
+            "success": not failed,
+            "requested_count": len(cleaned_keywords),
+            "added_count": len(added),
+            "skipped_count": len(skipped),
+            "failed_count": len(failed),
+            "added_keywords": added,
+            "skipped_keywords": skipped,
+            "failed_keywords": failed,
+            "guardrail": "추적 등록은 순위 측정용입니다. 스마트플레이스 설명/콘텐츠에 후보 키워드를 부자연스럽게 반복 삽입하지 마세요.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[place-tracking-candidates/apply] {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
