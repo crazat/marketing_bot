@@ -92,6 +92,8 @@ class ViralTargetRepository:
         returns: 성공 여부.
         """
         keywords_json = json.dumps(data.get("matched_keywords", []), ensure_ascii=False)
+        score_breakdown_json = json.dumps(data.get("score_breakdown") or {}, ensure_ascii=False)
+        sort_appearances_json = json.dumps(data.get("sort_appearances") or [], ensure_ascii=False)
         url = data.get("url", "")
         canonical_url = data.get("canonical_url") or canonicalize_viral_url(url)
         content_hash = self._content_hash(
@@ -147,6 +149,25 @@ class ViralTargetRepository:
                     "matched_keyword_kei": data.get("matched_keyword_kei", 0),
                     "matched_keyword_priority": data.get("matched_keyword_priority", 0),
                     "matched_keyword_category": data.get("matched_keyword_category"),
+                    "author": data.get("author"),
+                    "posted_at": data.get("posted_at") or data.get("date_str"),
+                    "like_count": data.get("like_count", 0),
+                    "comment_count": data.get("comment_count", 0),
+                    "view_count": data.get("view_count", 0),
+                    "exposure_score": data.get("exposure_score", 0),
+                    "workability_score": data.get("workability_score", 0),
+                    "conversion_fit_score": data.get("conversion_fit_score", 0),
+                    "score_breakdown": score_breakdown_json,
+                    "search_sort": data.get("search_sort"),
+                    "search_rank": data.get("search_rank", 0),
+                    "search_start": data.get("search_start", 0),
+                    "search_total": data.get("search_total", 0),
+                    "sort_appearances": sort_appearances_json,
+                    "ai_reviewed": 1 if data.get("ai_reviewed") else 0,
+                    "ai_infiltration_score": data.get("ai_infiltration_score", 0),
+                    "ai_post_type": data.get("ai_post_type"),
+                    "ai_competitor": 1 if data.get("ai_competitor") else 0,
+                    "ai_competitor_name": data.get("ai_competitor_name"),
                 }
                 insert_columns = [
                     column for column in insert_values
@@ -169,6 +190,30 @@ class ViralTargetRepository:
                     "matched_keyword_kei": f"matched_keyword_kei = COALESCE(NULLIF(excluded.matched_keyword_kei, 0), {self.TABLE}.matched_keyword_kei)",
                     "matched_keyword_priority": f"matched_keyword_priority = COALESCE(NULLIF(excluded.matched_keyword_priority, 0), {self.TABLE}.matched_keyword_priority)",
                     "matched_keyword_category": f"matched_keyword_category = COALESCE(excluded.matched_keyword_category, {self.TABLE}.matched_keyword_category)",
+                    "author": f"author = COALESCE(excluded.author, {self.TABLE}.author)",
+                    "posted_at": f"posted_at = COALESCE(excluded.posted_at, {self.TABLE}.posted_at)",
+                    "like_count": f"like_count = MAX(COALESCE({self.TABLE}.like_count, 0), COALESCE(excluded.like_count, 0))",
+                    "comment_count": f"comment_count = MAX(COALESCE({self.TABLE}.comment_count, 0), COALESCE(excluded.comment_count, 0))",
+                    "view_count": f"view_count = MAX(COALESCE({self.TABLE}.view_count, 0), COALESCE(excluded.view_count, 0))",
+                    "exposure_score": f"exposure_score = MAX(COALESCE({self.TABLE}.exposure_score, 0), COALESCE(excluded.exposure_score, 0))",
+                    "workability_score": f"workability_score = COALESCE(NULLIF(excluded.workability_score, 0), {self.TABLE}.workability_score)",
+                    "conversion_fit_score": f"conversion_fit_score = COALESCE(NULLIF(excluded.conversion_fit_score, 0), {self.TABLE}.conversion_fit_score)",
+                    "score_breakdown": f"score_breakdown = COALESCE(NULLIF(excluded.score_breakdown, '{{}}'), {self.TABLE}.score_breakdown)",
+                    "search_sort": f"search_sort = COALESCE(NULLIF(excluded.search_sort, ''), {self.TABLE}.search_sort)",
+                    "search_rank": (
+                        "search_rank = CASE "
+                        "WHEN COALESCE(excluded.search_rank, 0) > 0 "
+                        f"AND (COALESCE({self.TABLE}.search_rank, 0) = 0 OR excluded.search_rank < {self.TABLE}.search_rank) "
+                        f"THEN excluded.search_rank ELSE {self.TABLE}.search_rank END"
+                    ),
+                    "search_start": f"search_start = COALESCE(NULLIF(excluded.search_start, 0), {self.TABLE}.search_start)",
+                    "search_total": f"search_total = MAX(COALESCE({self.TABLE}.search_total, 0), COALESCE(excluded.search_total, 0))",
+                    "sort_appearances": f"sort_appearances = COALESCE(NULLIF(excluded.sort_appearances, '[]'), {self.TABLE}.sort_appearances)",
+                    "ai_reviewed": f"ai_reviewed = MAX(COALESCE({self.TABLE}.ai_reviewed, 0), COALESCE(excluded.ai_reviewed, 0))",
+                    "ai_infiltration_score": f"ai_infiltration_score = MAX(COALESCE({self.TABLE}.ai_infiltration_score, 0), COALESCE(excluded.ai_infiltration_score, 0))",
+                    "ai_post_type": f"ai_post_type = COALESCE(NULLIF(excluded.ai_post_type, ''), {self.TABLE}.ai_post_type)",
+                    "ai_competitor": f"ai_competitor = MAX(COALESCE({self.TABLE}.ai_competitor, 0), COALESCE(excluded.ai_competitor, 0))",
+                    "ai_competitor_name": f"ai_competitor_name = COALESCE(NULLIF(excluded.ai_competitor_name, ''), {self.TABLE}.ai_competitor_name)",
                 }
                 updates.extend(
                     update_sql for column, update_sql in optional_updates.items()
@@ -217,6 +262,14 @@ class ViralTargetRepository:
         if "matched_keywords" in safe_changes and isinstance(safe_changes["matched_keywords"], list):
             safe_changes["matched_keywords"] = json.dumps(
                 safe_changes["matched_keywords"], ensure_ascii=False
+            )
+        if "score_breakdown" in safe_changes and isinstance(safe_changes["score_breakdown"], (dict, list)):
+            safe_changes["score_breakdown"] = json.dumps(
+                safe_changes["score_breakdown"], ensure_ascii=False
+            )
+        if "sort_appearances" in safe_changes and isinstance(safe_changes["sort_appearances"], list):
+            safe_changes["sort_appearances"] = json.dumps(
+                safe_changes["sort_appearances"], ensure_ascii=False
             )
         try:
             with self._conn() as conn:
@@ -370,6 +423,22 @@ class ViralTargetRepository:
             except (TypeError, ValueError):
                 pass
 
+        min_clinic_fit = filters.get("min_clinic_fit")
+        if min_clinic_fit is not None and not hasattr(min_clinic_fit, "default"):
+            try:
+                clauses.append(f"{ViralTargetRepository._score_breakdown_number_expr('clinic_treatment_fit_score')} >= ?")
+                params.append(float(min_clinic_fit))
+            except (TypeError, ValueError):
+                pass
+
+        min_worksite_efficiency = filters.get("min_worksite_efficiency")
+        if min_worksite_efficiency is not None and not hasattr(min_worksite_efficiency, "default"):
+            try:
+                clauses.append(f"{ViralTargetRepository._score_breakdown_number_expr('worksite_efficiency_score')} >= ?")
+                params.append(float(min_worksite_efficiency))
+            except (TypeError, ValueError):
+                pass
+
         commentable_only = filters.get("commentable_only")
         if isinstance(commentable_only, str):
             commentable_only = commentable_only.strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -460,6 +529,12 @@ class ViralTargetRepository:
             return "ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC"
         if sort == "workability":
             return "ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC"
+        if sort == "clinic_fit":
+            expr = ViralTargetRepository._score_breakdown_number_expr("clinic_treatment_fit_score")
+            return f"ORDER BY {expr} DESC, priority_score DESC, discovered_at DESC"
+        if sort == "worksite_efficiency":
+            expr = ViralTargetRepository._score_breakdown_number_expr("worksite_efficiency_score")
+            return f"ORDER BY {expr} DESC, priority_score DESC, discovered_at DESC"
         if sort == "specialty":
             # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
             return ("ORDER BY CASE specialty_match "
@@ -468,3 +543,13 @@ class ViralTargetRepository:
         if sort == "ai_confidence":
             return "ORDER BY ai_ad_confidence DESC, priority_score DESC"
         return "ORDER BY priority_score DESC, discovered_at DESC"
+
+    @staticmethod
+    def _score_breakdown_number_expr(key: str) -> str:
+        safe_key = "".join(ch for ch in key if ch.isalnum() or ch == "_")
+        return (
+            "COALESCE("
+            "CASE WHEN json_valid(score_breakdown) "
+            f"THEN CAST(json_extract(score_breakdown, '$.{safe_key}') AS REAL) "
+            "ELSE 0 END, 0)"
+        )

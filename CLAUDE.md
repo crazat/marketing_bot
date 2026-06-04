@@ -1,5 +1,19 @@
 # Claude Code 프로젝트 가이드라인
 
+## 2026-06-04 Memory: Viral Hunter Gyulim Efficiency and Portfolio Queue
+
+- Viral Hunter now evaluates Cheongju Gyulim fit as an explicit execution layer, not just a generic priority score. Preserve the chain: Pathfinder/Legion keyword lineage -> Gyulim treatment fit -> exact worksite efficiency -> priority score -> staff queue/API/frontend explanation.
+- `viral_hunter.py` has separate scorers for `clinic_treatment_fit_score` and `worksite_efficiency_score`. These should continue to cover Gyulim's scar/acne/skin, face asymmetry, diet, pain/disc, traffic accident, body correction, and lifting/elasticity surfaces through `core_services/gyulim_keyword_profile.py`.
+- `core_services/viral_seed_builder.py` now diversifies Pathfinder-derived viral seeds by category quota, intent, cluster, and region. Do not collapse it back to a pure priority/KEI sort; that reintroduces near-duplicate local skin/scar searches and wastes SERP/API budget.
+- `repositories/viral_target_repo.py` and `marketing_bot_web/backend/routers/viral.py` must preserve `score_breakdown` JSON. Staff/API filters support `min_clinic_fit`, `min_worksite_efficiency`, `sort=clinic_fit`, and `sort=worksite_efficiency`; these are part of the operating contract for finding real viral work locations.
+- Smart recommendations expose a `gyulim_efficient_worksite` quick filter for pending, commentable targets with both Gyulim treatment fit and worksite efficiency at 70+. Keep this filter wired through `SmartFilterBar`, `ViralHunter.tsx`, and `services/api/viral.ts`.
+- `/viral/todays-queue` is portfolio-balanced. It fetches a wider candidate pool, ranks by worksite efficiency, clinic fit, and priority, then round-robins by category with `per_category` limits. This prevents skin/scar volume from crowding out asymmetry, diet, and other Gyulim core treatment categories.
+- `PriorityScoreExplain.tsx` should prefer backend `score_breakdown` over frontend heuristics so staff can see why a target is efficient: clinic fit, worksite efficiency, viral need, reply opportunity, timing, and journey stage.
+- Focused verification for this layer:
+  - `python -m py_compile viral_hunter.py core_services\viral_seed_builder.py repositories\viral_target_repo.py marketing_bot_web\backend\routers\viral.py`
+  - `$env:PYTHONPATH='.'; pytest tests/test_viral_service.py tests/test_viral_target_repo.py tests/test_router_smoke.py tests/test_pathfinder_viral_stability.py -q`
+  - `npm run typecheck` in `marketing_bot_web/frontend`
+
 ## 2026-06-04 Memory: Pathfinder Discovery Audit and Campaign Blueprint
 
 - Pathfinder for Cheongju Gyulim now treats keyword extraction as a full discovery system, not a score-only picker. The current flow is broad treatment discovery -> portfolio-balanced selection -> treatment intelligence -> risk-adjusted execution frontier -> campaign blueprint -> discovery audit feedback.

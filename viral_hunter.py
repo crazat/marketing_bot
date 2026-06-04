@@ -48,6 +48,7 @@ from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import ViralSeedBuilder
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -1199,6 +1200,8 @@ class CommentableFilter:
     MIN_TIMING_WINDOW_SCORE = 28
     MIN_JOURNEY_FIT_SCORE = 35
     MIN_QUALIFICATION_FIT_SCORE = 30
+    MIN_CLINIC_TREATMENT_FIT_SCORE = 34
+    MIN_WORKSITE_EFFICIENCY_SCORE = 36
 
     INTERROGATIVE_PATTERNS = [
         "?", "어디", "어떻게", "어떤", "뭐", "무엇", "왜", "언제", "얼마",
@@ -1521,11 +1524,12 @@ class CommentableFilter:
     # [Phase 2 개선] 키워드 티어별 가치 차등화
     KEYWORD_TIER1 = [  # 핵심 상품 (15점)
         "다이어트한약", "안면비대칭", "새살침", "체형교정", "골반교정",
-        "여드름흉터", "얼굴비대칭", "입원치료"
+        "여드름흉터", "패인흉터", "모공흉터", "수두흉터", "흉터치료",
+        "얼굴비대칭", "입원치료"
     ]
     KEYWORD_TIER2 = [  # 주요 서비스 (10점)
-        "교통사고", "다이어트", "여드름", "탈모", "비염", "갱년기",
-        "추나", "디스크", "산후조리", "공진단"
+        "교통사고", "다이어트", "여드름", "피부질환", "아토피", "지루성피부염",
+        "탈모", "비염", "갱년기", "추나", "디스크", "산후조리", "공진단"
     ]
     KEYWORD_TIER3 = [  # 일반 (5점)
         "한의원", "한약", "침", "뜸", "부항", "한방", "체질", "보약"
@@ -1561,6 +1565,282 @@ class CommentableFilter:
         if any(k in joined for k in ["리프팅", "탄력", "매선", "주름"]):
             return "lifting"
         return "general"
+
+    @classmethod
+    def _profile_categories_for_target(cls, target: ViralTarget, domain: str) -> List[str]:
+        """Return Pathfinder/Gyulim profile categories that can explain this target."""
+        candidates = [
+            getattr(target, "matched_keyword_category", "") or "",
+            getattr(target, "category", "") or "",
+        ]
+        domain_map = {
+            "diet": "다이어트",
+            "traffic": "교통사고",
+            "scar_skin": "피부/여드름",
+            "asymmetry": "안면비대칭",
+            "body": "체형교정",
+            "lifting": "리프팅/탄력",
+        }
+        if domain in domain_map:
+            candidates.append(domain_map[domain])
+
+        normalized: List[str] = []
+        for raw in candidates:
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(raw)
+            if category and category not in normalized:
+                normalized.append(category)
+            profile = GYULIM_KEYWORD_PROFILE.profile_for(raw)
+            if profile and profile.category not in normalized:
+                normalized.append(profile.category)
+        return normalized
+
+    @classmethod
+    def _region_fit_signal(cls, text: str) -> Tuple[int, List[str]]:
+        """Score how close the post is to the clinic's real operating area."""
+        score = 0
+        signals: List[str] = []
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.cheongju_regions)):
+            score += 18
+            signals.append("cheongju_area")
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.neighborhoods)):
+            score += 12
+            signals.append("cheongju_neighborhood")
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.nearby_regions)):
+            score += 7
+            signals.append("nearby_region")
+
+        distant_regions = [
+            "서울", "부산", "대구", "인천", "대전", "광주", "울산",
+            "수원", "천안", "전주", "광주광역시", "강남", "분당",
+        ]
+        has_primary = any(s in signals for s in ("cheongju_area", "cheongju_neighborhood"))
+        if cls._contains_any(text, distant_regions) and not has_primary:
+            score -= 24
+            signals.append("distant_region")
+        return score, signals
+
+    @classmethod
+    def _assess_clinic_treatment_fit(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        text: str,
+        is_health: bool,
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether the post fits Gyulim Cheongju's actual treatment portfolio."""
+        score, signals = cls._region_fit_signal(text)
+        categories = cls._profile_categories_for_target(target, domain)
+        profiles = [
+            GYULIM_KEYWORD_PROFILE.profile_for(category)
+            for category in categories
+        ]
+        profiles = [profile for profile in profiles if profile]
+
+        if profiles:
+            best_profile_score = 0.0
+            for profile in profiles:
+                category_hits = [term for term in profile.category_terms if term and term.lower() in text]
+                anchor_hits = [term for term in profile.direct_service_anchors if term and term.lower() in text]
+                core_hits = [term for term in profile.core_tokens if term and term.lower() in text]
+                low_value_hits = [term for term in profile.low_business_value_terms if term and term.lower() in text]
+
+                profile_score = 0.0
+                if category_hits:
+                    profile_score += min(22.0, 8.0 + len(set(category_hits)) * 4.0)
+                if core_hits:
+                    profile_score += min(18.0, 6.0 + len(set(core_hits)) * 4.0)
+                if anchor_hits:
+                    profile_score += min(20.0, 8.0 + len(set(anchor_hits)) * 4.0)
+                if low_value_hits:
+                    profile_score -= min(28.0, 10.0 + len(set(low_value_hits)) * 6.0)
+                profile_score *= max(0.7, min(1.35, float(profile.strategic_weight or 1.0)))
+                best_profile_score = max(best_profile_score, profile_score)
+
+            score += int(round(best_profile_score))
+            signals.append("gyulim_profile_match")
+        elif domain != "general" and cls._has_domain_anchor(domain, text):
+            score += 24
+            signals.append("domain_anchor_match")
+        else:
+            score -= 18
+            signals.append("no_profile_match")
+
+        explicit_not_service = cls._contains_any(text, [
+            "치료를 찾는 건 아니", "치료를 찾는건 아니",
+            "상담이나 치료를 찾는 건 아니", "상담이나 치료를 찾는건 아니",
+            "한의원 상담이나 치료를 찾는 건 아니", "한의원 상담이나 치료를 찾는건 아니",
+        ])
+        product_only_context = cls._contains_any(text, [
+            "홈케어", "화장품", "제품 위주", "제품위주", "올리브영",
+        ]) and not cls._contains_any(text, [
+            "말고 한의원", "대신 한의원", "한의원으로", "한의원 상담",
+            "한의원 치료", "한의원 알아", "새살침", "한약", "치료받",
+            "치료 받", "상담받", "상담 받", "안 돼서", "안돼서",
+            "효과 없어서", "효과없어서",
+        ])
+        non_service_request = explicit_not_service or product_only_context
+        if non_service_request:
+            score -= 24
+            signals.append("non_service_request")
+
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)) and not non_service_request:
+            score += 12
+            signals.append("hanbang_service_anchor")
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.high_intent_terms)):
+            score += 10
+            signals.append("high_intent_modifier")
+        if target.matched_keyword_grade in {"S", "A"}:
+            score += 8
+            signals.append("pathfinder_top_grade")
+        elif target.matched_keyword_grade == "B":
+            score += 4
+            signals.append("pathfinder_b_grade")
+        if target.matched_keyword_priority >= 100:
+            score += 8
+            signals.append("pathfinder_high_priority")
+        elif target.matched_keyword_priority >= 70:
+            score += 4
+            signals.append("pathfinder_priority")
+        if is_health:
+            score += 4
+            signals.append("health_context")
+
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.medical_general_tokens)):
+            hanbang_skin_context = (
+                cls._contains_any(text, ["한의원", "한방", "새살침", "침", "한약"])
+                and not non_service_request
+            )
+            if not hanbang_skin_context:
+                score -= 18
+                signals.append("western_provider_bias")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "excellent"
+        elif score >= 55:
+            tier = "strong"
+        elif score >= cls.MIN_CLINIC_TREATMENT_FIT_SCORE:
+            tier = "acceptable"
+        else:
+            tier = "weak"
+        return score, tier, list(dict.fromkeys(signals))
+
+    @classmethod
+    def _assess_worksite_efficiency(
+        cls,
+        target: ViralTarget,
+        clinic_treatment_fit_score: int,
+        viral_need_score: int,
+        viral_need_signals: List[str],
+        reply_opportunity_score: int,
+        reply_opportunity_signals: List[str],
+        timing_window_score: int,
+        timing_window_signals: List[str],
+        journey_fit_score: int,
+        journey_stage: str,
+        qualification_fit_score: int,
+        risk_flags: List[str],
+    ) -> Tuple[int, str, List[str]]:
+        """Score how efficient this exact public surface is for a helpful reply."""
+        platform = (target.platform or "").lower()
+        score = 30
+        signals: List[str] = []
+        need_set = set(viral_need_signals or [])
+        reply_set = set(reply_opportunity_signals or [])
+        timing_set = set(timing_window_signals or [])
+
+        if platform in {"cafe", "naver_cafe"}:
+            score += 18
+            signals.append("community_surface")
+        elif platform in {"kin", "naver_kin"}:
+            score += 15
+            signals.append("qa_surface")
+        elif platform == "blog":
+            score -= 12
+            signals.append("blog_low_comment_efficiency")
+        elif platform in {"instagram", "tiktok", "youtube"}:
+            score -= 6
+            signals.append("social_thread_lower_intent")
+
+        comment_count = max(0, int(getattr(target, "comment_count", 0) or 0))
+        view_count = max(0, int(getattr(target, "view_count", 0) or 0))
+        if comment_count == 0:
+            score += 16
+            signals.append("unanswered_thread")
+        elif comment_count <= 2:
+            score += 9
+            signals.append("low_response_thread")
+        elif comment_count >= 8:
+            score -= 16
+            signals.append("saturated_thread")
+        if view_count >= 100 and comment_count <= 2:
+            score += 8
+            signals.append("visible_gap")
+
+        if clinic_treatment_fit_score >= 75:
+            score += 14
+            signals.append("excellent_clinic_fit")
+        elif clinic_treatment_fit_score >= 55:
+            score += 8
+            signals.append("strong_clinic_fit")
+        elif clinic_treatment_fit_score < cls.MIN_CLINIC_TREATMENT_FIT_SCORE:
+            score -= 22
+            signals.append("weak_clinic_fit")
+
+        if reply_opportunity_score >= 75:
+            score += 12
+            signals.append("reply_welcome")
+        elif reply_opportunity_score < 45:
+            score -= 12
+            signals.append("weak_reply_opening")
+        if timing_window_score >= 75:
+            score += 12
+            signals.append("fresh_response_window")
+        elif timing_window_score < 45:
+            score -= 12
+            signals.append("aging_response_window")
+        if journey_stage == "decision":
+            score += 10
+            signals.append("decision_stage")
+        elif journey_stage == "consideration":
+            score += 6
+            signals.append("consideration_stage")
+        elif journey_stage in {"awareness", "post_service"}:
+            score -= 14
+            signals.append("low_conversion_stage")
+        if qualification_fit_score >= 75:
+            score += 10
+            signals.append("qualified_lead_context")
+        elif qualification_fit_score < 45:
+            score -= 10
+            signals.append("thin_lead_context")
+
+        if need_set & {"recommendation_request", "ready_to_act", "cost_decision"}:
+            score += 8
+            signals.append("actionable_need")
+        if "help_request_language" in reply_set or "clear_question_shape" in reply_set:
+            score += 6
+            signals.append("natural_reply_opening")
+        if "anti_ad_request" in need_set or "anti_ad_request" in reply_set:
+            score -= 6
+            signals.append("transparency_sensitive")
+        if "posted_over_30d" in timing_set or "stale_language" in timing_set:
+            score -= 14
+            signals.append("stale_context")
+        if risk_flags:
+            score -= min(22, 7 * len(risk_flags))
+            signals.append("medical_guardrail_load")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "high_efficiency"
+        elif score >= 55:
+            tier = "efficient"
+        elif score >= cls.MIN_WORKSITE_EFFICIENCY_SCORE:
+            tier = "manual_selective"
+        else:
+            tier = "inefficient"
+        return score, tier, list(dict.fromkeys(signals))
 
     @staticmethod
     def _contains_any(text: str, patterns: List[str]) -> bool:
@@ -2525,7 +2805,27 @@ class CommentableFilter:
         return round(min(150.0, platform_base + engagement), 2)
 
     @staticmethod
-    def _compose_priority_score(exposure_score: float, workability_score: float, conversion_fit_score: float) -> float:
+    def _compose_priority_score(
+        exposure_score: float,
+        workability_score: float,
+        conversion_fit_score: float,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
+    ) -> float:
+        if clinic_treatment_fit_score is not None or worksite_efficiency_score is not None:
+            clinic_scaled = min(150.0, max(0.0, float(clinic_treatment_fit_score or 0.0)) * 1.5)
+            worksite_scaled = min(150.0, max(0.0, float(worksite_efficiency_score or 0.0)) * 1.5)
+            return round(
+                max(0.0, min(
+                    150.0,
+                    (exposure_score * 0.35)
+                    + (workability_score * 0.25)
+                    + (conversion_fit_score * 0.20)
+                    + (clinic_scaled * 0.12)
+                    + (worksite_scaled * 0.08),
+                )),
+                2,
+            )
         return round(
             max(0.0, min(
                 150.0,
@@ -2548,7 +2848,8 @@ class CommentableFilter:
                  'no_region': 0, 'title_only': 0, 'domain_mismatch': 0,
                  'off_domain': 0, 'not_inquiry_health': 0, 'medical_risk': 0,
                  'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
-                 'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0}
+                 'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0,
+                 'clinic_mismatch': 0, 'low_worksite_efficiency': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
@@ -2784,6 +3085,83 @@ class CommentableFilter:
                 }
                 continue
 
+            clinic_treatment_fit_score, clinic_treatment_fit_tier, clinic_treatment_fit_signals = self._assess_clinic_treatment_fit(
+                target,
+                domain,
+                text,
+                is_health,
+            )
+            if clinic_treatment_fit_score < self.MIN_CLINIC_TREATMENT_FIT_SCORE:
+                stats['clinic_mismatch'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_clinic_mismatch"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                    "qualification_fit_score": float(qualification_fit_score),
+                    "qualification_tier": qualification_tier,
+                    "qualification_signals": ",".join(qualification_signals),
+                    "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                    "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                    "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                }
+                continue
+
+            worksite_efficiency_score, worksite_efficiency_tier, worksite_efficiency_signals = self._assess_worksite_efficiency(
+                target,
+                clinic_treatment_fit_score,
+                viral_need_score,
+                viral_need_signals,
+                reply_opportunity_score,
+                reply_opportunity_signals,
+                timing_window_score,
+                timing_window_signals,
+                journey_fit_score,
+                journey_stage,
+                qualification_fit_score,
+                risk_flags,
+            )
+            if worksite_efficiency_score < self.MIN_WORKSITE_EFFICIENCY_SCORE:
+                stats['low_worksite_efficiency'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_low_worksite_efficiency"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                    "qualification_fit_score": float(qualification_fit_score),
+                    "qualification_tier": qualification_tier,
+                    "qualification_signals": ",".join(qualification_signals),
+                    "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                    "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                    "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                    "worksite_efficiency_score": float(worksite_efficiency_score),
+                    "worksite_efficiency_tier": worksite_efficiency_tier,
+                    "worksite_efficiency_signals": ",".join(worksite_efficiency_signals),
+                }
+                continue
+
             # 5. 우선순위 점수 계산 (개선됨: 150점 캡, 세분화된 가중치)
             score = 0
             tags = []  # 태그 수집
@@ -2843,6 +3221,8 @@ class CommentableFilter:
             timing_window_adjustment = max(-20, min(18, (timing_window_score - 50) * 0.35))
             journey_fit_adjustment = max(-16, min(10, (journey_fit_score - 50) * 0.22))
             qualification_fit_adjustment = max(-18, min(12, (qualification_fit_score - 50) * 0.24))
+            clinic_treatment_adjustment = max(-24, min(18, (clinic_treatment_fit_score - 55) * 0.32))
+            worksite_efficiency_adjustment = max(-20, min(20, (worksite_efficiency_score - 55) * 0.35))
             score += soft_ad_penalty  # 음수 값이므로 감점됨
             score += risk_penalty
             score += viral_need_bonus
@@ -2850,6 +3230,8 @@ class CommentableFilter:
             score += timing_window_adjustment
             score += journey_fit_adjustment
             score += qualification_fit_adjustment
+            score += clinic_treatment_adjustment
+            score += worksite_efficiency_adjustment
 
             if reply_opportunity_score >= 75:
                 tags.append("🎯도움")
@@ -2859,6 +3241,10 @@ class CommentableFilter:
                 tags.append("🧭결정")
             if qualification_fit_score >= 75:
                 tags.append("✅자격")
+            if clinic_treatment_fit_score >= 75:
+                tags.append("🏷️진료적합")
+            if worksite_efficiency_score >= 75:
+                tags.append("📍작업효율")
 
             # 태그 정보 저장 (content_preview 앞에 추가)
             if tags:
@@ -2889,6 +3275,8 @@ class CommentableFilter:
             conversion_fit += min(24, timing_window_score * 0.24)
             conversion_fit += min(14, journey_fit_score * 0.14)
             conversion_fit += min(22, qualification_fit_score * 0.22)
+            conversion_fit += min(30, clinic_treatment_fit_score * 0.30)
+            conversion_fit += min(22, worksite_efficiency_score * 0.22)
             target.conversion_fit_score = max(0, min(conversion_fit, 150))
 
             target.score_breakdown = {
@@ -2919,6 +3307,14 @@ class CommentableFilter:
                 "qualification_tier": qualification_tier,
                 "qualification_signals": ",".join(qualification_signals),
                 "qualification_fit_adjustment": float(qualification_fit_adjustment),
+                "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                "clinic_treatment_adjustment": float(clinic_treatment_adjustment),
+                "worksite_efficiency_score": float(worksite_efficiency_score),
+                "worksite_efficiency_tier": worksite_efficiency_tier,
+                "worksite_efficiency_signals": ",".join(worksite_efficiency_signals),
+                "worksite_efficiency_adjustment": float(worksite_efficiency_adjustment),
                 "reply_risk_penalty": float(risk_penalty),
                 "manual_review": 1.0 if risk_flags else 0.0,
                 "reply_risk_flags": ",".join(risk_flags),
@@ -2927,6 +3323,8 @@ class CommentableFilter:
                 target.exposure_score,
                 target.workability_score,
                 target.conversion_fit_score,
+                clinic_treatment_fit_score,
+                worksite_efficiency_score,
             )
             if timing_window_score < 55:
                 timing_priority_adjustment = -min(22.0, (55 - timing_window_score) * 0.75)
@@ -2977,7 +3375,8 @@ class CommentableFilter:
             f"의료주의 {stats['medical_risk']}, 광고성 {stats['advertorial']}, "
             f"저의도 {stats['low_intent']}, 저응답적합 {stats['low_opportunity']}, "
             f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
-            f"자격부족 {stats['unqualified']}]"
+            f"자격부족 {stats['unqualified']}, 진료불일치 {stats['clinic_mismatch']}, "
+            f"작업효율낮음 {stats['low_worksite_efficiency']}]"
         )
         return filtered
 

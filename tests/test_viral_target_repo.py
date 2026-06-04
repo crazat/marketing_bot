@@ -276,6 +276,65 @@ def test_insert_preserves_pathfinder_lineage_when_columns_exist(tmp_db):
     assert row["matched_keyword_category"] == "피부/여드름"
 
 
+def test_insert_persists_viral_efficiency_breakdown_and_filters(tmp_db):
+    with sqlite3.connect(tmp_db) as conn:
+        for col, ctype in [
+            ("exposure_score", "REAL DEFAULT 0"),
+            ("workability_score", "REAL DEFAULT 0"),
+            ("conversion_fit_score", "REAL DEFAULT 0"),
+            ("score_breakdown", "TEXT DEFAULT '{}'"),
+            ("search_sort", "TEXT"),
+            ("search_rank", "INTEGER DEFAULT 0"),
+            ("sort_appearances", "TEXT DEFAULT '[]'"),
+        ]:
+            conn.execute(f"ALTER TABLE viral_targets ADD COLUMN {col} {ctype}")
+        conn.commit()
+
+    repo = ViralTargetRepository(tmp_db)
+    assert repo.insert({
+        "id": "eff-high",
+        "platform": "kin",
+        "url": "https://x/eff-high",
+        "title": "scar clinic fit",
+        "comment_status": "pending",
+        "priority_score": 82,
+        "matched_keywords": ["cheongju scar clinic"],
+        "exposure_score": 100,
+        "workability_score": 95,
+        "conversion_fit_score": 88,
+        "score_breakdown": {
+            "clinic_treatment_fit_score": 86,
+            "worksite_efficiency_score": 91,
+        },
+        "search_sort": "date",
+        "search_rank": 2,
+        "sort_appearances": ["date", "sim"],
+    })
+    assert repo.insert({
+        "id": "eff-low",
+        "platform": "blog",
+        "url": "https://x/eff-low",
+        "title": "low fit",
+        "comment_status": "pending",
+        "priority_score": 120,
+        "matched_keywords": ["home care"],
+        "score_breakdown": {
+            "clinic_treatment_fit_score": 28,
+            "worksite_efficiency_score": 35,
+        },
+    })
+
+    high = repo.get("eff-high")
+    assert high is not None
+    assert high["score_breakdown"]["clinic_treatment_fit_score"] == 86
+    assert high["sort_appearances"] == ["date", "sim"]
+
+    filters = {"min_clinic_fit": 70, "min_worksite_efficiency": 70}
+    assert repo.count(filters) == 1
+    rows = repo.list(filters, sort="worksite_efficiency", limit=10)
+    assert [row["id"] for row in rows] == ["eff-high"]
+
+
 def test_insert_conflict_recovers_null_scan_count(tmp_db):
     repo = ViralTargetRepository(tmp_db)
     sample = {

@@ -12,7 +12,7 @@ Viral Hunter API
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, Tuple
 import sys
 import os
 from pathlib import Path
@@ -162,6 +162,22 @@ def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], w
             filters["source_scan_run_id"] = scan_id
     if filters.get("exclude_revisited") is None and not filters.get("min_scan_count"):
         filters["exclude_revisited"] = True
+
+
+def _viral_score_breakdown_expr(cursor: sqlite3.Cursor, key: str) -> str:
+    try:
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(viral_targets)").fetchall()}
+    except Exception:
+        columns = set()
+    if "score_breakdown" not in columns:
+        return "CAST(0 AS REAL)"
+    safe_key = "".join(ch for ch in key if ch.isalnum() or ch == "_")
+    return (
+        "COALESCE("
+        "CASE WHEN json_valid(score_breakdown) "
+        f"THEN CAST(json_extract(score_breakdown, '$.{safe_key}') AS REAL) "
+        "ELSE 0 END, 0)"
+    )
 
 # [성능 최적화] ViralHunter 싱글톤 인스턴스
 _viral_hunter_instance: Optional[ViralHunter] = None
@@ -347,6 +363,8 @@ class BulkActionByFilterRequest(BaseModel):
     post_region: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     min_score: Optional[float] = Field(None, ge=0.0, le=150.0)
+    min_clinic_fit: Optional[float] = Field(None, ge=0.0, le=100.0)
+    min_worksite_efficiency: Optional[float] = Field(None, ge=0.0, le=100.0)
     commentable_only: Optional[bool] = None
     work_scope: Optional[str] = "latest_legion"
     exclude_revisited: Optional[bool] = None
@@ -1103,6 +1121,8 @@ async def get_viral_targets(
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
     min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
+    min_clinic_fit: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum clinic_treatment_fit_score"),
+    min_worksite_efficiency: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum worksite_efficiency_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
@@ -1150,6 +1170,8 @@ async def get_viral_targets(
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
             "min_exposure": min_exposure,
+            "min_clinic_fit": min_clinic_fit,
+            "min_worksite_efficiency": min_worksite_efficiency,
             "commentable_only": commentable_only,
         }.items() if v is not None}
 
@@ -1510,10 +1532,15 @@ async def get_todays_queue(
         params: List[Any] = []
         _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
+        clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
+        worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
+        candidate_limit = min(500, max(total_limit * 4, total_limit + per_category * len(VIRAL_CORE_CATEGORIES)))
 
         query = f"""
             SELECT id, platform, url, title, content_preview, matched_keywords,
-                   category, priority_score, discovered_at, author, matched_keyword
+                   category, priority_score, discovered_at, author, matched_keyword,
+                   {clinic_fit_expr} AS clinic_treatment_fit_score,
+                   {worksite_efficiency_expr} AS worksite_efficiency_score
             FROM viral_targets
             WHERE comment_status = 'pending'
               AND priority_score >= 80
@@ -1521,8 +1548,15 @@ async def get_todays_queue(
         """
         if today_only:
             query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
-        query += " ORDER BY priority_score DESC, discovered_at DESC LIMIT ?"
-        params.append(total_limit)
+        query += f"""
+            ORDER BY
+                {worksite_efficiency_expr} DESC,
+                {clinic_fit_expr} DESC,
+                priority_score DESC,
+                discovered_at DESC
+            LIMIT ?
+        """
+        params.append(candidate_limit)
         cursor.execute(query, params)
         rows = [dict(r) for r in cursor.fetchall()]
 
@@ -1540,17 +1574,65 @@ async def get_todays_queue(
             cat = r.get("category") or "기타"
             groups_map.setdefault(cat, []).append(r)
 
+        def target_rank_key(item: Dict[str, Any]) -> Tuple[float, float, float]:
+            return (
+                float(item.get("worksite_efficiency_score") or 0),
+                float(item.get("clinic_treatment_fit_score") or 0),
+                float(item.get("priority_score") or 0),
+            )
+
+        for items in groups_map.values():
+            items.sort(key=target_rank_key, reverse=True)
+
+        category_order = sorted(
+            groups_map,
+            key=lambda cat: target_rank_key(groups_map[cat][0]) if groups_map[cat] else (0.0, 0.0, 0.0),
+            reverse=True,
+        )
+        selected_by_category: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in category_order}
+        selected_ids: set[str] = set()
+        selected_total = 0
+
+        while selected_total < total_limit:
+            progressed = False
+            for cat in category_order:
+                if selected_total >= total_limit:
+                    break
+                if len(selected_by_category[cat]) >= per_category:
+                    continue
+                next_item = None
+                for item in groups_map[cat]:
+                    item_id = str(item.get("id") or "")
+                    if item_id and item_id not in selected_ids:
+                        next_item = item
+                        break
+                if next_item is None:
+                    continue
+                selected_ids.add(str(next_item.get("id") or ""))
+                selected_by_category[cat].append(next_item)
+                selected_total += 1
+                progressed = True
+            if not progressed:
+                break
+
         groups = []
-        for cat, items in sorted(groups_map.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        for cat in category_order:
+            items = selected_by_category.get(cat, [])
+            if not items:
+                continue
             groups.append({
                 "category": cat,
-                "count": len(items),
-                "items": items[:per_category],
+                "count": len(groups_map.get(cat, [])),
+                "selected_count": len(items),
+                "items": items,
             })
 
         return {
-            "total": len(rows),
+            "total": selected_total,
+            "candidate_total": len(rows),
             "today_only": today_only,
+            "portfolio_balanced": True,
+            "per_category": per_category,
             "generated_at": datetime.now().isoformat(),
             "groups": groups,
         }
@@ -1580,6 +1662,8 @@ async def count_viral_targets(
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
     min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
+    min_clinic_fit: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum clinic_treatment_fit_score"),
+    min_worksite_efficiency: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum worksite_efficiency_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
@@ -1605,6 +1689,8 @@ async def count_viral_targets(
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
             "min_exposure": min_exposure,
+            "min_clinic_fit": min_clinic_fit,
+            "min_worksite_efficiency": min_worksite_efficiency,
             "commentable_only": commentable_only,
         }
         filters = {k: v for k, v in filters.items() if v is not None}
@@ -2351,6 +2437,12 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         if req.min_score is not None:
             where += " AND COALESCE(priority_score, 0) >= ?"
             params.append(req.min_score)
+        if req.min_clinic_fit is not None:
+            where += f" AND {_viral_score_breakdown_expr(cursor, 'clinic_treatment_fit_score')} >= ?"
+            params.append(req.min_clinic_fit)
+        if req.min_worksite_efficiency is not None:
+            where += f" AND {_viral_score_breakdown_expr(cursor, 'worksite_efficiency_score')} >= ?"
+            params.append(req.min_worksite_efficiency)
         if req.commentable_only:
             where += " AND COALESCE(is_commentable, 0) = 1"
 
@@ -3422,6 +3514,8 @@ async def get_smart_recommendations(
         recurring_params: List[Any] = []
         _apply_work_scope_sql(cursor, work_scope, recurring_where, recurring_params, exclude_revisited=False)
         recurring_condition = f" AND {' AND '.join(recurring_where)}" if recurring_where else ""
+        clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
+        worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
 
         # 1. 빠른 필터 프리셋 생성
 
@@ -3498,6 +3592,32 @@ async def get_smart_recommendations(
                 "filter": {"status": "pending", "commentable_only": True, "sort": "priority"}
             })
 
+        cursor.execute(f"""
+            SELECT COUNT(*) FROM viral_targets
+            WHERE comment_status = 'pending'
+            AND COALESCE(is_commentable, 0) = 1
+            AND {clinic_fit_expr} >= 70
+            AND {worksite_efficiency_expr} >= 70
+            {visible_condition}
+        """, visible_params)
+        efficient_worksite_count = cursor.fetchone()[0]
+
+        if efficient_worksite_count > 0:
+            result["quick_filters"].append({
+                "id": "gyulim_efficient_worksite",
+                "name": "\uaddc\ub9bc \uace0\ud6a8\uc728 \uc791\uc5c5\uc9c0",
+                "icon": "target",
+                "description": f"\uc9c4\ub8cc \uc801\ud569 + \uc791\uc5c5 \ud6a8\uc728\uc774 \ub192\uc740 {efficient_worksite_count}\uac1c",
+                "count": efficient_worksite_count,
+                "filter": {
+                    "status": "pending",
+                    "commentable_only": True,
+                    "min_clinic_fit": 70,
+                    "min_worksite_efficiency": 70,
+                    "sort": "worksite_efficiency",
+                }
+            })
+
         # AI 생성된 댓글 대기 중
         cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
@@ -3505,6 +3625,13 @@ async def get_smart_recommendations(
             {visible_condition}
         """, visible_params)
         generated_count = cursor.fetchone()[0]
+
+        if efficient_worksite_count > 0:
+            result["insights"].append({
+                "type": "gyulim_efficiency",
+                "message": f"\uaddc\ub9bc \uc9c4\ub8cc \uc801\ud569\ub3c4\uc640 \uc791\uc5c5 \ud6a8\uc728\uc774 \ubaa8\ub450 \ub192\uc740 \ud0c0\uae43 {efficient_worksite_count}\uac1c\uac00 \uc788\uc2b5\ub2c8\ub2e4.",
+                "importance": "high"
+            })
 
         if generated_count > 0:
             result["quick_filters"].append({
@@ -3518,12 +3645,16 @@ async def get_smart_recommendations(
 
         # 2. 오늘 집중해야 할 타겟 (Top 5)
         cursor.execute(f"""
-            SELECT id, title, platform, priority_score, matched_keywords, scan_count
+            SELECT id, title, platform, priority_score, matched_keywords, scan_count,
+                   {clinic_fit_expr} AS clinic_treatment_fit_score,
+                   {worksite_efficiency_expr} AS worksite_efficiency_score
             FROM viral_targets
             WHERE comment_status = 'pending'
             {visible_condition}
             ORDER BY
                 CASE WHEN scan_count >= 2 THEN 1 ELSE 0 END DESC,
+                {worksite_efficiency_expr} DESC,
+                {clinic_fit_expr} DESC,
                 priority_score DESC
             LIMIT 5
         """, visible_params)
@@ -3543,12 +3674,14 @@ async def get_smart_recommendations(
 
         # 3. 플랫폼별 우선순위
         cursor.execute(f"""
-            SELECT platform, COUNT(*) as count, AVG(priority_score) as avg_score
+            SELECT platform, COUNT(*) as count, AVG(priority_score) as avg_score,
+                   AVG({worksite_efficiency_expr}) as avg_worksite_efficiency,
+                   AVG({clinic_fit_expr}) as avg_clinic_fit
             FROM viral_targets
             WHERE comment_status = 'pending'
             {visible_condition}
             GROUP BY platform
-            ORDER BY avg_score DESC
+            ORDER BY avg_worksite_efficiency DESC, avg_clinic_fit DESC, avg_score DESC
         """, visible_params)
 
         platform_priorities = []

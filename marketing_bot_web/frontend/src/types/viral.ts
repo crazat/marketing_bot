@@ -30,7 +30,7 @@ export interface ViralTargetData {
   exposure_score?: number | null
   workability_score?: number | null
   conversion_fit_score?: number | null
-  score_breakdown?: Record<string, number> | string | null
+  score_breakdown?: Record<string, number | string | boolean | null> | string | null
   search_sort?: string | null
   search_rank?: number | null
   search_start?: number | null
@@ -89,6 +89,8 @@ export interface ViralFilterState {
   min_scan_count?: number
   min_score?: number
   min_exposure?: number
+  min_clinic_fit?: number
+  min_worksite_efficiency?: number
   commentable_only?: boolean
   search?: string
   sort?: string

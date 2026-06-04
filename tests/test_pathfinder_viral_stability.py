@@ -1292,6 +1292,75 @@ def test_viral_seed_builder_handles_thin_keyword_schema(tmp_path):
     assert seeds[0].search_intent == "unknown"
 
 
+def test_viral_seed_builder_diversifies_skin_clusters_and_regions(tmp_path):
+    db_path = tmp_path / "seed_builder_diversity.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT,
+                longtail_score REAL,
+                business_value_score REAL,
+                high_value_longtail INTEGER
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (10, 'legion', 'completed', '2026-06-03');
+            """
+        )
+        rows = [
+            ("분평동 여드름흉터 한의원 비용", 200),
+            ("분평동 여드름흉터 한의원 상담", 190),
+            ("분평동 여드름흉터 한의원 예약", 180),
+            ("산남동 여드름 한의원 비용", 100),
+            ("복대동 새살침 후기", 90),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, scan_run_id, business_core,
+                status, longtail_score, business_value_score, high_value_longtail
+            ) VALUES (?, '피부/여드름', 'A', 100, 1000, 10, ?, 'transactional',
+                      10, 1, 'active', 100, 100, 1)
+            """,
+            rows,
+        )
+
+    seeds = ViralSeedBuilder(str(db_path)).build(
+        scan_run_id=10,
+        quotas={"피부/여드름": 4},
+    )
+
+    selected = [seed.keyword for seed in seeds]
+    assert selected == [
+        "분평동 여드름흉터 한의원 비용",
+        "분평동 여드름흉터 한의원 상담",
+        "산남동 여드름 한의원 비용",
+        "복대동 새살침 후기",
+    ]
+    assert "분평동 여드름흉터 한의원 예약" not in selected
+
+
 def test_viral_hunter_applies_pathfinder_context_for_custom_keyword(tmp_path):
     db_path = tmp_path / "custom_keyword_context.db"
     with sqlite3.connect(db_path) as conn:
@@ -1591,6 +1660,63 @@ def test_naver_multi_sort_collect_tracks_exposure_metadata():
     assert shared.search_sort == "sim"
     assert shared.exposure_score > 0
     assert shared.sort_appearances == ["sim", "date"]
+
+
+def test_viral_filter_scores_gyulim_skin_scar_worksite_fit():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/scar-fit",
+        title="청주 여드름흉터 새살침 한의원 추천 부탁드려요",
+        content_preview=(
+            "청주에서 여드름흉터랑 패인흉터 때문에 새살침 상담 받아보려고 합니다. "
+            "한의원 비용이나 예약 가능한 곳 아시는 분 추천 부탁드려요. "
+            "직장인이라 주말 진료도 궁금합니다."
+        ),
+        matched_keywords=["청주 여드름흉터 한의원 추천"],
+        category="피부",
+        matched_keyword_grade="A",
+        matched_keyword_priority=115,
+        date_str="방금 전",
+        comment_count=0,
+        view_count=180,
+    )
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert len(filtered) == 1
+    breakdown = filtered[0].score_breakdown
+    assert breakdown["clinic_treatment_fit_score"] >= 90
+    assert breakdown["worksite_efficiency_score"] >= 90
+    assert "gyulim_profile_match" in breakdown["clinic_treatment_fit_signals"]
+    assert "unanswered_thread" in breakdown["worksite_efficiency_signals"]
+    assert filtered[0].priority_score >= 120
+
+
+def test_viral_clinic_fit_drops_non_service_skin_beauty_posts():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/non-service-skin",
+        title="청주 여드름 화장품 추천",
+        content_preview=(
+            "청주에서 여드름 때문에 올리브영 화장품이랑 폼클렌징 추천 받고 싶어요. "
+            "피부과 레이저는 부담이라 홈케어 제품 위주로 알아보고 있습니다. "
+            "한의원 상담이나 치료를 찾는 건 아니고 화장품 후기 궁금합니다."
+        ),
+        matched_keywords=["청주 여드름"],
+        category="피부",
+    )
+    text = f"{target.title} {target.content_preview}".lower()
+
+    score, tier, signals = viral_hunter.CommentableFilter._assess_clinic_treatment_fit(
+        target,
+        "scar_skin",
+        text,
+        is_health=True,
+    )
+
+    assert score < viral_hunter.CommentableFilter.MIN_CLINIC_TREATMENT_FIT_SCORE
+    assert tier == "weak"
+    assert "non_service_request" in signals
 
 
 def test_zero_result_streak_does_not_sleep_without_api_errors(monkeypatch):

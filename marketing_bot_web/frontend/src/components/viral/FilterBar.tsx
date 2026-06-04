@@ -10,6 +10,8 @@ export interface FilterState {
   comment_status?: string;     // 댓글 상태 필터 추가
   min_scan_count?: number;
   min_score?: number;
+  min_clinic_fit?: number;
+  min_worksite_efficiency?: number;
   commentable_only?: boolean;
   search?: string;
   sort?: string;
@@ -72,6 +74,8 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
       filters.comment_status ||
       filters.min_scan_count ||
       filters.min_score ||
+      filters.min_clinic_fit ||
+      filters.min_worksite_efficiency ||
       filters.commentable_only ||
       filters.search ||
       (filters.sort && filters.sort !== 'priority') ||

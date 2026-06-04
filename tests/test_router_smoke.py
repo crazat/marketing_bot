@@ -163,6 +163,177 @@ def test_smart_recommendations_hide_revisited_from_visible_staff_counts(tmp_db_p
     assert result["platform_priorities"] == [{"platform": "cafe", "count": 1, "avg_score": 90.0}]
 
 
+def test_smart_recommendations_surface_gyulim_efficiency_filter(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+    core_category = viral_router.VIRAL_CORE_CATEGORIES[0]
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        conn.execute(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, matched_keywords, category,
+                is_commentable, comment_status, priority_score, discovered_at,
+                scan_count, score_breakdown
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?, ?)
+            """,
+            (
+                "gyulim-efficient",
+                "kin",
+                "http://x/gyulim-efficient",
+                "scar treatment fit",
+                '["scar"]',
+                core_category,
+                1,
+                "pending",
+                78,
+                1,
+                '{"clinic_treatment_fit_score": 92, "worksite_efficiency_score": 89}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, matched_keywords, category,
+                is_commentable, comment_status, priority_score, discovered_at,
+                scan_count, score_breakdown
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?, ?)
+            """,
+            (
+                "priority-but-inefficient",
+                "blog",
+                "http://x/priority-but-inefficient",
+                "low fit despite high priority",
+                '["scar"]',
+                core_category,
+                1,
+                "pending",
+                125,
+                1,
+                '{"clinic_treatment_fit_score": 34, "worksite_efficiency_score": 25}',
+            ),
+        )
+        conn.commit()
+
+    result = asyncio.run(
+        viral_router.get_smart_recommendations(work_scope="core", exclude_revisited=None)
+    )
+    quick = {item["id"]: item for item in result["quick_filters"]}
+
+    assert quick["gyulim_efficient_worksite"]["count"] == 1
+    assert quick["gyulim_efficient_worksite"]["filter"] == {
+        "status": "pending",
+        "commentable_only": True,
+        "min_clinic_fit": 70,
+        "min_worksite_efficiency": 70,
+        "sort": "worksite_efficiency",
+    }
+    assert result["today_focus"][0]["id"] == "gyulim-efficient"
+    assert result["today_focus"][0]["clinic_treatment_fit_score"] == 92.0
+    assert result["today_focus"][0]["worksite_efficiency_score"] == 89.0
+    assert any(item["type"] == "gyulim_efficiency" for item in result["insights"])
+
+
+def test_todays_queue_is_portfolio_balanced_across_core_categories(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+    skin = viral_router.VIRAL_CORE_CATEGORIES[0]
+    diet = viral_router.VIRAL_CORE_CATEGORIES[1]
+    asymmetry = viral_router.VIRAL_CORE_CATEGORIES[3]
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword TEXT")
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        rows = []
+        for idx in range(6):
+            rows.append((
+                f"skin-{idx}",
+                "kin",
+                f"http://x/skin-{idx}",
+                f"skin top {idx}",
+                '["skin"]',
+                skin,
+                1,
+                "pending",
+                140 - idx,
+                1,
+                "skin",
+                '{"clinic_treatment_fit_score": 95, "worksite_efficiency_score": 95}',
+            ))
+        rows.extend([
+            (
+                "diet-1",
+                "cafe",
+                "http://x/diet-1",
+                "diet fit",
+                '["diet"]',
+                diet,
+                1,
+                "pending",
+                88,
+                1,
+                "diet",
+                '{"clinic_treatment_fit_score": 82, "worksite_efficiency_score": 81}',
+            ),
+            (
+                "asymmetry-1",
+                "cafe",
+                "http://x/asymmetry-1",
+                "asymmetry fit",
+                '["asymmetry"]',
+                asymmetry,
+                1,
+                "pending",
+                84,
+                1,
+                "asymmetry",
+                '{"clinic_treatment_fit_score": 80, "worksite_efficiency_score": 79}',
+            ),
+        ])
+        conn.executemany(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, matched_keywords, category,
+                is_commentable, comment_status, priority_score, discovered_at,
+                scan_count, matched_keyword, score_breakdown
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    result = asyncio.run(
+        viral_router.get_todays_queue(
+            total_limit=4,
+            per_category=2,
+            today_only=False,
+            work_scope="core",
+            exclude_revisited=None,
+        )
+    )
+    categories = [group["category"] for group in result["groups"]]
+    selected_ids = [
+        item["id"]
+        for group in result["groups"]
+        for item in group["items"]
+    ]
+
+    assert result["portfolio_balanced"] is True
+    assert result["candidate_total"] >= 8
+    assert categories[:3] == [skin, diet, asymmetry]
+    assert selected_ids.count("skin-0") == 1
+    assert "skin-1" in selected_ids
+    assert "diet-1" in selected_ids
+    assert "asymmetry-1" in selected_ids
+    assert len([item_id for item_id in selected_ids if item_id.startswith("skin-")]) == 2
+
+
 def test_all_backlog_staff_queries_hide_revisited_by_default(tmp_db_path, monkeypatch):
     from routers import viral as viral_router
 

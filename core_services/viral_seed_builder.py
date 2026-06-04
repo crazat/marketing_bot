@@ -8,19 +8,22 @@ comment queue stays aligned with the clinic's current focus.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass, asdict
 from typing import Dict, Iterable, List, Optional
 
+from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+
 
 DEFAULT_CATEGORY_QUOTAS: Dict[str, int] = {
-    "교통사고": 10,
-    "피부/여드름": 12,
-    "다이어트": 10,
-    "안면비대칭": 6,
-    "체형교정": 4,
+    "피부/여드름": 14,
+    "다이어트": 12,
+    "교통사고": 8,
+    "안면비대칭": 8,
+    "체형교정": 5,
     "리프팅/탄력": 3,
 }
 
@@ -43,6 +46,8 @@ DEFAULT_EXCLUDE_PATTERNS = [
 ]
 
 DEFAULT_MAX_PER_INTENT_PER_CATEGORY = 4
+DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY = 2
+DEFAULT_MAX_PER_REGION_PER_CATEGORY = 4
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,8 @@ class ViralSeedBuilder:
         exclude_patterns: Optional[Iterable[str]] = None,
         include_grades: Iterable[str] = ("S", "A", "B"),
         max_per_intent_per_category: int = DEFAULT_MAX_PER_INTENT_PER_CATEGORY,
+        max_per_cluster_per_category: int = DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY,
+        max_per_region_per_category: int = DEFAULT_MAX_PER_REGION_PER_CATEGORY,
     ) -> List[ViralSeed]:
         scan_id = scan_run_id or self.latest_completed_legion_scan_id()
         if not scan_id:
@@ -235,6 +242,8 @@ class ViralSeedBuilder:
                 by_category.get(category, []),
                 quota,
                 max_per_intent_per_category,
+                max_per_cluster_per_category,
+                max_per_region_per_category,
             )
             for item in category_rows:
                 row = item["row"]
@@ -391,6 +400,8 @@ class ViralSeedBuilder:
         items: List[dict],
         quota: int,
         max_per_intent: int,
+        max_per_cluster: int = DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY,
+        max_per_region: int = DEFAULT_MAX_PER_REGION_PER_CATEGORY,
     ) -> List[dict]:
         if quota <= 0 or not items:
             return []
@@ -398,12 +409,26 @@ class ViralSeedBuilder:
         selected: List[dict] = []
         deferred: List[dict] = []
         intent_counts: Counter = Counter()
+        cluster_counts: Counter = Counter()
+        region_counts: Counter = Counter()
 
         for item in items:
             intent = item["row"]["search_intent"] or "unknown"
-            if intent_counts[intent] < max_per_intent:
+            keyword = item["row"]["keyword"] or ""
+            category = item["row"]["category"] or "기타"
+            cluster = ViralSeedBuilder._keyword_cluster_key(keyword, category)
+            region = ViralSeedBuilder._keyword_region_key(keyword)
+
+            within_intent_cap = intent_counts[intent] < max_per_intent
+            within_cluster_cap = cluster_counts[cluster] < max_per_cluster
+            within_region_cap = region == "unknown" or region_counts[region] < max_per_region
+
+            if within_intent_cap and within_cluster_cap and within_region_cap:
                 selected.append(item)
                 intent_counts[intent] += 1
+                cluster_counts[cluster] += 1
+                if region != "unknown":
+                    region_counts[region] += 1
             else:
                 deferred.append(item)
 
@@ -414,6 +439,44 @@ class ViralSeedBuilder:
             selected.extend(deferred[: quota - len(selected)])
 
         return selected[:quota]
+
+    @staticmethod
+    def _keyword_region_key(keyword: str) -> str:
+        compact = re.sub(r"\s+", "", (keyword or "").lower())
+        for region in sorted(
+            GYULIM_KEYWORD_PROFILE.neighborhoods + GYULIM_KEYWORD_PROFILE.cheongju_regions,
+            key=len,
+            reverse=True,
+        ):
+            region_key = re.sub(r"\s+", "", region.lower())
+            if region_key and region_key in compact:
+                return region
+        return "unknown"
+
+    @staticmethod
+    def _keyword_cluster_key(keyword: str, category: str = "") -> str:
+        compact = re.sub(r"\s+", "", (keyword or "").lower())
+        normalized_category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(normalized_category)
+        core = "generic"
+        if profile:
+            for term in sorted(profile.core_tokens + profile.category_terms, key=len, reverse=True):
+                token = re.sub(r"\s+", "", term.lower())
+                if token and token in compact:
+                    core = term
+                    break
+
+        journey = "general"
+        if any(term in compact for term in ("주차", "야간", "주말", "진료시간")):
+            journey = "access"
+        elif any(term in compact for term in ("부작용", "주의사항", "재발", "치료기간", "기간")):
+            journey = "safety"
+        elif any(term in compact for term in ("후기", "추천", "괜찮은곳", "잘하는곳")):
+            journey = "validation"
+        elif any(term in compact for term in ("비용", "가격", "상담", "예약")):
+            journey = "decision"
+
+        return f"{normalized_category}:{core}:{journey}"
 
     def _load_keyword_feedback(self) -> Dict[str, dict]:
         """Summarize Viral Hunter outcomes by matched keyword for seed ranking."""

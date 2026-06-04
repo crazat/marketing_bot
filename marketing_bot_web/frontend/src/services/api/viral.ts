@@ -73,6 +73,7 @@ export interface SmartRecommendations {
   today_focus: {
     id: string; title: string; platform: string
     priority_score: number; matched_keywords: string[]; scan_count: number
+    clinic_treatment_fit_score?: number; worksite_efficiency_score?: number
   }[]
   platform_priorities: { platform: string; count: number; avg_score: number }[]
   insights: { type: string; message: string; importance: 'high' | 'medium' | 'low' }[]
@@ -139,6 +140,8 @@ export const viralApi = {
       min_scan_count?: number
       min_score?: number
       min_exposure?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       sort?: string
@@ -164,6 +167,8 @@ export const viralApi = {
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
     if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
+    if (filters?.min_clinic_fit != null) params.min_clinic_fit = filters.min_clinic_fit
+    if (filters?.min_worksite_efficiency != null) params.min_worksite_efficiency = filters.min_worksite_efficiency
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.sort) params.sort = filters.sort
@@ -191,6 +196,8 @@ export const viralApi = {
       min_scan_count?: number
       min_score?: number
       min_exposure?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       scan_batch?: string
@@ -214,6 +221,8 @@ export const viralApi = {
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
     if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
+    if (filters?.min_clinic_fit != null) params.min_clinic_fit = filters.min_clinic_fit
+    if (filters?.min_worksite_efficiency != null) params.min_worksite_efficiency = filters.min_worksite_efficiency
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
@@ -327,11 +336,15 @@ export const viralApi = {
     })
     return response.data as {
       total: number
+      candidate_total?: number
       today_only?: boolean
+      portfolio_balanced?: boolean
+      per_category?: number
       generated_at: string
       groups: Array<{
         category: string
         count: number
+        selected_count?: number
         items: Array<{
           id: string
           platform: string
@@ -344,6 +357,8 @@ export const viralApi = {
           discovered_at: string
           author?: string
           matched_keyword?: string
+          clinic_treatment_fit_score?: number
+          worksite_efficiency_score?: number
         }>
       }>
     }
@@ -451,6 +466,8 @@ export const viralApi = {
       comment_status?: string
       min_scan_count?: number
       min_score?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       scan_batch?: string

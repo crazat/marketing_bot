@@ -49,7 +49,8 @@ export default function ViralHunter() {
   const [filters, setFilters] = useState<FilterState>(() => {
     const platforms = searchParams.get('platforms')
     const hasAnyFilter = ['status', 'sort', 'category', 'comment_status', 'date_filter',
-      'search', 'scan_batch', 'platforms', 'min_scan_count', 'min_score', 'commentable_only',
+      'search', 'scan_batch', 'platforms', 'min_scan_count', 'min_score',
+      'min_clinic_fit', 'min_worksite_efficiency', 'commentable_only',
       'ai_ad_label', 'specialty_match', 'post_region', 'work_scope'].some(k => searchParams.get(k))
     if (!hasAnyFilter) {
       // Default staff queue: latest Legion scan, core clinic categories, pending targets.
@@ -74,6 +75,12 @@ export default function ViralHunter() {
       min_score: searchParams.get('min_score')
         ? Number(searchParams.get('min_score'))
         : undefined,
+      min_clinic_fit: searchParams.get('min_clinic_fit')
+        ? Number(searchParams.get('min_clinic_fit'))
+        : undefined,
+      min_worksite_efficiency: searchParams.get('min_worksite_efficiency')
+        ? Number(searchParams.get('min_worksite_efficiency'))
+        : undefined,
       commentable_only: searchParams.get('commentable_only') === 'true' ? true : undefined,
       ai_ad_label: searchParams.get('ai_ad_label') ?? undefined,
       specialty_match: searchParams.get('specialty_match') ?? undefined,
@@ -97,6 +104,8 @@ export default function ViralHunter() {
     }
     if (filters.min_scan_count) params.set('min_scan_count', String(filters.min_scan_count))
     if (filters.min_score) params.set('min_score', String(filters.min_score))
+    if (filters.min_clinic_fit) params.set('min_clinic_fit', String(filters.min_clinic_fit))
+    if (filters.min_worksite_efficiency) params.set('min_worksite_efficiency', String(filters.min_worksite_efficiency))
     if (filters.commentable_only) params.set('commentable_only', 'true')
     if (filters.ai_ad_label) params.set('ai_ad_label', filters.ai_ad_label)
     if (filters.specialty_match) params.set('specialty_match', filters.specialty_match)
@@ -298,6 +307,8 @@ export default function ViralHunter() {
         category: filters.category,
         min_scan_count: filters.min_scan_count,
         min_score: filters.min_score,
+        min_clinic_fit: filters.min_clinic_fit,
+        min_worksite_efficiency: filters.min_worksite_efficiency,
         commentable_only: filters.commentable_only,
         search: filters.search,
         sort: filters.sort,
@@ -328,6 +339,8 @@ export default function ViralHunter() {
         category: filters.category,
         min_scan_count: filters.min_scan_count,
         min_score: filters.min_score,
+        min_clinic_fit: filters.min_clinic_fit,
+        min_worksite_efficiency: filters.min_worksite_efficiency,
         commentable_only: filters.commentable_only,
         search: filters.search,
         scan_batch: filters.scan_batch,
@@ -942,6 +955,8 @@ export default function ViralHunter() {
         platforms: filters.platforms,
         min_scan_count: filters.min_scan_count,
         min_score: filters.min_score,
+        min_clinic_fit: filters.min_clinic_fit,
+        min_worksite_efficiency: filters.min_worksite_efficiency,
         commentable_only: filters.commentable_only,
         search: filters.search,
         scan_batch: filters.scan_batch,
@@ -1404,6 +1419,8 @@ export default function ViralHunter() {
               s.push({ label: '플랫폼', value: filters.platforms.join(', ') })
             if (filters.min_score) s.push({ label: '최소 점수', value: `${filters.min_score}점` })
             if (filters.commentable_only) s.push({ label: '댓글 가능', value: '가능한 타겟만' })
+            if (filters.min_clinic_fit) s.push({ label: '\uc9c4\ub8cc \uc801\ud569\ub3c4', value: `${filters.min_clinic_fit}\uc810 \uc774\uc0c1` })
+            if (filters.min_worksite_efficiency) s.push({ label: '\uc791\uc5c5 \ud6a8\uc728', value: `${filters.min_worksite_efficiency}\uc810 \uc774\uc0c1` })
             if (filters.search) s.push({ label: '검색어', value: filters.search })
             if (filters.scan_batch) s.push({ label: '스캔 배치', value: filters.scan_batch })
             if (s.length === 0) s.push({ label: '필터', value: '전체 (필터 없음)' })
