@@ -1085,19 +1085,32 @@ class CommentableFilter:
         "상담문의 :", "상담 문의 :", "open.kakao.com", "카카오톡 오픈채팅",
         "현재 할인가", "구입할수 있는 방법", "영양제 한눈에 보기", "필수 <다이어트>",
         "운영 중인", "전문블로거", "결론부터", "연락주시",
+        "환자분이 내원", "환자분이 내원해주시면", "처방 한의원",
+        "만족도가 상당히", "일반적으로 3개월", "3단계에 걸쳐",
+        "비용 절감 혜택", "네이버에서", "검색하셔서", "전화 상담",
+        "전화상담", "상담받아 보세요", "상담 받아 보세요",
+        "방문해서 상담", "전문의 소견", "방치하면 만성",
+        "초기에 한의원", "비용 부담 없이", "자동차보험으로 상담",
     ]
 
     KIN_RECOMMENDATION_SPAM_PATTERNS = [
         "후기 잘보고", "부작용없고 효과", "효과 좋은 곳", "꼭 가보시길",
         "가격이 부담스럽지도", "무지 유명한 곳", "입소문난", "유명 다이어트한의원",
         "확실하게 좋은 곳", "도움 받았다는", "도움을 받았다는", "관리좀 받으려",
+        "효과 좋아요", "효과 좋았", "추천드려요", "추천드립니다",
+        "가격도 괜찮", "친절하고 가격", "금액이 대박", "무제한으로",
+        "비만패키지", "할인이벤트", "할인 이벤트", "잘 봐주시는",
+        "꼼꼼하고 친절", "상담 한번 받아", "상담받아 보세요",
+        "방문해서 상담", "유명하니", "유명한 곳으로",
     ]
 
     COMMERCIAL_CTA_PATTERNS = [
         "진료 예약", "예약하기", "예약 문의", "상담 신청", "상담문의", "문의주세요",
         "문의 주세요", "언제든 문의", "내원해보세요", "방문해보세요", "전화상담",
         "홈페이지", "바로가기", "지금 바로", "상담 가능", "방문 상담 가능",
-        "카카오톡 상담", "네이버 예약", "온라인 예약",
+        "카카오톡 상담", "네이버 예약", "온라인 예약", "전화로 예약",
+        "예약제로 운영", "문의하시면", "연락주세요", "상담 한번",
+        "상담받아 보세요", "상담 받아보세요", "검색하셔서",
     ]
 
     LOCAL_SEO_FOOTER_PATTERNS = [
@@ -1112,6 +1125,27 @@ class CommentableFilter:
         "본원에서는", "본원은", "치료를 진행", "치료 프로그램", "맞춤 처방",
         "회복을 위한", "관리가 가능한", "관리 가능한", "치료와 관리",
         "치료와 후유증 관리", "전인적", "종합적 관리", "한의치료",
+        "주소", "오시는 길", "오시는길", "진료시간", "영업시간",
+        "대표원장", "의료진 소개", "둘러보기", "위치 안내",
+    ]
+
+    ANSWER_SNIPPET_AD_REGEXES = [
+        r"(?:저도|저는|제가).{0,50}"
+        r"(?:효과\s*좋|먹고|복용|상담받고\s*치료|상담\s*받고\s*치료|"
+        r"치료받았|치료\s*받았|다녔|추천(?:드려|드립니다|합니다|하게|해요))",
+        r"(?<![가-힣A-Za-z0-9ㄱ-ㅎ])"
+        r"(?!(?:어느|어디|무슨|좋은|잘하는|근처|가까운)(?:한의원|한방병원|병원|내과|클리닉))"
+        r"[가-힣A-Za-z0-9ㄱ-ㅎ]{2,}(?:한의원|한방병원|병원|내과|클리닉)"
+        r"(?:이|가|은|는|도|에서|쪽|점).{0,80}"
+        r"(?:상담\s*한번|상담받아|방문해서\s*상담|네이버에서|검색하셔서|전화\s*상담|"
+        r"비용\s*부담\s*없이|자동차보험으로|잘\s*봐주|유명하니)",
+        r"(?:할인이벤트|할인\s*이벤트|비만패키지|금액이\s*대박|무제한|현재\s*할인가|"
+        r"비용\s*절감\s*혜택|최저가|할인\s*혜택).{0,80}"
+        r"(?:한의원|병원|카복시|고주파|다이어트|한약)",
+        r"(?:운동없이|운동\s*없이|요요없는|요요\s*없는).{0,60}"
+        r"(?:비만도\s*질병|무조건\s*빨리|전화\s*상담|검색하셔서)",
+        r"(?:규림한의원|ㄱㄹ한의원).{0,80}"
+        r"(?:추천|상담|치료|꼼꼼|친절|자동차보험|방문)",
     ]
 
     MEDICAL_PROVIDER_TERMS = [
@@ -1202,6 +1236,14 @@ class CommentableFilter:
     MIN_QUALIFICATION_FIT_SCORE = 30
     MIN_CLINIC_TREATMENT_FIT_SCORE = 34
     MIN_WORKSITE_EFFICIENCY_SCORE = 36
+    FINAL_REJECT_STATUSES = {
+        "advertorial": "filtered_out_ad",
+        "medical_promo": "filtered_out_ad",
+        "non_relevant": "filtered_out",
+        "off_domain": "filtered_out",
+        "route_navigation": "filtered_out",
+        "domain_mismatch": "filtered_out",
+    }
 
     INTERROGATIVE_PATTERNS = [
         "?", "어디", "어떻게", "어떤", "뭐", "무엇", "왜", "언제", "얼마",
@@ -1348,6 +1390,9 @@ class CommentableFilter:
         "자동차보험료", "자차보험", "차보험 견적",
         "자탐 모임", "템플스테이", "조계사", "수녀님", "교역자 필독서",
         "정책뉴스", "자격증취득", "국비지원무료교육",
+        "화상영어", "전화영어", "아이엘츠", "영어공부",
+        "배드민턴", "코트 대관", "천기저귀", "소창기저귀",
+        "광목", "커텐", "커튼", "이불",
     ]
 
     # 검색어는 맞지만 실제 상담 영역이 다른 글. 예: "교정"이 치과 교정 글에 걸리는 경우.
@@ -2582,6 +2627,14 @@ class CommentableFilter:
             signals.append("kin_recommendation_spam")
             score += 3 + min(3, len(kin_recommendation_spam))
 
+        answer_snippet_ads = [
+            pattern for pattern in cls.ANSWER_SNIPPET_AD_REGEXES
+            if re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        ]
+        if answer_snippet_ads:
+            signals.append("answer_snippet_ad")
+            score += 4 + min(5, len(answer_snippet_ads) * 2)
+
         if platform in {"blog", "cafe", "naver_cafe"}:
             provider_bracket_title = bool(
                 re.search(r"[\[\(【][^\]\)】]{0,30}(?:병원|한방병원|한의원|의원|피부과|클리닉)[^\]\)】]{0,30}[\]\)】]", title_text)
@@ -2632,7 +2685,11 @@ class CommentableFilter:
             score += 4
 
         kin_answer_like = platform == "kin" and (
-            bool(kin_provider) or bool(kin_answer_ad) or bool(kin_recommendation_spam) or kin_answer_transition
+            bool(kin_provider)
+            or bool(kin_answer_ad)
+            or bool(kin_recommendation_spam)
+            or bool(answer_snippet_ads)
+            or kin_answer_transition
         )
         if strong_inquiry and not kin_answer_like:
             score -= 2
@@ -2719,6 +2776,28 @@ class CommentableFilter:
         if cls._contains_any(text, cls.STRICT_MEDICAL_PROMO_PATTERNS):
             return "medical_promo"
         return None
+
+    @classmethod
+    def apply_final_reject(cls, target: ViralTarget) -> Optional[str]:
+        """Apply final gate result to the target so DB upsert persists the rejection."""
+        reason = cls.final_reject_reason(target)
+        if not reason:
+            return None
+
+        title = (target.title or "").lower()
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        text = f"{title} {body}"
+        _is_ad, ad_signals, ad_signal_score = cls._detect_advertorial(target, text)
+
+        target.is_commentable = False
+        target.comment_status = cls.FINAL_REJECT_STATUSES.get(reason, "filtered_out")
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "final_reject_reason": reason,
+            "ad_signal_score": float(ad_signal_score),
+            "ad_signals": ",".join(ad_signals),
+        }
+        return reason
 
     @staticmethod
     def _load_self_exclusion() -> Dict[str, List[str]]:
@@ -3392,6 +3471,15 @@ class AICommentGenerator:
     카테고리별 프롬프트 템플릿
     """
 
+    UNIFIED_ANALYSIS_PREVIEW_CHARS = 700
+    UNIFIED_AD_SAFETY_NOTE = """
+
+[추가 제외 기준]
+- 검색 스니펫이 원 질문 뒤에 기존 답변/댓글을 이어 붙인 경우, 뒤쪽 답변에 특정 병원/한의원/제품 추천, 예약/위치/전화/상담/가격/이벤트/홈페이지/카카오톡 안내가 보이면 SUITABLE=false로 판정하세요.
+- "저도 ... 효과", "성안길/지웰시티 쪽 OO한의원", "상담 한번 받아보세요", "네이버에서 검색", "비용 부담 없이", "할인이벤트/무제한/패키지" 같은 문구는 자연 질문이 아니라 광고성 답변 스니펫 신호입니다.
+- 제목이 질문형이어도 본문 대부분이 매끄러운 병원 홍보, 후기 가장, 기존 답변 추천이면 promotion/review/other로 제외하세요.
+"""
+
     def __init__(self):
         self.cfg = ConfigManager()
         logger.info("✅ AI Client 초기화 완료 (centralized ai_client)")
@@ -3403,6 +3491,17 @@ class AICommentGenerator:
             return prompts.get('viral_hunter', {})
         except Exception:
             return {}
+
+    @classmethod
+    def _format_unified_target(cls, post_id: int, target: ViralTarget) -> str:
+        body = CommentableFilter._strip_internal_labels(target.content_preview or "")
+        body = re.sub(r"\s+", " ", body).strip()
+        preview = body[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS] if body else "(없음)"
+        return (
+            f"\n---\nPOST_ID: {post_id}\n플랫폼: {target.platform}\n"
+            f"제목: {target.title}\n"
+            f"내용: {preview}\n---\n"
+        )
 
     @staticmethod
     def _compliance_guardrail(target: ViralTarget) -> str:
@@ -3827,21 +3926,21 @@ POST_ID: {i}
             # 게시글 포맷팅
             posts_formatted = ""
             for i, target in enumerate(batch, 1):
-                posts_formatted += f"""
----
-POST_ID: {i}
-플랫폼: {target.platform}
-제목: {target.title}
-내용: {target.content_preview[:150] if target.content_preview else '(없음)'}
----
-"""
+                posts_formatted += self._format_unified_target(i, target)
 
             try:
-                prompt = template.format(posts_formatted=posts_formatted)
+                prompt = template.format(posts_formatted=posts_formatted) + self.UNIFIED_AD_SAFETY_NOTE
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable, batch_competitor = self._parse_unified_results(batch, result_text)
+                final_suitable = []
+                for target in batch_suitable:
+                    if CommentableFilter.apply_final_reject(target):
+                        batch_unsuitable += 1
+                        continue
+                    final_suitable.append(target)
+                batch_suitable = final_suitable
                 suitable_targets.extend(batch_suitable)
                 unsuitable_count += batch_unsuitable
                 competitor_count += batch_competitor
@@ -3906,13 +4005,9 @@ POST_ID: {i}
         def run_batch(batch_idx: int, batch: List[ViralTarget]):
             posts_formatted = ""
             for i, t in enumerate(batch, 1):
-                posts_formatted += (
-                    f"\n---\nPOST_ID: {i}\n플랫폼: {t.platform}\n"
-                    f"제목: {t.title}\n"
-                    f"내용: {t.content_preview[:150] if t.content_preview else '(없음)'}\n---\n"
-                )
+                posts_formatted += self._format_unified_target(i, t)
             try:
-                prompt = template.format(posts_formatted=posts_formatted)
+                prompt = template.format(posts_formatted=posts_formatted) + self.UNIFIED_AD_SAFETY_NOTE
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
                 return batch_idx, suitable, unsuit, comp, None
@@ -3961,10 +4056,17 @@ POST_ID: {i}
 
                 final_suitable = []
                 final_rejected = 0
+                final_reject_saved = 0
                 for t in suitable:
-                    reject_reason = CommentableFilter.final_reject_reason(t)
+                    reject_reason = CommentableFilter.apply_final_reject(t)
                     if reject_reason:
                         final_rejected += 1
+                        if db is not None:
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    final_reject_saved += 1
+                            except Exception as e:
+                                logger.warning(f"최종 게이트 제외 상태 저장 실패: {e}")
                         logger.debug(f"최종 게이트 제외({reject_reason}): {t.title[:60]}")
                         continue
                     final_suitable.append(t)
@@ -3987,7 +4089,8 @@ POST_ID: {i}
                     logger.info(
                         f"   ✅ 배치 {batch_idx}/{total_batches} 완료 "
                         f"(적합 {len(suitable)}, 최종제외 {final_rejected}, "
-                        f"부적합 {unsuit}, 경쟁사 {comp}, 저장 {newly_saved}) "
+                        f"최종제외저장 {final_reject_saved}, 부적합 {unsuit}, "
+                        f"경쟁사 {comp}, 저장 {newly_saved}) "
                         f"[누적 {len(done_batches)}/{total_batches}]"
                     )
                     # 체크포인트 저장
@@ -4922,6 +5025,26 @@ class ViralHunter:
             kw_hash, list(processed_set), all_targets, seen_urls
         )
 
+        # 재발견된 기존 pending 광고글도 상태가 갱신되도록 강한 최종 게이트를 먼저 적용한다.
+        if all_targets:
+            gate_keep: List[ViralTarget] = []
+            gate_removed = 0
+            gate_saved = 0
+            for target in all_targets:
+                reject_reason = CommentableFilter.apply_final_reject(target)
+                if reject_reason:
+                    gate_removed += 1
+                    try:
+                        if self.db.insert_viral_target(target.to_dict()):
+                            gate_saved += 1
+                    except Exception as e:
+                        logger.warning(f"사전 최종 게이트 제외 상태 저장 실패: {e}")
+                    continue
+                gate_keep.append(target)
+            if gate_removed:
+                print(f"   🧹 사전 광고/노이즈 게이트: {gate_removed}개 제외 (상태 저장 {gate_saved}개)")
+            all_targets = gate_keep
+
         # 필터링
         print(f"\n🔍 필터링 중...")
         if progress_callback:
@@ -4986,15 +5109,25 @@ class ViralHunter:
         # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
         raw_saved = 0
         if rest_targets:
-            before_final_gate = len(rest_targets)
-            rest_targets = [
-                t for t in rest_targets
-                if not CommentableFilter.final_reject_reason(t)
-            ]
-            final_gate_removed = before_final_gate - len(rest_targets)
+            final_gate_removed = 0
+            final_gate_saved = 0
+            raw_keep: List[ViralTarget] = []
+            for t in rest_targets:
+                reject_reason = CommentableFilter.apply_final_reject(t)
+                if reject_reason:
+                    final_gate_removed += 1
+                    try:
+                        if self.db.insert_viral_target(t.to_dict()):
+                            final_gate_saved += 1
+                    except Exception as e:
+                        logger.warning(f"Raw 최종 게이트 제외 상태 저장 실패: {e}")
+                    continue
+                raw_keep.append(t)
+            rest_targets = raw_keep
+
             print(f"\n💾 Raw 백로그 저장 (AI 제외 {len(rest_targets)}개, pending 큐 제외)...")
             if final_gate_removed:
-                print(f"   🧹 최종 게이트 제외: {final_gate_removed}개")
+                print(f"   🧹 최종 게이트 제외: {final_gate_removed}개 (상태 저장 {final_gate_saved}개)")
             for t in rest_targets:
                 t.comment_status = "raw_backlog"
                 if self.db.insert_viral_target(t.to_dict()):

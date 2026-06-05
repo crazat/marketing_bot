@@ -1692,6 +1692,56 @@ def test_viral_filter_scores_gyulim_skin_scar_worksite_fit():
     assert filtered[0].priority_score >= 120
 
 
+def test_viral_filter_rejects_kin_question_with_ad_answer_snippet():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/kin-answer-ad",
+        title="청주교통사고한의원 어깨통증 치료 될까요??",
+        content_preview=(
+            "청주에서 사고가 난 뒤 어깨통증이 심해서 한의원 치료가 되는지 궁금합니다. "
+            "방치하면 만성이 되기 쉬우니 초기에 한의원에서 추나나 약침 치료를 받으시는 게 좋습니다. "
+            "청주 성안길 쪽 규림한의원이 교통사고 진료도 꼼꼼하고 친절하게 잘 봐주시는 편이니 "
+            "비용 부담 없이 자동차보험으로 상담 한번 받아보세요."
+        ),
+        matched_keywords=["청주 교통사고 한의원"],
+        category="교통사고",
+        matched_keyword_grade="A",
+        matched_keyword_priority=100,
+        date_str="방금 전",
+        comment_count=0,
+        view_count=150,
+    )
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert filtered == []
+    assert target.comment_status == "filtered_out_ad"
+    assert target.score_breakdown["ad_signal_score"] >= 4
+    assert "answer_snippet_ad" in target.score_breakdown["ad_signals"]
+
+
+def test_viral_final_gate_does_not_reject_plain_user_question():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/plain-question",
+        title="청주 교통사고 한의원 치료 받고 싶어요",
+        content_preview=(
+            "저는 청주에서 교통사고가 난 뒤 목이랑 어깨 통증이 계속 있어서 "
+            "한의원 치료를 받고 싶어요. 자동차보험 적용되는지랑 입원 가능한 곳이 있는지 "
+            "아시는 분 알려주세요."
+        ),
+        matched_keywords=["청주 교통사고 한의원"],
+        category="교통사고",
+        matched_keyword_grade="A",
+        matched_keyword_priority=100,
+        date_str="방금 전",
+        comment_count=0,
+        view_count=120,
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
+
+
 def test_viral_clinic_fit_drops_non_service_skin_beauty_posts():
     target = ViralTarget(
         platform="cafe",

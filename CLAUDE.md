@@ -1,5 +1,27 @@
 # Claude Code 프로젝트 가이드라인
 
+
+## 2026-06-05 Memory: Viral Hunter Advertorial Gate and Model Split
+
+- Viral Hunter advertorial filtering was hardened after KIN/cafe snippets showed natural user questions followed by existing promotional answers. Preserve the layered gate: local advertorial/final reject patterns -> `structured` AI analysis -> final reject persistence before DB upsert.
+- KIN and Naver snippets can concatenate the original question with an existing answer/comment. If the later snippet contains named clinic/provider recommendation, consultation/booking/location/phone guidance, price/event/package language, `저도 ... 효과`, `상담 한번 받아보세요`, `네이버에서 검색`, or `비용 부담 없이`, treat it as advertorial even when the title/front question looks natural.
+- `CommentableFilter.apply_final_reject()` is the persistence contract for final exclusions. Do not just drop rejected targets from Python lists; set `is_commentable=False`, map the status (`filtered_out_ad` for advertorial/medical promo, `filtered_out` for non-relevant/off-domain/route noise), and keep `final_reject_reason`, `ad_signal_score`, and `ad_signals` in `score_breakdown`.
+- Duplicate/existing URL paths must still run the final gate before returning, so stale `pending` advertorial rows can be updated to a filtered status when rediscovered. Raw backlog paths must also persist final-gate rejections instead of silently skipping them.
+- Unified AI analysis must send a longer preview (`UNIFIED_ANALYSIS_PREVIEW_CHARS`, currently 700) and append the ad safety note. Do not reduce the preview back to 150 chars; that cuts off the answer/comment portion where most promo signals appear.
+- Current model split is intentional: high-volume viral scan judgment uses Codex CLI `task="structured"` -> `gpt-5.4-mini` for speed/cost, while viral comment generation and compliance-risk work use `viral_comment`/`compliance` -> `gpt-5.5`. Do not globally upgrade scan judgment to `gpt-5.5` unless measured misses remain after local gates; prefer escalating only ambiguous/risky cases.
+- Cleanup applied on 2026-06-05 to `db/marketing_data.db` changed 201 existing `pending` rows to filtered statuses after backup `db/marketing_data.db.backup_pre_viral_filter_20260605_125032` was created. Do not commit the DB backup unless explicitly requested.
+- Focused verification for this layer:
+  - `python -m py_compile viral_hunter.py scripts\ai_ad_classify_submit.py`
+  - `$env:PYTHONPATH='C:\Projects\marketing_bot'; pytest tests\test_pathfinder_viral_stability.py -q`
+
+
+## 2026-06-04 Memory: Codex CLI and Port 8000 Server Standard
+
+- All LLM/AI functionalities are strictly locked to the Codex CLI interface. Google AI SDK or direct Gemini API requests are prohibited. AI tasks are dynamically routed to task-mapped Codex models (e.g. gpt-5.4, gpt-5.5).
+- The backend server must always be run on port 8000 (e.g., `uvicorn main:app --reload --port 8000`). Never run it on other ports to avoid proxy and API gateway mismatch errors.
+- **CRITICAL**: Never run `wsl --shutdown`, `wsl -t`, or any Linux termination/reboot commands. Shutting down the WSL/Linux environment is strictly prohibited under any circumstances as it causes complete data and session loss for the user's ongoing workloads.
+
+
 ## 2026-06-04 Memory: Viral Hunter Gyulim Efficiency and Portfolio Queue
 
 - Viral Hunter now evaluates Cheongju Gyulim fit as an explicit execution layer, not just a generic priority score. Preserve the chain: Pathfinder/Legion keyword lineage -> Gyulim treatment fit -> exact worksite efficiency -> priority score -> staff queue/API/frontend explanation.
