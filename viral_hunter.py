@@ -30,7 +30,7 @@ import hashlib
 import logging
 import argparse
 from dataclasses import dataclass, field, asdict
-from typing import Any, List, Optional, Dict, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote, urljoin
 import requests
@@ -48,7 +48,7 @@ from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import ViralSeedBuilder
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
-from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -56,30 +56,50 @@ if sys.platform.startswith('win'):
 
 
 AI_CATEGORY_MIN_QUOTAS: Dict[str, int] = {
+    "흉터/여드름흉터": 50,
     "피부": 50,
     "교통사고": 50,
     "다이어트": 40,
-    "비대칭/교정": 25,
-    "통증/디스크": 20,
+    "안면비대칭": 25,
+    "체형교정": 20,
     "경쟁사_역공략": 20,
     "리프팅/탄력": 10,
 }
 
 AI_CATEGORY_ALIASES: Dict[str, str] = {
-    "피부/여드름": "피부",
-    "안면비대칭": "비대칭/교정",
-    "체형교정": "비대칭/교정",
+    "흉터": "흉터/여드름흉터",
+    "여드름흉터": "흉터/여드름흉터",
+    "피부": "피부/여드름",
+    "비대칭/교정": "안면비대칭",
+    "통증/디스크": "체형교정",
 }
+
+
+def _canonical_ai_category(raw_category: str) -> str:
+    aliased = AI_CATEGORY_ALIASES.get(raw_category, raw_category)
+    return GYULIM_KEYWORD_PROFILE.normalize_category(aliased)
 
 
 def _ai_quota_category(target: "ViralTarget") -> str:
     """Return the category bucket used for balanced AI target selection."""
-    raw_category = (
-        getattr(target, "category", None)
-        or getattr(target, "matched_keyword_category", None)
-        or "기타"
-    )
-    return AI_CATEGORY_ALIASES.get(raw_category, raw_category)
+    category = _canonical_ai_category(str(getattr(target, "category", "") or ""))
+    matched_category = _canonical_ai_category(str(getattr(target, "matched_keyword_category", "") or ""))
+    core_handoff_categories = {
+        "피부/여드름", "교통사고", "다이어트", "안면비대칭", "체형교정", "리프팅/탄력"
+    }
+    if matched_category in core_handoff_categories:
+        return matched_category
+    if category:
+        return category
+    return _canonical_ai_category("기타")
+
+
+def _normalized_ai_category_quotas(quotas: Dict[str, int]) -> Dict[str, int]:
+    normalized: Dict[str, int] = {}
+    for raw_category, quota in (quotas or {}).items():
+        category = _canonical_ai_category(raw_category)
+        normalized[category] = normalized.get(category, 0) + int(quota or 0)
+    return normalized
 
 
 def split_ai_targets_with_category_floor(
@@ -99,14 +119,15 @@ def split_ai_targets_with_category_floor(
     if len(targets) <= top_n:
         return list(targets), []
 
-    quotas = category_min_quotas or AI_CATEGORY_MIN_QUOTAS
+    quotas = _normalized_ai_category_quotas(category_min_quotas or AI_CATEGORY_MIN_QUOTAS)
     selected: List[ViralTarget] = []
     selected_urls: set[str] = set()
+    per_category_floor_cap = max(1, math.ceil(top_n * 0.4)) if len(quotas) > 1 else top_n
 
     for category, quota in quotas.items():
         if len(selected) >= top_n:
             break
-        remaining_quota = min(quota, top_n - len(selected))
+        remaining_quota = min(quota, per_category_floor_cap, top_n - len(selected))
         picked = 0
         for target in targets:
             url = target.url or target.id
@@ -178,6 +199,7 @@ class ViralTarget:
     ai_post_type: str = ""
     ai_competitor: bool = False
     ai_competitor_name: str = ""
+    canonical_url: str = ""
 
     def __post_init__(self):
         # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
@@ -849,6 +871,8 @@ class NaverUnifiedSearch:
             if not items:
                 break
 
+            before_add_count = len(targets)
+
             for idx, item in enumerate(items):
                 link = item.get('link', '') or ''
                 if not link or link in seen:
@@ -885,6 +909,11 @@ class NaverUnifiedSearch:
                 ))
                 if len(targets) >= max_results:
                     break
+
+            # 이번 배치에서 추가된 유효 타겟이 하나도 없다면, 무의미한 페이징 호출 중단을 위해 조기 탈출
+            if len(targets) == before_add_count:
+                logger.info(f"[{platform}] '{keyword}' {sort_type} 스캔 조기 종료: 신규 유효 타겟 없음 (누적: {len(targets)}/{max_results})")
+                break
 
             if len(items) < fetch_n:
                 break  # 결과 끝
@@ -979,6 +1008,7 @@ class NaverUnifiedSearch:
         keyword: str,
         max_per_platform: int = 100,
         include_blog: bool = True,
+        platform_limits: Optional[Dict[str, int]] = None,
     ) -> List[ViralTarget]:
         """카페·블로그·지식인 통합 검색.
 
@@ -986,16 +1016,20 @@ class NaverUnifiedSearch:
         다만 검색 노출 커버리지를 위해 기본 수집하되 플랫폼 가중치는 낮게 둔다.
         """
         all_targets = []
+        platform_limits = platform_limits or {}
+        cafe_limit = int(platform_limits.get("cafe", max_per_platform) or 0)
+        blog_limit = int(platform_limits.get("blog", max_per_platform) or 0)
+        kin_limit = int(platform_limits.get("kin", max_per_platform) or 0)
 
-        cafe_results = self.search_cafe(keyword, max_per_platform)
+        cafe_results = self.search_cafe(keyword, cafe_limit) if cafe_limit > 0 else []
         all_targets.extend(cafe_results)
 
         blog_results: List[ViralTarget] = []
-        if include_blog:
-            blog_results = self.search_blog(keyword, max_per_platform)
+        if include_blog and blog_limit > 0:
+            blog_results = self.search_blog(keyword, blog_limit)
             all_targets.extend(blog_results)
 
-        kin_results = self.search_kin(keyword, max_per_platform)
+        kin_results = self.search_kin(keyword, kin_limit) if kin_limit > 0 else []
         all_targets.extend(kin_results)
 
         logger.info(
@@ -1052,6 +1086,7 @@ class CommentableFilter:
         "배고플땐 먹기", "음식엔 죄가 없다", "빠지고 있다",
         "순서만 잘 지켜도", "왜 먹는데", "성공 비법", "이제 가능합니다",
         "부담없이 건강하게",
+        "차앤차는 전국", "전국 지점이 위치", "전국 지점",
     ]
 
     KIN_PROVIDER_ANSWER_PATTERNS = [
@@ -1091,6 +1126,8 @@ class CommentableFilter:
         "전화상담", "상담받아 보세요", "상담 받아 보세요",
         "방문해서 상담", "전문의 소견", "방치하면 만성",
         "초기에 한의원", "비용 부담 없이", "자동차보험으로 상담",
+        "차앤차는 전국", "전국 지점이 위치", "전국 지점",
+        "교통사고보험한의원", "교통사고후물리치료", "자보한의원",
     ]
 
     KIN_RECOMMENDATION_SPAM_PATTERNS = [
@@ -1150,12 +1187,23 @@ class CommentableFilter:
 
     MEDICAL_PROVIDER_TERMS = [
         "병원", "한방병원", "한의원", "의원", "피부과", "클리닉",
+        "한약", "다이어트한약", "비만클리닉",
     ]
 
     MEDICAL_PROMO_TITLE_PATTERNS = [
         "회복을 위한", "관리를 위한", "관리 가능한", "관리가 가능한",
         "치료와 관리", "통증치료", "통증 치료", "후유증 관리",
         "한의치료", "맞춤치료", "맞춤 치료", "체계적인", "꼼꼼한",
+        "야간진료", "야간 진료", "주말진료", "주말 진료",
+        "예약가능", "예약 가능", "예약 가능해요", "진료 예약", "진료예약",
+        "결정적인 실수", "올바른 식습관", "건강을 잃기전에", "건강을 잃기 전에",
+        "찾아오세요", "유명한곳", "유명한 곳",
+    ]
+
+    BLOG_MEDICAL_SEO_TITLE_PATTERNS = [
+        "문제가 아닌", "이유", "원인", "증상", "필요성", "개선",
+        "치료 방법", "치료방법", "치료법", "관리법", "알아보기", "알아보세요",
+        "되찾", "균형", "체계적인", "정확한", "건강을 위한",
     ]
 
     LEGAL_PROMO_PATTERNS = [
@@ -1167,6 +1215,7 @@ class CommentableFilter:
     BRAND_PROMO_PATTERNS = [
         "쥬비스", "인치 감량", "부작용없는", "업력", "최저가로 파는",
         "처방병원", "비댓문의", "비댓 문의", "카페는 위고비", "나만의닥터",
+        "차앤차",
     ]
 
     STRONG_USER_INQUIRY_PATTERNS = [
@@ -1242,7 +1291,9 @@ class CommentableFilter:
         "non_relevant": "filtered_out",
         "off_domain": "filtered_out",
         "route_navigation": "filtered_out",
+        "region_mismatch": "filtered_out",
         "domain_mismatch": "filtered_out",
+        "lens_mismatch": "filtered_out",
     }
 
     INTERROGATIVE_PATTERNS = [
@@ -1373,12 +1424,222 @@ class CommentableFilter:
         "붙임머리", "남자파마", "파마잘하는", "미용실", "헤어샵", "헤어클리닉",
         "펌 잘하는", "염색", "두피케어", "네일", "속눈썹", "왁싱",
         "보톡스", "땀주사", "두피주사", "모발이식",
+        "피부관리실", "피부관리샵", "피부샵", "에스테틱", "관리실",
+        "윤곽관리", "얼굴관리", "경락", "약손", "작은얼굴", "얼굴축소",
+        "눈썹문신", "반영구", "아이라인문신", "입술문신",
+        "led 마스크", "led마스크", "LED 마스크", "LED마스크", "마스크팩",
+    ]
+
+    ASYMMETRY_HARD_OFF_AXIS_PATTERNS = [
+        "눈썹문신", "반영구", "아이라인문신", "입술문신", "속눈썹",
+        "미용실", "헤어샵", "메이크업", "왁싱", "네일",
+    ]
+    ASYMMETRY_BEAUTY_MANAGEMENT_PATTERNS = [
+        "윤곽관리", "얼굴관리", "경락", "약손", "작은얼굴", "얼굴축소",
+        "에스테틱", "피부관리실", "피부관리샵", "관리실", "관리샵",
+        "마사지", "마사지샵", "미다스뷰티", "비율에스테틱",
+    ]
+    ASYMMETRY_DENTAL_OR_ORTHO_NOISE_PATTERNS = [
+        "치과", "치아", "치열", "치아교정", "치열교정", "교정치과",
+        "덧니", "돌출입", "부정교합", "브라켓", "인비절라인",
+        "반듯한 배열", "치아 배열", "교정추천",
+    ]
+    ASYMMETRY_STRONG_AXIS_PATTERNS = [
+        "안면비대칭", "얼굴비대칭", "턱비대칭", "좌우비대칭", "두상비대칭",
+        "턱관절", "턱 교정", "턱교정", "안면교정", "얼굴교정",
+        "비대칭교정", "비대칭 교정", "얼굴 틀어짐", "얼굴틀어짐",
+        "턱 틀어짐", "턱틀어짐",
+    ]
+    ASYMMETRY_CLINIC_ACTION_PATTERNS = [
+        "한의원", "한방", "추나", "추나요법", "치료", "진료", "검사",
+        "상담", "교정", "병원", "의원", "클리닉",
+    ]
+
+    DIET_ACTIVITY_NOISE_PATTERNS = [
+        "태권도", "태권도장", "째즈댄스", "재즈댄스", "댄스학원",
+        "댄스 학원", "피트니스", "헬스장", "헬스클럽", "스포랜드",
+        "스포츠센터", "운동할만한곳", "운동 할만한곳", "운동 추천",
+        "운동 루틴", "pt샵", "pt 샵", "필라테스", "요가", "복싱장",
+        "복싱", "체육관", "수영장", "점핑", "크로스핏", "도장",
+        "줌바", "줌바댄스", "다이어트댄스", "다이어트 댄스",
+    ]
+    DIET_MEDICAL_INTENT_PATTERNS = [
+        "다이어트한약", "다이어트 한약", "한약", "한의원", "한방",
+        "비만", "감량", "체중", "식욕", "요요", "부종", "처방",
+        "상담", "진료", "치료", "약", "주사", "의원", "병원",
+        "클리닉", "탕약",
+    ]
+    DIET_NON_HANBANG_MEDICAL_NOISE_PATTERNS = [
+        "지방분해주사", "지방 분해 주사", "윤곽주사", "윤곽 주사",
+        "비만주사", "비만 주사", "다이어트주사", "다이어트 주사",
+        "달걀주사", "달걀 주사", "비비주사", "비비 주사",
+        "바디톡신", "클라투", "지방융해술", "비만클리닉",
+        "삭센다", "위고비", "마운자로",
+    ]
+    DIET_HANBANG_INTENT_PATTERNS = [
+        "다이어트한약", "다이어트 한약", "한약", "한의원", "한방",
+        "탕약", "감비", "감비환", "비움탕", "체질", "부항",
+        "침", "약침",
+    ]
+    SKIN_SALON_OR_INCIDENTAL_NOISE_PATTERNS = [
+        "스킨스파", "스킨앤스파", "hakskin", "학스킨", "피부관리실",
+        "피부관리샵", "피부샵", "에스테틱", "림프마사지", "마사지",
+        "피부 스케일링", "스킨케어", "압출관리", "피지관리",
+        "피부영양", "피부 영양",
+    ]
+    SKIN_HARD_SALON_PATTERNS = [
+        "스킨스파", "스킨앤스파", "hakskin", "학스킨", "림프마사지",
+        "피부관리실", "피부관리샵", "피부샵", "에스테틱",
+    ]
+    SKIN_CLINIC_RESCUE_PATTERNS = [
+        "한의원", "피부과", "병원", "의원", "클리닉", "치료",
+        "진료", "처방", "새살침", "약침", "침치료", "한약",
+        "여드름흉터", "패인흉터", "편평사마귀", "지루성피부염",
+    ]
+    SKIN_WESTERN_RX_NOISE_PATTERNS = [
+        "이소티논", "로아큐탄", "니메겐", "이소트레티노인", "isotretinoin",
+        "피지조절제", "피지 조절제", "여드름약", "여드름 약",
+        "피부과약", "피부과 약", "항생제", "독시사이클린", "미노씬",
+        "스티바", "디페린", "에피듀오", "크레오신",
+        "약처방", "약 처방", "처방전", "처방 병원", "처방해주는",
+        "처방 해주는", "처방받", "처방 받",
+    ]
+    SKIN_HANBANG_SERVICE_RESCUE_PATTERNS = [
+        "한의원", "피부한의원", "한방", "한약", "약침", "침치료",
+        "새살침", "침", "한방치료", "한방 치료", "규림",
+    ]
+    LEGAL_OR_SCHOOL_VIOLENCE_PATTERNS = [
+        "학폭", "학교폭력", "피해학생", "가해학생", "법승", "변호사",
+        "법률", "소송", "고소", "신고", "재판", "합의", "형사",
+    ]
+    TRAFFIC_REPAIR_OR_PROPERTY_NOISE_PATTERNS = [
+        "광택", "코팅", "유리막", "판금", "도색", "공업사", "정비소",
+        "수리비", "차량수리", "차량 수리", "차체수리", "보수도장",
+        "렌트비", "렌터카", "렌트카", "대물", "대물보상", "부품값",
+        "블랙박스", "사고차", "보험료 할증", "할증", "폐차",
+    ]
+    TRAFFIC_LEGAL_COMPENSATION_NOISE_PATTERNS = [
+        "합의금", "합의건", "합의 건", "과실비율", "과실 비율", "손해보험사",
+        "손해 보험사", "휴업손해", "위자료", "보상받", "보상 받", "손해배상",
+        "소송", "민사", "형사", "변호사", "법률", "구상권", "분쟁조정",
+    ]
+    TRAFFIC_MEDICAL_CARE_RESCUE_PATTERNS = [
+        "입원", "통원", "통원치료", "입원치료", "한의원", "한방병원", "병원",
+        "정형외과", "재활의학과", "치료", "진료", "후유증", "통증", "아파",
+        "목통증", "허리통증", "어깨통증", "다리통증", "염좌", "추나",
+        "물리치료", "도수치료", "약침", "침치료", "한약", "엑스레이", "x-ray",
+        "mri", "응급실", "보험접수", "보험 접수",
+    ]
+    TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS = [
+        "입원가능", "입원 가능", "입원할수", "입원 할수", "통원치료",
+        "치료받", "치료 받", "진료받", "진료 받", "병원 추천", "한의원 추천",
+        "어디", "알려주세요", "아시는", "추천", "가야", "가볼", "받고싶",
+        "통증", "후유증", "아파", "목", "허리", "어깨",
+    ]
+    TRAFFIC_ANIMAL_OR_VET_NOISE_PATTERNS = [
+        "동물병원", "동물 병원", "수의사", "반려동물", "반려 동물",
+        "반려견", "강아지", "고양이", "애견", "펫병원", "펫 병원",
+        "닥스훈트", "말티즈", "푸들", "시츄", "포메라니안",
+    ]
+    BODY_USER_AXIS_ANCHOR_PATTERNS = [
+        "체형", "체형교정", "골반", "골반교정", "자세", "자세교정",
+        "거북목", "일자목", "척추", "측만", "추나", "추나요법",
+        "도수", "도수치료", "허리", "허리통증", "허리디스크",
+        "목디스크", "디스크", "경추", "어깨통증", "휜다리",
+        "라운드숄더",
+    ]
+    BODY_COMPANION_OFF_AXIS_PATTERNS = [
+        "adhd", "틱", "불안장애", "공황장애", "우울", "자율신경",
+        "두전증", "어지럼증", "두통", "편두통", "수면장애", "불면",
+        "감기", "비염", "소화불량", "소화", "피로", "보약", "공진단",
+        "아이한약", "어린이한약", "어린이 한약", "소아", "성장",
+        "한약 잘하는", "스트레스성두통", "이명", "족지간신경종",
+        "발목", "손목", "교통사고", "자동차보험", "자보", "사고후",
+        "사고 후", "입원", "통원",
+    ]
+    BODY_FITNESS_PROVIDER_NOISE_PATTERNS = [
+        "닥터짐", "헬스장", "헬스클럽", "pt", "피티", "퍼스널트레이닝",
+        "퍼스널 트레이닝", "스피닝", "운동센터", "운동은어디서",
+        "회원권", "센터 회원", "카카오톡 문의", "오픈카톡",
+    ]
+    BODY_MEDICAL_RESCUE_PATTERNS = [
+        "한의원", "한방", "추나", "추나요법", "도수치료", "도수 치료",
+        "정형외과", "재활의학과", "병원", "의원", "치료", "진료",
+        "통증", "디스크", "검사", "상담받", "상담 받",
+    ]
+    ASYMMETRY_USER_AXIS_ANCHOR_PATTERNS = ASYMMETRY_STRONG_AXIS_PATTERNS + [
+        "얼굴형", "턱", "광대", "교정",
+    ]
+    LIFTING_USER_AXIS_ANCHOR_PATTERNS = [
+        "리프팅", "한방리프팅", "매선", "탄력", "피부탄력",
+        "주름", "팔자", "처짐", "노화", "동안",
+    ]
+    LIFTING_NON_HANBANG_DEVICE_PATTERNS = [
+        "울쎄라", "써마지", "슈링크", "인모드", "실리프팅",
+        "실 리프팅", "필러", "보톡스", "엘란쎄", "리쥬란",
+        "쥬베룩", "스킨부스터", "레이저", "피부과",
+    ]
+    LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS = [
+        "한방리프팅", "한방 리프팅", "한방성형", "한방 성형",
+        "매선", "매선침", "매선 리프팅", "한의원", "침치료",
+        "약침",
+    ]
+    LIFTING_INCIDENTAL_COMMERCE_NOISE_PATTERNS = [
+        "홈플러스", "당당치킨", "강정", "식품 브랜드", "매장 성장",
+        "브랜드 출시", "론칭", "론칭제", "솥솥", "젠틀몬스터",
+        "안경", "패션", "신제품", "프랜차이즈",
+    ]
+    EXPLICIT_HANBANG_EXCLUSION_PATTERNS = [
+        "한의원은 추천안", "한의원은 추천 안", "한의원 추천안",
+        "한의원 추천 안", "한의원은 제외", "한의원 제외",
+        "한의원 말고", "한방 말고", "한약 말고", "침 말고",
+        "추나 말고", "한의원 상담이나 치료를 찾는 건 아니",
+        "한의원 상담이나 치료를 찾는건 아니",
+    ]
+    MULTI_REGION_ANSWER_FOOTER_REGIONS = [
+        "강남", "노원", "신림", "수원", "안양", "일산", "부천", "인천",
+        "대전", "청주", "천안", "광주", "대구", "부산", "울산", "포항",
+        "진주", "제주", "창원", "춘천", "구미", "전주", "원주",
+    ]
+    KIN_PROVIDER_FOOTER_PATTERNS = [
+        "피부 네트워크", "23지점", "전국 지점", "지점 의 피부",
+        "강남, 노원", "대전, 청주, 천안", "구미, 전주, 원주",
+    ]
+    PROVIDER_INFO_POST_PATTERNS = [
+        "치료비용입니다", "치료 비용입니다", "오셔서", "진행해보시길",
+        "진행해 보시길", "대표적인 한방 프로그램", "프로그램으로는",
+        "한의사입니다", "한의원입니다", "한의원에서는", "가격 차이",
+        "정리해봤습니다", "정리해 봤습니다", "브랜드 비용",
+        "운영 방식에 따라", "상담과 관리", "치료를 진행",
+        "치료를 진행해", "관리해드립니다", "관리해 드립니다",
+        "청주점에서는", "카카오톡 상담", "오픈카톡", "#청주한의원",
+        "전신을 바로잡", "최고 효과", "본 한의원", "의료진들은",
+        "풍부한 임상경험", "풍부한 임상 경험", "추천해 드리고 싶습니다",
+        "추천해드리고 싶습니다", "안심하시고 받으실",
+    ]
+    PROVIDER_INFO_TITLE_PATTERNS = [
+        "정리해봤습니다", "정리해 봤습니다", "가격 차이", "치료비용",
+        "치료 비용", "추나요법이란", "요법이란", "전신을 바로잡아",
+        "효과는 무엇일까", "통증을 사로잡는다", "차이점", "필요할까",
+        "어떤 상황에서", " - ",
+    ]
+    TRAFFIC_USER_CARE_ANCHOR_PATTERNS = [
+        "교통사고", "자동차사고", "차사고", "사고 후", "사고후",
+        "입원", "통원", "치료", "진료", "후유증", "염좌", "통증",
+        "목", "허리", "어깨", "자보", "자동차보험", "보험접수",
+    ]
+    TRAFFIC_TITLE_HARD_NOISE_PATTERNS = [
+        "보험료할증", "보험료 할증", "할증", "과실비율", "합의금",
+        "합의건", "합의 건", "광택", "코팅", "수리비", "대물",
+        "렌트비", "렌터카", "렌트카", "판금", "도색",
     ]
 
     # NON_RELEVANT: 비관련 업종 - 무조건 제외
     NON_RELEVANT_EXCLUDE = [
         # 기존
-        "강아지", "반려견", "성형외과", "분양", "아파트",
+        "강아지", "반려견", "동물병원", "동물 병원", "수의사",
+        "반려동물", "반려 동물", "고양이", "애견", "펫병원",
+        "성형외과", "분양", "아파트",
         "주식", "코인", "부동산", "매매", "임대",
         "케이크", "베이커리", "맛집",
         "성형", "쌍수", "코수술", "지방흡입",
@@ -1390,7 +1651,8 @@ class CommentableFilter:
         "자동차보험료", "자차보험", "차보험 견적",
         "자탐 모임", "템플스테이", "조계사", "수녀님", "교역자 필독서",
         "정책뉴스", "자격증취득", "국비지원무료교육",
-        "화상영어", "전화영어", "아이엘츠", "영어공부",
+        "화상영어", "전화영어", "아이엘츠", "영어공부", "영어작문",
+        "작문 부탁", "내공50", "내공 50",
         "배드민턴", "코트 대관", "천기저귀", "소창기저귀",
         "광목", "커텐", "커튼", "이불",
     ]
@@ -1409,7 +1671,7 @@ class CommentableFilter:
         "cosmetic_clinic": [
             "피부과", "프락셀", "레이저", "레이저토닝", "토닝", "필러",
             "보톡스", "슈링크", "인모드", "울쎄라", "리쥬란", "스킨부스터",
-            "쥬베룩", "포텐자", "피코토닝", "두피주사", "땀주사",
+            "쥬베룩", "엘란쎄", "포텐자", "피코토닝", "두피주사", "땀주사",
         ],
         "fitness": [
             "홈트레이닝", "홈트", "pt", "퍼스널트레이닝", "헬스장", "헬스",
@@ -1429,6 +1691,7 @@ class CommentableFilter:
         "diet": [
             "다이어트", "감량", "체중", "비만", "살빼", "식욕", "요요",
             "한약", "다이어트약", "체지방", "뱃살", "허벅지", "한의원", "한방",
+            "의원", "클리닉", "처방", "삭센다", "위고비", "마운자로",
         ],
         "traffic": [
             "교통사고", "자동차사고", "차사고", "사고", "자보", "자동차보험",
@@ -1437,29 +1700,57 @@ class CommentableFilter:
         "scar_skin": [
             "여드름", "흉터", "여드름흉터", "패인흉터", "새살침", "모공",
             "트러블", "피부", "자국", "한의원", "한방",
+            "의원", "클리닉", "피부과", "레이저", "시술", "스킨부스터",
+            "리쥬란", "쥬베룩", "포텐자",
         ],
         "asymmetry": [
             "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
             "얼굴", "광대", "턱", "추나", "한의원", "한방",
+            "의원", "클리닉", "상담", "분석", "검사",
         ],
         "body": [
             "체형", "체형교정", "골반", "골반교정", "척추", "측만", "자세",
             "거북목", "일자목", "추나", "통증", "한의원", "한방",
+            "의원", "클리닉", "바디라인", "승모근",
         ],
         "lifting": [
             "리프팅", "탄력", "주름", "매선", "한방리프팅", "피부탄력",
-            "노화", "한의원", "한방",
+            "노화", "한의원", "한방", "의원", "클리닉", "피부과",
+            "레이저", "스킨부스터", "리쥬란", "쥬베룩",
+        ],
+    }
+    STRICT_DOMAIN_ANCHORS = {
+        "asymmetry": [
+            "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
+            "턱 교정", "턱교정", "얼굴형", "두상비대칭",
+        ],
+        "body": [
+            "체형", "체형교정", "골반", "골반교정", "자세", "자세교정",
+            "거북목", "일자목", "척추", "측만", "추나", "추나요법",
+            "도수", "도수치료", "어깨", "목통증", "허리통증", "목디스크",
+            "허리디스크", "디스크", "경추", "휜다리", "라운드숄더",
+        ],
+        "lifting": [
+            "리프팅", "한방리프팅", "매선", "탄력", "피부탄력",
+            "주름", "팔자", "처짐", "노화",
         ],
     }
 
     # 사업 권역 지역 키워드 (제목 또는 본문에 하나 이상 포함돼야 통과)
-    # 청주·세종·충주·제천·증평·보은·진천·옥천·영동·음성 및 동/지구 단위
-    REGION_KEYWORDS = [
-        "청주", "세종", "충주", "제천", "증평", "보은", "진천", "옥천", "영동", "음성",
-        "율량", "가경", "복대", "산남", "오창", "오송", "사창", "성안길",
-        "내덕", "우암", "흥덕", "용암", "용정", "개신", "분평", "수곡",
-        "상당", "서원", "흥덕", "청원", "용암동", "봉명",
-        "충북",
+    REGION_KEYWORDS = list(dict.fromkeys(
+        list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+    ))
+    DISTANT_REGION_KEYWORDS = [
+        "서울", "부산", "대구", "인천", "대전", "대전광역시", "광주", "광주광역시", "울산",
+        "수원", "천안", "전주", "강남", "분당", "판교", "유성", "도안", "둔산", "노은",
+        "평택", "성남", "용인", "화성", "안산", "안양", "부천", "고양", "의정부",
+        "파주", "김포", "남양주", "하남", "의왕", "군포", "시흥", "오산", "광명",
+        "구리", "장안동", "아산", "탕정", "탕정면", "배방", "배방읍", "장재리",
+        "달서구",
+        "쌍용동", "불당동", "신불당동", "공주", "논산", "당진", "서산", "충주", "제천",
+        "홍성", "예산", "태안", "계룡", "부여", "서천", "금산",
     ]
 
     # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
@@ -1562,9 +1853,12 @@ class CommentableFilter:
         "불면", "수면", "두통", "어지럼", "소화", "위염", "역류",
         "비염", "알레르기", "아토피", "탈모", "다한증", "땀",
         "스트레스", "우울", "불안", "긴장", "화병",
-        # 지역 키워드
-        "청주", "율량", "가경", "복대", "산남", "오창", "오송", "세종"
     ]
+    HEALTH_KEYWORDS = list(dict.fromkeys(
+        HEALTH_KEYWORDS
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "hanbang_keywords", ()))
+        + REGION_KEYWORDS
+    ))
 
     # [Phase 2 개선] 키워드 티어별 가치 차등화
     KEYWORD_TIER1 = [  # 핵심 상품 (15점)
@@ -1593,17 +1887,306 @@ class CommentableFilter:
                 score += 5
         return min(score, 40)  # 최대 40점
 
+    @staticmethod
+    def _score_breakdown_float(target: ViralTarget, key: str, default: float = 0.0) -> float:
+        try:
+            value = (target.score_breakdown or {}).get(key, default)
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _score_breakdown_text(target: ViralTarget, key: str, default: str = "") -> str:
+        value = (target.score_breakdown or {}).get(key, default)
+        return default if value is None else str(value)
+
+    @classmethod
+    def _pathfinder_execution_context(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Return Pathfinder execution signals attached to this candidate post."""
+        return {
+            "viral_readiness": cls._score_breakdown_float(target, "pathfinder_viral_readiness_score"),
+            "local_service_fit": cls._score_breakdown_float(target, "pathfinder_local_service_fit_score"),
+            "content_actionability": cls._score_breakdown_float(target, "pathfinder_content_actionability_score"),
+            "medical_ad_risk": cls._score_breakdown_float(target, "pathfinder_medical_ad_risk_score"),
+            "community_signal": cls._score_breakdown_float(target, "pathfinder_community_signal"),
+            "conversion_signal": cls._score_breakdown_float(target, "pathfinder_conversion_signal"),
+            "profile_action_signal": cls._score_breakdown_float(target, "pathfinder_profile_action_signal"),
+            "preferred_surface": cls._score_breakdown_text(target, "pathfinder_preferred_search_surface"),
+            "recommended_type": cls._score_breakdown_text(target, "pathfinder_recommended_content_type"),
+            "brand_intent_type": cls._score_breakdown_text(target, "pathfinder_brand_intent_type", "generic"),
+            "review_intent_type": cls._score_breakdown_text(target, "pathfinder_review_intent_type", "none"),
+            "execution_lens": cls._score_breakdown_text(target, "pathfinder_execution_lens"),
+        }
+
+    @classmethod
+    def _pathfinder_lens_post_fit(
+        cls,
+        target: ViralTarget,
+        *,
+        platform: Optional[str] = None,
+        text: str = "",
+    ) -> Tuple[float, str, List[str]]:
+        """Score whether a candidate post matches the Pathfinder seed's execution lens."""
+        lens = str(cls._pathfinder_execution_context(target).get("execution_lens") or "").strip().lower()
+        if not lens or lens == "service":
+            return 50.0, "neutral", []
+
+        text_lc = (text or "").lower()
+        platform_key = (platform or target.platform or "").lower()
+        lens_terms = {
+            "review": (
+                "\ucd94\ucc9c", "\ud6c4\uae30", "\uc798\ud558\ub294", "\uad1c\ucc2e", "\uc5b4\ub514",
+                "\uacbd\ud5d8", "\uac00\ubcf8", "\uc544\uc2dc\ub294", "review", "recommend",
+            ),
+            "community": (
+                "\ucd94\ucc9c", "\ud6c4\uae30", "\uc5b4\ub514", "\uacbd\ud5d8", "\uac00\ubcf8",
+                "\uc544\uc2dc\ub294", "\ubd84\ub4e4", "\uac19\uc740", "\uad81\uae08", "review", "recommend",
+            ),
+            "cost": (
+                "\ube44\uc6a9", "\uac00\uaca9", "\uc5bc\ub9c8", "\uc2e4\ube44", "\ubcf4\ud5d8",
+                "\uc790\ubcf4", "\uce58\ub8cc\ube44", "\ubd80\ub2f4", "cost", "price", "insurance",
+            ),
+            "consultation": (
+                "\uc0c1\ub2f4", "\ubb38\uc758", "\ucc98\ubc29", "\uc9c4\ub2e8",
+                "\uc0c1\ub2f4\ubc1b", "\uce58\ub8cc\ubc1b", "\uac80\uc0ac\ubc1b",
+                "\uad81\uae08", "\uc54c\uace0\uc2f6", "consult", "consultation", "inquiry",
+            ),
+            "availability": (
+                "\uc608\uc57d", "\uc608\uc57d\uac00\ub2a5", "\uc57c\uac04", "\uc8fc\ub9d0",
+                "\uc9c4\ub8cc\uc2dc\uac04", "\ub2f9\uc77c\uc9c4\ub8cc",
+                "\uc624\ub298", "\ub2f9\uc77c", "booking", "appointment",
+                "near", "hours",
+            ),
+            "safety": (
+                "\ubd80\uc791\uc6a9", "\uc8fc\uc758", "\uce58\ub8cc\uae30\uac04", "\ud1b5\uc99d", "\ud68c\ubcf5",
+                "\uc7ac\ubc1c", "\uc548\uc804", "\ud6a8\uacfc", "\uac71\uc815", "sideeffect", "side-effect",
+                "recovery", "safety",
+            ),
+        }
+        terms = lens_terms.get(lens)
+        if not terms:
+            return 50.0, "neutral", []
+
+        matched_terms = [term for term in terms if term and term in text_lc]
+        signals: List[str] = []
+        score = 45.0
+
+        if matched_terms:
+            score += min(35.0, 18.0 + len(matched_terms) * 4.0)
+            signals.append(f"pathfinder_lens_{lens}_match")
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                score += 8.0
+                signals.append("pathfinder_lens_surface_match")
+        else:
+            score -= 18.0
+            signals.append(f"pathfinder_lens_{lens}_mismatch")
+            if platform_key == "blog" and lens in {"review", "community", "cost"}:
+                score -= 6.0
+                signals.append("pathfinder_lens_blog_weak_match")
+
+        if lens in {"review", "community"} and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            score += 5.0
+        if lens in {"cost", "consultation", "availability"} and cls._contains_any(text_lc, cls.REGION_KEYWORDS):
+            score += 4.0
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 75.0:
+            tier = "strong"
+        elif score >= 55.0:
+            tier = "acceptable"
+        elif score >= 40.0:
+            tier = "weak"
+        else:
+            tier = "mismatch"
+        return score, tier, list(dict.fromkeys(signals))
+
+    @classmethod
+    def _pathfinder_axis_post_fit(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        text: str = "",
+    ) -> Tuple[float, str, List[str]]:
+        """Score whether the visible post body matches the Pathfinder treatment axis."""
+        raw_category = (
+            getattr(target, "matched_keyword_category", "") or
+            getattr(target, "category", "") or
+            GYULIM_KEYWORD_PROFILE.detect_category(" ".join(target.matched_keywords or []), default="")
+        )
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return 50.0, "neutral", []
+
+        text_lc = (text or "").lower()
+        compact_text = re.sub(r"\s+", "", text_lc)
+
+        def matching_terms(terms: Iterable[str]) -> List[str]:
+            matches: List[str] = []
+            for term in terms:
+                clean = str(term or "").strip().lower()
+                if not clean:
+                    continue
+                compact = re.sub(r"\s+", "", clean)
+                if clean in text_lc or (compact and compact in compact_text):
+                    matches.append(str(term))
+            return list(dict.fromkeys(matches))
+
+        category_hits = matching_terms(profile.category_terms)
+        core_hits = matching_terms(profile.core_tokens)
+        anchor_hits = matching_terms(profile.direct_service_anchors)
+        low_value_hits = matching_terms(profile.low_business_value_terms)
+        primary_hits = list(dict.fromkeys(category_hits + core_hits))
+
+        score = 35.0
+        signals: List[str] = []
+        if category_hits:
+            score += min(28.0, 14.0 + len(category_hits) * 3.5)
+            signals.append("pathfinder_axis_category_match")
+        if core_hits:
+            score += min(24.0, 10.0 + len(core_hits) * 4.0)
+            signals.append("pathfinder_axis_core_match")
+        if anchor_hits:
+            score += min(12.0, 4.0 + len(anchor_hits) * 2.5)
+            signals.append("pathfinder_axis_service_anchor")
+        if low_value_hits:
+            score -= min(24.0, 10.0 + len(low_value_hits) * 5.0)
+            signals.append("pathfinder_axis_low_value_context")
+        if not primary_hits:
+            score -= 20.0
+            signals.append("pathfinder_axis_no_primary_terms")
+
+        region_score, region_signals = cls._region_fit_signal(text_lc)
+        if region_score > 0:
+            score += min(6.0, region_score * 0.20)
+            signals.append("pathfinder_axis_local_context")
+
+        competing_hits = 0
+        competing_categories: List[str] = []
+        for other_profile in getattr(GYULIM_KEYWORD_PROFILE, "profiles", ()):
+            if other_profile.category == profile.category:
+                continue
+            other_hits = matching_terms(other_profile.category_terms + other_profile.core_tokens)
+            if other_hits:
+                competing_hits += len(other_hits)
+                competing_categories.append(other_profile.category)
+        if competing_hits > max(1, len(primary_hits) + 1):
+            score -= min(18.0, 8.0 + competing_hits * 2.0)
+            signals.append("pathfinder_axis_cross_axis_noise")
+            if competing_categories:
+                signals.append(
+                    "pathfinder_axis_competes_with:" + ",".join(list(dict.fromkeys(competing_categories))[:3])
+                )
+
+        if domain != "general" and cls._has_domain_anchor(domain, text_lc):
+            score += 4.0
+            signals.append("pathfinder_axis_domain_anchor")
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 75.0:
+            tier = "strong"
+        elif score >= 55.0:
+            tier = "acceptable"
+        elif score >= 38.0:
+            tier = "weak"
+        else:
+            tier = "mismatch"
+        return score, tier, list(dict.fromkeys(signals + region_signals[:1]))
+
+    @classmethod
+    def _pathfinder_execution_adjustment(
+        cls,
+        target: ViralTarget,
+        *,
+        platform: Optional[str] = None,
+        text: str = "",
+    ) -> Tuple[float, List[str]]:
+        """Translate Pathfinder keyword readiness into post-level scoring signals."""
+        ctx = cls._pathfinder_execution_context(target)
+        readiness = float(ctx["viral_readiness"] or 0.0)
+        actionability = float(ctx["content_actionability"] or 0.0)
+        medical_risk = float(ctx["medical_ad_risk"] or 0.0)
+        local_fit = float(ctx["local_service_fit"] or 0.0)
+        community = float(ctx["community_signal"] or 0.0)
+        conversion = float(ctx["conversion_signal"] or 0.0)
+        profile_action = float(ctx["profile_action_signal"] or 0.0)
+        preferred_surface = str(ctx["preferred_surface"] or "")
+        recommended_type = str(ctx["recommended_type"] or "")
+        review_intent_type = str(ctx["review_intent_type"] or "none")
+        platform_key = (platform or target.platform or "").lower()
+        text_lc = (text or "").lower()
+
+        adjustment = 0.0
+        signals: List[str] = []
+
+        if readiness >= 75.0:
+            adjustment += min(12.0, (readiness - 60.0) * 0.32)
+            signals.append("pathfinder_ready_keyword")
+        elif 0.0 < readiness < 35.0:
+            adjustment -= min(10.0, (35.0 - readiness) * 0.28)
+            signals.append("pathfinder_low_readiness")
+
+        if actionability >= 75.0:
+            adjustment += min(8.0, (actionability - 60.0) * 0.24)
+            signals.append("pathfinder_actionable_content")
+        elif 0.0 < actionability < 45.0:
+            adjustment -= min(12.0, (45.0 - actionability) * 0.32)
+            signals.append("pathfinder_low_actionability")
+
+        if local_fit >= 75.0 and cls._contains_any(text_lc, cls.REGION_KEYWORDS):
+            adjustment += min(6.0, (local_fit - 60.0) * 0.18)
+            signals.append("pathfinder_local_service_fit")
+        elif 0.0 < local_fit < 40.0:
+            adjustment -= min(10.0, (40.0 - local_fit) * 0.24)
+            signals.append("pathfinder_local_service_weak")
+
+        if community >= 60.0 and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            adjustment += min(7.0, (community - 50.0) * 0.20)
+            signals.append("pathfinder_community_surface_fit")
+        if conversion >= 55.0:
+            adjustment += min(6.0, (conversion - 45.0) * 0.18)
+            signals.append("pathfinder_conversion_signal")
+        if profile_action >= 55.0:
+            adjustment += min(5.0, (profile_action - 45.0) * 0.16)
+            signals.append("pathfinder_profile_action_signal")
+
+        if preferred_surface in {"hybrid_local_content", "profile_action", "local_pack"}:
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                adjustment += 4.0
+                signals.append("pathfinder_surface_match")
+            elif platform_key == "blog":
+                adjustment += 1.5
+                signals.append("pathfinder_surface_partial_match")
+        if recommended_type in {"faq_safety", "service_landing", "access_landing"}:
+            adjustment += 3.0
+            signals.append("pathfinder_content_type_fit")
+        if review_intent_type not in {"", "none"} and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            adjustment += 3.0
+            signals.append("pathfinder_review_intent_surface")
+
+        if medical_risk >= 70.0:
+            adjustment -= 18.0
+            signals.append("pathfinder_high_medical_ad_risk")
+        elif medical_risk >= 40.0:
+            adjustment -= 7.0
+            signals.append("pathfinder_medical_ad_review")
+
+        return round(max(-28.0, min(28.0, adjustment)), 2), list(dict.fromkeys(signals))
+
     @classmethod
     def _keyword_domain(cls, matched_keywords: List[str]) -> str:
         """검색 키워드가 어느 진료 축에 속하는지 추정한다."""
         joined = " ".join(matched_keywords or []).lower()
         if any(k in joined for k in ["교통사고", "자동차사고", "자보", "입원"]):
             return "traffic"
-        if any(k in joined for k in ["다이어트", "비만", "감량", "체중"]):
+        if any(k in joined for k in ["다이어트", "다이어트한약", "한약", "비만", "감량", "체중"]):
             return "diet"
         if any(k in joined for k in ["여드름", "흉터", "새살침", "패인흉터", "모공"]):
             return "scar_skin"
-        if any(k in joined for k in ["안면비대칭", "얼굴비대칭", "비대칭"]):
+        if any(k in joined for k in ["안면비대칭", "얼굴비대칭", "비대칭", "턱관절", "턱교정", "두상비대칭"]):
             return "asymmetry"
         if any(k in joined for k in ["체형", "골반", "척추", "측만", "자세"]):
             return "body"
@@ -1613,7 +2196,7 @@ class CommentableFilter:
 
     @classmethod
     def _profile_categories_for_target(cls, target: ViralTarget, domain: str) -> List[str]:
-        """Return Pathfinder/Gyulim profile categories that can explain this target."""
+        """Return Pathfinder clinic profile categories that can explain this target."""
         candidates = [
             getattr(target, "matched_keyword_category", "") or "",
             getattr(target, "category", "") or "",
@@ -1621,11 +2204,12 @@ class CommentableFilter:
         domain_map = {
             "diet": "다이어트",
             "traffic": "교통사고",
-            "scar_skin": "피부/여드름",
             "asymmetry": "안면비대칭",
             "body": "체형교정",
             "lifting": "리프팅/탄력",
         }
+        if domain == "scar_skin":
+            candidates.extend(["흉터/여드름흉터", "피부/여드름"])
         if domain in domain_map:
             candidates.append(domain_map[domain])
 
@@ -1644,25 +2228,50 @@ class CommentableFilter:
         """Score how close the post is to the clinic's real operating area."""
         score = 0
         signals: List[str] = []
+        area_signal = getattr(GYULIM_KEYWORD_PROFILE, "area_signal", "target_area")
+        neighborhood_signal = getattr(GYULIM_KEYWORD_PROFILE, "neighborhood_signal", "target_neighborhood")
         if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.cheongju_regions)):
             score += 18
-            signals.append("cheongju_area")
+            signals.append(area_signal)
         if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.neighborhoods)):
             score += 12
-            signals.append("cheongju_neighborhood")
+            signals.append(neighborhood_signal)
         if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.nearby_regions)):
             score += 7
             signals.append("nearby_region")
 
-        distant_regions = [
-            "서울", "부산", "대구", "인천", "대전", "광주", "울산",
-            "수원", "천안", "전주", "광주광역시", "강남", "분당",
-        ]
-        has_primary = any(s in signals for s in ("cheongju_area", "cheongju_neighborhood"))
-        if cls._contains_any(text, distant_regions) and not has_primary:
+        active_local_terms = set(GYULIM_KEYWORD_PROFILE.cheongju_regions) | set(GYULIM_KEYWORD_PROFILE.neighborhoods) | set(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        distant_regions = list(cls.DISTANT_REGION_KEYWORDS)
+        distant_regions = [region for region in distant_regions if region not in active_local_terms]
+        has_primary = any(s in signals for s in (area_signal, neighborhood_signal))
+        if distant_regions and cls._contains_any(text, distant_regions) and not has_primary:
             score -= 24
             signals.append("distant_region")
         return score, signals
+
+    @classmethod
+    def _is_distant_local_target(cls, title: str, text: str) -> bool:
+        """Reject posts whose visible target market is outside the active clinic area."""
+        active_local_terms = (
+            set(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+            | set(GYULIM_KEYWORD_PROFILE.neighborhoods)
+            | set(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        )
+        distant_regions = [region for region in cls.DISTANT_REGION_KEYWORDS if region not in active_local_terms]
+        if not distant_regions:
+            return False
+
+        title_has_distant = cls._contains_any(title, distant_regions)
+        title_has_active = cls._contains_any(title, active_local_terms)
+        if title_has_distant and not title_has_active:
+            return True
+
+        text_has_distant = cls._contains_any(text, distant_regions)
+        text_has_active = cls._contains_any(text, active_local_terms)
+        explicit_cheongju = cls._contains_any(text, ["청주", "충북", "충청북도"])
+        if text_has_distant and not explicit_cheongju:
+            return True
+        return bool(text_has_distant and not text_has_active)
 
     @classmethod
     def _assess_clinic_treatment_fit(
@@ -1672,7 +2281,7 @@ class CommentableFilter:
         text: str,
         is_health: bool,
     ) -> Tuple[int, str, List[str]]:
-        """Score whether the post fits Gyulim Cheongju's actual treatment portfolio."""
+        """Score whether the post fits the active clinic's actual treatment portfolio."""
         score, signals = cls._region_fit_signal(text)
         categories = cls._profile_categories_for_target(target, domain)
         profiles = [
@@ -1683,11 +2292,24 @@ class CommentableFilter:
 
         if profiles:
             best_profile_score = 0.0
+            compact_text = re.sub(r"\s+", "", text)
+
+            def matching_terms(terms: Iterable[str]) -> List[str]:
+                matches: List[str] = []
+                for term in terms:
+                    if not term:
+                        continue
+                    term_lower = term.lower()
+                    term_compact = re.sub(r"\s+", "", term_lower)
+                    if term_lower in text or (term_compact and term_compact in compact_text):
+                        matches.append(term)
+                return matches
+
             for profile in profiles:
-                category_hits = [term for term in profile.category_terms if term and term.lower() in text]
-                anchor_hits = [term for term in profile.direct_service_anchors if term and term.lower() in text]
-                core_hits = [term for term in profile.core_tokens if term and term.lower() in text]
-                low_value_hits = [term for term in profile.low_business_value_terms if term and term.lower() in text]
+                category_hits = matching_terms(profile.category_terms)
+                anchor_hits = matching_terms(profile.direct_service_anchors)
+                core_hits = matching_terms(profile.core_tokens)
+                low_value_hits = matching_terms(profile.low_business_value_terms)
 
                 profile_score = 0.0
                 if category_hits:
@@ -1702,7 +2324,8 @@ class CommentableFilter:
                 best_profile_score = max(best_profile_score, profile_score)
 
             score += int(round(best_profile_score))
-            signals.append("gyulim_profile_match")
+            signals.append(getattr(GYULIM_KEYWORD_PROFILE, "profile_match_signal", "clinic_profile_match"))
+            signals.append("clinic_profile_match")
         elif domain != "general" and cls._has_domain_anchor(domain, text):
             score += 24
             signals.append("domain_anchor_match")
@@ -1752,7 +2375,11 @@ class CommentableFilter:
 
         if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.medical_general_tokens)):
             hanbang_skin_context = (
-                cls._contains_any(text, ["한의원", "한방", "새살침", "침", "한약"])
+                cls._contains_any(
+                    text,
+                    list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)
+                    + ["한의원", "한방", "새살침", "침", "한약", "의원", "클리닉", "피부과", "레이저", "시술"],
+                )
                 and not non_service_request
             )
             if not hanbang_skin_context:
@@ -1912,6 +2539,55 @@ class CommentableFilter:
             if cut_points:
                 body = body[:min(cut_points)]
         return f"{target.title or ''} {body}".strip()
+
+    @classmethod
+    def _axis_user_segment_text(cls, target: ViralTarget, *, max_body_chars: int = 150) -> str:
+        """Short user-authored segment used for strict axis checks.
+
+        Search snippets can include answer/provider text. For Pathfinder companion
+        queries, full-snippet anchors are too permissive, so use title plus the
+        opening body segment before giving a low-supply axis rescue.
+        """
+        title = (target.title or "").lower()
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        platform = (target.platform or "").lower()
+        if platform in {"kin", "naver_kin"}:
+            # Naver Kin snippets often append provider answers; axis checks should
+            # stay close to the asker's own wording.
+            user_text = cls._user_need_text(target).lower()
+            if title and user_text.startswith(title):
+                body = user_text[len(title):].strip()
+            else:
+                body = user_text
+            max_body_chars = min(max_body_chars, 70)
+        return f"{title} {body[:max_body_chars]}".strip()
+
+    @classmethod
+    def _pathfinder_query_variant(cls, target: ViralTarget) -> str:
+        return cls._score_breakdown_text(target, "pathfinder_query_variant", "")
+
+    @classmethod
+    def _is_axis_companion_variant(cls, target: ViralTarget, prefix: str) -> bool:
+        return cls._pathfinder_query_variant(target).startswith(prefix)
+
+    @classmethod
+    def _has_user_axis_anchor(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        category: str,
+    ) -> bool:
+        user_text = cls._axis_user_segment_text(target)
+        if category == "체형교정" or domain == "body":
+            return cls._contains_any(user_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "안면비대칭" or domain == "asymmetry":
+            return cls._contains_any(user_text, cls.ASYMMETRY_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "리프팅/탄력" or domain == "lifting":
+            return cls._contains_any(user_text, cls.LIFTING_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "교통사고" or domain == "traffic":
+            return cls._contains_any(user_text, cls.TRAFFIC_USER_CARE_ANCHOR_PATTERNS)
+        return True
 
     @classmethod
     def _assess_viral_need(
@@ -2596,6 +3272,7 @@ class CommentableFilter:
         platform = (target.platform or "").lower()
         signals: List[str] = []
         score = 0
+        domain = cls._keyword_domain(target.matched_keywords)
 
         def matched(patterns: List[str]) -> List[str]:
             return [pattern for pattern in patterns if pattern and pattern.lower() in text]
@@ -2643,14 +3320,46 @@ class CommentableFilter:
                 signals.append("provider_bracket_title")
                 score += 2 if strong_inquiry else 5
 
-            local_provider_promo_title = (
+            local_provider_domain_title = (
                 cls._contains_any(title_text, cls.REGION_KEYWORDS)
                 and cls._contains_any(title_text, cls.MEDICAL_PROVIDER_TERMS)
+                and cls._has_domain_anchor(domain, text)
+            )
+            local_provider_promo_title = (
+                local_provider_domain_title
                 and cls._contains_any(title_text, cls.MEDICAL_PROMO_TITLE_PATTERNS)
             )
             if local_provider_promo_title:
                 signals.append("local_provider_promo_title")
                 score += 2 if strong_inquiry else 5
+
+            blog_medical_seo_title = (
+                platform == "blog"
+                and local_provider_domain_title
+                and cls._contains_any(title_text, cls.BLOG_MEDICAL_SEO_TITLE_PATTERNS)
+                and not strong_inquiry
+            )
+            if blog_medical_seo_title:
+                signals.append("blog_medical_seo_title")
+                score += 5
+
+            title_question_like = bool(re.search(r"[?？]", title_text)) or cls._contains_any(
+                title_text,
+                cls.RECOMMENDATION_REQUEST_PATTERNS,
+            )
+            local_provider_service_title = (
+                platform in {"blog", "cafe", "naver_cafe"}
+                and local_provider_domain_title
+                and not strong_inquiry
+                and not title_question_like
+            )
+            if local_provider_service_title:
+                signals.append(
+                    "blog_local_provider_service_title"
+                    if platform == "blog"
+                    else "local_provider_service_title"
+                )
+                score += 4 if platform == "blog" else 5
 
         legal = matched(cls.LEGAL_PROMO_PATTERNS)
         if legal:
@@ -2676,6 +3385,33 @@ class CommentableFilter:
         if blog_structural:
             signals.append("blog_ad_structure")
             score += 2 + min(3, len(blog_structural))
+
+        diet_provider_context = domain == "diet" and cls._contains_any(
+            text,
+            ["한의원", "한약", "다이어트한약", "비움탕", "감비환", "비만클리닉"],
+        )
+        diet_testimonial_marker = cls._contains_any(
+            text,
+            ["내돈내산", "성공후기", "성공 후기", "다이어트후기", "다이어트 후기", "감량 후기"],
+        ) or bool(re.search(r"\d+\s*(?:kg|키로|킬로).{0,20}(?:성공|후기|감량|빠졌)", text))
+        if diet_provider_context and diet_testimonial_marker and not strong_inquiry:
+            signals.append("diet_testimonial_promo")
+            score += 5
+
+        medical_price_event_context = cls._contains_any(
+            text,
+            [
+                "치료", "시술", "한의원", "병원", "의원", "피부과", "클리닉",
+                "여드름", "흉터", "사마귀", "다이어트", "한약", "리프팅",
+            ],
+        )
+        medical_price_event_marker = cls._contains_any(
+            text,
+            ["무제한", "성지", "할인이벤트", "할인 이벤트", "이벤트", "최저가"],
+        ) or bool(re.search(r"\d+\s*만원.{0,20}(?:이벤트|혜택|할인|무제한)", text))
+        if medical_price_event_context and medical_price_event_marker and not strong_inquiry:
+            signals.append("medical_price_event_promo")
+            score += 5
 
         local_footer_hits = matched(cls.LOCAL_SEO_FOOTER_PATTERNS)
         local_area_hits = [hit for hit in local_footer_hits if hit in cls.REGION_KEYWORDS]
@@ -2718,6 +3454,8 @@ class CommentableFilter:
         """'교정'처럼 넓은 단어만으로 통과하지 않도록 핵심 맥락을 요구한다."""
         if domain == "general":
             return True
+        if domain in cls.STRICT_DOMAIN_ANCHORS:
+            return cls._contains_any(text, cls.STRICT_DOMAIN_ANCHORS[domain])
         return cls._contains_any(text, cls.DOMAIN_ANCHORS.get(domain, []))
 
     @classmethod
@@ -2728,6 +3466,17 @@ class CommentableFilter:
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["golf"]):
             return domain in {"body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["cosmetic_clinic"]):
+            if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+                recover_skin_context = cls._contains_any(
+                    text,
+                    [
+                        "흉터", "여드름", "피부", "모공", "색소", "리프팅", "탄력",
+                        "주름", "스킨부스터", "리쥬란", "쥬베룩", "레이저", "클리닉", "의원",
+                    ],
+                )
+                return domain not in {"scar_skin", "lifting", "general"} and not recover_skin_context
+            if domain in {"asymmetry", "body", "traffic", "diet"}:
+                return True
             hanbang_skin_context = cls._contains_any(text, ["새살침", "한의원", "한방", "침치료"])
             return domain in {"scar_skin", "lifting", "general"} and not hanbang_skin_context
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["fitness"]):
@@ -2738,10 +3487,364 @@ class CommentableFilter:
                 return not medical_diet_context
             return domain in {"body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["surgery"]):
+            if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+                post_surgery_scar_context = cls._contains_any(
+                    text,
+                    ["수술흉터", "수술 흉터", "흉터", "켈로이드", "절개흉터", "상처자국"],
+                )
+                if post_surgery_scar_context and domain in {"scar_skin", "general"}:
+                    return False
             return True
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["urology"]):
             return True
         return False
+
+    @classmethod
+    def _is_non_service_beauty_target(cls, domain: str, text: str) -> bool:
+        """Exclude home-care or salon beauty posts that are not clinic-service leads."""
+        if domain not in {"scar_skin", "asymmetry", "body", "lifting", "general"}:
+            return False
+        if not cls._contains_any(text, cls.NON_SERVICE_BEAUTY_PATTERNS):
+            return False
+
+        service_rescue = cls._contains_any(
+            text,
+            [
+                "한의원", "한방", "한약", "새살침", "침치료", "추나", "치료",
+                "상담", "병원", "의원", "클리닉",
+            ],
+        )
+        product_or_salon_context = cls._contains_any(
+            text,
+            [
+                "제품", "홈케어", "마스크팩", "led", "피부관리실", "피부관리샵",
+                "피부샵", "에스테틱", "관리실", "미용실", "헤어샵", "네일",
+            ],
+        )
+        return bool(product_or_salon_context or not service_rescue)
+
+    @classmethod
+    def _is_asymmetry_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject face/asymmetry seeds that actually point to beauty, brow, dental, or esthetic services."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "asymmetry" and category != "안면비대칭":
+            return False
+
+        text_lc = (text or "").lower()
+        compact = re.sub(r"\s+", "", text_lc)
+
+        def has_any(terms: Iterable[str]) -> bool:
+            for term in terms:
+                clean = str(term or "").strip().lower()
+                if not clean:
+                    continue
+                if clean in text_lc:
+                    return True
+                compact_term = re.sub(r"\s+", "", clean)
+                if compact_term and compact_term in compact:
+                    return True
+            return False
+
+        if has_any(cls.ASYMMETRY_HARD_OFF_AXIS_PATTERNS):
+            return True
+
+        strong_axis = has_any(cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
+        clinic_action = has_any(cls.ASYMMETRY_CLINIC_ACTION_PATTERNS)
+
+        if has_any(cls.ASYMMETRY_DENTAL_OR_ORTHO_NOISE_PATTERNS) and not strong_axis:
+            return True
+        if has_any(cls.ASYMMETRY_BEAUTY_MANAGEMENT_PATTERNS) and not (strong_axis and clinic_action):
+            return True
+
+        ambiguous_face_shape = has_any(["얼굴형", "윤곽", "페이스라인", "얼굴라인"])
+        if ambiguous_face_shape and not strong_axis and not clinic_action:
+            return True
+
+        if cls._is_axis_companion_variant(target, "axis_asymmetry:") and not cls._has_user_axis_anchor(
+            target,
+            domain=domain,
+            category=category,
+        ):
+            return True
+
+        return False
+
+    @classmethod
+    def _is_body_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject broad body/Chuna companion hits whose user question is really another condition."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "body" and category != "체형교정":
+            return False
+
+        user_text = cls._axis_user_segment_text(target)
+        title_text = (target.title or "").lower()
+        title_has_body_anchor = cls._contains_any(title_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        user_has_body_anchor = cls._contains_any(user_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        has_fitness_provider_noise = cls._contains_any(text, cls.BODY_FITNESS_PROVIDER_NOISE_PATTERNS)
+        has_medical_rescue = cls._contains_any(text, cls.BODY_MEDICAL_RESCUE_PATTERNS)
+
+        if has_fitness_provider_noise and not has_medical_rescue:
+            return True
+
+        if cls._contains_any(title_text, cls.BODY_COMPANION_OFF_AXIS_PATTERNS) and not title_has_body_anchor:
+            return True
+        if cls._contains_any(user_text, cls.BODY_COMPANION_OFF_AXIS_PATTERNS) and not title_has_body_anchor:
+            return True
+        if cls._is_axis_companion_variant(target, "axis_body:") and not user_has_body_anchor:
+            return True
+        return False
+
+    @classmethod
+    def _is_diet_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject broad diet seeds that are actually gyms, sports classes, or exercise venue questions."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "diet" and category != "다이어트":
+            return False
+
+        has_non_hanbang_medical_noise = cls._contains_any(text, cls.DIET_NON_HANBANG_MEDICAL_NOISE_PATTERNS)
+        if has_non_hanbang_medical_noise and not cls._contains_any(text, cls.DIET_HANBANG_INTENT_PATTERNS):
+            return True
+
+        has_activity_noise = cls._contains_any(text, cls.DIET_ACTIVITY_NOISE_PATTERNS)
+        if not has_activity_noise:
+            return False
+        has_medical_intent = cls._contains_any(text, cls.DIET_MEDICAL_INTENT_PATTERNS)
+        return not has_medical_intent
+
+    @classmethod
+    def _is_skin_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject skin/acne seeds where the skin term is incidental or salon-only."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "scar_skin" and category != "피부/여드름":
+            return False
+
+        if cls._contains_any(text, cls.SKIN_WESTERN_RX_NOISE_PATTERNS):
+            return not cls._contains_any(text, cls.SKIN_HANBANG_SERVICE_RESCUE_PATTERNS)
+
+        if cls._contains_any(text, cls.LEGAL_OR_SCHOOL_VIOLENCE_PATTERNS):
+            has_clinic_rescue = cls._contains_any(text, cls.SKIN_CLINIC_RESCUE_PATTERNS)
+            return not has_clinic_rescue
+
+        if cls._contains_any(text, cls.SKIN_HARD_SALON_PATTERNS):
+            return True
+
+        has_salon_noise = cls._contains_any(text, cls.SKIN_SALON_OR_INCIDENTAL_NOISE_PATTERNS)
+        if not has_salon_noise:
+            return False
+        has_clinic_rescue = cls._contains_any(text, cls.SKIN_CLINIC_RESCUE_PATTERNS)
+        return not has_clinic_rescue
+
+    @classmethod
+    def _is_lifting_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject lifting companion hits unless the user text is actually about lifting/elasticity."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "lifting" and category != "리프팅/탄력":
+            return False
+        if cls._contains_any(text, cls.LIFTING_INCIDENTAL_COMMERCE_NOISE_PATTERNS) and not cls._contains_any(
+            text,
+            cls.LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS,
+        ):
+            return True
+        if cls._contains_any(text, cls.LIFTING_NON_HANBANG_DEVICE_PATTERNS) and not cls._contains_any(
+            text,
+            cls.LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS,
+        ):
+            return True
+        return not cls._has_user_axis_anchor(target, domain=domain, category=category)
+
+    @classmethod
+    def _is_explicit_hanbang_exclusion(cls, target: ViralTarget, text: str) -> bool:
+        """Reject targets where the asker explicitly excludes Korean-medicine care."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain not in {"diet", "scar_skin", "asymmetry", "body", "lifting", "traffic"} and category not in {
+            "다이어트", "피부/여드름", "안면비대칭", "체형교정", "리프팅/탄력", "교통사고",
+        }:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        check_text = user_text or text
+        return cls._contains_any(check_text, cls.EXPLICIT_HANBANG_EXCLUSION_PATTERNS)
+
+    @classmethod
+    def _is_kin_answer_footer_region_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject Kin hits where Cheongju appears only in a provider's multi-branch footer."""
+        if (target.platform or "").lower() not in {"kin", "naver_kin"}:
+            return False
+
+        user_opening = cls._axis_user_segment_text(target, max_body_chars=70)
+        if cls._contains_any(user_opening, cls.REGION_KEYWORDS):
+            return False
+
+        footer_region_hits = sum(1 for region in cls.MULTI_REGION_ANSWER_FOOTER_REGIONS if region in text)
+        footer_shape = footer_region_hits >= 6 or cls._contains_any(text, cls.KIN_PROVIDER_FOOTER_PATTERNS)
+        return bool(footer_shape and cls._contains_any(text, cls.REGION_KEYWORDS))
+
+    @classmethod
+    def _is_provider_info_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject provider-authored info/price posts that are not natural public reply targets."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        title = (target.title or "").lower()
+        user_text = cls._user_need_text(target).lower()
+        has_provider_info = cls._contains_any(text, cls.PROVIDER_INFO_POST_PATTERNS)
+        has_info_title = cls._contains_any(title, cls.PROVIDER_INFO_TITLE_PATTERNS)
+        if not (has_provider_info or has_info_title):
+            return False
+
+        direct_ask = cls._contains_any(
+            user_text,
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS,
+        )
+        testimonial_context = cls._contains_any(user_text, ["내돈내산", "후기", "경험", "해보신", "가보신"])
+        if direct_ask and testimonial_context and not has_info_title:
+            return False
+        return True
+
+    @classmethod
+    def _is_traffic_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject accident seeds that are about vehicle repair, property damage, or legal settlement."""
+        domain = cls._keyword_domain(target.matched_keywords)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "traffic" and category != "교통사고":
+            return False
+
+        title_text = (target.title or "").lower()
+        user_text = cls._axis_user_segment_text(target)
+        if cls._contains_any(f"{title_text} {user_text}", cls.TRAFFIC_ANIMAL_OR_VET_NOISE_PATTERNS):
+            return True
+        if cls._contains_any(title_text, cls.TRAFFIC_TITLE_HARD_NOISE_PATTERNS) and not cls._contains_any(
+            user_text,
+            cls.TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS,
+        ):
+            return True
+
+        has_repair_noise = cls._contains_any(user_text, cls.TRAFFIC_REPAIR_OR_PROPERTY_NOISE_PATTERNS)
+        has_legal_noise = cls._contains_any(user_text, cls.TRAFFIC_LEGAL_COMPENSATION_NOISE_PATTERNS)
+        has_medical_context = cls._contains_any(user_text, cls.TRAFFIC_MEDICAL_CARE_RESCUE_PATTERNS)
+        has_active_care_intent = cls._contains_any(user_text, cls.TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS)
+
+        if has_repair_noise and not has_medical_context:
+            return True
+        if has_legal_noise and not has_active_care_intent:
+            return True
+        return False
+
+    @classmethod
+    def _pathfinder_fit_reject_reason(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        text: str,
+        axis_fit_score: Optional[float] = None,
+        axis_fit_tier: str = "",
+        lens_fit_score: Optional[float] = None,
+        lens_fit_tier: str = "",
+    ) -> Optional[str]:
+        """Final Pathfinder axis/lens fit gate for lanes that historically over-collect noise."""
+        if cls._is_asymmetry_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_body_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_diet_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_skin_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_lifting_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_traffic_axis_noise(target, text):
+            return "off_domain"
+
+        ctx = cls._pathfinder_execution_context(target)
+        lens = str(ctx.get("execution_lens") or "").strip().lower()
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        axis_score = float(axis_fit_score if axis_fit_score is not None else 0.0)
+        lens_score = float(lens_fit_score if lens_fit_score is not None else 0.0)
+        axis_tier = str(axis_fit_tier or "")
+        lens_tier = str(lens_fit_tier or "")
+
+        conversion_lens = lens in {"cost", "consultation", "availability"}
+        guarded_lens = lens in {"cost", "consultation", "availability", "safety"}
+        community_rescue = cls._contains_any(
+            text,
+            [
+                "추천", "어디", "괜찮은", "잘하는", "경험", "해보신",
+                "가보신", "아시는", "궁금", "후기", "부탁",
+            ],
+        )
+        lens_mismatch = guarded_lens and (lens_tier == "mismatch" or (0.0 < lens_score < 50.0))
+        if lens_mismatch and not community_rescue:
+            return "lens_mismatch"
+
+        if category == "안면비대칭" or domain == "asymmetry":
+            has_strong_axis_text = cls._contains_any(text, cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
+            if axis_tier == "mismatch" or (0.0 < axis_score < 55.0 and not has_strong_axis_text):
+                return "domain_mismatch"
+            if conversion_lens and axis_score and axis_score < 60.0:
+                return "domain_mismatch"
+
+        if category in {"체형교정", "리프팅/탄력", "교통사고"} or domain in {"body", "lifting", "traffic"}:
+            has_axis_anchor = cls._has_domain_anchor(domain, text)
+            has_user_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+            axis_rescue = (
+                has_axis_anchor
+                and has_user_axis_anchor
+                and community_rescue
+                and lens in {"review", "community", "consultation"}
+            )
+            if axis_tier == "mismatch" and not axis_rescue:
+                return "domain_mismatch"
+            if 0.0 < axis_score < 55.0 and not has_axis_anchor:
+                return "domain_mismatch"
+            if guarded_lens and axis_score and axis_score < 60.0 and not axis_rescue:
+                return "domain_mismatch"
+
+        return None
+
+    @classmethod
+    def _non_relevant_exclude_terms(cls, text: str = "") -> List[str]:
+        terms = list(cls.NON_RELEVANT_EXCLUDE)
+        if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+            scar_context = cls._contains_any(
+                text,
+                [
+                    "흉터", "수술흉터", "수술 흉터", "절개흉터", "절개 흉터",
+                    "켈로이드", "상처자국", "상처 자국", "패인흉터", "여드름흉터",
+                ],
+            )
+            allowed_cosmetic_context_terms = {"성형외과"}
+            if scar_context:
+                allowed_cosmetic_context_terms.update({"성형", "쌍수", "코수술", "지방흡입"})
+            terms = [term for term in terms if term not in allowed_cosmetic_context_terms]
+        return terms
 
     @classmethod
     def _is_route_navigation(cls, text: str) -> bool:
@@ -2764,9 +3867,30 @@ class CommentableFilter:
 
         if cls._is_off_domain(domain, text):
             return "off_domain"
+        if cls._is_non_service_beauty_target(domain, text):
+            return "off_domain"
+        if cls._is_explicit_hanbang_exclusion(target, text):
+            return "off_domain"
+        if cls._is_kin_answer_footer_region_noise(target, text):
+            return "region_mismatch"
+        if cls._is_provider_info_without_user_ask(target, text):
+            return "advertorial"
+        pathfinder_reason = cls._pathfinder_fit_reject_reason(
+            target,
+            domain=domain,
+            text=text,
+            axis_fit_score=cls._score_breakdown_float(target, "pathfinder_axis_fit_score", 0.0),
+            axis_fit_tier=cls._score_breakdown_text(target, "pathfinder_axis_fit_tier", ""),
+            lens_fit_score=cls._score_breakdown_float(target, "pathfinder_lens_fit_score", 0.0),
+            lens_fit_tier=cls._score_breakdown_text(target, "pathfinder_lens_fit_tier", ""),
+        )
+        if pathfinder_reason:
+            return pathfinder_reason
         if cls._is_route_navigation(text):
             return "route_navigation"
-        if cls._contains_any(text, cls.NON_RELEVANT_EXCLUDE):
+        if cls._is_distant_local_target(title, text):
+            return "region_mismatch"
+        if cls._contains_any(text, cls._non_relevant_exclude_terms(text)):
             return "non_relevant"
         is_advertorial, _, _ = cls._detect_advertorial(target, text)
         if is_advertorial:
@@ -2928,7 +4052,8 @@ class CommentableFilter:
                  'off_domain': 0, 'not_inquiry_health': 0, 'medical_risk': 0,
                  'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
                  'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0,
-                 'clinic_mismatch': 0, 'low_worksite_efficiency': 0}
+                 'clinic_mismatch': 0, 'low_worksite_efficiency': 0,
+                 'pathfinder_mismatch': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
@@ -2965,19 +4090,49 @@ class CommentableFilter:
                     "ad_signals": ",".join(ad_signals),
                 }
                 continue
-            if any(ad in text for ad in self.NON_RELEVANT_EXCLUDE):
+            if any(ad in text for ad in self._non_relevant_exclude_terms(text)):
                 stats['non_relevant'] += 1
                 continue
             if self._is_off_domain(domain, text):
                 stats['off_domain'] += 1
                 continue
+            if self._is_non_service_beauty_target(domain, text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_explicit_hanbang_exclusion(target, text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_kin_answer_footer_region_noise(target, text):
+                stats['no_region'] += 1
+                continue
+            if self._is_provider_info_without_user_ask(target, text):
+                stats['advertorial'] += 1
+                continue
+            if self._is_asymmetry_axis_noise(target, text):
+                stats['off_domain'] += 1
+                continue
             if self._is_route_navigation(text):
                 stats['non_relevant'] += 1
+                continue
+            if self._is_distant_local_target(title_lower, text):
+                stats['no_region'] += 1
                 continue
 
             early_is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
             early_viral_need_score, early_viral_need_tier, early_viral_need_signals = self._assess_viral_need(
                 target, domain, early_is_inquiry, early_is_health
+            )
+            pathfinder_ctx = self._pathfinder_execution_context(target)
+            pathfinder_short_actionable = (
+                float(pathfinder_ctx.get("viral_readiness") or 0.0) >= 78.0
+                and float(pathfinder_ctx.get("content_actionability") or 0.0) >= 70.0
+                and float(pathfinder_ctx.get("medical_ad_risk") or 0.0) < 40.0
+                and (
+                    float(pathfinder_ctx.get("community_signal") or 0.0) >= 60.0
+                    or float(pathfinder_ctx.get("conversion_signal") or 0.0) >= 50.0
+                )
+                and any(rk in text for rk in self.REGION_KEYWORDS)
+                and (domain != "general" or target.matched_keyword_grade in {"S", "A"})
             )
             short_actionable = (
                 early_viral_need_score >= 55
@@ -2985,7 +4140,7 @@ class CommentableFilter:
                     signal in early_viral_need_signals
                     for signal in ("recommendation_request", "ready_to_act", "cost_decision")
                 )
-            )
+            ) or pathfinder_short_actionable
 
             # 2. 본문 최소 길이
             if len(body_clean) < self.MIN_CONTENT_LENGTH and not short_actionable:
@@ -3302,6 +4457,55 @@ class CommentableFilter:
             qualification_fit_adjustment = max(-18, min(12, (qualification_fit_score - 50) * 0.24))
             clinic_treatment_adjustment = max(-24, min(18, (clinic_treatment_fit_score - 55) * 0.32))
             worksite_efficiency_adjustment = max(-20, min(20, (worksite_efficiency_score - 55) * 0.35))
+            pathfinder_axis_fit_score, pathfinder_axis_fit_tier, pathfinder_axis_fit_signals = (
+                self._pathfinder_axis_post_fit(
+                    target,
+                    domain=domain,
+                    text=text,
+                )
+            )
+            pathfinder_axis_adjustment = 0.0
+            if pathfinder_axis_fit_tier != "neutral":
+                pathfinder_axis_adjustment = max(-18.0, min(12.0, (pathfinder_axis_fit_score - 55.0) * 0.28))
+            pathfinder_lens_fit_score, pathfinder_lens_fit_tier, pathfinder_lens_fit_signals = (
+                self._pathfinder_lens_post_fit(
+                    target,
+                    platform=target.platform,
+                    text=text,
+                )
+            )
+            pathfinder_lens_adjustment = 0.0
+            if pathfinder_lens_fit_tier != "neutral":
+                pathfinder_lens_adjustment = max(-14.0, min(12.0, (pathfinder_lens_fit_score - 55.0) * 0.30))
+            pathfinder_execution_adjustment, pathfinder_execution_signals = self._pathfinder_execution_adjustment(
+                target,
+                platform=target.platform,
+                text=text,
+            )
+            pathfinder_fit_reject_reason = self._pathfinder_fit_reject_reason(
+                target,
+                domain=domain,
+                text=text,
+                axis_fit_score=pathfinder_axis_fit_score,
+                axis_fit_tier=pathfinder_axis_fit_tier,
+                lens_fit_score=pathfinder_lens_fit_score,
+                lens_fit_tier=pathfinder_lens_fit_tier,
+            )
+            if pathfinder_fit_reject_reason:
+                stats['pathfinder_mismatch'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get(pathfinder_fit_reject_reason, "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": pathfinder_fit_reject_reason,
+                    "pathfinder_axis_fit_score": float(pathfinder_axis_fit_score),
+                    "pathfinder_axis_fit_tier": pathfinder_axis_fit_tier,
+                    "pathfinder_axis_fit_signals": ",".join(pathfinder_axis_fit_signals),
+                    "pathfinder_lens_fit_score": float(pathfinder_lens_fit_score),
+                    "pathfinder_lens_fit_tier": pathfinder_lens_fit_tier,
+                    "pathfinder_lens_fit_signals": ",".join(pathfinder_lens_fit_signals),
+                }
+                continue
             score += soft_ad_penalty  # 음수 값이므로 감점됨
             score += risk_penalty
             score += viral_need_bonus
@@ -3311,6 +4515,9 @@ class CommentableFilter:
             score += qualification_fit_adjustment
             score += clinic_treatment_adjustment
             score += worksite_efficiency_adjustment
+            score += pathfinder_axis_adjustment
+            score += pathfinder_execution_adjustment
+            score += pathfinder_lens_adjustment
 
             if reply_opportunity_score >= 75:
                 tags.append("🎯도움")
@@ -3356,6 +4563,10 @@ class CommentableFilter:
             conversion_fit += min(22, qualification_fit_score * 0.22)
             conversion_fit += min(30, clinic_treatment_fit_score * 0.30)
             conversion_fit += min(22, worksite_efficiency_score * 0.22)
+            if pathfinder_axis_fit_tier != "neutral":
+                conversion_fit += max(-18, min(18, (pathfinder_axis_fit_score - 55) * 0.22))
+            if pathfinder_lens_fit_tier != "neutral":
+                conversion_fit += max(-18, min(18, (pathfinder_lens_fit_score - 55) * 0.24))
             target.conversion_fit_score = max(0, min(conversion_fit, 150))
 
             target.score_breakdown = {
@@ -3394,6 +4605,16 @@ class CommentableFilter:
                 "worksite_efficiency_tier": worksite_efficiency_tier,
                 "worksite_efficiency_signals": ",".join(worksite_efficiency_signals),
                 "worksite_efficiency_adjustment": float(worksite_efficiency_adjustment),
+                "pathfinder_axis_fit_score": float(pathfinder_axis_fit_score),
+                "pathfinder_axis_fit_tier": pathfinder_axis_fit_tier,
+                "pathfinder_axis_fit_signals": ",".join(pathfinder_axis_fit_signals),
+                "pathfinder_axis_adjustment": float(pathfinder_axis_adjustment),
+                "pathfinder_lens_fit_score": float(pathfinder_lens_fit_score),
+                "pathfinder_lens_fit_tier": pathfinder_lens_fit_tier,
+                "pathfinder_lens_fit_signals": ",".join(pathfinder_lens_fit_signals),
+                "pathfinder_lens_adjustment": float(pathfinder_lens_adjustment),
+                "pathfinder_execution_adjustment": float(pathfinder_execution_adjustment),
+                "pathfinder_execution_signals": ",".join(pathfinder_execution_signals),
                 "reply_risk_penalty": float(risk_penalty),
                 "manual_review": 1.0 if risk_flags else 0.0,
                 "reply_risk_flags": ",".join(risk_flags),
@@ -3423,6 +4644,15 @@ class CommentableFilter:
                 qualification_priority_adjustment = min(5.0, (qualification_fit_score - 75) * 0.16)
             else:
                 qualification_priority_adjustment = 0.0
+            pathfinder_priority_adjustment = max(
+                -18.0,
+                min(
+                    14.0,
+                    pathfinder_execution_adjustment * 0.45
+                    + pathfinder_lens_adjustment * 0.35
+                    + pathfinder_axis_adjustment * 0.30,
+                ),
+            )
             target.priority_score = round(
                 max(
                     0.0,
@@ -3431,7 +4661,8 @@ class CommentableFilter:
                         target.priority_score
                         + timing_priority_adjustment
                         + journey_priority_adjustment
-                        + qualification_priority_adjustment,
+                        + qualification_priority_adjustment
+                        + pathfinder_priority_adjustment,
                     ),
                 ),
                 2,
@@ -3439,6 +4670,7 @@ class CommentableFilter:
             target.score_breakdown["timing_priority_adjustment"] = float(timing_priority_adjustment)
             target.score_breakdown["journey_priority_adjustment"] = float(journey_priority_adjustment)
             target.score_breakdown["qualification_priority_adjustment"] = float(qualification_priority_adjustment)
+            target.score_breakdown["pathfinder_priority_adjustment"] = float(pathfinder_priority_adjustment)
             target.is_commentable = True
             filtered.append(target)
 
@@ -3455,7 +4687,8 @@ class CommentableFilter:
             f"저의도 {stats['low_intent']}, 저응답적합 {stats['low_opportunity']}, "
             f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
             f"자격부족 {stats['unqualified']}, 진료불일치 {stats['clinic_mismatch']}, "
-            f"작업효율낮음 {stats['low_worksite_efficiency']}]"
+            f"작업효율낮음 {stats['low_worksite_efficiency']}, "
+            f"Pathfinder불일치 {stats['pathfinder_mismatch']}]"
         )
         return filtered
 
@@ -3497,10 +4730,32 @@ class AICommentGenerator:
         body = CommentableFilter._strip_internal_labels(target.content_preview or "")
         body = re.sub(r"\s+", " ", body).strip()
         preview = body[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS] if body else "(없음)"
+        breakdown = target.score_breakdown or {}
+        pathfinder_lines = []
+        if target.matched_keywords:
+            pathfinder_lines.append(f"PATHFINDER_KEYWORD: {', '.join(target.matched_keywords[:3])}")
+        if target.matched_keyword_category or target.category:
+            pathfinder_lines.append(
+                f"PATHFINDER_CATEGORY: {target.matched_keyword_category or target.category}"
+            )
+        readiness = breakdown.get("pathfinder_viral_readiness_score")
+        actionability = breakdown.get("pathfinder_content_actionability_score")
+        medical_risk = breakdown.get("pathfinder_medical_ad_risk_score")
+        if any(value not in (None, "", 0, 0.0) for value in (readiness, actionability, medical_risk)):
+            pathfinder_lines.append(
+                "PATHFINDER_EXECUTION: "
+                f"readiness={readiness or 0}, "
+                f"actionability={actionability or 0}, "
+                f"medical_ad_risk={medical_risk or 0}, "
+                f"surface={breakdown.get('pathfinder_preferred_search_surface') or ''}, "
+                f"type={breakdown.get('pathfinder_recommended_content_type') or ''}, "
+                f"lens={breakdown.get('pathfinder_execution_lens') or ''}"
+            )
+        pathfinder_context = ("\n" + "\n".join(pathfinder_lines)) if pathfinder_lines else ""
         return (
             f"\n---\nPOST_ID: {post_id}\n플랫폼: {target.platform}\n"
             f"제목: {target.title}\n"
-            f"내용: {preview}\n---\n"
+            f"내용: {preview}{pathfinder_context}\n---\n"
         )
 
     @staticmethod
@@ -3508,12 +4763,13 @@ class AICommentGenerator:
         risk_flags = ""
         if target.score_breakdown:
             risk_flags = str(target.score_breakdown.get("reply_risk_flags", ""))
+        clinic_name = "리커버의원" if GYULIM_KEYWORD_PROFILE.profile_key == "recover_gangnam" else "규림한의원"
         return f"""
 [필수 운영 원칙]
 - 댓글은 도움이 되는 정보성 답변이어야 하며 광고, 후기 가장, 잠입, 사칭처럼 보이면 안 됩니다.
 - 본인 또는 지인의 치료 경험, 방문 경험, 효과 경험을 지어내지 마세요.
 - 병원/의원/한의원 이름을 숨기기 위해 초성, 은어, 모호한 표현을 쓰지 마세요.
-- 규림한의원을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
+- {clinic_name}을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
 - 의료 효능 보장, 완치, 전후 비교, 최상급/비교 우위, 가격 유인, 이벤트성 문구를 쓰지 마세요.
 - 진단·처방처럼 단정하지 말고, 증상이 있으면 자격 있는 전문가 상담을 권하세요.
 - 댓글은 1~2문장으로 짧게 쓰고, AI/광고 고지 문구는 생성 후 자동 첨부되므로 제거를 유도하지 마세요.
@@ -3523,18 +4779,26 @@ class AICommentGenerator:
     @staticmethod
     def _normalize_transparency_terms(comment: str) -> str:
         """Replace old stealth-style clinic references with explicit naming."""
-        replacements = (
-            (r"성안길\s*ㄱㄹ\s*한의원", "규림한의원"),
-            (r"시내\s*ㄱㄹ\s*한의원", "규림한의원"),
-            (r"ㄱㄹ\s*한의원", "규림한의원"),
-            (r"성안길\s*ㄱㄹ", "규림한의원"),
-            (r"시내\s*ㄱㄹ", "규림한의원"),
-            (r"ㄱ으로\s*시작하는\s*한의원", "규림한의원"),
-            (r"ㄱ자\s*한의원", "규림한의원"),
-            (r"성안길\s*쪽\s*한의원", "규림한의원"),
-            (r"시내\s*그\s*한의원", "규림한의원"),
-            (r"(?<![가-힣A-Za-z0-9])ㄱㄹ(?![가-힣A-Za-z0-9])", "규림한의원"),
-        )
+        if GYULIM_KEYWORD_PROFILE.profile_key == "recover_gangnam":
+            replacements = (
+                (r"강남\s*ㄹㅋㅂ\s*(?:의원|클리닉)?", "리커버의원"),
+                (r"ㄹㅋㅂ\s*(?:의원|클리닉)?", "리커버의원"),
+                (r"리커버\s*클리닉", "리커버의원"),
+                (r"리커버\s*강남", "리커버의원"),
+            )
+        else:
+            replacements = (
+                (r"성안길\s*ㄱㄹ\s*한의원", "규림한의원"),
+                (r"시내\s*ㄱㄹ\s*한의원", "규림한의원"),
+                (r"ㄱㄹ\s*한의원", "규림한의원"),
+                (r"성안길\s*ㄱㄹ", "규림한의원"),
+                (r"시내\s*ㄱㄹ", "규림한의원"),
+                (r"ㄱ으로\s*시작하는\s*한의원", "규림한의원"),
+                (r"ㄱ자\s*한의원", "규림한의원"),
+                (r"성안길\s*쪽\s*한의원", "규림한의원"),
+                (r"시내\s*그\s*한의원", "규림한의원"),
+                (r"(?<![가-힣A-Za-z0-9])ㄱㄹ(?![가-힣A-Za-z0-9])", "규림한의원"),
+            )
         normalized = comment
         for pattern, replacement in replacements:
             normalized = re.sub(pattern, replacement, normalized)
@@ -3565,7 +4829,7 @@ class AICommentGenerator:
             flags=re.IGNORECASE,
         )
         normalized = normalized.replace("도움이 될 수어요", "도움이 될 수 있습니다")
-        normalized = re.sub(r"(규림한의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
+        normalized = re.sub(r"(규림한의원|리커버의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
         return normalized
 
     def generate(self, target: ViralTarget, style: str = "default") -> str:
@@ -4357,7 +5621,11 @@ class ViralHunter:
         self.seed_builder = ViralSeedBuilder()
         self.keyword_context: Dict[str, dict] = {}
 
-    def _load_keywords(self, use_latest_legion: bool = True) -> List[str]:
+    def _load_keywords(
+        self,
+        use_latest_legion: bool = True,
+        source_scan_run_id: Optional[int] = None,
+    ) -> List[str]:
         """
         Pathfinder 전용 모드 - 검증된 키워드만 사용
 
@@ -4367,7 +5635,7 @@ class ViralHunter:
         - 자동 업데이트 지원
         """
         if use_latest_legion:
-            seeds = self.seed_builder.build()
+            seeds = self.seed_builder.build(scan_run_id=source_scan_run_id)
             if seeds:
                 self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
                 scan_id = seeds[0].scan_run_id
@@ -4380,6 +5648,8 @@ class ViralHunter:
                     logger.info(f"   • {category}: {count}개")
                 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 return [seed.keyword for seed in seeds]
+            if source_scan_run_id:
+                logger.warning(f"Pathfinder scan #{source_scan_run_id} produced no Viral seeds; falling back to legacy keyword loader")
             logger.warning("⚠️ 최신 Legion 기반 seed를 찾지 못해 legacy keyword loader로 폴백합니다")
 
         keywords = set()
@@ -4546,6 +5816,368 @@ class ViralHunter:
         seeds = self.seed_builder.build()
         self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
 
+    @staticmethod
+    def _handoff_lane_key(ctx: Dict[str, Any]) -> str:
+        """Group a seed by the treatment axis and execution lens it should cover."""
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+        lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+        return f"{category}::{lens}"
+
+    def _order_keywords_for_handoff_coverage(
+        self,
+        keywords: List[str],
+        *,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+    ) -> List[str]:
+        """Round-robin keywords by Pathfinder handoff lane before applying run limits."""
+        if len(keywords) <= 1:
+            return list(keywords or [])
+
+        boosted_categories = {
+            GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+            for category in (boost_categories or [])
+            if str(category or "").strip()
+        }
+        boosted_lenses = {
+            str(lens or "").strip().lower()
+            for lens in (boost_lenses or [])
+            if str(lens or "").strip()
+        }
+        lanes: Dict[str, List[str]] = {}
+        ranked_lanes: List[str] = []
+        boosted_lane_keys: set[str] = set()
+        missing_context = 0
+        for keyword in keywords:
+            ctx = self.keyword_context.get(keyword) or {}
+            if not ctx:
+                missing_context += 1
+            lane_key = self._handoff_lane_key(ctx)
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+            lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+            if lane_key not in lanes:
+                lanes[lane_key] = []
+                ranked_lanes.append(lane_key)
+            if category in boosted_categories or lens in boosted_lenses:
+                boosted_lane_keys.add(lane_key)
+            lanes[lane_key].append(keyword)
+
+        if len(ranked_lanes) <= 1 or missing_context == len(keywords):
+            return list(keywords)
+
+        if boosted_lane_keys:
+            lane_order = {lane_key: idx for idx, lane_key in enumerate(ranked_lanes)}
+            ranked_lanes.sort(key=lambda lane_key: (0 if lane_key in boosted_lane_keys else 1, lane_order[lane_key]))
+
+        ordered: List[str] = []
+        while len(ordered) < len(keywords):
+            progressed = False
+            for lane_key in ranked_lanes:
+                bucket = lanes.get(lane_key) or []
+                if not bucket:
+                    continue
+                ordered.append(bucket.pop(0))
+                progressed = True
+            if not progressed:
+                break
+
+        return ordered
+
+    @staticmethod
+    def _checkpoint_boost_categories(categories: Optional[Iterable[str]]) -> List[str]:
+        return sorted(
+            {
+                GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+                for category in (categories or [])
+                if str(category or "").strip()
+            }
+        )
+
+    @staticmethod
+    def _checkpoint_boost_lenses(lenses: Optional[Iterable[str]]) -> List[str]:
+        return sorted(
+            {
+                str(lens or "").strip().lower()
+                for lens in (lenses or [])
+                if str(lens or "").strip()
+            }
+        )
+
+    def _checkpoint_hash_for_run(
+        self,
+        keywords: List[str],
+        *,
+        max_per_platform: int,
+        source_scan_run_id: Optional[int] = None,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+    ) -> str:
+        """Hash the exact Pathfinder handoff execution signature for resume safety."""
+        query_plans: List[Dict[str, Any]] = []
+        for idx, keyword in enumerate(keywords):
+            ctx = self.keyword_context.get(keyword) or {}
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+            lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+            context_scan_id = int(ctx.get("scan_run_id") or source_scan_run_id or 0)
+            for plan in self._search_queries_for_keyword(keyword, max_per_platform):
+                query_plans.append({
+                    "position": idx,
+                    "keyword": keyword,
+                    "query": str(plan.get("query") or keyword),
+                    "variant": str(plan.get("variant") or "base"),
+                    "category": category,
+                    "execution_lens": lens,
+                    "scan_run_id": context_scan_id,
+                    "include_blog": bool(plan.get("include_blog")),
+                    "platform_limits": dict(plan.get("platform_limits") or {}),
+                })
+
+        signature = {
+            "version": 4,
+            "max_per_platform": int(max_per_platform or 0),
+            "source_scan_run_id": int(source_scan_run_id or 0),
+            "boost_categories": self._checkpoint_boost_categories(boost_categories),
+            "boost_lenses": self._checkpoint_boost_lenses(boost_lenses),
+            "query_plans": query_plans,
+        }
+        raw = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _context_float(ctx: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        try:
+            return float(ctx.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _search_plan_for_keyword(self, keyword: str, max_per_platform: int) -> Dict[str, Any]:
+        """Tune discovery depth by Pathfinder execution signals without changing the public API."""
+        base_limit = max(1, int(max_per_platform or 100))
+        ctx = self.keyword_context.get(keyword) or {}
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+        readiness = self._context_float(ctx, "viral_readiness_score")
+        community = self._context_float(ctx, "community_signal")
+        conversion = self._context_float(ctx, "conversion_signal")
+        profile_action = self._context_float(ctx, "profile_action_signal")
+        medical_risk = self._context_float(ctx, "medical_ad_risk_score")
+        content_actionability = self._context_float(ctx, "content_actionability_score")
+        preferred_surface = str(ctx.get("preferred_search_surface") or "")
+        recommended_type = str(ctx.get("recommended_content_type") or "")
+        review_intent_type = str(ctx.get("review_intent_type") or "none")
+        execution_lens = str(ctx.get("execution_lens") or "")
+
+        multiplier = 1.0
+        if readiness >= 80.0 or community >= 60.0 or conversion >= 50.0 or profile_action >= 60.0:
+            multiplier = 1.8
+        elif readiness >= 60.0 or community >= 40.0 or conversion >= 35.0 or profile_action >= 35.0:
+            multiplier = 1.35
+
+        if medical_risk >= 70.0 or (0.0 < content_actionability < 45.0):
+            multiplier = min(multiplier, 0.7)
+        elif medical_risk >= 50.0:
+            multiplier = min(multiplier, 1.0)
+
+        expanded_limit = max(20, min(320, int(round(base_limit * multiplier))))
+        conservative_limit = max(15, min(base_limit, int(round(base_limit * 0.65))))
+
+        if medical_risk >= 70.0 or (0.0 < content_actionability < 45.0):
+            limits = {
+                "cafe": conservative_limit,
+                "blog": max(10, int(round(conservative_limit * 0.5))),
+                "kin": conservative_limit,
+            }
+            include_blog = recommended_type in {"faq_safety", "service_landing", "access_landing"}
+        elif execution_lens in {"review", "community"} or community >= 40.0 or review_intent_type not in {"", "none"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(
+                    20,
+                    min(
+                        expanded_limit,
+                        int(round(base_limit * (0.65 if execution_lens in {"review", "community"} else 0.9))),
+                    ),
+                ),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif execution_lens in {"cost", "consultation", "safety"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(20, min(expanded_limit, int(round(base_limit * 0.65)))),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif preferred_surface in {"profile_action", "local_pack", "hybrid_local_content"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(20, min(expanded_limit, int(round(base_limit * 0.75)))),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif recommended_type in {"faq_safety", "service_landing", "access_landing"}:
+            limits = {
+                "cafe": max(base_limit, int(round(expanded_limit * 0.8))),
+                "blog": expanded_limit,
+                "kin": max(base_limit, int(round(expanded_limit * 0.8))),
+            }
+            include_blog = True
+        else:
+            limits = {"cafe": expanded_limit, "blog": base_limit, "kin": expanded_limit}
+            include_blog = True
+
+        if category in {"안면비대칭", "체형교정", "리프팅/탄력"}:
+            # These axes are flooded by blog/provider SEO; cafe/Kin user questions are more workable.
+            limits["blog"] = max(10, min(int(limits.get("blog", 0) or 0), int(round(base_limit * 0.35))))
+            if execution_lens in {"review", "community", "consultation"} or review_intent_type not in {"", "none"}:
+                user_surface_limit = max(20, min(240, int(round(base_limit * 1.5))))
+                limits["cafe"] = max(int(limits.get("cafe", 0) or 0), user_surface_limit)
+                limits["kin"] = max(int(limits.get("kin", 0) or 0), user_surface_limit)
+
+        return {
+            "include_blog": include_blog,
+            "platform_limits": limits,
+            "readiness": readiness,
+            "medical_risk": medical_risk,
+            "preferred_surface": preferred_surface,
+            "recommended_content_type": recommended_type,
+            "execution_lens": execution_lens,
+        }
+
+    @staticmethod
+    def _scaled_platform_limits(limits: Dict[str, int], factor: float, *, minimum: int = 10, maximum: int = 140) -> Dict[str, int]:
+        scaled: Dict[str, int] = {}
+        for platform, value in (limits or {}).items():
+            limit = int(value or 0)
+            scaled[platform] = 0 if limit <= 0 else max(minimum, min(maximum, int(round(limit * factor))))
+        return scaled
+
+    @staticmethod
+    def _compact_query_text(text: str) -> str:
+        return re.sub(r"\s+", "", (text or "").lower())
+
+    def _search_query_variants_for_keyword(self, keyword: str) -> List[Dict[str, Any]]:
+        """Create a bounded set of lens-aware search queries for one Pathfinder seed."""
+        ctx = self.keyword_context.get(keyword) or {}
+        execution_lens = str(ctx.get("execution_lens") or "")
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+        compact = self._compact_query_text(keyword)
+        variants: List[Dict[str, Any]] = [{"query": keyword, "variant": "base", "source_keyword": keyword}]
+
+        lens_terms = {
+            "review": ("추천", "후기", "어디"),
+            "community": ("추천", "후기", "어디"),
+            "cost": ("비용", "가격", "얼마"),
+            "consultation": ("상담", "문의"),
+            "availability": ("예약", "주말", "야간"),
+            "safety": ("부작용", "치료기간", "회복"),
+        }
+        terms = lens_terms.get(execution_lens, ())
+        if not terms and float(ctx.get("conversion_signal") or 0.0) >= 55.0:
+            terms = ("상담",)
+
+        if not any(self._compact_query_text(term) in compact for term in terms):
+            for term in terms:
+                term_compact = self._compact_query_text(term)
+                if term_compact and term_compact not in compact:
+                    variants.append({
+                        "query": f"{keyword} {term}",
+                        "variant": f"{execution_lens or 'conversion'}:{term}",
+                        "source_keyword": keyword,
+                    })
+                    break
+
+        max_variants = 3 if category in {"안면비대칭", "체형교정", "리프팅/탄력"} else 2
+        for variant in self._axis_companion_query_variants(keyword, category):
+            if len(variants) >= max_variants:
+                break
+            query_compact = self._compact_query_text(variant["query"])
+            if query_compact and all(query_compact != self._compact_query_text(item["query"]) for item in variants):
+                variants.append(variant)
+
+        return variants[:max_variants]
+
+    @staticmethod
+    def _axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
+        """Add one axis-specific user-question query for categories with thin organic supply."""
+        compact = ViralHunter._compact_query_text(keyword)
+        candidates: List[Tuple[str, str]] = []
+        if category == "체형교정":
+            candidates = [
+                ("청주 체형교정 추나 한의원 추천", "axis_body:체형추나추천"),
+                ("청주 골반교정 추나 한의원 추천", "axis_body:골반교정추천"),
+                ("청주 거북목 일자목 한의원 추천", "axis_body:거북목추천"),
+            ]
+        elif category == "안면비대칭":
+            candidates = [
+                ("청주 턱관절 안면비대칭 한의원 추천", "axis_asymmetry:턱관절비대칭추천"),
+                ("청주 안면비대칭 교정 한의원 추천", "axis_asymmetry:교정추천"),
+            ]
+        elif category == "리프팅/탄력":
+            candidates = [
+                ("청주 매선 한방리프팅 후기", "axis_lifting:매선한방후기"),
+                ("청주 팔자주름 한방리프팅 후기", "axis_lifting:팔자주름후기"),
+                ("청주 피부탄력 매선 리프팅 후기", "axis_lifting:피부탄력매선후기"),
+            ]
+
+        variants: List[Dict[str, Any]] = []
+        for query, variant_name in candidates:
+            query_compact = ViralHunter._compact_query_text(query)
+            if query_compact and query_compact != compact:
+                variants.append({
+                    "query": query,
+                    "variant": variant_name,
+                    "source_keyword": keyword,
+                })
+        return variants
+
+    def _search_queries_for_keyword(self, keyword: str, max_per_platform: int) -> List[Dict[str, Any]]:
+        """Return query plans for a seed while preserving its Pathfinder lineage."""
+        base_plan = self._search_plan_for_keyword(keyword, max_per_platform)
+        variants = self._search_query_variants_for_keyword(keyword)
+        plans: List[Dict[str, Any]] = []
+
+        for idx, variant in enumerate(variants):
+            plan = dict(base_plan)
+            plan.update(variant)
+            if idx > 0:
+                plan["platform_limits"] = self._scaled_platform_limits(
+                    base_plan.get("platform_limits") or {},
+                    0.45,
+                )
+                plan["query_variant_of"] = keyword
+                if keyword in self.keyword_context:
+                    variant_context = dict(self.keyword_context[keyword])
+                    variant_context["pathfinder_source_keyword"] = keyword
+                    variant_context["pathfinder_query_variant"] = variant["variant"]
+                    self.keyword_context[variant["query"]] = variant_context
+            plans.append(plan)
+
+        return plans
+
+    @staticmethod
+    def _attach_search_query_lineage(
+        target: ViralTarget,
+        *,
+        source_keyword: str,
+        search_query: str,
+        query_variant: str,
+    ) -> ViralTarget:
+        lineage_keywords = [source_keyword]
+        if search_query and search_query != source_keyword:
+            lineage_keywords.append(search_query)
+        target.matched_keywords = [
+            keyword
+            for keyword in dict.fromkeys(lineage_keywords + list(target.matched_keywords or []))
+            if keyword
+        ]
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "pathfinder_source_keyword": source_keyword or "",
+            "pathfinder_search_query": search_query or "",
+            "pathfinder_query_variant": query_variant or "base",
+        }
+        return target
+
     def _apply_keyword_context(self, target: ViralTarget) -> ViralTarget:
         """Attach Pathfinder lineage to a search result before filtering/storage."""
         if not target.matched_keywords:
@@ -4568,9 +6200,24 @@ class ViralHunter:
         target.matched_keyword_grade = ctx.get("grade") or ""
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
         target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
-        target.matched_keyword_category = ctx.get("category") or ""
+        target.matched_keyword_category = GYULIM_KEYWORD_PROFILE.normalize_category(ctx.get("category") or "")
         if (not target.category or target.category == "기타") and target.matched_keyword_category:
             target.category = target.matched_keyword_category
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "pathfinder_viral_readiness_score": float(ctx.get("viral_readiness_score") or 0),
+            "pathfinder_local_service_fit_score": float(ctx.get("local_service_fit_score") or 0),
+            "pathfinder_content_actionability_score": float(ctx.get("content_actionability_score") or 0),
+            "pathfinder_medical_ad_risk_score": float(ctx.get("medical_ad_risk_score") or 0),
+            "pathfinder_community_signal": float(ctx.get("community_signal") or 0),
+            "pathfinder_conversion_signal": float(ctx.get("conversion_signal") or 0),
+            "pathfinder_profile_action_signal": float(ctx.get("profile_action_signal") or 0),
+            "pathfinder_preferred_search_surface": ctx.get("preferred_search_surface") or "",
+            "pathfinder_recommended_content_type": ctx.get("recommended_content_type") or "",
+            "pathfinder_brand_intent_type": ctx.get("brand_intent_type") or "generic",
+            "pathfinder_review_intent_type": ctx.get("review_intent_type") or "none",
+            "pathfinder_execution_lens": ctx.get("execution_lens") or "",
+        }
         return target
 
     # ── 체크포인트 유틸 ────────────────────────────────────────────────
@@ -4919,7 +6566,10 @@ class ViralHunter:
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
              top_n_for_ai: int = 300, ai_parallel: int = 5,
-             use_latest_legion: bool = True) -> List[ViralTarget]:
+             use_latest_legion: bool = True,
+             source_scan_run_id: Optional[int] = None,
+             boost_categories: Optional[Iterable[str]] = None,
+             boost_lenses: Optional[Iterable[str]] = None) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -4935,19 +6585,33 @@ class ViralHunter:
             발견된 ViralTarget 리스트
         """
         if keywords is None:
-            keywords = self._load_keywords(use_latest_legion=use_latest_legion)
+            keywords = self._load_keywords(
+                use_latest_legion=use_latest_legion,
+                source_scan_run_id=source_scan_run_id,
+            )
         else:
             self._load_keyword_context(keywords)
+
+        self._load_keyword_context(keywords)
+        keywords = self._order_keywords_for_handoff_coverage(
+            keywords,
+            boost_categories=boost_categories,
+            boost_lenses=boost_lenses,
+        )
 
         if limit_keywords:
             keywords = keywords[:limit_keywords]
 
         self._load_keyword_context(keywords)
 
-        # 키워드 세트 해시 (순서 무관)
-        kw_hash = hashlib.md5(
-            ('|'.join(sorted(keywords))).encode('utf-8')
-        ).hexdigest()[:16]
+        # Checkpoint scope includes scan lineage, boost lanes, ordered queries, and platform limits.
+        kw_hash = self._checkpoint_hash_for_run(
+            keywords,
+            max_per_platform=max_per_platform,
+            source_scan_run_id=source_scan_run_id,
+            boost_categories=boost_categories,
+            boost_lenses=boost_lenses,
+        )
 
         # 체크포인트 복원
         all_targets: List[ViralTarget] = []
@@ -4992,7 +6656,35 @@ class ViralHunter:
                 progress_callback("검색중", i, len(keywords), f"'{kw}' 검색 | 수집: {len(all_targets)}개")
 
             try:
-                results = self.searcher.search_all(kw, max_per_platform)
+                results = []
+                for search_plan in self._search_queries_for_keyword(kw, max_per_platform):
+                    query = search_plan["query"]
+                    limits = search_plan["platform_limits"]
+                    logger.info(
+                        "[search-plan] %s query=%s variant=%s readiness=%.1f risk=%.1f surface=%s type=%s limits=%s",
+                        kw,
+                        query,
+                        search_plan.get("variant") or "base",
+                        search_plan["readiness"],
+                        search_plan["medical_risk"],
+                        search_plan["preferred_surface"] or "-",
+                        search_plan["recommended_content_type"] or "-",
+                        limits,
+                    )
+                    query_results = self.searcher.search_all(
+                        query,
+                        max_per_platform=max_per_platform,
+                        include_blog=bool(search_plan["include_blog"]),
+                        platform_limits=limits,
+                    )
+                    for target in query_results:
+                        self._attach_search_query_lineage(
+                            target,
+                            source_keyword=kw,
+                            search_query=query,
+                            query_variant=search_plan.get("variant") or "base",
+                        )
+                    results.extend(query_results)
             except Exception as e:
                 logger.error(f"'{kw}' 검색 중 예외: {e} — 다음 키워드로 진행")
                 results = []
@@ -5422,9 +7114,12 @@ def main():
     parser.add_argument('--no-db', action='store_true', help='DB 저장 없이 결과만 출력 (WSL 호환)')
     parser.add_argument('--fresh', action='store_true', help='체크포인트 무시하고 처음부터 스캔')
     parser.add_argument('--legacy-keywords', action='store_true', help='최신 Legion curated seed 대신 기존 누적 키워드 로더 사용')
+    parser.add_argument('--source-scan-id', type=int, default=None, help='특정 Pathfinder/Legion scan_run_id 기반 seed로 실행')
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
     parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
+    parser.add_argument('--boost-category', action='append', default=[], help='먼저 실행할 Pathfinder 진료축 lane')
+    parser.add_argument('--boost-lens', action='append', default=[], help='먼저 실행할 Pathfinder 실행렌즈 lane')
 
     args = parser.parse_args()
 
@@ -5464,7 +7159,7 @@ def main():
         generator = AICommentGenerator()
 
         # 키워드 로드
-        seeds = ViralSeedBuilder().build()
+        seeds = ViralSeedBuilder().build(scan_run_id=args.source_scan_id)
         keywords = [seed.keyword for seed in seeds] or ["청주 한의원", "청주 다이어트"]
         if args.limit_keywords:
             keywords = keywords[:args.limit_keywords]
@@ -5595,7 +7290,10 @@ def main():
         hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords,
                     fresh=args.fresh, checkpoint_every=args.checkpoint_every,
                     top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel,
-                    use_latest_legion=not args.legacy_keywords)
+                    use_latest_legion=not args.legacy_keywords,
+                    source_scan_run_id=args.source_scan_id,
+                    boost_categories=args.boost_category,
+                    boost_lenses=args.boost_lens)
         return
 
     if args.generate:

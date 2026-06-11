@@ -18,7 +18,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.json_io import atomic_write_json
-from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
 
 @dataclass

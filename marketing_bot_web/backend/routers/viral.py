@@ -70,6 +70,7 @@ parent_dir = str(setup_paths.PROJECT_ROOT)
 
 from db.database import DatabaseManager
 from viral_hunter import ViralHunter, ViralTarget
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 from backend_utils.error_handlers import handle_exceptions
 from schemas.response import success_response, error_response
 from config.app_settings import get_settings
@@ -78,15 +79,60 @@ from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 router = APIRouter()
 
-VIRAL_CORE_CATEGORIES = [
-    "\ub2e4\uc774\uc5b4\ud2b8",
-    "\uad50\ud1b5\uc0ac\uace0",
-    "\ud53c\ubd80",
-    "\ube44\ub300\uce6d/\uad50\uc815",
-    "\uccb4\ud615\uad50\uc815",
-    "\ub9ac\ud504\ud305/\ud0c4\ub825",
-    "\uacbd\uc7c1\uc0ac_\uc5ed\uacf5\ub7b5",
-]
+_PREFERRED_GYULIM_CORE_CATEGORY_ORDER = (
+    "피부/여드름",
+    "다이어트",
+    "교통사고",
+    "안면비대칭",
+    "체형교정",
+    "리프팅/탄력",
+    "통증/디스크",
+    "탈모/두피",
+    "두통/어지럼",
+    "소화/위장",
+    "호흡기/알레르기",
+    "갱년기/여성",
+    "수면/피로",
+    "스트레스/자율신경",
+    "여성/산후",
+    "다한증/냉증",
+    "수험생/집중력",
+    "면역/보약",
+    "경쟁사_역공략",
+)
+
+
+def _unique_categories(categories: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for category in categories:
+        clean = (category or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+    return result
+
+
+def _canonical_viral_category(category: Optional[str]) -> str:
+    if not category:
+        return "기타"
+    return GYULIM_KEYWORD_PROFILE.normalize_category(str(category).strip())
+
+
+VIRAL_CORE_CANONICAL_CATEGORIES = _unique_categories(
+    [_canonical_viral_category(category) for category in _PREFERRED_GYULIM_CORE_CATEGORY_ORDER]
+    + [_canonical_viral_category(category) for category in GYULIM_KEYWORD_PROFILE.business_core_categories]
+)
+
+VIRAL_CORE_CATEGORIES = _unique_categories(
+    VIRAL_CORE_CANONICAL_CATEGORIES
+    + [
+        alias
+        for alias, canonical in GYULIM_KEYWORD_PROFILE.category_aliases.items()
+        if _canonical_viral_category(canonical) in VIRAL_CORE_CANONICAL_CATEGORIES
+    ]
+)
 
 VALID_VIRAL_WORK_SCOPES = {"latest_legion", "core", "all_backlog"}
 
@@ -126,6 +172,37 @@ def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
         return 0
 
 
+def _viral_target_columns(cursor: sqlite3.Cursor) -> set[str]:
+    try:
+        return {row[1] for row in cursor.execute("PRAGMA table_info(viral_targets)").fetchall()}
+    except Exception:
+        return set()
+
+
+def _viral_category_scope_columns(cursor: sqlite3.Cursor) -> List[str]:
+    columns = _viral_target_columns(cursor)
+    scope_columns = ["category"]
+    if "matched_keyword_category" in columns:
+        scope_columns.append("matched_keyword_category")
+    return scope_columns
+
+
+def _append_core_category_scope(cursor: sqlite3.Cursor, where: List[str], params: List[Any]) -> None:
+    placeholders = ",".join(["?"] * len(VIRAL_CORE_CATEGORIES))
+    clauses = []
+    for column in _viral_category_scope_columns(cursor):
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(VIRAL_CORE_CATEGORIES)
+    where.append("(" + " OR ".join(clauses) + ")")
+
+
+def _viral_category_expr(cursor: sqlite3.Cursor) -> str:
+    columns = _viral_target_columns(cursor)
+    if "matched_keyword_category" in columns:
+        return "COALESCE(NULLIF(matched_keyword_category, ''), NULLIF(category, ''), '기타')"
+    return "COALESCE(NULLIF(category, ''), '기타')"
+
+
 def _apply_work_scope_sql(
     cursor: sqlite3.Cursor,
     work_scope: Optional[str],
@@ -146,8 +223,7 @@ def _apply_work_scope_sql(
             where.append("source_scan_run_id = ?")
             params.append(scan_id)
     if scope in ("latest_legion", "core"):
-        where.append(f"category IN ({','.join(['?'] * len(VIRAL_CORE_CATEGORIES))})")
-        params.extend(VIRAL_CORE_CATEGORIES)
+        _append_core_category_scope(cursor, where, params)
     if exclude_revisited:
         where.append("COALESCE(scan_count, 1) <= 1")
 
@@ -165,10 +241,7 @@ def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], w
 
 
 def _viral_score_breakdown_expr(cursor: sqlite3.Cursor, key: str) -> str:
-    try:
-        columns = {row[1] for row in cursor.execute("PRAGMA table_info(viral_targets)").fetchall()}
-    except Exception:
-        columns = set()
+    columns = _viral_target_columns(cursor)
     if "score_breakdown" not in columns:
         return "CAST(0 AS REAL)"
     safe_key = "".join(ch for ch in key if ch.isalnum() or ch == "_")
@@ -1012,29 +1085,45 @@ async def get_viral_home_stats(
             del platform_stats[p]['totalScore']
 
         # 2. 카테고리별 통계 (DB 집계)
+        category_expr = _viral_category_expr(cursor)
         cursor.execute(f"""
             SELECT
-                COALESCE(category, '기타') as category,
+                {category_expr} as category,
                 COUNT(*) as count,
                 AVG(COALESCE(priority_score, 0)) as avg_score,
                 MAX(COALESCE(priority_score, 0)) as max_score
             FROM viral_targets
             WHERE comment_status = 'pending'
             {batch_condition}
-            GROUP BY COALESCE(category, '기타')
+            GROUP BY {category_expr}
             ORDER BY MAX(COALESCE(priority_score, 0)) DESC
         """, params)
 
         category_rows = cursor.fetchall()
-        category_stats = []
+        category_buckets: Dict[str, Dict[str, float]] = {}
         for row in category_rows:
-            avg_score = row['avg_score'] or 0
-            max_score = row['max_score'] or 0
-            priority = max_score * 0.5 + avg_score * 0.3 + row['count'] * 0.2
+            category = _canonical_viral_category(row['category'])
+            count = int(row['count'] or 0)
+            avg_score = float(row['avg_score'] or 0)
+            max_score = float(row['max_score'] or 0)
+            bucket = category_buckets.setdefault(
+                category,
+                {'count': 0, 'score_sum': 0.0, 'max_score': 0.0},
+            )
+            bucket['count'] += count
+            bucket['score_sum'] += avg_score * count
+            bucket['max_score'] = max(bucket['max_score'], max_score)
+
+        category_stats = []
+        for category, bucket in category_buckets.items():
+            count = int(bucket['count'])
+            avg_score = (bucket['score_sum'] / count) if count else 0.0
+            max_score = bucket['max_score']
+            priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
 
             category_stats.append({
-                'category': row['category'],
-                'count': row['count'],
+                'category': category,
+                'count': count,
                 'avgScore': round(avg_score, 2),
                 'maxScore': round(max_score, 2),
                 'priority': round(priority, 2)
@@ -1534,11 +1623,17 @@ async def get_todays_queue(
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
         clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
         worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
+        target_columns = _viral_target_columns(cursor)
+        matched_category_select = (
+            "matched_keyword_category"
+            if "matched_keyword_category" in target_columns
+            else "NULL AS matched_keyword_category"
+        )
         candidate_limit = min(500, max(total_limit * 4, total_limit + per_category * len(VIRAL_CORE_CATEGORIES)))
 
         query = f"""
             SELECT id, platform, url, title, content_preview, matched_keywords,
-                   category, priority_score, discovered_at, author, matched_keyword,
+                   category, {matched_category_select}, priority_score, discovered_at, author, matched_keyword,
                    {clinic_fit_expr} AS clinic_treatment_fit_score,
                    {worksite_efficiency_expr} AS worksite_efficiency_score
             FROM viral_targets
@@ -1571,7 +1666,14 @@ async def get_todays_queue(
         # 카테고리별 그룹핑 (per_category 상한 적용)
         groups_map: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
-            cat = r.get("category") or "기타"
+            raw_category = r.get("category") or "기타"
+            routing_category = r.get("matched_keyword_category") or raw_category
+            cat = _canonical_viral_category(routing_category)
+            if raw_category != cat:
+                r["raw_category"] = raw_category
+            if r.get("matched_keyword_category"):
+                r["matched_keyword_category"] = _canonical_viral_category(r.get("matched_keyword_category"))
+            r["category"] = cat
             groups_map.setdefault(cat, []).append(r)
 
         def target_rank_key(item: Dict[str, Any]) -> Tuple[float, float, float]:
@@ -1718,25 +1820,39 @@ async def get_viral_categories() -> List[Dict[str, Any]]:
         cursor = conn.cursor()
 
         # DB에서 직접 카테고리별 집계 (기존: 10,000개 로드 후 Python 처리)
-        cursor.execute("""
+        category_expr = _viral_category_expr(cursor)
+        cursor.execute(f"""
             SELECT
-                COALESCE(category, '기타') as category,
+                {category_expr} as category,
                 COUNT(*) as count,
                 AVG(COALESCE(priority_score, 0)) as avg_score,
                 MAX(COALESCE(priority_score, 0)) as max_score
             FROM viral_targets
             WHERE comment_status = 'pending'
-            GROUP BY COALESCE(category, '기타')
+            GROUP BY {category_expr}
         """)
 
         rows = cursor.fetchall()
 
         # 우선순위 계산 및 결과 생성
-        result = []
+        buckets: Dict[str, Dict[str, float]] = {}
         for row in rows:
             category, count, avg_score, max_score = row
-            avg_score = avg_score or 0
-            max_score = max_score or 0
+            category = _canonical_viral_category(category)
+            count = int(count or 0)
+            bucket = buckets.setdefault(
+                category,
+                {'count': 0, 'score_sum': 0.0, 'max_score': 0.0},
+            )
+            bucket['count'] += count
+            bucket['score_sum'] += float(avg_score or 0) * count
+            bucket['max_score'] = max(bucket['max_score'], float(max_score or 0))
+
+        result = []
+        for category, bucket in buckets.items():
+            count = int(bucket['count'])
+            avg_score = (bucket['score_sum'] / count) if count else 0.0
+            max_score = bucket['max_score']
             priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
 
             result.append({

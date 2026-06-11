@@ -3508,6 +3508,28 @@ class DatabaseManager:
             logger.error(f"get_existing_viral_urls error: {e}")
             return set()
 
+    @staticmethod
+    def _parse_json_dict(value) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                import json
+
+                parsed = json.loads(value)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _merge_score_breakdown(existing_value, incoming_value) -> dict:
+        existing = DatabaseManager._parse_json_dict(existing_value)
+        incoming = DatabaseManager._parse_json_dict(incoming_value)
+        if not incoming:
+            return existing
+        return {**existing, **incoming}
+
     def refresh_existing_viral_targets(self, targets_data: list[dict]) -> int:
         """Refresh scan metadata for existing viral URLs without changing workflow status.
 
@@ -3547,6 +3569,11 @@ class DatabaseManager:
                 if not existing_identity:
                     continue
                 target_id, _stored_url = existing_identity
+                existing_breakdown_row = self.cursor.execute(
+                    "SELECT score_breakdown FROM viral_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                existing_score_breakdown = existing_breakdown_row[0] if existing_breakdown_row else "{}"
 
                 kws_list = target_data.get('matched_keywords') or []
                 if isinstance(kws_list, str):
@@ -3559,7 +3586,11 @@ class DatabaseManager:
                 matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
                 author = target_data.get('author') or None
                 posted_at = target_data.get('date_str') or target_data.get('posted_at') or None
-                score_breakdown_json = json.dumps(target_data.get('score_breakdown') or {}, ensure_ascii=False)
+                score_breakdown = self._merge_score_breakdown(
+                    existing_score_breakdown,
+                    target_data.get('score_breakdown') or {},
+                )
+                score_breakdown_json = json.dumps(score_breakdown, ensure_ascii=False)
                 sort_appearances_json = json.dumps(target_data.get('sort_appearances') or [], ensure_ascii=False)
                 content_hash = self.calculate_content_hash(
                     url=canonical_url or url,

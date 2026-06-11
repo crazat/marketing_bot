@@ -61,8 +61,8 @@ class ViralTargetRepository:
 
     def count(self, filters: Optional[Dict[str, Any]] = None) -> int:
         """필터 조건에 맞는 레코드 총 개수."""
-        where, params = self._build_where(filters or {})
         with self._conn() as conn:
+            where, params = self._build_where(filters or {}, self._columns_for_conn(conn))
             cur = conn.cursor()
             cur.execute(f"SELECT COUNT(*) FROM {self.TABLE} {where}", params)
             return int(cur.fetchone()[0])
@@ -75,9 +75,9 @@ class ViralTargetRepository:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """필터·정렬·페이지네이션된 목록 조회."""
-        where, params = self._build_where(filters or {})
         order_by = self._build_order_by(sort)
         with self._conn() as conn:
+            where, params = self._build_where(filters or {}, self._columns_for_conn(conn))
             cur = conn.cursor()
             cur.execute(
                 f"SELECT * FROM {self.TABLE} {where} {order_by} LIMIT ? OFFSET ?",
@@ -304,8 +304,8 @@ class ViralTargetRepository:
         if matched > max_affected:
             raise ValueError(f"매칭 {matched}건이 max_affected({max_affected}) 초과")
 
-        where, params = self._build_where(filters)
         with self._conn() as conn:
+            where, params = self._build_where(filters, self._columns_for_conn(conn))
             cur = conn.cursor()
             cur.execute(
                 f"UPDATE {self.TABLE} SET comment_status = ? {where}",
@@ -347,7 +347,50 @@ class ViralTargetRepository:
         return d
 
     @staticmethod
-    def _build_where(filters: Dict[str, Any]) -> tuple[str, list]:
+    def _category_columns(table_columns: Optional[set[str]]) -> List[str]:
+        columns = ["category"]
+        if table_columns and "matched_keyword_category" in table_columns:
+            columns.append("matched_keyword_category")
+        return columns
+
+    @staticmethod
+    def _append_category_in_clause(
+        clauses: List[str],
+        params: List[Any],
+        categories: List[str],
+        table_columns: Optional[set[str]],
+    ) -> None:
+        if not categories:
+            return
+        placeholders = ",".join(["?"] * len(categories))
+        category_columns = ViralTargetRepository._category_columns(table_columns)
+        clauses.append(
+            "(" + " OR ".join(f"{column} IN ({placeholders})" for column in category_columns) + ")"
+        )
+        for _ in category_columns:
+            params.extend(categories)
+
+    @staticmethod
+    def _append_category_not_in_clause(
+        clauses: List[str],
+        params: List[Any],
+        categories: List[str],
+        table_columns: Optional[set[str]],
+    ) -> None:
+        if not categories:
+            return
+        placeholders = ",".join(["?"] * len(categories))
+        category_columns = ViralTargetRepository._category_columns(table_columns)
+        clauses.append(
+            " AND ".join(
+                f"COALESCE({column}, '') NOT IN ({placeholders})" for column in category_columns
+            )
+        )
+        for _ in category_columns:
+            params.extend(categories)
+
+    @staticmethod
+    def _build_where(filters: Dict[str, Any], table_columns: Optional[set[str]] = None) -> tuple[str, list]:
         """GET /targets와 동일한 필터 규칙."""
         clauses: List[str] = ["1=1"]
         params: List[Any] = []
@@ -374,30 +417,33 @@ class ViralTargetRepository:
             # 콤마 구분 다중값 지원 (골든큐: 다이어트,피부,비대칭/교정,교통사고,통증/디스크)
             if isinstance(category, str) and "," in category:
                 cats = [c.strip() for c in category.split(",") if c.strip()]
-                placeholders = ",".join(["?"] * len(cats))
-                clauses.append(f"category IN ({placeholders})")
-                params.extend(cats)
             else:
-                clauses.append("category = ?")
-                params.append(category)
+                cats = [str(category).strip()]
+            ViralTargetRepository._append_category_in_clause(clauses, params, cats, table_columns)
 
         include_categories = filters.get("include_categories")
         if include_categories and not category:
             if isinstance(include_categories, str):
                 include_categories = [c.strip() for c in include_categories.split(",") if c.strip()]
             if include_categories:
-                placeholders = ",".join(["?"] * len(include_categories))
-                clauses.append(f"category IN ({placeholders})")
-                params.extend(include_categories)
+                ViralTargetRepository._append_category_in_clause(
+                    clauses,
+                    params,
+                    [str(c).strip() for c in include_categories if str(c).strip()],
+                    table_columns,
+                )
 
         exclude_categories = filters.get("exclude_categories")
         if exclude_categories:
             if isinstance(exclude_categories, str):
                 exclude_categories = [c.strip() for c in exclude_categories.split(",") if c.strip()]
             if exclude_categories:
-                placeholders = ",".join(["?"] * len(exclude_categories))
-                clauses.append(f"COALESCE(category, '') NOT IN ({placeholders})")
-                params.extend(exclude_categories)
+                ViralTargetRepository._append_category_not_in_clause(
+                    clauses,
+                    params,
+                    [str(c).strip() for c in exclude_categories if str(c).strip()],
+                    table_columns,
+                )
 
         source_scan_run_id = filters.get("source_scan_run_id")
         if source_scan_run_id is not None:

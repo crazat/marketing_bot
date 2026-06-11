@@ -238,6 +238,92 @@ def test_smart_recommendations_surface_gyulim_efficiency_filter(tmp_db_path, mon
     assert any(item["type"] == "gyulim_efficiency" for item in result["insights"])
 
 
+def test_core_scope_accepts_gyulim_canonical_legacy_and_matched_categories(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword_category TEXT")
+        rows = [
+            (
+                "canonical-asymmetry",
+                "cafe",
+                "http://x/canonical-asymmetry",
+                "canonical asymmetry",
+                "안면비대칭",
+                "",
+                "pending",
+                97,
+                1,
+            ),
+            (
+                "matched-skin",
+                "kin",
+                "http://x/matched-skin",
+                "matched skin",
+                "기타",
+                "피부/여드름",
+                "pending",
+                95,
+                1,
+            ),
+            (
+                "legacy-scar",
+                "blog",
+                "http://x/legacy-scar",
+                "legacy scar",
+                "흉터/여드름흉터",
+                "",
+                "pending",
+                93,
+                1,
+            ),
+            (
+                "off-scope",
+                "blog",
+                "http://x/off-scope-category",
+                "off scope",
+                "legacy",
+                "",
+                "pending",
+                120,
+                1,
+            ),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, category, matched_keyword_category,
+                comment_status, priority_score, discovered_at, scan_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    count = asyncio.run(
+        viral_router.count_viral_targets(
+            work_scope="core",
+            exclude_revisited=None,
+            min_confidence=None,
+            min_score=None,
+            commentable_only=None,
+        )
+    )
+    result = asyncio.run(
+        viral_router.get_smart_recommendations(work_scope="core", exclude_revisited=None)
+    )
+    quick = {item["id"]: item for item in result["quick_filters"]}
+    focus_ids = {target["id"] for target in result["today_focus"]}
+
+    assert count == {"total": 3}
+    assert quick["high_priority"]["count"] == 3
+    assert {"canonical-asymmetry", "matched-skin", "legacy-scar"}.issubset(focus_ids)
+    assert "off-scope" not in focus_ids
+
+
 def test_todays_queue_is_portfolio_balanced_across_core_categories(tmp_db_path, monkeypatch):
     from routers import viral as viral_router
 
@@ -332,6 +418,114 @@ def test_todays_queue_is_portfolio_balanced_across_core_categories(tmp_db_path, 
     assert "diet-1" in selected_ids
     assert "asymmetry-1" in selected_ids
     assert len([item_id for item_id in selected_ids if item_id.startswith("skin-")]) == 2
+
+
+def test_todays_queue_merges_gyulim_legacy_and_matched_categories(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword TEXT")
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword_category TEXT")
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        rows = [
+            (
+                "legacy-scar-top",
+                "kin",
+                "http://x/legacy-scar-top",
+                "legacy scar top",
+                '["scar"]',
+                "흉터/여드름흉터",
+                "",
+                1,
+                "pending",
+                98,
+                1,
+                "scar",
+                '{"clinic_treatment_fit_score": 95, "worksite_efficiency_score": 95}',
+            ),
+            (
+                "canonical-skin",
+                "cafe",
+                "http://x/canonical-skin",
+                "canonical skin",
+                '["skin"]',
+                "피부/여드름",
+                "",
+                1,
+                "pending",
+                96,
+                1,
+                "skin",
+                '{"clinic_treatment_fit_score": 94, "worksite_efficiency_score": 94}',
+            ),
+            (
+                "matched-skin-overflow",
+                "blog",
+                "http://x/matched-skin-overflow",
+                "matched skin overflow",
+                '["skin"]',
+                "기타",
+                "피부/여드름",
+                1,
+                "pending",
+                94,
+                1,
+                "skin",
+                '{"clinic_treatment_fit_score": 93, "worksite_efficiency_score": 93}',
+            ),
+            (
+                "diet-fill",
+                "cafe",
+                "http://x/diet-fill",
+                "diet fill",
+                '["diet"]',
+                "다이어트",
+                "",
+                1,
+                "pending",
+                90,
+                1,
+                "diet",
+                '{"clinic_treatment_fit_score": 82, "worksite_efficiency_score": 82}',
+            ),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, matched_keywords, category,
+                matched_keyword_category, is_commentable, comment_status,
+                priority_score, discovered_at, scan_count, matched_keyword, score_breakdown
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    result = asyncio.run(
+        viral_router.get_todays_queue(
+            total_limit=3,
+            per_category=2,
+            today_only=False,
+            work_scope="core",
+            exclude_revisited=None,
+        )
+    )
+    groups = {group["category"]: group for group in result["groups"]}
+    selected_ids = [
+        item["id"]
+        for group in result["groups"]
+        for item in group["items"]
+    ]
+
+    assert set(groups) == {"피부/여드름", "다이어트"}
+    assert groups["피부/여드름"]["selected_count"] == 2
+    assert "legacy-scar-top" in selected_ids
+    assert "canonical-skin" in selected_ids
+    assert "matched-skin-overflow" not in selected_ids
+    assert "diet-fill" in selected_ids
 
 
 def test_all_backlog_staff_queries_hide_revisited_by_default(tmp_db_path, monkeypatch):

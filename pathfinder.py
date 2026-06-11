@@ -9,7 +9,7 @@ import urllib3
 import concurrent.futures
 import threading
 from scrapers.naver_autocomplete import NaverAutocompleteScraper
-from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -122,7 +122,7 @@ class Pathfinder:
 [제외할 키워드 (이미 수집됨)]: {exclude_str}
 
 규칙:
-- 지역명 '청주'를 포함하세요
+- 지역명 '{GYULIM_KEYWORD_PROFILE.primary_region}'를 포함하세요
 - 위 [탐색 의도]에 맞는 구체적인 상황을 상상하세요.
 - [제외할 키워드]는 절대 포함하지 마세요.
 - 최소 10개 이상 생성
@@ -184,130 +184,46 @@ class Pathfinder:
             ]
 
             has_competitor = any(comp in kw for comp in competitor_blacklist)
+            if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+                cosmetic_allowed = {"피부과", "성형외과"}
+                scar_context = any(token in kw for token in ("흉터", "여드름", "수술흉터", "켈로이드", "피부"))
+                if scar_context:
+                    has_competitor = any(
+                        comp in kw
+                        for comp in competitor_blacklist
+                        if comp not in cosmetic_allowed
+                    )
             if has_competitor:
                 logger.debug(f"⛔ Competitor keyword blocked: {kw}")
                 continue
 
-            # [IMPROVED FILTER] 보너스 키워드 추가 필터 (청주 중심)
+            # [IMPROVED FILTER] 보너스 키워드 추가 필터 (활성 진료권 중심)
             if kw not in candidates:
-                # 청주 전용 지역명 (규림 제외 - 전국 지점 혼동 방지)
-                cheongju_locations = [
-                    "청주",
-                    # 4개 구
-                    "상당", "서원", "흥덕", "청원", "상당구", "서원구", "흥덕구", "청원구",
-                    # 주요 동/읍 (흥덕구)
-                    "복대동", "가경동", "분평동", "봉명동", "사창동", "강서동",
-                    "송정동", "향정동", "신봉동", "신성동", "장성동",
-                    # 서원구
-                    "산남동", "수곡동", "모충동", "사직동", "남이면", "현도면",
-                    # 상당구
-                    "율량동", "용암동", "금천동", "성화동", "우암동", "탑동", "영동", "중앙동",
-                    # 청원구
-                    "내덕동", "오창", "오송", "오창읍", "오송읍", "북이면", "내수읍",
-                    # 주요 시설/지역
-                    "청주역", "터미널", "육거리", "중앙공원", "운천", "성안길"
-                ]
+                target_locations = list(dict.fromkeys(
+                    list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                    + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+                    + list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+                ))
 
-                # 다른 지역명 블랙리스트 (규림 전국 지점 필터링)
+                # 다른 지역명 블랙리스트
                 other_cities = [
                     "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
                     "강남", "강서", "강북", "서초", "송파", "마포", "영등포", "용산",
                     "해운대", "수영", "동래", "연제"  # 부산 주요 구
                 ]
+                other_cities = [city for city in other_cities if city not in target_locations]
 
-                has_cheongju = any(loc in kw for loc in cheongju_locations)
+                has_target_region = any(loc in kw for loc in target_locations)
                 has_other_city = any(city in kw for city in other_cities)
 
-                # 청주 관련 없거나, 다른 도시명 포함되면 제외
-                if not has_cheongju or has_other_city:
-                    logger.debug(f"Bonus keyword filtered out (not Cheongju exclusive): {kw}")
+                # 타깃 진료권 관련 없거나, 다른 도시명 포함되면 제외
+                if not has_target_region or has_other_city:
+                    logger.debug(f"Bonus keyword filtered out (not target-region exclusive): {kw}")
                     continue
 
-                # [NEW] 옵션 B: 한의원 중심 필터 (보너스 키워드만)
-                # 한의원 관련 키워드
-                hanbang_terms = [
-                    "한의원", "한방", "한약", "침", "뜸", "추나", "부항", "교정",
-                    "공진단", "경옥고", "보약", "총명탕"
-                ]
-
-                # 한의원이 다루는 증상 키워드 (대폭 확장)
-                hanbang_symptoms = [
-                    # 비만/체중 관리
-                    "다이어트", "비만", "살빼기", "체중감량", "복부비만", "식욕억제",
-
-                    # 피부 질환
-                    "여드름", "피부", "흉터", "아토피", "건선", "습진", "피부염",
-                    "기미", "주근깨", "잡티", "모공", "여드름흉터",
-
-                    # 탈모
-                    "탈모", "원형탈모", "지루성두피", "두피", "탈모치료", "발모",
-
-                    # 통증 관리
-                    "통증", "디스크", "허리", "목", "무릎", "어깨", "팔", "손목",
-                    "발목", "관절", "근육통", "신경통", "요통", "좌골신경통",
-                    "오십견", "팔저림", "손목통증", "족저근막염", "관절염",
-
-                    # 교통사고/외상
-                    "교통사고", "후유증", "입원", "염좌", "타박상", "골절",
-
-                    # 체형 교정
-                    "안면비대칭", "체형교정", "골반교정", "턱관절", "측만증",
-                    "거북목", "일자목", "휜다리", "골반불균형", "척추측만증",
-
-                    # 여성 질환
-                    "갱년기", "폐경", "생리통", "산후조리", "생리불순", "냉대하",
-                    "자궁근종", "난임", "불임", "임신준비", "산후비만", "산후우울",
-                    "여성질환", "방광염", "요실금",
-
-                    # 남성 질환
-                    "남성갱년기", "전립선", "발기부전", "조루", "성기능",
-
-                    # 정신/신경
-                    "불면증", "수면", "피로", "스트레스", "우울증", "불안증",
-                    "공황장애", "화병", "신경쇠약", "만성피로",
-
-                    # 소화기
-                    "소화불량", "위염", "변비", "담적", "역류성식도염", "설사",
-                    "과민성대장", "장염", "복통", "식욕부진", "구토",
-
-                    # 호흡기
-                    "비염", "알레르기", "축농증", "감기", "기침", "천식", "후비루",
-                    "코막힘", "재채기", "비중격만곡", "알레르기비염", "만성비염",
-
-                    # 두통/어지럼증
-                    "두통", "편두통", "어지럼증", "현기증", "메니에르", "이명",
-                    "난청", "귀울림",
-
-                    # 순환/대사
-                    "다한증", "냉증", "수족냉증", "손발저림", "부종", "하지정맥류",
-                    "고혈압", "당뇨", "고지혈증", "지방간", "간질환", "신장",
-
-                    # 안과 증상
-                    "안구건조증", "눈피로", "시력", "눈떨림", "결막염",
-
-                    # 성장/발달
-                    "성장판", "키성장", "성조숙증", "저신장", "성장부진",
-
-                    # 소아 질환
-                    "소아", "아이", "야뇨증", "식욕부진", "아토피", "비염",
-                    "감기", "잔병치레", "면역력", "키성장",
-
-                    # 수험생/학습
-                    "수험생", "집중력", "총명탕", "기억력", "학습능력", "시험",
-
-                    # 중풍/뇌혈관
-                    "중풍", "뇌졸중", "반신마비", "언어장애", "안면마비", "구안와사",
-
-                    # 면역/만성질환
-                    "면역력", "대상포진", "체질개선", "암", "항암", "면역",
-                    "잔병치레", "만성질환",
-
-                    # 수면
-                    "코골이", "수면무호흡증", "수면장애",
-
-                    # 기타
-                    "체질", "건강검진", "예방", "관리", "치료", "개선"
-                ]
+                # 활성 프로필 중심 필터 (보너스 키워드만)
+                hanbang_terms = list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)
+                hanbang_symptoms = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords)
 
                 has_hanbang = any(term in kw for term in hanbang_terms)
                 has_symptom = any(term in kw for term in hanbang_symptoms)
@@ -348,8 +264,12 @@ class Pathfinder:
             opp_score, tag = self._analyze_opportunity(vol, doc_count)
             
             # 3. Detect Region (Fix for :region parameter binding error)
-            regions = ["청주", "세종", "진천", "증평", "괴산", "보은"]
-            detected_region = next((r for r in regions if r in kw), "기타")
+            regions = list(dict.fromkeys(
+                list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+                + list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                + list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+            ))
+            detected_region = next((r for r in regions if r in kw), GYULIM_KEYWORD_PROFILE.primary_region)
             
             insights.append({
                 "keyword": kw,
@@ -401,11 +321,15 @@ class Pathfinder:
         kw = keyword.replace(" ", "")
         
         # 0. Always Allow Brand
-        if "규림" in kw:
+        if any(brand.replace(" ", "").lower() in kw.lower() for brand in GYULIM_KEYWORD_PROFILE.own_brand_terms):
             return True
 
         # 1. Region Check
-        regions = ["청주", "세종", "진천", "증평", "괴산", "보은", "오창", "오송", "가경", "복대", "율량", "산남", "용암", "금천", "분평", "사창", "봉명", "비하", "강서", "송절"]
+        regions = list(dict.fromkeys(
+            list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+            + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+            + list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        ))
         has_region = any(r in kw for r in regions)
         if not has_region:
             return False
@@ -423,28 +347,14 @@ class Pathfinder:
             return False
 
         # 3. Medical/Intent Domain Check (Specific)
-        medical_terms = [
-            # Medical Institutions
-            "한의원", "병원", "피부과", "정형외과", "내과", "이비인후과", "치과", "안과", "비뇨기과", "산부인과", "의원", "클리닉",
-            # Diet & Obesity
-            "다이어트", "감량", "살빼", "비만", "체중", "피티", "PT", "운동", "요가", "필라테스", 
-            # Skin & Beauty
-            "여드름", "피부", "흉터", "모공", "잡티", "기미", "점빼", "리프팅", "보톡스", "필러", "슈링크", "인모드", "울쎄라", "안면", "비대칭", "윤곽", "주름", "매선",
-            # Pain & Rehab
-            "교통사고", "입원", "물리치료", "도수치료", "추나", "침잘", "통증", "디스크", "관절", "허리", "어깨", "목", "무릎", "손목", "엘보",
-            # Woman & Postpartum
-            "갱년기", "폐경", "생리", "산후", "조리", "유산", "임신", "난임", "여성", "질환", "방광염", "질염",
-            # Internal & Stress
-            "소화", "위장", "담적", "역류성", "과민성", "변비", "설사", "두통", "어지럼", "이석증", "불면", "수면", "공황", "우울", "불안", "스트레스", "자율신경",
-            # Immunue & Features
-            "비염", "축농증", "감기", "보약", "공진단", "경옥고", "면역", "피로", "대상포진",
-            # Growth & Study
-            "성장", "키", "수능한약", "총명탕"
-        ]
+        medical_terms = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords)
         
         # [Refinement] "센터" is too broad, only allow if preceded by a medical term
         if "센터" in kw:
-            allowed_centers = ["다이어트센터", "교정센터", "비만센터", "통증센터", "성장센터", "산후조리센터"]
+            allowed_centers = [
+                "다이어트센터", "교정센터", "비만센터", "통증센터", "성장센터", "산후조리센터",
+                "흉터센터", "피부센터", "리프팅센터", "체형센터", "비대칭센터",
+            ]
             if not any(ac in kw for ac in allowed_centers):
                 return False
 
@@ -511,18 +421,17 @@ class Pathfinder:
         # 2. Naver 자동완성으로 확장
         autocomplete_scraper = NaverAutocompleteScraper(delay=0.3)
 
-        cheongju_regions = [
-            "청주", "상당", "서원", "흥덕", "청원",
-            "복대", "가경", "율량", "오창", "오송",
-            "분평", "봉명", "산남", "용암", "금천"
-        ]
+        active_regions = list(dict.fromkeys(
+            list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+            + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+        ))
 
         # BFS 확장 (depth=2로 적절한 longtail까지)
         expanded_keywords = autocomplete_scraper.expand_keywords_bfs(
             seed_keywords=seeds,
             max_depth=2,
             max_total=max_keywords,
-            region_filter=cheongju_regions
+            region_filter=active_regions
         )
 
         logger.info(f"🔍 자동완성 확장 완료: {len(expanded_keywords)}개")
@@ -539,13 +448,13 @@ class Pathfinder:
         bonus_count = len(all_keywords) - len(expanded_keywords)
         logger.info(f"📊 검색량 조회 완료: {len(all_keywords)}개 (보너스: {bonus_count}개)")
 
-        # 4. 청주 지역 필터
-        cheongju_keywords = []
+        # 4. 활성 진료권 지역 필터
+        local_keywords = []
         for kw in all_keywords:
-            if any(loc in kw for loc in cheongju_regions):
-                cheongju_keywords.append(kw)
+            if any(loc in kw for loc in active_regions):
+                local_keywords.append(kw)
 
-        logger.info(f"📍 청주 관련 키워드: {len(cheongju_keywords)}개")
+        logger.info(f"📍 {GYULIM_KEYWORD_PROFILE.display_name} 진료권 키워드: {len(local_keywords)}개")
 
         # 5. 필터링 및 KEI 계산
         from scrapers.keyword_harvester import KeywordHarvester
@@ -557,42 +466,27 @@ class Pathfinder:
         # 경쟁사/비한의원 블랙리스트 (강화)
         competitor_blacklist = [
             # 다른 의료 업종
-            "피부과", "성형외과", "정형외과", "산부인과", "이비인후과",
+            "정형외과", "산부인과", "이비인후과",
             "내과", "정신과", "비뇨기과", "치과", "안과", "신경외과",
             # 미용/뷰티 (비한의원)
             "미용실", "헤어샵", "네일", "왁싱", "마사지", "에스테틱",
             "필라테스", "요가", "헬스장", "크로스핏", "복싱", "PT",
-            # 피부과 시술
-            "보톡스", "필러", "레이저제모", "울쎄라", "써마지", "인모드",
             # 비의료 서비스
             "세차", "배터리", "공방", "가구", "블랙박스", "폐기물", "이사",
             "네일", "속눈썹", "반영구", "문신", "타투",
             # 경쟁사 이름
             "스노우", "미하이", "365", "비타", "포에버", "동안나라",
         ]
+        if not getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+            competitor_blacklist.extend(["피부과", "성형외과", "보톡스", "필러", "레이저제모", "울쎄라", "써마지", "인모드"])
 
-        # 한의원 관련 용어 (필수 포함)
-        hanbang_terms = [
-            "한의원", "한방", "한약", "침", "뜸", "추나", "부항", "교정",
-            "공진단", "경옥고", "보약", "총명탕", "한방병원"
-        ]
+        # 활성 진료 프로필 관련 용어 (필수 포함)
+        hanbang_terms = list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)
 
         # 한의원 치료 질환
-        hanbang_symptoms = [
-            "다이어트", "비만", "살빼", "체중", "감량",
-            "여드름", "피부", "모공", "흉터", "아토피",
-            "탈모", "두피",
-            "통증", "디스크", "허리", "목", "어깨", "무릎", "관절",
-            "교통사고", "후유증", "입원",
-            "안면비대칭", "체형교정", "턱관절",
-            "갱년기", "폐경", "생리", "산후",
-            "불면증", "수면",
-            "비염", "축농증", "알레르기",
-            "두통", "어지럼", "이명",
-            "소화", "위장", "역류",
-        ]
+        hanbang_symptoms = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords)
 
-        for kw in cheongju_keywords:
+        for kw in local_keywords:
             # 5-1. 경쟁사/비한의원 필터
             if any(comp in kw for comp in competitor_blacklist):
                 filtered_count["competitor"] += 1
@@ -630,8 +524,10 @@ class Pathfinder:
             category = self._detect_category_v3(kw)
 
             # 5-7. 지역 감지
-            regions = ["청주", "오창", "오송", "복대", "가경", "율량", "산남"]
-            detected_region = next((r for r in regions if r in kw), "청주")
+            detected_region = next(
+                (r for r in active_regions if r in kw),
+                GYULIM_KEYWORD_PROFILE.primary_region,
+            )
 
             insights.append({
                 "keyword": kw,
@@ -693,7 +589,7 @@ class Pathfinder:
             max_neighborhoods_per_category=5,
             include_contexts=False,
         )
-        logger.info(f"V3 시드 생성 완료: {len(seeds)}개 (규림 진료축 프로필 기반)")
+        logger.info(f"V3 시드 생성 완료: {len(seeds)}개 ({GYULIM_KEYWORD_PROFILE.display_name} 진료축 프로필 기반)")
         return seeds
 
     def _detect_category_v3(self, keyword: str) -> str:
@@ -907,7 +803,7 @@ class Pathfinder:
         기존 문제: 47개 지역 × 10개 용어 × 9개 의도 × 5개 시설 = 21,150개/카테고리 (비현실적)
         개선: 청주 중심으로 간결하게 992개 시드 생성 (99.7% 감소)
         """
-        logger.info("🤖 청주 규림 진료축 Smart Seed 생성 중...")
+        logger.info(f"🤖 {GYULIM_KEYWORD_PROFILE.display_name} 진료축 Smart Seed 생성 중...")
         seeds = GYULIM_KEYWORD_PROFILE.build_seed_keywords(
             max_terms_per_category=8,
             max_suffixes_per_category=3,
@@ -928,7 +824,7 @@ class Pathfinder:
             for seed in seeds
         ]
         coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(seeds, min_per_category=6)
-        logger.info(f"🎯 청주 중심 Smart Seed {len(unique_seeds):,}개 생성 완료!")
+        logger.info(f"🎯 {GYULIM_KEYWORD_PROFILE.primary_region} 중심 Smart Seed {len(unique_seeds):,}개 생성 완료!")
         logger.info(f"   진료축 커버리지: {coverage['counts']}")
         return unique_seeds
     
@@ -1026,8 +922,12 @@ class Pathfinder:
                 if opp_score < 100: tag = "Red Ocean 🔴"
                 
                 # Region detection
-                regions = ["청주", "세종", "진천", "증평", "괴산", "보은"]
-                detected_region = next((r for r in regions if r in kw), "기타")
+                regions = list(dict.fromkeys(
+                    list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+                    + list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                    + list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+                ))
+                detected_region = next((r for r in regions if r in kw), GYULIM_KEYWORD_PROFILE.primary_region)
                 
                 # Retrieve Category from Map
                 category = self.keyword_category_map.get(kw, '기타')

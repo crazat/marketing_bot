@@ -37,7 +37,7 @@ from contextlib import closing
 from pathlib import Path
 from functools import lru_cache
 from utils.json_io import atomic_write_json
-from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
 # 품질 필터 (노이즈 제거)
 try:
@@ -622,7 +622,7 @@ class SeasonalKeywordDB:
 
                 if adjusted_month in months:
                     for kw in months[adjusted_month]:
-                        keywords.append((f"청주 {kw}", category))
+                        keywords.append((f"{GYULIM_KEYWORD_PROFILE.primary_region} {kw}", category))
 
         return keywords
 
@@ -986,8 +986,8 @@ class GoogleAutocomplete:
 class LegionCollector:
     """LEGION MODE 키워드 수집기 (Multi-Source)"""
 
-    # 한의원과 무관한 키워드 블랙리스트
-    # (피부과/내과는 한의원과 경쟁 관계이므로 유지)
+    # 활성 클리닉과 무관한 키워드 블랙리스트.
+    # 프로필에 따라 일부 의료과/시술명은 치료축 안에 포함될 수 있다.
     BLACKLIST_KEYWORDS = [
         # 다른 진료과 (한의원 진료 영역 외)
         '치과', '정형외과', '산부인과', '안과', '외과',
@@ -1013,12 +1013,12 @@ class LegionCollector:
         else:
             self.google = None
 
-        # 청주 지역/동네 기준은 공용 Gyulim profile을 따른다.
+        # 지역/동네 기준은 활성 클리닉 프로필을 따른다.
         self.cheongju_regions = list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
         self.nearby_regions = list(GYULIM_KEYWORD_PROFILE.nearby_regions)
         self.neighborhoods = list(GYULIM_KEYWORD_PROFILE.neighborhoods)
 
-        # 한의원/규림 진료축 관련 키워드. 공용 프로필 + 보조 진료군을 합친다.
+        # 활성 클리닉 진료축 관련 키워드. 공용 프로필 + 보조 진료군을 합친다.
         self.hanbang_keywords = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords) + [
             "갱년기", "생리", "산후", "불임",
             "불면", "두통", "어지럼",
@@ -1171,49 +1171,43 @@ class LegionCollector:
 
     # ===== 도메인/지역 적합도 헬퍼 (관련도 강등용) =====
 
-    # 한의원 외 의료 일반과 (한의원 콘텐츠 후보 부적합)
-    MEDICAL_GENERAL_TOKENS = (
-        '피부과', '내과', '이비인후과', '안과', '치과',
-        '정형외과', '성형외과', '신경외과', '비뇨기과', '산부인과',
-        '소아과', '가정의학과', '외과', '응급실',
-    )
-
-    # 한방 indicator (이게 있으면 한의원 컨텍스트로 인정)
-    HANBANG_INDICATORS = (
-        '한의원', '한방', '한약', '한약재', '침', '추나',
-        '뜸', '부항', '경혈', '한의사', '한방병원',
-    )
+    # 기존 호출부 호환용 기본값. 실제 판정은 활성 프로필의 토큰을 우선 사용한다.
+    MEDICAL_GENERAL_TOKENS = tuple(GYULIM_KEYWORD_PROFILE.medical_general_tokens)
+    HANBANG_INDICATORS = tuple(GYULIM_KEYWORD_PROFILE.hanbang_indicators)
 
     def _is_medical_general(self, keyword: str) -> bool:
-        """한의원 외 의료 일반과 키워드 (한방 indicator 부재 시 True)"""
-        if not any(t in keyword for t in self.MEDICAL_GENERAL_TOKENS):
+        """활성 프로필의 진료축 밖 의료 일반과 키워드인지 판정한다."""
+        text = keyword or ""
+        medical_general_tokens = tuple(getattr(GYULIM_KEYWORD_PROFILE, "medical_general_tokens", self.MEDICAL_GENERAL_TOKENS))
+        service_indicators = tuple(getattr(GYULIM_KEYWORD_PROFILE, "hanbang_indicators", self.HANBANG_INDICATORS))
+        if not any(t in text for t in medical_general_tokens):
             return False
-        # 한방 indicator 동반 시 한의원 비교 콘텐츠로 활용 가능 → 강등 면제
-        return not any(h in keyword for h in self.HANBANG_INDICATORS)
+        # 프로필별 서비스 indicator가 동반되면 비교/전환 콘텐츠로 활용 가능하다.
+        return not any(h in text for h in service_indicators)
 
     def _is_in_target_region(self, keyword: str) -> bool:
-        """본 사업영역(청주 행정구역) 매칭. 인접 시(충주/제천/세종 등)는 False."""
+        """본 사업영역 매칭. 인접 권역은 기본적으로 False."""
         return GYULIM_KEYWORD_PROFILE.is_target_region(keyword)
 
     def apply_relevance_demotion(self, keyword: str, grade: str) -> Tuple[str, Optional[str]]:
         """
         도메인/지역 관련도 기반 등급 강등.
         Returns: (new_grade, reason or None)
-        - 의료 일반과: S/A/B → C (사업 무관)
-        - 비-청주 지역: 2단계 강등 (S→B, A→C — 사업영역 외 격하)
+        - 의료 일반과: S/A/B -> C (사업 무관)
+        - 비타깃 지역: 2단계 강등 (S->B, A->C)
         """
         # P1: 의료 일반과 누수 차단
         if self._is_medical_general(keyword):
             if grade in ('S', 'A', 'B'):
                 return 'C', 'medical_general'
-        # P2: 비-청주 지역 2단계 강등 (S→B, A→C, B→C)
+        # P2: 비타깃 지역 2단계 강등
         if not self._is_in_target_region(keyword):
             order = ['S', 'A', 'B', 'C']
             if grade in order:
                 idx = order.index(grade)
                 new_idx = min(idx + 2, len(order) - 1)
                 if new_idx > idx:
-                    return order[new_idx], 'non_cheongju'
+                    return order[new_idx], 'non_target_region'
         return grade, None
 
     def _detect_category(self, keyword: str) -> str:
@@ -1270,7 +1264,7 @@ class LegionCollector:
         return False
 
     def is_focus_candidate(self, keyword: str, category: Optional[str] = None) -> bool:
-        """규림 기본 Legion 타깃: 미용 한의원 + 교통사고 입원실 중심."""
+        """활성 프로필의 기본 Legion 타깃 진료축 중심."""
         if category is None:
             category = self._detect_category(keyword)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
@@ -1284,20 +1278,34 @@ class LegionCollector:
 
     def _is_valid_keyword(self, keyword: str) -> bool:
         """유효한 키워드인지 확인"""
-        # 청주 또는 인근 지역 포함
+        # 활성 프로필의 타깃 또는 인근 지역 포함
         has_region = GYULIM_KEYWORD_PROFILE.is_target_region(keyword, include_nearby=True)
-        # 한방 관련 키워드 포함
+        # 활성 프로필의 진료/시술 관련 키워드 포함
         has_hanbang = GYULIM_KEYWORD_PROFILE.has_hanbang_or_treatment_signal(keyword) or any(
             h in keyword for h in self.hanbang_keywords
         )
         return has_region and has_hanbang
 
+    def _is_blacklisted_keyword(self, keyword: str) -> bool:
+        text = keyword or ""
+        cosmetic_scope = getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False)
+        scar_skin_context = any(
+            token in text
+            for token in ("흉터", "여드름", "패인흉터", "모공흉터", "수술흉터", "켈로이드", "피부")
+        )
+        for blocked in self.BLACKLIST_KEYWORDS:
+            if blocked not in text:
+                continue
+            if cosmetic_scope and blocked in {"성형외과", "외과"} and scar_skin_context:
+                continue
+            return True
+        return False
+
     def _filter_blacklist(self, keywords: List[str]) -> List[str]:
         """블랙리스트 키워드 필터링"""
         if not keywords:
             return keywords
-        return [kw for kw in keywords
-                if not any(bl in kw for bl in self.BLACKLIST_KEYWORDS)]
+        return [kw for kw in keywords if not self._is_blacklisted_keyword(kw)]
 
     def get_autocomplete(self, keyword: str, max_retries: int = 3) -> List[str]:
         """Naver 자동완성 가져오기 (재시도 로직 포함)"""
@@ -1805,7 +1813,12 @@ def cluster_keywords_for_sampling(keywords: List[str]) -> Dict[str, List[str]]:
     for kw in keywords:
         # 핵심어 추출 (지역 제거)
         clean = kw
-        for region in ["청주", "충주", "제천", "진천", "증평"]:
+        active_regions = (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+        )
+        for region in active_regions:
             clean = clean.replace(region, "").strip()
 
         # 의도 suffix 제거
@@ -1953,18 +1966,21 @@ class PathfinderLegion:
         "복대동", "가경동", "분평동", "봉명동", "사창동", "산남동", "수곡동",
         "모충동", "용암동", "금천동", "율량동", "사직동", "성화동", "내덕동",
         "우암동", "오창", "오송", "율량", "복대", "가경", "분평", "봉명",
+        "강남", "강남역", "신논현", "논현", "논현동", "역삼", "역삼동",
+        "선릉", "삼성", "삼성동", "청담", "청담동", "압구정", "신사동",
     )
     LONGTAIL_SCOUT_REGIONS = (
         "청주", "복대동", "가경동", "분평동", "봉명동", "율량동", "용암동", "오송", "오창",
     )
     CATEGORY_CANONICAL_SERVICES = {
-        "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원"),
+        "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원", "다이어트약 처방", "비만클리닉", "식욕억제 상담"),
         "교통사고": ("교통사고 한의원", "교통사고 입원", "교통사고 후유증"),
-        "피부/여드름": ("여드름흉터 한의원", "패인흉터 새살침", "수두흉터 한의원", "새살침"),
-        "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원"),
-        "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원"),
+        "흉터/여드름흉터": ("흉터 클리닉", "여드름흉터 치료", "패인흉터 상담", "수술흉터 치료", "켈로이드 상담"),
+        "피부/여드름": ("여드름흉터 한의원", "패인흉터 새살침", "수두흉터 한의원", "새살침", "여드름 치료", "피부 클리닉", "스킨부스터 상담"),
+        "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원", "안면비대칭 상담", "얼굴비대칭 클리닉"),
+        "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원", "바디라인 클리닉", "체형교정 상담"),
         "통증/디스크": ("허리통증 한의원", "디스크 한의원", "추나요법"),
-        "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅"),
+        "리프팅/탄력": ("한방리프팅", "매선리프팅", "침리프팅", "리프팅 클리닉", "피부탄력 상담", "스킨부스터 리프팅"),
         "탈모/두피": ("탈모 한의원", "탈모 한약", "두피관리 한의원"),
         "두통/어지럼": ("두통 한의원", "편두통 한의원", "어지럼증 한의원"),
         "소화/위장": ("소화불량 한의원", "담적 한의원", "역류성식도염 한의원"),
@@ -1977,9 +1993,16 @@ class PathfinderLegion:
         "수험생/집중력": ("수험생 한약", "총명탕", "집중력 한의원"),
         "면역/보약": ("보약 한의원", "공진단", "경옥고"),
     }
+    STRATEGIC_SA_DENSITY_CATEGORIES = ("피부/여드름", "다이어트", "안면비대칭")
+    STRATEGIC_SA_DENSITY_SUFFIXES = {
+        "피부/여드름": ("비용", "상담", "예약", "후기", "추천", "치료기간"),
+        "다이어트": ("상담", "예약", "비용", "후기", "추천", "가격"),
+        "안면비대칭": ("상담", "예약", "비용", "후기", "추천", "교정"),
+    }
     HIGH_VALUE_LONGTAIL_SUFFIXES = {
         "다이어트": ("비용", "상담", "예약", "추천", "주차", "야간"),
         "교통사고": ("입원", "자보", "자동차보험", "치료비", "주말", "야간"),
+        "흉터/여드름흉터": ("비용", "상담", "예약", "추천", "후기", "회복기간", "부작용", "주의사항", "통증"),
         "피부/여드름": ("비용", "상담", "치료기간", "추천", "예약", "부작용", "주의사항"),
         "안면비대칭": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
         "체형교정": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
@@ -2000,6 +2023,7 @@ class PathfinderLegion:
     HIGH_VALUE_LONGTAIL_CONTEXTS = {
         "다이어트": ("직장인", "산후", "출산후", "갱년기", "웨딩", "요요", "식욕억제"),
         "교통사고": ("입원 가능한", "야간", "주말", "목통증", "허리통증", "합의전"),
+        "흉터/여드름흉터": ("패인흉터", "모공흉터", "수술흉터", "수두흉터", "켈로이드", "오래된", "얼굴", "볼", "코"),
         "피부/여드름": ("흉터", "패인흉터", "모공흉터", "수두흉터", "여드름자국", "민감피부", "재발", "성인", "압출후"),
         "안면비대칭": ("턱관절", "얼굴형", "사진", "교정 전후", "통증", "비수술"),
         "체형교정": ("골반", "라운드숄더", "거북목", "허리통증", "산후", "비수술"),
@@ -2044,6 +2068,12 @@ class PathfinderLegion:
             "access": ("주차", "야간", "주말", "진료시간"),
             "coverage": ("치료비", "상담", "새살침 상담", "치료기간"),
             "safety": ("부작용", "주의사항", "재발", "치료기간", "통증"),
+        },
+        "흉터/여드름흉터": {
+            "decision": ("비용", "상담", "예약", "추천", "후기"),
+            "access": ("주차", "야간", "주말", "진료시간"),
+            "coverage": ("흉터 상담", "치료기간", "회복기간"),
+            "safety": ("부작용", "주의사항", "통증", "켈로이드"),
         },
         "안면비대칭": {
             "decision": ("비용", "상담", "예약", "추천"),
@@ -2244,7 +2274,7 @@ class PathfinderLegion:
         "길찾기", "위치", "주소", "가는길", "가는 길", "근처", "가까운",
         "주변", "몇층", "몇 층", "찾아가는",
     )
-    OWN_BRAND_FALLBACK_TERMS = ("규림한의원", "규림", "kyurim", "규림한의원청주점")
+    OWN_BRAND_FALLBACK_TERMS = tuple(getattr(GYULIM_KEYWORD_PROFILE, "own_brand_terms", ("규림한의원", "규림", "kyurim")))
     BRAND_COMPARISON_TERMS = ("비교", "vs", "보다", "차이", "어디", "추천", "후기")
     BRAND_DEFENSE_TERMS = ("후기", "가격", "비용", "예약", "전화", "위치", "영업시간", "진료시간")
     REVIEW_INTENT_TERMS = (
@@ -2317,8 +2347,8 @@ class PathfinderLegion:
             self.datalab = None
             self.has_datalab = False
 
-        # 규림한의원 핵심 시드
-        self.base_seeds = [
+        # 레거시 핵심 시드. 활성 프로필의 진료권에 맞는 경우에만 보조로 유지한다.
+        legacy_base_seeds = [
             # 안면비대칭/체형교정
             "청주 안면비대칭", "청주 안면비대칭 교정", "청주 얼굴비대칭",
             "청주 체형교정", "청주 골반교정", "청주 자세교정",
@@ -2359,7 +2389,11 @@ class PathfinderLegion:
                 max_neighborhoods_per_category=5,
             )
         )
-        self.base_seeds = list(dict.fromkeys(profile_base_seeds + self.base_seeds))
+        legacy_base_seeds = [
+            seed for seed in legacy_base_seeds
+            if GYULIM_KEYWORD_PROFILE.is_target_region(seed, include_nearby=True)
+        ]
+        self.base_seeds = list(dict.fromkeys(profile_base_seeds + legacy_base_seeds))
         seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(self.base_seeds, min_per_category=8)
         if not seed_coverage["ok"]:
             repair_categories = list(seed_coverage["missing"]) + list(seed_coverage["undercovered"].keys())
@@ -2373,7 +2407,7 @@ class PathfinderLegion:
             )
             self.base_seeds = list(dict.fromkeys(self.base_seeds))
             seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(self.base_seeds, min_per_category=8)
-        print(f"🎯 규림 진료축 시드 커버리지: {seed_coverage['counts']}")
+        print(f"🎯 {GYULIM_KEYWORD_PROFILE.display_name} 진료축 시드 커버리지: {seed_coverage['counts']}")
 
         # ========== 시즌 키워드 추가 (ULTRA 이식) ==========
         seasonal_seeds = SeasonalKeywordDB.get_current_seasonal_keywords()
@@ -2490,6 +2524,7 @@ class PathfinderLegion:
 
     def _load_brand_intent_terms(self) -> None:
         own_terms: Set[str] = set(self.OWN_BRAND_FALLBACK_TERMS)
+        own_terms.update(str(term) for term in getattr(GYULIM_KEYWORD_PROFILE, "own_brand_terms", ()) if term)
         competitor_terms: Set[str] = set()
 
         business_profile_path = Path("config/business_profile.json")
@@ -2497,14 +2532,16 @@ class PathfinderLegion:
             try:
                 with open(business_profile_path, "r", encoding="utf-8") as f:
                     profile = json.load(f)
-                for key in ("name", "short_name"):
-                    value = str(profile.get(key) or "").strip()
+                business = profile.get("business") or profile
+                for key in ("name", "short_name", "english_name"):
+                    value = str(business.get(key) or "").strip()
                     if value:
                         own_terms.add(value)
                 branding = profile.get("branding") or {}
                 for value in branding.values():
                     for token in re.findall(r"[0-9A-Za-z가-힣]+", str(value or "")):
-                        if "규림" in token.lower() or "kyurim" in token.lower():
+                        normalized_token = token.lower()
+                        if any(str(brand).lower() in normalized_token for brand in own_terms):
                             own_terms.add(token)
             except Exception:
                 pass
@@ -3108,7 +3145,7 @@ class PathfinderLegion:
         for region in list(collector.neighborhoods) + list(collector.cheongju_regions):
             if region and region in (keyword or ""):
                 return region
-        return "청주"
+        return GYULIM_KEYWORD_PROFILE.primary_region
 
     def _is_longtail_keyword(self, keyword: str) -> bool:
         terms = self._keyword_terms(keyword)
@@ -4285,6 +4322,171 @@ class PathfinderLegion:
             return "B", flags
         return grade, flags
 
+    def _promote_grade_for_execution_fit(
+        self,
+        grade: str,
+        value_profile: Dict[str, object],
+        *,
+        has_real_volume: bool,
+        search_volume: int,
+        verification_score: float,
+        source_signal_count: int,
+        category: str,
+        community_signal: float,
+        conversion_signal: float,
+        profile_action_signal: float,
+        local_service_fit_score: float,
+        content_actionability_score: float,
+        local_surface_score: float,
+        review_surface_score: float,
+        availability_intent_score: float,
+        payment_coverage_score: float,
+        access_convenience_score: float,
+        medical_ad_risk_score: float,
+        reputation_risk_score: float,
+        brand_intent_type: str,
+        quality_flags: Optional[List[str]] = None,
+    ) -> Tuple[str, List[str]]:
+        """Promote local medical longtails that are execution-ready, not just KEI-rich.
+
+        Regional clinic keywords often have low KEI because document counts are
+        broad while true demand appears in community, booking, cost, and local
+        surface signals. This promotion keeps the existing risk guards, but lets
+        a small set of well-verified execution keywords reach S/A.
+        """
+        flags = list(quality_flags or [])
+        order = {"S": 0, "A": 1, "B": 2, "C": 3}
+        current_rank = order.get(grade, 3)
+
+        if current_rank >= order["C"]:
+            return grade, flags
+        if not has_real_volume or search_volume < 20:
+            return grade, flags
+        if not bool(value_profile.get("high_value_longtail")):
+            return grade, flags
+        if str(brand_intent_type or "generic") != "generic":
+            return grade, flags
+        if medical_ad_risk_score >= 40.0 or reputation_risk_score >= 40.0:
+            return grade, flags
+        if bool(value_profile.get("hard_negative_intent")):
+            return grade, flags
+        red_flag_execution = any(
+            flag == "content_action:safe_faq_candidate"
+            or flag.startswith("negative_intent:")
+            for flag in flags
+        )
+
+        business_value_score = float(value_profile.get("business_value_score", 0.0) or 0.0)
+        longtail_score = float(value_profile.get("longtail_score", 0.0) or 0.0)
+        market_signal = max(
+            float(community_signal or 0.0),
+            float(conversion_signal or 0.0) * 1.15,
+            float(profile_action_signal or 0.0),
+            float(review_surface_score or 0.0),
+            float(availability_intent_score or 0.0),
+            float(payment_coverage_score or 0.0),
+            float(access_convenience_score or 0.0),
+        )
+        execution_score = (
+            min(100.0, max(0.0, local_service_fit_score)) * 0.20
+            + min(100.0, max(0.0, content_actionability_score)) * 0.18
+            + min(100.0, max(0.0, business_value_score)) * 0.14
+            + min(100.0, max(0.0, longtail_score)) * 0.10
+            + min(100.0, max(0.0, verification_score)) * 0.12
+            + min(100.0, max(0.0, local_surface_score)) * 0.10
+            + min(100.0, max(0.0, market_signal)) * 0.16
+        )
+
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(category or "")
+        skin_service_axis_signal = (
+            category_key == "피부/여드름"
+            and local_surface_score >= 70.0
+            and availability_intent_score >= 45.0
+            and local_service_fit_score >= 90.0
+            and content_actionability_score >= 90.0
+            and business_value_score >= 95.0
+            and longtail_score >= 90.0
+        )
+        strategic_focus_service_floor = {
+            "피부/여드름": 90.0,
+            "다이어트": 90.0,
+            "안면비대칭": 80.0,
+        }.get(category_key)
+        strategic_focus_axis_signal = bool(
+            strategic_focus_service_floor is not None
+            and local_service_fit_score >= strategic_focus_service_floor
+            and content_actionability_score >= 84.0
+            and business_value_score >= 95.0
+            and longtail_score >= 90.0
+            and (
+                local_surface_score >= 70.0
+                or review_surface_score >= 65.0
+                or availability_intent_score >= 45.0
+                or payment_coverage_score >= 50.0
+                or community_signal >= 60.0
+            )
+        )
+        s_signal = (
+            community_signal >= 65.0
+            or conversion_signal >= 45.0
+            or profile_action_signal >= 60.0
+            or (review_surface_score >= 70.0 and community_signal >= 40.0)
+            or (
+                category_key == "교통사고"
+                and payment_coverage_score >= 70.0
+                and community_signal >= 35.0
+            )
+        )
+        s_ready = (
+            execution_score >= 90.0
+            and verification_score >= 82.0
+            and local_service_fit_score >= 90.0
+            and content_actionability_score >= 85.0
+            and local_surface_score >= 70.0
+            and business_value_score >= 90.0
+            and longtail_score >= 85.0
+            and s_signal
+            and not red_flag_execution
+        )
+        if s_ready and current_rank > order["S"]:
+            if "execution_fit_s_grade" not in flags:
+                flags.append("execution_fit_s_grade")
+            return "S", flags
+
+        a_signal = (
+            market_signal >= 55.0
+            or source_signal_count >= 2
+            or skin_service_axis_signal
+            or strategic_focus_axis_signal
+        )
+        a_ready = (
+            execution_score >= 82.0
+            and verification_score >= 75.0
+            and local_service_fit_score >= 85.0
+            and content_actionability_score >= 80.0
+            and local_surface_score >= 65.0
+            and business_value_score >= 85.0
+            and longtail_score >= 75.0
+            and a_signal
+        )
+        strategic_focus_a_ready = (
+            strategic_focus_axis_signal
+            and execution_score >= 78.0
+            and verification_score >= 65.0
+            and local_service_fit_score >= strategic_focus_service_floor
+            and content_actionability_score >= 84.0
+            and business_value_score >= 95.0
+            and longtail_score >= 90.0
+        )
+        if (a_ready or strategic_focus_a_ready) and current_rank > order["A"]:
+            if "execution_fit_a_grade" not in flags:
+                flags.append("execution_fit_a_grade")
+            if strategic_focus_a_ready and "strategic_focus_axis_a_grade" not in flags:
+                flags.append("strategic_focus_axis_a_grade")
+            return "A", flags
+
+        return grade, flags
+
     def _build_high_value_longtail_variants(
         self,
         seed_keywords: List[str],
@@ -4324,13 +4526,64 @@ class PathfinderLegion:
             if category not in category_order:
                 category_order.append(category)
 
-        for region in self.LONGTAIL_SCOUT_REGIONS:
+        active_scout_regions = list(dict.fromkeys(
+            [GYULIM_KEYWORD_PROFILE.primary_region]
+            + list(collector.neighborhoods[:8])
+            + list(collector.cheongju_regions[:6])
+            + [
+                region for region in self.LONGTAIL_SCOUT_REGIONS
+                if GYULIM_KEYWORD_PROFILE.is_target_region(region, include_nearby=True)
+            ]
+        ))
+        for region in active_scout_regions:
             if region not in region_order:
                 region_order.append(region)
 
         first_pass_limit = min(max_keywords, max(90, int(max_keywords * 0.30)))
+        strategic_limit = min(max_keywords, max(45, int(max_keywords * 0.24)))
         journey_limit = min(max_keywords, max(first_pass_limit, int(max_keywords * 0.62)))
         question_limit = min(max_keywords, max(journey_limit, int(max_keywords * 0.82)))
+
+        # Strategic density pass: secure high-intent skin, diet, and asymmetry
+        # variants before broad medical categories consume the early quota.
+        # Build them round-robin so scar/skin terms do not consume the whole
+        # strategic slice before diet and asymmetry get coverage.
+        strategic_combos_by_category: Dict[str, List[Tuple[str, str, str]]] = {}
+        for category in self.STRATEGIC_SA_DENSITY_CATEGORIES:
+            services = self.CATEGORY_CANONICAL_SERVICES.get(category, ())
+            suffixes = self.STRATEGIC_SA_DENSITY_SUFFIXES.get(category, ())
+            if not services or not suffixes:
+                continue
+            strategic_combos_by_category[category] = [
+                (region_item, service, suffix)
+                for region_item in region_order[:5]
+                for service in services[:4]
+                for suffix in suffixes[:5]
+            ]
+
+        strategic_indices = {category: 0 for category in strategic_combos_by_category}
+        while len(variants) < strategic_limit and strategic_combos_by_category:
+            progressed = False
+            for category in self.STRATEGIC_SA_DENSITY_CATEGORIES:
+                combos = strategic_combos_by_category.get(category)
+                if not combos:
+                    continue
+                index = strategic_indices.get(category, 0)
+                while index < len(combos):
+                    strategic_indices[category] = index + 1
+                    before_count = len(variants)
+                    if add_variant(*combos[index]):
+                        return variants
+                    index += 1
+                    if len(variants) > before_count:
+                        progressed = True
+                        break
+                if strategic_indices.get(category, 0) >= len(combos):
+                    strategic_combos_by_category.pop(category, None)
+                if len(variants) >= strategic_limit:
+                    break
+            if not progressed:
+                break
 
         # First pass: cover every focus category across priority regions before adding richer context variants.
         for region_item in region_order[:3]:
@@ -4759,7 +5012,7 @@ class PathfinderLegion:
                 break
 
         return "|".join([
-            region or "청주",
+            region or GYULIM_KEYWORD_PROFILE.primary_region,
             category or "unknown",
             search_intent or "unknown",
             aspect,
@@ -5120,6 +5373,31 @@ class PathfinderLegion:
             result.high_value_longtail = False
         if result.brand_intent_type != "generic":
             result.high_value_longtail = False
+        value_profile = dict(value_profile)
+        value_profile["high_value_longtail"] = result.high_value_longtail
+        result.grade, result.quality_flags = self._promote_grade_for_execution_fit(
+            result.grade,
+            value_profile,
+            has_real_volume=has_real_volume,
+            search_volume=result.search_volume,
+            verification_score=result.verification_score,
+            source_signal_count=len(signals),
+            category=result.category,
+            community_signal=result.community_signal,
+            conversion_signal=result.conversion_signal,
+            profile_action_signal=result.profile_action_signal,
+            local_service_fit_score=result.local_service_fit_score,
+            content_actionability_score=result.content_actionability_score,
+            local_surface_score=result.local_surface_score,
+            review_surface_score=result.review_surface_score,
+            availability_intent_score=result.availability_intent_score,
+            payment_coverage_score=result.payment_coverage_score,
+            access_convenience_score=result.access_convenience_score,
+            medical_ad_risk_score=result.medical_ad_risk_score,
+            reputation_risk_score=result.reputation_risk_score,
+            brand_intent_type=result.brand_intent_type,
+            quality_flags=result.quality_flags,
+        )
 
     @staticmethod
     def _calculate_verification_score(
@@ -5346,7 +5624,7 @@ class PathfinderLegion:
                 diverse_suffixes.append(item)
         intent_suffixes = diverse_suffixes
 
-        region_pool = ["청주"]
+        region_pool = [GYULIM_KEYWORD_PROFILE.primary_region]
         for region in self.collector.neighborhoods[:8]:
             if region not in region_pool:
                 region_pool.append(region)
@@ -5572,18 +5850,22 @@ class PathfinderLegion:
         category = collector._detect_category(keyword)
         profile_score = GYULIM_KEYWORD_PROFILE.business_relevance_score(keyword, category)
 
-        # Tier 1: 핵심 한방 키워드 (+40)
-        tier1 = ['한의원', '한방', '한약', '침', '추나', '부항', '뜸']
+        # Tier 1: 활성 프로필의 핵심 서비스 키워드 (+40)
+        tier1 = list(getattr(GYULIM_KEYWORD_PROFILE, "hanbang_indicators", ()))
         if any(t in keyword_lower for t in tier1):
             score += 40
 
         # Tier 2: 주요 시술/진료 (+30)
-        tier2 = ['다이어트', '교통사고', '입원', '자동차사고', '안면비대칭', '비대칭', '여드름', '여드름흉터', '흉터', '새살침']
+        tier2 = list(getattr(GYULIM_KEYWORD_PROFILE, "hanbang_keywords", ()))
         if any(t in keyword_lower for t in tier2):
             score += 30
 
-        # Tier 3: 지역 (+20)
-        tier3 = ['청주', '충북', '세종', '오창', '오송', '율량']
+        # Tier 3: 타깃 지역 (+20)
+        tier3 = (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+        )
         if any(t in keyword_lower for t in tier3):
             score += 20
 
@@ -5912,13 +6194,13 @@ class PathfinderLegion:
                 grade = 'C'
                 search_volume = 30  # 점수 계산용 추정치
 
-            # 도메인·지역 관련도 강등 (의료일반·비-청주 누수 차단)
+            # 도메인·지역 관련도 강등 (의료일반·비타깃 지역 누수 차단)
             grade, demote_reason = self.collector.apply_relevance_demotion(kw, grade)
             if demote_reason and kei_grade in ('S', 'A', 'B'):
                 # KEI 기반 등급도 동일하게 강등 (보고서 일관성)
                 if demote_reason == 'medical_general':
                     kei_grade = 'C'
-                elif demote_reason == 'non_cheongju':
+                elif demote_reason in {'non_cheongju', 'non_target_region'}:
                     _order = ['S', 'A', 'B', 'C']
                     _idx = _order.index(kei_grade)
                     kei_grade = _order[min(_idx + 2, len(_order) - 1)]
@@ -6289,6 +6571,29 @@ class PathfinderLegion:
                 verification_score,
                 quality_flags,
             )
+            grade, quality_flags = self._promote_grade_for_execution_fit(
+                grade,
+                value_profile,
+                has_real_volume=has_real_volume,
+                search_volume=search_volume,
+                verification_score=verification_score,
+                source_signal_count=len(source_signals),
+                category=category,
+                community_signal=community_signal,
+                conversion_signal=conversion_signal,
+                profile_action_signal=profile_action_signal,
+                local_service_fit_score=local_service_fit_score,
+                content_actionability_score=content_actionability_score,
+                local_surface_score=local_surface_score,
+                review_surface_score=review_surface_score,
+                availability_intent_score=availability_intent_score,
+                payment_coverage_score=payment_coverage_score,
+                access_convenience_score=access_convenience_score,
+                medical_ad_risk_score=medical_ad_risk_score,
+                reputation_risk_score=reputation_risk_score,
+                brand_intent_type=brand_intent_type,
+                quality_flags=quality_flags,
+            )
 
             # 우선순위 점수 계산 (KEI 포함) + 히스토리 기반 신규성 보정
             priority = self._calculate_priority(
@@ -6505,7 +6810,10 @@ class PathfinderLegion:
 
         round1_seeds = self.base_seeds
         if round1_seed_limit is not None:
-            round1_seeds = round1_seeds[:max(0, round1_seed_limit)]
+            limit = max(0, round1_seed_limit)
+            if len(round1_seeds) > limit:
+                step = len(round1_seeds) / limit
+                round1_seeds = [round1_seeds[int(i * step)] for i in range(limit)]
             print(f"   Smoke/limited mode: Round 1 seeds {len(round1_seeds)}/{len(self.base_seeds)}")
 
         for seed in round1_seeds:
@@ -6727,8 +7035,8 @@ class PathfinderLegion:
                             round5_keywords.update(suggestions)
 
                 # 3. 경쟁사 + 키워드 조합 (그들의 강점 파악)
-                region = self.collector.cheongju_regions[0] if self.collector.cheongju_regions else "청주"
-                for cat in ["다이어트", "교통사고", "한의원"]:
+                region = self.collector.cheongju_regions[0] if self.collector.cheongju_regions else GYULIM_KEYWORD_PROFILE.primary_region
+                for cat in ["다이어트", "흉터", "피부", GYULIM_KEYWORD_PROFILE.service_query_anchor]:
                     seed = f"{region} {cat} {comp_name.split()[0] if comp_name else ''}"
                     suggestions = self.collector.get_autocomplete(seed.strip())
                     if suggestions is not None:
@@ -6830,7 +7138,7 @@ class PathfinderLegion:
         print(f"\n[Round {round_num}] 문제 해결형 키워드 (증상/고민 기반)...")
 
         round7_keywords = set()
-        region = "청주"  # 기본 지역
+        region = GYULIM_KEYWORD_PROFILE.primary_region
 
         # 문제 키워드 + 지역 조합
         for problem in self.collector.problem_keywords:
@@ -6841,8 +7149,8 @@ class PathfinderLegion:
             if suggestions is not None:
                 round7_keywords.update(suggestions)
 
-            # 문제 + 한의원/치료
-            for suffix in ["한의원", "치료", "병원"]:
+            # 문제 + 서비스/치료
+            for suffix in [GYULIM_KEYWORD_PROFILE.service_query_anchor, "치료", "병원", "상담"]:
                 seed2 = f"{region} {problem} {suffix}"
                 round7_keywords.add(seed2)
                 suggestions = self.collector.get_autocomplete(seed2)
@@ -7801,8 +8109,13 @@ class PathfinderLegion:
 
         for i, r in enumerate(results):
             try:
-                region = "청주"
-                for reg in ["오창", "가경", "복대", "율량", "세종", "대전"]:
+                region = GYULIM_KEYWORD_PROFILE.primary_region
+                region_candidates = (
+                    list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+                    + list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+                    + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+                )
+                for reg in region_candidates:
                     if reg in r.keyword:
                         region = reg
                         break

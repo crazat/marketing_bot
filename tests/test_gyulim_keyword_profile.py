@@ -31,9 +31,19 @@ def test_gyulim_profile_exploration_seeds_cover_patient_journey_and_secondary_ax
     assert any("복대동 허리통증 한의원 야간" in seed for seed in seeds)
     assert any("청주 여드름흉터 부작용" in seed for seed in seeds)
     assert any("청주 수두흉터 치료기간" in seed for seed in seeds)
+    assert any("청주 수술흉터" in seed for seed in seeds)
     assert any("청주 비염 한의원 비용" in seed for seed in seeds)
     assert any("청주 불면증 한의원 상담" in seed for seed in seeds)
     assert any("청주 보약 한의원 가격" in seed for seed in seeds)
+
+
+def test_gyulim_profile_merges_broad_scar_terms_into_skin_axis():
+    assert GYULIM_KEYWORD_PROFILE.normalize_category("흉터/여드름흉터") == "피부/여드름"
+    assert GYULIM_KEYWORD_PROFILE.normalize_category("수술흉터") == "피부/여드름"
+    assert GYULIM_KEYWORD_PROFILE.detect_category("청주 수술흉터 새살침 상담") == "피부/여드름"
+    assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 새살침 상담", "흉터/여드름흉터")
+    assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 상처흉터 한의원 치료기간", "피부/여드름")
+    assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 피부과 추천", "피부/여드름")
 
 
 def test_legion_collector_focus_matches_gyulim_treatments():
@@ -89,11 +99,14 @@ def test_quality_filter_uses_profile_for_pain_and_skin_relevance():
 
     pain = quality_filter.validate("청주 허리통증 한의원 비용")
     scar = quality_filter.validate("청주 패인흉터 새살침 상담")
+    surgery_scar = quality_filter.validate("청주 수술흉터 새살침 상담")
 
     assert pain.is_valid
     assert pain.relevance_score >= 0.8
     assert scar.is_valid
     assert scar.relevance_score >= 0.8
+    assert surgery_scar.is_valid
+    assert surgery_scar.relevance_score >= 0.8
 
 
 def test_legion_longtail_templates_include_pain_category():

@@ -1,6 +1,20 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-12 Memory: Gyulim Pathfinder to Viral Hunter Precision Loop
+
+- Current client context is Cheongju Gyulim Korean Medicine Clinic, not Recover Gangnam. Pathfinder/Viral Hunter work should optimize for Gyulim treatment axes: scar/acne/skin, facial asymmetry, diet, body correction/chuna/pain, lifting/elasticity, and traffic accident care.
+- `core_services/viral_seed_builder.py` intentionally raises thin-axis quotas so low-supply categories are not crowded out by skin/diet/traffic volume: `안면비대칭=10`, `체형교정=7`, `리프팅/탄력=6`. Do not collapse this back to a pure top-score sort.
+- `viral_hunter.py` now expands thin axis seeds with multiple companion queries. Asymmetry/body/lifting can use up to 3 variants so base search, review/community intent, and axis-specific user-question surfaces are all probed.
+- Final gate precision was hardened from live scan 67 false positives. Preserve these exclusions unless live review proves otherwise: Western acne prescription search (`이소티논`, `로아큐탄`, `피지조절제`, etc.) without hanbang intent, diet activity venues (`줌바`, `복싱`, `체육관`, `다이어트댄스`), and traffic accident posts about pets/vets/animal hospitals.
+- `CommentableFilter.apply_final_reject()` remains the DB persistence path. After adding new gates, rerun it over existing `pending`/`raw_backlog` rows when stale false positives already entered the queue.
+- Latest live probe used `python viral_hunter.py --scan --fresh --source-scan-id 67 --limit-keywords 18 --top-n-for-ai 80 --ai-parallel 3` with boosts for lifting/asymmetry/body/skin/diet and review/community lenses. It exposed two vet/animal-hospital traffic false positives, which are now regression-tested and filtered.
+- Focused verification for this layer:
+  - `python -m py_compile viral_hunter.py core_services\viral_seed_builder.py`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q`
+  - `git diff --check -- viral_hunter.py core_services\viral_seed_builder.py tests\test_pathfinder_viral_stability.py`
+
+
 ## 2026-06-05 Memory: Viral Hunter Advertorial Gate and Model Split
 
 - Viral Hunter advertorial filtering was hardened after KIN/cafe snippets showed natural user questions followed by existing promotional answers. Preserve the layered gate: local advertorial/final reject patterns -> `structured` AI analysis -> final reject persistence before DB upsert.

@@ -4,6 +4,7 @@ import time
 import sqlite3
 import random
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -537,6 +538,157 @@ def _load_competitors() -> list:
     return competitors
 
 
+def _load_keywords_from_file(path: str) -> list[str]:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            keywords = data.get("naver_place", [])
+            if isinstance(keywords, list):
+                return [str(k).strip() for k in keywords if str(k).strip()]
+    except Exception as exc:
+        logger.error(f"Failed to load keywords.json: {exc}", exc_info=True)
+    return []
+
+
+def _normalize_term(term: str) -> str:
+    if not term:
+        return ""
+    lowered = str(term).strip().lower()
+    if not lowered:
+        return ""
+    return re.sub(r"[^0-9a-zㄱ-ㅎ가-힣]+", "", lowered)
+
+
+def _contains_any_term(text: str, terms: list[str]) -> bool:
+    if not text:
+        return False
+    lowered_text = str(text).lower()
+    normalized_text = _normalize_term(text)
+    for term in terms:
+        raw_term = str(term).strip()
+        if not raw_term:
+            continue
+        lowered_term = raw_term.lower()
+        if lowered_term and lowered_term in lowered_text:
+            return True
+        normalized_term = _normalize_term(raw_term)
+        if normalized_term and normalized_term in normalized_text:
+            return True
+    return False
+
+
+def _filter_local_service_keywords(
+    keywords: list[str],
+    place_regions: list[str] | None = None,
+    place_services: list[str] | None = None,
+    fallback_to_unfiltered: bool = True,
+) -> list[str]:
+    if not keywords:
+        return []
+
+    regions = [r.strip() for r in (place_regions or []) if str(r).strip()]
+    services = [s.strip() for s in (place_services or []) if str(s).strip()]
+    if not regions or not services:
+        logger.debug("Pathfinder filter skipped: missing regions or services.")
+        return list(keywords)
+
+    filtered = [
+        kw for kw in keywords
+        if _contains_any_term(kw, regions) and _contains_any_term(kw, services)
+    ]
+    if filtered:
+        return filtered
+
+    if fallback_to_unfiltered:
+        logger.warning(
+            "Local-service filter returned 0 matches. "
+            "Fallback to unfiltered keyword list to avoid empty scan."
+        )
+        return list(keywords)
+
+    logger.warning(
+        "Local-service filter returned 0 matches and fallback disabled. "
+        "Running with no keywords."
+    )
+    return []
+
+
+def _parse_keyword_list_arg(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    parts = re.split(r"[,\|;]", raw)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _load_pathfinder_keywords(
+    grades: list[str] | None = None,
+    limit: int = 0,
+    min_volume: int = 0,
+    all_runs: bool = False,
+) -> list[str]:
+    grades = [g.strip().upper() for g in (grades or []) if g and g.strip()]
+    if not grades:
+        grades = ["S", "A"]
+
+    db = DatabaseManager()
+    try:
+        with db.get_new_connection() as conn:
+            cur = conn.cursor()
+
+            if all_runs:
+                latest_run_id = None
+            else:
+                run_row = cur.execute(
+                    "SELECT id FROM scan_runs WHERE scan_type = 'legion' "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                latest_run_id = run_row[0] if run_row else None
+
+            grade_placeholders = ",".join(["?"] * len(grades))
+            where = [f"grade IN ({grade_placeholders})"]
+            params = list(grades)
+
+            if min_volume and min_volume > 0:
+                where.append("CAST(COALESCE(search_volume, volume, 0) AS INTEGER) >= ?")
+                params.append(min_volume)
+
+            if latest_run_id:
+                where.append("scan_run_id = ?")
+                params.append(latest_run_id)
+
+            query = f"""
+                SELECT keyword
+                FROM keyword_insights
+                WHERE {' AND '.join(where)}
+                GROUP BY keyword
+                ORDER BY CAST(COALESCE(search_volume, volume, 0) AS INTEGER) DESC
+            """
+            if limit and limit > 0:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            rows = cur.execute(query, params).fetchall()
+            keywords = []
+            seen = set()
+            for (kw,) in rows:
+                norm = str(kw).strip()
+                if not norm or norm in seen:
+                    continue
+                seen.add(norm)
+                keywords.append(norm)
+            return keywords
+    except Exception as exc:
+        logger.warning(f"Failed to load pathfinder keywords from DB: {exc}")
+        return []
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def _get_previous_rank(db: DatabaseManager, keyword: str, target_name: str) -> tuple:
     """
     [Phase 2.1] 이전 순위 조회
@@ -1005,36 +1157,74 @@ def _scan_keywords_for_device(driver, db, keywords, target_name, device_type: st
                            note=f"[{device_type}] {str(e)[:150]}", device_type=device_type)
 
 
-def check_naver_place_rank(parallel: bool = True, max_workers: int = 3):
+def check_naver_place_rank(
+    parallel: bool = True,
+    max_workers: int = 3,
+    *,
+    include_pathfinder_keywords: bool = False,
+    pathfinder_grades: list[str] | None = None,
+    pathfinder_limit: int = 0,
+    pathfinder_min_volume: int = 0,
+    pathfinder_all_runs: bool = False,
+    place_regions: list[str] | None = None,
+    place_services: list[str] | None = None,
+    place_filter_enabled: bool = False,
+    place_filter_fallback: bool = True,
+    max_total_keywords: int | None = None,
+):
     """
-    네이버 플레이스 순위 체크
+    Check Naver Place ranking.
 
     Args:
-        parallel: True면 병렬 모드 사용 (Phase 3), False면 순차 모드
-        max_workers: 병렬 모드에서 동시 브라우저 수 (기본: 3)
+        parallel: True for parallel mode, False for sequential.
+        max_workers: Browser count for parallel mode.
     """
-    # Load Dynamic Keywords
-    import json
     from retry_helper import SafeSeleniumDriver
+
     kw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'keywords.json')
+    base_keywords = _load_keywords_from_file(kw_path)
+
+    pathfinder_keywords: list[str] = []
+    if include_pathfinder_keywords:
+        pathfinder_keywords = _load_pathfinder_keywords(
+            grades=pathfinder_grades,
+            limit=pathfinder_limit,
+            min_volume=pathfinder_min_volume,
+            all_runs=pathfinder_all_runs,
+        )
+
     keywords = []
-    if os.path.exists(kw_path):
-        try:
-            with open(kw_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                keywords = data.get("naver_place", [])
-        except Exception as e:
-            logger.error(f"❌ Failed to load keywords.json: {e}", exc_info=True)
-            return # Fail fast
+    seen = set()
+    for kw in list(base_keywords) + list(pathfinder_keywords):
+        norm = str(kw).strip()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        keywords.append(norm)
+
+    if place_filter_enabled:
+        before_filter = len(keywords)
+        keywords = _filter_local_service_keywords(
+            keywords,
+            place_regions=place_regions,
+            place_services=place_services,
+            fallback_to_unfiltered=place_filter_fallback,
+        )
+        logger.info(f"Applied local region+service filter: {before_filter} -> {len(keywords)} keywords")
+
+    if max_total_keywords and max_total_keywords > 0:
+        keywords = keywords[:max_total_keywords]
 
     if not keywords:
-        logger.error("❌ No keywords found in config. Aborting Rank Check.")
+        logger.error("No keywords found. Aborting rank check.")
         return
 
-    logger.info(f"📋 Loaded {len(keywords)} Target Keywords")
+    logger.info(
+        f"Loaded {len(base_keywords)} base keywords + "
+        f"{len(pathfinder_keywords)} pathfinder keywords -> {len(keywords)} total keywords"
+    )
 
-    # Load Main Target
-    target_name = "규림한의원" # Default
+    target_name = "규림한의원"
     try:
         from utils import ConfigManager
         cfg = ConfigManager()
@@ -1044,58 +1234,47 @@ def check_naver_place_rank(parallel: bool = True, max_workers: int = 3):
                 target_name = t['name']
                 break
     except Exception as e:
-        logger.error(f"❌ Failed to load target name from config: {e}", exc_info=True)
-        pass # Keep default "규림한의원" but log error.
+        logger.error(f"Failed to load target name from config: {e}", exc_info=True)
 
-    logger.info(f"🎯 Target Name: {target_name}")
+    logger.info(f"Target Name: {target_name}")
 
     mode_str = f"PARALLEL (workers={max_workers})" if parallel else "SEQUENTIAL"
-    print(f"🚀 Naver Place Rank Tracker Started... [{mode_str}]")
+    print(f"Naver Place Rank Tracker Started... [{mode_str}]")
     status_manager.update_status("Place Sniper", "RUNNING", f"Checking Ranks... [{mode_str}]")
 
     start_time = time.time()
 
     if parallel:
-        # [Phase 3] 병렬 모드 - BrowserPool + ThreadPoolExecutor
-        logger.info(f"⚡ [Phase 3] PARALLEL MODE: {max_workers} concurrent browsers")
-
-        # 1. 모바일 병렬 스캔
-        logger.info("📱 Phase 1: Mobile PARALLEL Scan...")
+        logger.info(f"[Phase 3] PARALLEL MODE: {max_workers} concurrent browsers")
+        logger.info("Phase 1: Mobile PARALLEL Scan...")
         mobile_results = _scan_keywords_parallel(
             keywords, target_name, "mobile",
             max_workers=max_workers,
-            delay_between_starts=2.0  # 네이버 차단 방지
+            delay_between_starts=2.0
         )
 
-        # 2. 데스크톱 병렬 스캔
-        logger.info("🖥️ Phase 2: Desktop PARALLEL Scan...")
+        logger.info("Phase 2: Desktop PARALLEL Scan...")
         desktop_results = _scan_keywords_parallel(
             keywords, target_name, "desktop",
             max_workers=max_workers,
             delay_between_starts=2.0
         )
 
-        # 결과 요약
         mobile_found = sum(1 for r in mobile_results if r["status"] == "found" and r["rank"] > 0)
         desktop_found = sum(1 for r in desktop_results if r["status"] == "found" and r["rank"] > 0)
-        logger.info(f"📊 Results: Mobile {mobile_found}/{len(keywords)}, Desktop {desktop_found}/{len(keywords)}")
-
+        logger.info(f"Results: Mobile {mobile_found}/{len(keywords)}, Desktop {desktop_found}/{len(keywords)}")
     else:
-        # 기존 순차 모드
         db = DatabaseManager()
-
-        # 1. 모바일 스캔 (m.place.naver.com)
-        logger.info("📱 Phase 1: Mobile Scan Starting...")
+        logger.info("Phase 1: Mobile Scan Starting...")
         with SafeSeleniumDriver(mobile=True, headless=True) as driver:
             _scan_keywords_for_device(driver, db, keywords, target_name, "mobile")
 
-        # 2. 데스크톱 스캔 (place.naver.com)
-        logger.info("🖥️ Phase 2: Desktop Scan Starting...")
+        logger.info("Phase 2: Desktop Scan Starting...")
         with SafeSeleniumDriver(mobile=False, headless=True) as driver:
             _scan_keywords_for_device(driver, db, keywords, target_name, "desktop")
 
     elapsed = time.time() - start_time
-    print(f"🏁 Rank Check Complete (Mobile + Desktop) in {elapsed:.1f}s")
+    print(f"Rank Check Complete (Mobile + Desktop) in {elapsed:.1f}s")
     status_manager.update_status("Place Sniper", "COMPLETED", f"Rank Check Done ({elapsed:.1f}s)")
 
 def collect_competitor_reviews():
@@ -1475,6 +1654,62 @@ if __name__ == "__main__":
         default="both",
         help="[Phase 4] Device type for single keyword scan (default: both)"
     )
+    parser.add_argument(
+        "--pathfinder-keywords",
+        action="store_true",
+        help="Include S/A keywords from keyword_insights"
+    )
+    parser.add_argument(
+        "--pathfinder-grades",
+        type=str,
+        default="S,A",
+        help="Comma/pipe/semi-colon separated grades (default: S,A)"
+    )
+    parser.add_argument(
+        "--pathfinder-limit",
+        type=int,
+        default=0,
+        help="Limit pathfinder keyword count (0 means no limit)"
+    )
+    parser.add_argument(
+        "--pathfinder-min-volume",
+        type=int,
+        default=0,
+        help="Filter pathfinder keywords by minimum search_volume"
+    )
+    parser.add_argument(
+        "--pathfinder-all-runs",
+        action="store_true",
+        help="Load pathfinder keywords from all completed runs (default: latest only)"
+    )
+    parser.add_argument(
+        "--place-regions",
+        type=str,
+        default="",
+        help="Comma/pipe/semi-colon separated region terms for local+service filter"
+    )
+    parser.add_argument(
+        "--place-services",
+        type=str,
+        default="",
+        help="Comma/pipe/semi-colon separated service terms for local+service filter"
+    )
+    parser.add_argument(
+        "--place-filter",
+        action="store_true",
+        help="Enable region + service based filtering"
+    )
+    parser.add_argument(
+        "--no-place-filter-fallback",
+        action="store_true",
+        help="Do not fallback to unfiltered keywords when filter returns empty"
+    )
+    parser.add_argument(
+        "--max-total-keywords",
+        type=int,
+        default=0,
+        help="Cap final keyword count (0 means no cap)"
+    )
 
     args = parser.parse_args()
 
@@ -1495,7 +1730,20 @@ if __name__ == "__main__":
     # [Phase 3] 기본값: 병렬 모드 (3개 브라우저)
     parallel_mode = not args.sequential
 
-    check_naver_place_rank(parallel=parallel_mode, max_workers=args.workers)
+    check_naver_place_rank(
+        parallel=parallel_mode,
+        max_workers=args.workers,
+        include_pathfinder_keywords=args.pathfinder_keywords,
+        pathfinder_grades=_parse_keyword_list_arg(args.pathfinder_grades),
+        pathfinder_limit=args.pathfinder_limit,
+        pathfinder_min_volume=args.pathfinder_min_volume,
+        pathfinder_all_runs=args.pathfinder_all_runs,
+        place_regions=_parse_keyword_list_arg(args.place_regions),
+        place_services=_parse_keyword_list_arg(args.place_services),
+        place_filter_enabled=args.place_filter,
+        place_filter_fallback=not args.no_place_filter_fallback,
+        max_total_keywords=(args.max_total_keywords if args.max_total_keywords > 0 else None),
+    )
 
     if not args.skip_reviews:
         collect_competitor_reviews()

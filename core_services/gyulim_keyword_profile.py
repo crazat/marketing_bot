@@ -8,8 +8,11 @@ discovery, scoring, and UI filtering do not drift apart.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
@@ -55,6 +58,16 @@ class TreatmentCategoryProfile:
 
 class GyulimKeywordProfile:
     """Canonical treatment, region, and intent profile for Pathfinder."""
+
+    profile_key = "gyulim_cheongju"
+    display_name = "규림 청주"
+    primary_region = "청주"
+    service_query_anchor = "한의원"
+    profile_match_signal = "gyulim_profile_match"
+    area_signal = "cheongju_area"
+    neighborhood_signal = "cheongju_neighborhood"
+    cosmetic_clinic_terms_on_scope = False
+    own_brand_terms: Tuple[str, ...] = ("규림", "규림한의원", "kyurim", "gyulim")
 
     cheongju_regions: Tuple[str, ...] = (
         "청주",
@@ -163,6 +176,15 @@ class GyulimKeywordProfile:
         "여드름/피부": "피부/여드름",
         "피부": "피부/여드름",
         "여드름": "피부/여드름",
+        "흉터": "피부/여드름",
+        "피부/흉터": "피부/여드름",
+        "흉터/여드름흉터": "피부/여드름",
+        "여드름흉터": "피부/여드름",
+        "패인흉터": "피부/여드름",
+        "모공흉터": "피부/여드름",
+        "수두흉터": "피부/여드름",
+        "수술흉터": "피부/여드름",
+        "새살침": "피부/여드름",
         "교통사고_입원": "교통사고",
         "교통사고입원": "교통사고",
         "통증": "통증/디스크",
@@ -277,14 +299,18 @@ class GyulimKeywordProfile:
                 category="피부/여드름",
                 seed_terms=(
                     "여드름",
-                    "여드름 한의원",
                     "여드름흉터",
                     "여드름흉터 한의원",
                     "새살침",
                     "패인흉터",
                     "모공흉터",
                     "수두흉터",
+                    "수술흉터",
+                    "여드름 한의원",
+                    "상처흉터",
+                    "켈로이드",
                     "흉터치료",
+                    "흉터 새살침",
                     "피부재생",
                     "여드름자국",
                     "피부 한의원",
@@ -302,7 +328,11 @@ class GyulimKeywordProfile:
                     "패인흉터",
                     "모공흉터",
                     "수두흉터",
+                    "수술흉터",
+                    "상처흉터",
+                    "켈로이드",
                     "흉터치료",
+                    "흉터새살침",
                     "피부재생",
                     "색소침착",
                     "붉은자국",
@@ -325,6 +355,10 @@ class GyulimKeywordProfile:
                     "패인흉터",
                     "모공흉터",
                     "수두흉터",
+                    "수술흉터",
+                    "상처흉터",
+                    "켈로이드",
+                    "흉터새살침",
                     "피부재생",
                     "여드름흉터",
                     "여드름자국",
@@ -339,7 +373,11 @@ class GyulimKeywordProfile:
                     "패인흉터",
                     "모공흉터",
                     "수두흉터",
+                    "수술흉터",
+                    "상처흉터",
+                    "켈로이드",
                     "흉터치료",
+                    "흉터새살침",
                     "피부재생",
                     "색소침착",
                     "붉은자국",
@@ -360,7 +398,21 @@ class GyulimKeywordProfile:
                     "올리브영",
                 ),
                 longtail_suffixes=("비용", "상담", "치료기간", "예약", "후기", "추천", "부작용", "주의사항", "재발"),
-                longtail_contexts=("흉터", "패인흉터", "모공흉터", "수두흉터", "여드름자국", "민감피부", "재발", "성인", "마스크", "압출후"),
+                longtail_contexts=(
+                    "흉터",
+                    "패인흉터",
+                    "모공흉터",
+                    "수두흉터",
+                    "수술흉터",
+                    "상처흉터",
+                    "켈로이드",
+                    "여드름자국",
+                    "민감피부",
+                    "재발",
+                    "성인",
+                    "마스크",
+                    "압출후",
+                ),
                 journey_suffixes={
                     "decision": ("비용", "상담", "예약", "추천"),
                     "access": ("주차", "야간", "주말", "진료시간"),
@@ -1165,12 +1217,15 @@ class GyulimKeywordProfile:
             self.normalize_category(category) for category in categories
         } if categories else set(self.focus_categories)
 
+        primary_region = getattr(self, "primary_region", "청주")
+        service_anchor = getattr(self, "service_query_anchor", "한의원")
+
         seeds: List[str] = [
-            "청주 한의원",
-            "청주 한의원 추천",
-            "청주 한의원 잘하는곳",
-            "청주 야간 한의원",
-            "청주 주말 한의원",
+            f"{primary_region} {service_anchor}",
+            f"{primary_region} {service_anchor} 추천",
+            f"{primary_region} {service_anchor} 잘하는곳",
+            f"{primary_region} 야간 {service_anchor}",
+            f"{primary_region} 주말 {service_anchor}",
         ]
         neighborhoods = self.neighborhoods[:max_neighborhoods_per_category]
 
@@ -1182,11 +1237,11 @@ class GyulimKeywordProfile:
             contexts = profile.longtail_contexts[:3] if include_contexts else ()
 
             for term in terms:
-                seeds.append(f"청주 {term}")
+                seeds.append(f"{primary_region} {term}")
 
             for term in terms[:5]:
                 for suffix in suffixes:
-                    seeds.append(f"청주 {term} {suffix}")
+                    seeds.append(f"{primary_region} {term} {suffix}")
 
             for region in neighborhoods:
                 for term in terms[:2]:
@@ -1194,7 +1249,7 @@ class GyulimKeywordProfile:
 
             for context in contexts:
                 for term in terms[:2]:
-                    seeds.append(f"청주 {context} {term}")
+                    seeds.append(f"{primary_region} {context} {term}")
 
         return _unique(seeds)
 
@@ -1217,7 +1272,9 @@ class GyulimKeywordProfile:
             self.normalize_category(category) for category in categories
         } if categories else set(self.focus_categories)
 
-        regions = ("청주",) + self.neighborhoods[:max_neighborhoods_per_category]
+        primary_region = getattr(self, "primary_region", "청주")
+        service_anchor = getattr(self, "service_query_anchor", "한의원")
+        regions = (primary_region,) + self.neighborhoods[:max_neighborhoods_per_category]
         universal_suffixes = (
             "비용",
             "상담",
@@ -1233,10 +1290,10 @@ class GyulimKeywordProfile:
         )
         question_patterns = (
             "{region} {term} 비용 얼마",
-            "{region} {term} 한의원 어디",
+            "{region} {term} " + service_anchor + " 어디",
             "{region} {term} 상담 가능한곳",
             "{region} {term} 야간 진료",
-            "{region} {term} 주차 편한 한의원",
+            "{region} {term} 주차 편한 " + service_anchor,
         )
 
         seeds: List[str] = []
@@ -1257,23 +1314,23 @@ class GyulimKeywordProfile:
 
             for term in terms:
                 for suffix in suffixes:
-                    seeds.append(f"청주 {term} {suffix}")
+                    seeds.append(f"{primary_region} {term} {suffix}")
                 for context in contexts:
-                    seeds.append(f"청주 {context} {term}")
-                    seeds.append(f"청주 {term} {context}")
+                    seeds.append(f"{primary_region} {context} {term}")
+                    seeds.append(f"{primary_region} {term} {context}")
 
             for region in regions:
                 for term in terms[:4]:
-                    seeds.append(f"{region} {term} 한의원")
+                    seeds.append(f"{region} {term} {service_anchor}")
                     for suffix in suffixes[:6]:
-                        seeds.append(f"{region} {term} 한의원 {suffix}")
+                        seeds.append(f"{region} {term} {service_anchor} {suffix}")
                     for pattern in question_patterns[:3]:
                         seeds.append(pattern.format(region=region, term=term))
 
             for context in contexts:
                 for term in terms[:3]:
                     for suffix in suffixes[:3]:
-                        seeds.append(f"청주 {context} {term} {suffix}")
+                        seeds.append(f"{primary_region} {context} {term} {suffix}")
 
         return _unique(seeds)
 
@@ -1297,5 +1354,434 @@ class GyulimKeywordProfile:
             "ok": not missing and not undercovered,
         }
 
+class RecoverGangnamKeywordProfile(GyulimKeywordProfile):
+    """Keyword taxonomy for RECOVER Gangnam scar, skin, asymmetry, and diet care."""
+
+    profile_key = "recover_gangnam"
+    display_name = "리커버 강남"
+    primary_region = "강남"
+    service_query_anchor = "클리닉"
+    profile_match_signal = "recover_profile_match"
+    area_signal = "gangnam_area"
+    neighborhood_signal = "gangnam_neighborhood"
+    cosmetic_clinic_terms_on_scope = True
+    own_brand_terms: Tuple[str, ...] = ("리커버", "리커버의원", "recover")
+
+    cheongju_regions: Tuple[str, ...] = (
+        "강남",
+        "강남구",
+        "강남역",
+        "신논현",
+        "논현",
+        "언주",
+        "선릉",
+        "역삼",
+        "삼성",
+        "청담",
+        "압구정",
+        "신사",
+        "서초",
+        "교대",
+        "양재",
+    )
+    neighborhoods: Tuple[str, ...] = (
+        "강남역",
+        "신논현",
+        "역삼동",
+        "논현동",
+        "신사동",
+        "청담동",
+        "삼성동",
+        "대치동",
+        "도곡동",
+        "압구정동",
+        "서초동",
+        "반포동",
+        "잠원동",
+        "선릉",
+        "언주",
+        "학동",
+        "논현",
+        "역삼",
+        "삼성",
+        "청담",
+        "압구정",
+    )
+    nearby_regions: Tuple[str, ...] = ("서초", "송파", "잠실", "성수", "용산", "분당", "판교")
+
+    hanbang_indicators: Tuple[str, ...] = (
+        "의원",
+        "클리닉",
+        "병원",
+        "피부과",
+        "성형외과",
+        "피부클리닉",
+        "흉터클리닉",
+        "비만클리닉",
+        "다이어트클리닉",
+        "상담",
+        "진료",
+        "치료",
+        "시술",
+        "레이저",
+        "주사",
+        "처방",
+        "리커버",
+        "recover",
+    )
+    high_intent_terms: Tuple[str, ...] = (
+        "가격",
+        "비용",
+        "상담",
+        "예약",
+        "후기",
+        "추천",
+        "잘하는곳",
+        "잘하는",
+        "효과",
+        "부작용",
+        "주의사항",
+        "기간",
+        "회복",
+        "회복기간",
+        "통증",
+        "붓기",
+        "멍",
+        "당일",
+        "야간",
+        "주말",
+        "진료시간",
+        "전문의",
+        "원장",
+        "실비",
+        "근처",
+    )
+    medical_general_tokens: Tuple[str, ...] = (
+        "치과",
+        "정형외과",
+        "한의원",
+        "한방병원",
+        "내과",
+        "이비인후과",
+        "안과",
+        "비뇨기과",
+        "산부인과",
+        "소아과",
+        "응급실",
+    )
+    category_aliases: Dict[str, str] = {
+        "흉터": "흉터/여드름흉터",
+        "여드름흉터": "흉터/여드름흉터",
+        "수술흉터": "흉터/여드름흉터",
+        "피부": "피부/여드름",
+        "여드름": "피부/여드름",
+        "여드름_피부": "피부/여드름",
+        "여드름/피부": "피부/여드름",
+        "피부/흉터": "흉터/여드름흉터",
+        "비대칭/교정": "안면비대칭",
+        "비대칭_교정": "안면비대칭",
+        "안면비대칭_교정": "안면비대칭",
+        "안면비대칭교정": "안면비대칭",
+        "얼굴비대칭": "안면비대칭",
+        "다이어트/비만": "다이어트",
+        "비만": "다이어트",
+        "체형": "체형교정",
+        "체형/바디": "체형교정",
+        "리프팅": "리프팅/탄력",
+        "탄력": "리프팅/탄력",
+        "스킨부스터": "피부/여드름",
+    }
+
+    def __init__(self) -> None:
+        self.profiles: Tuple[TreatmentCategoryProfile, ...] = (
+            TreatmentCategoryProfile(
+                category="흉터/여드름흉터",
+                seed_terms=(
+                    "흉터",
+                    "흉터 치료",
+                    "여드름흉터",
+                    "패인흉터",
+                    "모공흉터",
+                    "수두흉터",
+                    "수술흉터",
+                    "켈로이드",
+                    "흉터레이저",
+                    "흉터재생",
+                    "흉터클리닉",
+                    "새살침",
+                ),
+                category_terms=(
+                    "흉터",
+                    "여드름흉터",
+                    "패인흉터",
+                    "모공흉터",
+                    "수두흉터",
+                    "수술흉터",
+                    "켈로이드",
+                    "색소침착",
+                    "흉터자국",
+                    "흉터재생",
+                    "흉터치료",
+                    "흉터레이저",
+                    "새살침",
+                ),
+                direct_service_anchors=(
+                    "의원",
+                    "클리닉",
+                    "병원",
+                    "피부과",
+                    "상담",
+                    "치료",
+                    "시술",
+                    "레이저",
+                    "재생",
+                    "흉터클리닉",
+                ),
+                core_tokens=("흉터", "여드름흉터", "패인흉터", "수술흉터", "켈로이드", "모공흉터"),
+                low_business_value_terms=("연고", "패치", "화장품", "홈케어", "셀프", "민간요법", "타투커버"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "회복기간", "부작용", "주의사항", "통증"),
+                longtail_contexts=("패인", "깊은", "오래된", "얼굴", "볼", "코", "수술 후", "붉은 자국"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "가격"),
+                    "validation": ("후기", "추천", "잘하는곳", "전문의"),
+                    "safety": ("부작용", "주의사항", "회복기간", "통증"),
+                },
+                strategic_weight=1.35,
+            ),
+            TreatmentCategoryProfile(
+                category="안면비대칭",
+                seed_terms=(
+                    "안면비대칭",
+                    "얼굴비대칭",
+                    "턱비대칭",
+                    "광대비대칭",
+                    "좌우비대칭",
+                    "얼굴균형",
+                    "턱관절 비대칭",
+                    "비대칭 상담",
+                ),
+                category_terms=(
+                    "안면비대칭",
+                    "얼굴비대칭",
+                    "턱비대칭",
+                    "광대비대칭",
+                    "좌우비대칭",
+                    "얼굴균형",
+                    "얼굴라인",
+                    "턱관절",
+                    "비대칭",
+                    "윤곽",
+                ),
+                direct_service_anchors=("의원", "클리닉", "상담", "진료", "교정", "분석", "검사", "촬영"),
+                core_tokens=("안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절", "얼굴균형"),
+                low_business_value_terms=("셀프", "마사지", "운동", "유튜브", "홈케어", "보정앱"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "검사", "원인", "교정기간"),
+                longtail_contexts=("턱", "광대", "입꼬리", "사진", "웨딩", "면접", "증명사진"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "검사"),
+                    "validation": ("후기", "추천", "잘하는곳"),
+                    "safety": ("원인", "교정기간", "주의사항"),
+                },
+                strategic_weight=1.25,
+            ),
+            TreatmentCategoryProfile(
+                category="피부/여드름",
+                seed_terms=(
+                    "피부",
+                    "여드름",
+                    "성인여드름",
+                    "피부트러블",
+                    "모공",
+                    "색소침착",
+                    "기미",
+                    "홍조",
+                    "피부재생",
+                    "스킨부스터",
+                    "리쥬란",
+                    "쥬베룩",
+                ),
+                category_terms=(
+                    "피부",
+                    "여드름",
+                    "성인여드름",
+                    "트러블",
+                    "모공",
+                    "색소침착",
+                    "기미",
+                    "잡티",
+                    "홍조",
+                    "피부결",
+                    "피부재생",
+                    "스킨부스터",
+                    "리쥬란",
+                    "쥬베룩",
+                    "포텐자",
+                ),
+                direct_service_anchors=("의원", "클리닉", "피부과", "상담", "치료", "시술", "레이저", "주사", "관리"),
+                core_tokens=("피부", "여드름", "트러블", "모공", "색소침착", "홍조", "피부재생"),
+                low_business_value_terms=("화장품", "폼클렌징", "클렌징", "홈케어", "팩", "올리브영", "셀프"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "부작용", "회복기간"),
+                longtail_contexts=("성인", "턱", "볼", "마스크", "민감성", "피부결", "웨딩"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "가격"),
+                    "validation": ("후기", "추천", "잘하는곳"),
+                    "safety": ("부작용", "주의사항", "회복기간"),
+                },
+                strategic_weight=1.15,
+            ),
+            TreatmentCategoryProfile(
+                category="다이어트",
+                seed_terms=(
+                    "다이어트",
+                    "비만클리닉",
+                    "다이어트약",
+                    "식욕억제",
+                    "체중감량",
+                    "지방분해",
+                    "비만관리",
+                    "삭센다",
+                    "위고비",
+                    "마운자로",
+                ),
+                category_terms=(
+                    "다이어트",
+                    "비만",
+                    "체중",
+                    "감량",
+                    "체지방",
+                    "식욕억제",
+                    "다이어트약",
+                    "비만클리닉",
+                    "지방분해",
+                    "삭센다",
+                    "위고비",
+                    "마운자로",
+                    "요요",
+                ),
+                direct_service_anchors=("의원", "클리닉", "상담", "진료", "처방", "주사", "약", "비만클리닉"),
+                core_tokens=("다이어트", "비만", "체중", "감량", "체지방", "식욕억제", "다이어트약"),
+                low_business_value_terms=("댄스", "줌바", "요가", "필라테스", "헬스", "pt", "홈트", "식단", "도시락"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "부작용", "처방", "요요"),
+                longtail_contexts=("직장인", "웨딩", "산후", "복부", "허벅지", "팔뚝", "단기"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "처방"),
+                    "validation": ("후기", "추천", "잘하는곳"),
+                    "safety": ("부작용", "주의사항", "요요"),
+                },
+                strategic_weight=1.2,
+            ),
+            TreatmentCategoryProfile(
+                category="리프팅/탄력",
+                seed_terms=(
+                    "리프팅",
+                    "피부탄력",
+                    "주름",
+                    "탄력관리",
+                    "콜라겐",
+                    "스킨부스터",
+                    "볼처짐",
+                    "팔자주름",
+                ),
+                category_terms=(
+                    "리프팅",
+                    "탄력",
+                    "주름",
+                    "처짐",
+                    "피부탄력",
+                    "콜라겐",
+                    "팔자주름",
+                    "볼처짐",
+                    "목주름",
+                    "스킨부스터",
+                ),
+                direct_service_anchors=("의원", "클리닉", "피부과", "상담", "시술", "레이저", "주사"),
+                core_tokens=("리프팅", "탄력", "주름", "처짐", "피부탄력", "팔자주름"),
+                low_business_value_terms=("화장품", "팩", "마사지", "홈케어", "괄사", "셀프"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "부작용", "회복기간"),
+                longtail_contexts=("팔자", "볼", "턱선", "목", "눈가", "웨딩", "동안"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약"),
+                    "validation": ("후기", "추천", "잘하는곳"),
+                    "safety": ("부작용", "주의사항", "회복기간"),
+                },
+                strategic_weight=1.05,
+            ),
+            TreatmentCategoryProfile(
+                category="체형교정",
+                seed_terms=(
+                    "체형교정",
+                    "바디라인",
+                    "골반비대칭",
+                    "승모근",
+                    "종아리라인",
+                    "복부라인",
+                    "팔뚝라인",
+                ),
+                category_terms=(
+                    "체형",
+                    "체형교정",
+                    "바디라인",
+                    "골반",
+                    "골반비대칭",
+                    "승모근",
+                    "종아리",
+                    "복부",
+                    "팔뚝",
+                    "라인",
+                ),
+                direct_service_anchors=("의원", "클리닉", "상담", "진료", "시술", "관리", "분석"),
+                core_tokens=("체형", "체형교정", "바디라인", "골반비대칭", "승모근", "종아리"),
+                low_business_value_terms=("헬스", "pt", "요가", "필라테스", "홈트", "운동", "마사지", "셀프"),
+                longtail_suffixes=("비용", "상담", "예약", "후기", "추천", "기간"),
+                longtail_contexts=("웨딩", "직장인", "어깨", "골반", "종아리", "복부", "팔뚝"),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약"),
+                    "validation": ("후기", "추천", "잘하는곳"),
+                    "safety": ("기간", "주의사항", "통증"),
+                },
+                strategic_weight=0.95,
+            ),
+        )
+        self._profile_by_category: Dict[str, TreatmentCategoryProfile] = {
+            profile.category: profile for profile in self.profiles
+        }
+
 
 GYULIM_KEYWORD_PROFILE = GyulimKeywordProfile()
+RECOVER_GANGNAM_KEYWORD_PROFILE = RecoverGangnamKeywordProfile()
+
+
+def _read_business_profile_key() -> str:
+    explicit = os.getenv("MARKETING_BOT_CLINIC_PROFILE") or os.getenv("CLINIC_KEYWORD_PROFILE")
+    if explicit:
+        return explicit.strip().lower()
+
+    profile_path = Path(__file__).resolve().parent.parent / "config" / "business_profile.json"
+    try:
+        data = json.loads(profile_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    explicit_config = str(data.get("clinic_profile") or data.get("profile_key") or "").strip().lower()
+    if explicit_config:
+        return explicit_config
+
+    business = data.get("business") or {}
+    marker = " ".join(
+        str(business.get(key) or "")
+        for key in ("name", "short_name", "english_name", "region", "address")
+    ).lower()
+    if any(token in marker for token in ("리커버", "recover", "강남", "gangnam")):
+        return "recover_gangnam"
+    return "gyulim_cheongju"
+
+
+def get_active_keyword_profile() -> GyulimKeywordProfile:
+    key = _read_business_profile_key()
+    if key in {"recover", "recover_gangnam", "gangnam", "리커버", "리커버강남"}:
+        return RECOVER_GANGNAM_KEYWORD_PROFILE
+    return GYULIM_KEYWORD_PROFILE
+
+
+ACTIVE_KEYWORD_PROFILE = get_active_keyword_profile()
+CLINIC_KEYWORD_PROFILE = ACTIVE_KEYWORD_PROFILE

@@ -27,6 +27,7 @@ os.environ.setdefault("DISABLE_API_AUTH", "true")
 os.environ.setdefault("MARKETING_BOT_API_KEY", "test-key")
 os.environ.setdefault("MARKETING_BOT_DISABLE_AI", "true")
 os.environ.setdefault("MARKETING_BOT_QA_RAG_AUTO_INDEX", "false")
+os.environ.setdefault("MARKETING_BOT_CLINIC_PROFILE", "gyulim_cheongju")
 
 from main import app
 
