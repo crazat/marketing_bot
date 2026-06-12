@@ -37,12 +37,16 @@ def test_gyulim_profile_exploration_seeds_cover_patient_journey_and_secondary_ax
     assert any("청주 보약 한의원 가격" in seed for seed in seeds)
 
 
-def test_gyulim_profile_merges_broad_scar_terms_into_skin_axis():
-    assert GYULIM_KEYWORD_PROFILE.normalize_category("흉터/여드름흉터") == "피부/여드름"
-    assert GYULIM_KEYWORD_PROFILE.normalize_category("수술흉터") == "피부/여드름"
-    assert GYULIM_KEYWORD_PROFILE.detect_category("청주 수술흉터 새살침 상담") == "피부/여드름"
+def test_gyulim_profile_keeps_scar_axis_separate_from_skin_axis():
+    # 2026-06-12 taxonomy: 흉터/여드름흉터는 피부/여드름에서 분리된 독립 축이다.
+    assert GYULIM_KEYWORD_PROFILE.normalize_category("흉터/여드름흉터") == "흉터/여드름흉터"
+    assert GYULIM_KEYWORD_PROFILE.normalize_category("수술흉터") == "흉터/여드름흉터"
+    assert GYULIM_KEYWORD_PROFILE.detect_category("청주 수술흉터 새살침 상담") == "흉터/여드름흉터"
     assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 새살침 상담", "흉터/여드름흉터")
-    assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 상처흉터 한의원 치료기간", "피부/여드름")
+    assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 상처흉터 한의원 치료기간", "흉터/여드름흉터")
+    # scar 키워드는 더 이상 피부 축 후보가 아니고, 피부과 추천 의도는 어느 축에서도 제외.
+    assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 상처흉터 한의원 치료기간", "피부/여드름")
+    assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 피부과 추천", "흉터/여드름흉터")
     assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 피부과 추천", "피부/여드름")
 
 
@@ -50,8 +54,8 @@ def test_legion_collector_focus_matches_gyulim_treatments():
     collector = LegionCollector(delay=0.0, use_google=False)
 
     expected = {
-        "청주 여드름흉터 한의원 비용": "피부/여드름",
-        "청주 수두흉터 새살침 상담": "피부/여드름",
+        "청주 여드름흉터 한의원 비용": "흉터/여드름흉터",
+        "청주 수두흉터 새살침 상담": "흉터/여드름흉터",
         "청주 피부관리 한의원 상담": "피부/여드름",
         "청주 안면비대칭 교정 후기": "안면비대칭",
         "청주 다이어트 한약 비용": "다이어트",

@@ -2555,13 +2555,18 @@ def test_viral_hunter_builds_lens_aware_search_query_variants():
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
+        "여드름흉터",
     ]
     assert plans[1]["source_keyword"] == "금천동 여드름흉터"
     assert plans[1]["variant"] == "community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
+    # 비지역 환자 질문 표면: 지역 토큰 제거 + kin 위주 한정 예산
+    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["platform_limits"] == {"cafe": 15, "blog": 0, "kin": 40}
     assert plans[1]["platform_limits"]["cafe"] < plans[0]["platform_limits"]["cafe"]
     assert hunter.keyword_context["금천동 여드름흉터 추천"]["pathfinder_source_keyword"] == "금천동 여드름흉터"
     assert hunter.keyword_context["청주 여드름흉터 새살침 후기"]["pathfinder_source_keyword"] == "금천동 여드름흉터"
+    assert hunter.keyword_context["여드름흉터"]["pathfinder_query_variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_infers_query_plan_for_manual_scar_keyword_without_context():
@@ -2574,11 +2579,13 @@ def test_viral_hunter_infers_query_plan_for_manual_scar_keyword_without_context(
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
+        "여드름흉터",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
+    assert plans[3]["variant"] == "patient_voice_kin"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["category"] == "흉터/여드름흉터"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["execution_lens"] == "cost"
 
@@ -2630,12 +2637,16 @@ def test_viral_hunter_adds_axis_companion_query_for_scar_seed():
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
+        "여드름흉터",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
+    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["platform_limits"] == {"cafe": 15, "blog": 0, "kin": 40}
     assert hunter.keyword_context["청주 여드름흉터 새살침 후기"]["pathfinder_source_keyword"] == "금천동 여드름흉터 비용"
+    assert hunter.keyword_context["여드름흉터"]["pathfinder_source_keyword"] == "금천동 여드름흉터 비용"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_skin_seed_without_duplicate():
@@ -2661,8 +2672,10 @@ def test_viral_hunter_adds_axis_companion_query_for_skin_seed_without_duplicate(
         "청주 여드름 한의원",
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
+        "여드름 한의원",
     ]
     assert plans[2]["variant"] == "axis_skin:피부질환추천"
+    assert plans[3]["variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_diet_review_seed():
@@ -2688,11 +2701,13 @@ def test_viral_hunter_adds_axis_companion_query_for_diet_review_seed():
         "청주 다이어트한약 추천",
         "청주 다이어트한약 후기",
         "청주 한방다이어트 한의원 추천",
+        "다이어트한약 추천",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["platform_limits"]["cafe"] >= 150
     assert plans[1]["variant"] == "axis_diet:한약후기"
     assert plans[2]["variant"] == "axis_diet:한방다이어트추천"
+    assert plans[3]["variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_body_review_seed():
@@ -2717,11 +2732,13 @@ def test_viral_hunter_adds_axis_companion_query_for_body_review_seed():
         "청주 체형교정 한의원 추천",
         "청주 체형교정 추나 한의원 추천",
         "청주 골반교정 추나 한의원 추천",
+        "체형교정 한의원 추천",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["platform_limits"]["cafe"] >= 150
     assert plans[1]["variant"] == "axis_body:체형추나추천"
     assert plans[2]["variant"] == "axis_body:골반교정추천"
+    assert plans[3]["variant"] == "patient_voice_kin"
     assert hunter.keyword_context["청주 체형교정 추나 한의원 추천"]["pathfinder_source_keyword"] == "청주 체형교정 한의원 추천"
     assert hunter.keyword_context["청주 골반교정 추나 한의원 추천"]["pathfinder_source_keyword"] == "청주 체형교정 한의원 추천"
 
@@ -2748,10 +2765,12 @@ def test_viral_hunter_adds_axis_companion_query_for_lifting_seed_even_when_revie
         "청주 한방리프팅 추천",
         "청주 매선 한방리프팅 후기",
         "청주 팔자주름 한방리프팅 후기",
+        "한방리프팅 추천",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[1]["variant"] == "axis_lifting:매선한방후기"
     assert plans[2]["variant"] == "axis_lifting:팔자주름후기"
+    assert plans[3]["variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_adds_compound_axis_companion_query_for_asymmetry_seed():
@@ -2779,11 +2798,13 @@ def test_viral_hunter_adds_compound_axis_companion_query_for_asymmetry_seed():
         "봉명동 턱비대칭 한의원",
         "봉명동 턱비대칭 한의원 추천",
         "청주 턱관절 안면비대칭 한의원 추천",
+        "턱비대칭 한의원",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_asymmetry:턱관절비대칭추천"
+    assert plans[3]["variant"] == "patient_voice_kin"
     assert hunter.keyword_context["봉명동 턱비대칭 한의원"]["pathfinder_source_keyword"] == "봉명동 턱비대칭 한의원 비용"
 
 
@@ -2809,10 +2830,12 @@ def test_viral_hunter_redirects_cost_lens_seed_to_community_surface():
         "청주 여드름 한의원",
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
+        "여드름 한의원",
     ]
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_skin:피부질환추천"
+    assert plans[3]["variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
@@ -2836,10 +2859,12 @@ def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
         "청주 아토피 한의원 후기",
+        "여드름 한의원 추천",
     ]
     assert [plan["query"] for plan in plans].count("청주 여드름 한의원 추천") == 1
     assert plans[1]["variant"] == "axis_skin:피부질환추천"
     assert plans[2]["variant"] == "axis_skin:아토피후기"
+    assert plans[3]["variant"] == "patient_voice_kin"
 
 
 def test_viral_hunter_query_variant_keeps_original_seed_lineage():
@@ -4740,7 +4765,9 @@ def test_viral_final_gate_keeps_asymmetry_tmj_hanbang_question():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
 
 
-def test_viral_final_gate_rejects_asymmetry_seed_without_axis_anchor():
+def test_viral_final_gate_cross_axis_redeems_diet_question_from_asymmetry_seed():
+    # 2026-06-12 교차축 구제: 비대칭 시드가 찾은 글이라도 글 자체가 다른 핵심
+    # 진료축(다이어트)의 유효한 사용자 질문이면 cafe/kin에서는 살린다.
     target = ViralTarget(
         platform="cafe",
         url="https://example.com/asymmetry-seed-broad-clinic",
@@ -4755,7 +4782,24 @@ def test_viral_final_gate_rejects_asymmetry_seed_without_axis_anchor():
         matched_keyword_grade="B",
     )
 
-    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "domain_mismatch"
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
+
+    # 같은 글이 blog로 들어오면 교차축 구제가 없다 (업체 SEO 위험).
+    blog_variant = ViralTarget(
+        platform="blog",
+        url="https://example.com/asymmetry-seed-broad-clinic-blog",
+        title="청주다이어트한약 먹으면서 감량 성공하신 분?",
+        content_preview=(
+            "청주에서 다이어트한약을 먹고 감량 상담을 받아본 분들의 "
+            "한의원 후기가 궁금합니다."
+        ),
+        matched_keywords=["청주 턱관절 한의원 상담 추천"],
+        category="안면비대칭",
+        matched_keyword_category="안면비대칭",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(blog_variant) == "domain_mismatch"
 
 
 def test_viral_final_gate_rejects_asymmetry_conversion_lens_when_axis_fit_is_low():
@@ -6755,3 +6799,699 @@ def test_viral_hunter_discovery_audit_counts_current_run_rediscoveries(tmp_path)
     assert audit["per_category"]["흉터/여드름흉터"]["rediscovered"] == 1
     assert audit["per_query_variant"]["axis_scar:새살침후기"]["rediscovered"] == 1
     assert "피부/여드름" not in audit["per_category"]
+
+
+
+def test_staff_outcome_adjustment_thresholds():
+    adjust = ViralSeedBuilder._staff_outcome_adjustment
+
+    assert adjust({}) == 0.0
+    assert adjust({"staff_reviewed_count": 7, "staff_accept_rate": 0.0}) == 0.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.04}) == -14.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.08}) == -8.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.15}) == 0.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.22}) == 5.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.40}) > 5.0
+
+    # 증거가 얇으면 같은 승인율이라도 감점 폭이 줄어든다.
+    thin = adjust({"staff_reviewed_count": 8, "staff_accept_rate": 0.0})
+    assert -14.0 < thin < 0.0
+
+
+def test_viral_seed_builder_uses_staff_outcomes_to_reorder_lanes(tmp_path):
+    db_path = tmp_path / "seed_builder_staff_outcomes.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                last_scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                url TEXT UNIQUE,
+                matched_keyword TEXT,
+                comment_status TEXT,
+                generated_comment TEXT,
+                scan_count INTEGER
+            );
+            CREATE TABLE viral_target_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id TEXT NOT NULL,
+                rating TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (1, 'legion', 'completed', '2026-06-12');
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, last_scan_run_id, business_core, status
+            ) VALUES (?, 'cat', 'A', 100, 1000, 10, 200.0, ?, 1, 1, 'active')
+            """,
+            [
+                ("alpha lane keyword", "transactional"),
+                ("beta lane keyword", "informational"),
+                ("gamma lane keyword", "commercial"),
+            ],
+        )
+        # alpha: 직원이 20개 전부 skip — 발견시점 점수와 무관하게 강등돼야 한다.
+        conn.executemany(
+            "INSERT INTO viral_targets VALUES (?, ?, 'alpha lane keyword', 'skipped', '', 1)",
+            [(f"alpha-{i}", f"https://example.com/alpha/{i}") for i in range(20)],
+        )
+        # beta: 20개 중 8개 posted — 승인율 40%로 보너스 구간.
+        conn.executemany(
+            "INSERT INTO viral_targets VALUES (?, ?, 'beta lane keyword', ?, '', 1)",
+            [
+                (f"beta-{i}", f"https://example.com/beta/{i}", "posted" if i < 8 else "skipped")
+                for i in range(20)
+            ],
+        )
+        # gamma: 상태는 pending이지만 직원 rating 'good' 10개 — 명시 피드백도 양성 신호.
+        conn.executemany(
+            "INSERT INTO viral_targets VALUES (?, ?, 'gamma lane keyword', 'pending', '', 1)",
+            [(f"gamma-{i}", f"https://example.com/gamma/{i}") for i in range(10)],
+        )
+        conn.executemany(
+            "INSERT INTO viral_target_feedback(target_id, rating) VALUES (?, 'good')",
+            [(f"gamma-{i}",) for i in range(10)],
+        )
+        conn.commit()
+
+    seeds = ViralSeedBuilder(str(db_path)).build(scan_run_id=1, quotas={"cat": 3})
+    by_keyword = {seed.keyword: seed for seed in seeds}
+
+    assert set(by_keyword) == {"alpha lane keyword", "beta lane keyword", "gamma lane keyword"}
+
+    alpha = by_keyword["alpha lane keyword"]
+    beta = by_keyword["beta lane keyword"]
+    gamma = by_keyword["gamma lane keyword"]
+
+    assert alpha.historical_staff_reviewed_count == 20
+    assert alpha.historical_staff_accept_rate == 0.0
+    assert alpha.staff_outcome_adjustment < 0
+
+    assert beta.historical_staff_reviewed_count == 20
+    assert beta.historical_staff_accept_rate == 0.4
+    assert beta.staff_outcome_adjustment > 0
+
+    assert gamma.historical_staff_reviewed_count == 10
+    assert gamma.historical_staff_accept_rate == 1.0
+    assert gamma.staff_outcome_adjustment > 0
+
+    keywords_in_order = [seed.keyword for seed in seeds]
+    assert keywords_in_order.index("beta lane keyword") < keywords_in_order.index("alpha lane keyword")
+    assert keywords_in_order.index("gamma lane keyword") < keywords_in_order.index("alpha lane keyword")
+
+
+def _create_rescue_viral_targets_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE viral_targets (
+            id TEXT PRIMARY KEY,
+            platform TEXT,
+            url TEXT UNIQUE,
+            title TEXT,
+            content_preview TEXT,
+            matched_keywords TEXT,
+            matched_keyword TEXT,
+            category TEXT,
+            is_commentable INTEGER,
+            generated_comment TEXT,
+            priority_score REAL,
+            author TEXT,
+            posted_at TEXT,
+            comment_status TEXT,
+            discovered_at TEXT,
+            source_scan_run_id INTEGER,
+            matched_keyword_grade TEXT,
+            matched_keyword_kei REAL,
+            matched_keyword_priority REAL,
+            matched_keyword_category TEXT
+        )
+        """
+    )
+
+
+def _insert_rescue_target(conn, target_id, url, category, status, priority, discovered_at):
+    conn.execute(
+        """
+        INSERT INTO viral_targets (
+            id, platform, url, title, content_preview, matched_keywords, matched_keyword,
+            category, is_commentable, generated_comment, priority_score, author, posted_at,
+            comment_status, discovered_at, source_scan_run_id, matched_keyword_grade,
+            matched_keyword_kei, matched_keyword_priority, matched_keyword_category
+        ) VALUES (?, 'cafe', ?, '청주 후기 질문글', '실제 사용자 질문 본문', '["청주 키워드"]', '청주 키워드',
+                  ?, 1, '', ?, 'user', '', ?, ?, 60, 'A', 10.0, 100.0, ?)
+        """,
+        (target_id, url, category, priority, status, discovered_at, category),
+    )
+
+
+def test_viral_hunter_loads_backlog_rescue_targets(tmp_path):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "rescue.db"
+    now = datetime.now().isoformat()
+    with sqlite3.connect(db_path) as conn:
+        _create_rescue_viral_targets_table(conn)
+        _insert_rescue_target(conn, "pibu-90", "https://cafe.naver.com/t/90", "피부", "raw_backlog", 90, now)
+        _insert_rescue_target(conn, "pibu-80", "https://cafe.naver.com/t/80", "피부", "raw_backlog", 80, now)
+        _insert_rescue_target(conn, "pibu-70", "https://cafe.naver.com/t/70", "피부", "raw_backlog", 70, now)
+        _insert_rescue_target(conn, "asym-10", "https://cafe.naver.com/t/asym", "안면비대칭", "needs_ai_retry", 10, now)
+        # 레스큐 대상이 아니어야 하는 행들
+        _insert_rescue_target(conn, "pending-99", "https://cafe.naver.com/t/pending", "피부", "pending", 99, now)
+        _insert_rescue_target(conn, "old-95", "https://cafe.naver.com/t/old", "피부", "raw_backlog", 95, "2020-01-01T00:00:00")
+        _insert_rescue_target(conn, "dup-97", "https://cafe.naver.com/t/dup", "피부", "raw_backlog", 97, now)
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    exclude = {canonicalize_viral_url("https://cafe.naver.com/t/dup") or "https://cafe.naver.com/t/dup"}
+    rescued = hunter._load_backlog_rescue_targets(3, exclude_urls=exclude)
+
+    rescued_urls = {target.url for target in rescued}
+
+    assert len(rescued) == 3
+    # 카테고리 floor 덕분에 저점수 비대칭 needs_ai_retry도 포함된다.
+    assert "https://cafe.naver.com/t/asym" in rescued_urls
+    assert "https://cafe.naver.com/t/90" in rescued_urls
+    assert "https://cafe.naver.com/t/80" in rescued_urls
+    # pending/오래된 행/제외 URL은 레스큐되지 않는다.
+    assert "https://cafe.naver.com/t/pending" not in rescued_urls
+    assert "https://cafe.naver.com/t/old" not in rescued_urls
+    assert "https://cafe.naver.com/t/dup" not in rescued_urls
+
+
+def test_unified_analysis_parallel_persists_ai_unsuitable(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    monkeypatch.setattr(
+        AICommentGenerator,
+        "_load_prompts",
+        lambda self: {"unified_analysis": {"template": "{posts_formatted}", "batch_size": 25}},
+    )
+    monkeypatch.setattr(
+        viral_hunter,
+        "ai_generate",
+        lambda *args, **kwargs: (
+            "POST_ID: 1\nSUITABLE: true\nSCORE: 80\nTYPE: consultation\n"
+            "COMPETITOR: false\n---\n"
+            "POST_ID: 2\nSUITABLE: false\nSCORE: 10\nTYPE: unknown\n---"
+        ),
+    )
+
+    suitable_target = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/suit/1",
+        title="다이어트 한약 후기 궁금해요",
+        content_preview="요즘 살이 너무 쪄서 고민이에요. 효과 있을까요?",
+        matched_keywords=["청주 다이어트"],
+        category="다이어트",
+    )
+    unsuitable_target = ViralTarget(
+        platform="blog",
+        url="https://blog.naver.com/unsuit/2",
+        title="오늘의 일상 기록",
+        content_preview="그냥 일기입니다.",
+        matched_keywords=["청주 다이어트"],
+        category="다이어트",
+    )
+
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    fake_db = FakeDB()
+    results = generator.unified_analysis_parallel(
+        [suitable_target, unsuitable_target],
+        batch_size=25,
+        max_workers=1,
+        db=fake_db,
+    )
+
+    result_urls = {target.url for target in results}
+    assert "https://cafe.naver.com/suit/1" in result_urls
+    assert "https://blog.naver.com/unsuit/2" not in result_urls
+
+    # AI 부적합 판정은 침묵 폐기가 아니라 filtered_out_ai로 영속화돼야 한다.
+    unsuitable_saved = [
+        row for row in fake_db.saved if row.get("url") == "https://blog.naver.com/unsuit/2"
+    ]
+    assert unsuitable_saved
+    assert unsuitable_saved[-1]["comment_status"] == "filtered_out_ai"
+    assert unsuitable_target.ai_reviewed is True
+    assert unsuitable_target.is_commentable is False
+    assert (unsuitable_target.score_breakdown or {}).get("ai_verdict") == "unsuitable"
+
+
+
+def test_strip_region_tokens_removes_local_anchors_only():
+    from core_services.viral_seed_builder import strip_region_tokens
+
+    assert strip_region_tokens("청주 여드름흉터 한의원") == "여드름흉터 한의원"
+    assert strip_region_tokens("복대동 다이어트 한약") == "다이어트 한약"
+    assert strip_region_tokens("청주시 오창 안면비대칭 교정") == "안면비대칭 교정"
+    # 지역 토큰만 남으면 빈 문자열 — 호출자는 이 시드를 건너뛰어야 한다.
+    assert strip_region_tokens("율량동") == ""
+    # 지역 토큰이 없으면 원문 유지
+    assert strip_region_tokens("다이어트 한약 효과") == "다이어트 한약 효과"
+
+
+def test_viral_hunter_skips_patient_voice_for_non_user_surface_axis():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 교통사고 한의원": {
+            "category": "교통사고",
+            "viral_readiness_score": 70,
+            "community_signal": 45,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "review_intent_type": "none",
+            "execution_lens": "community",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 교통사고 한의원", 100)
+
+    # 교통사고는 사용자-표면 중심 축이 아니므로 비지역 변형을 보내지 않는다.
+    assert all(plan["variant"] != "patient_voice_kin" for plan in plans)
+
+
+def test_variant_proven_zero_yield_thresholds():
+    proven = viral_hunter.ViralHunter._variant_proven_zero_yield
+
+    assert proven({"discovered": 60, "pending": 0}) is True
+    assert proven({"discovered": 59, "pending": 0}) is False
+    assert proven({"discovered": 60, "pending": 1}) is False
+    assert proven({"discovered": 300, "pending": 1}) is True  # 0.33% < 0.4%
+    assert proven({"discovered": 300, "pending": 2}) is False
+    assert proven({}) is False
+
+
+def test_viral_hunter_variant_yield_gate_drops_proven_zero_yield_companions(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "variant_yield.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        audit_json = json.dumps(
+            {
+                "per_query_variant": {
+                    "axis_skin:아토피후기": {"discovered": 80, "pending": 0, "ad_filtered": 30},
+                    "axis_skin:피부질환추천": {"discovered": 80, "pending": 6, "ad_filtered": 10},
+                }
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", audit_json),
+        )
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름 한의원 추천": {
+            "viral_readiness_score": 72,
+            "community_signal": 64,
+            "conversion_signal": 20,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "review",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름 한의원 추천", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    # 제로수율이 증명된 동반 변형만 차단되고, 기준/건강 변형은 유지된다.
+    assert "axis_skin:아토피후기" not in variants
+    assert "axis_skin:피부질환추천" in variants
+    assert variants[0] == "base"
+    assert "patient_voice_kin" in variants
+    assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
+
+
+
+def test_blog_postview_url_conversion():
+    convert = viral_hunter.blog_postview_url
+
+    assert convert("https://blog.naver.com/risk4wu/224301094763") == (
+        "https://blog.naver.com/PostView.naver?blogId=risk4wu&logNo=224301094763"
+    )
+    already = "https://blog.naver.com/PostView.naver?blogId=abc&logNo=224301094763"
+    assert convert(already) == already
+    assert convert("https://cafe.naver.com/somecafe/123") is None
+    assert convert("") is None
+
+
+def test_extract_kin_body_includes_question_and_answers():
+    html = (
+        '<html><body>'
+        '<div class="questionDetail">청주에서 여드름흉터 <b>새살침</b> 받아본 분 계신가요? 효과 궁금합니다.</div>'
+        '<div class="answerDetail">안녕하세요, 상담한의사입니다. 병원 위치 | 진료 예약 | 문의 전화 주세요.</div>'
+        '<div class="answerDetail">저는 그냥 시간이 지나니 옅어졌어요.</div>'
+        '<div class="answerDetail">세 번째 답변은 잘려야 합니다.</div>'
+        '</body></html>'
+    )
+
+    body = viral_hunter.extract_kin_body_from_html(html, max_answers=2)
+
+    assert "여드름흉터" in body and "새살침" in body
+    assert "[기존답변1]" in body and "진료 예약" in body
+    assert "[기존답변2]" in body and "옅어졌어요" in body
+    assert "세 번째" not in body
+
+
+def test_extract_blog_body_from_html_supports_both_editors():
+    smart = '<div class="se-main-container">추나치료 <span>청주한의원</span> 소개해 드릴게요.</div>'
+    legacy = '<div id="postViewArea">구버전 에디터 본문입니다.</div>'
+
+    assert "추나치료" in viral_hunter.extract_blog_body_from_html(smart)
+    assert "구버전 에디터" in viral_hunter.extract_blog_body_from_html(legacy)
+    assert viral_hunter.extract_blog_body_from_html("") == ""
+
+
+def test_viral_hunter_enriches_and_regates_ai_targets(monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    kin_html = (
+        '<div class="questionDetail">턱관절 비대칭 때문에 고민이 많아요. 청주에 잘하는 곳 있을까요? '
+        '두통도 같이 와서 일상생활이 힘듭니다. 교정으로 좋아질 수 있는지 궁금해요.</div>'
+        '<div class="answerDetail">저도 비슷했는데 꾸준히 치료받고 나아졌어요.</div>'
+    )
+    # planted 질문: 광고 신호가 질문 세그먼트 자체에 있다 → 로컬 게이트 재탈락 대상.
+    promo_kin_html = (
+        '<div class="questionDetail">PROMO 지금 바로 예약하세요 특별 할인!</div>'
+        '<div class="answerDetail">광고 같네요.</div>'
+    )
+    # 자연 질문 + 광고성 답변: 게이트는 질문만 보고 통과시키고 AI가 전체를 판단한다.
+    answer_promo_kin_html = (
+        '<div class="questionDetail">다이어트 한약 먹어도 되나요? 부작용 걱정돼요.</div>'
+        '<div class="answerDetail">PROMO 저희 한의원으로 예약 주세요!</div>'
+    )
+
+    cafe_article_json = json.dumps({
+        "result": {
+            "article": {
+                "contentHtml": "<p>주성 율량 주변에 교통사고로 입원할 수 있는 한방병원 있을까요? 추천 부탁드려요.</p>"
+            }
+        }
+    }, ensure_ascii=False)
+
+    def fake_fetcher(url):
+        if "promo-question" in url:
+            return promo_kin_html
+        if "promo-answer" in url:
+            return answer_promo_kin_html
+        if "cjpublic" in url:
+            return cafe_article_json
+        if "cafe-articleapi" in url:
+            return ""  # 멤버 전용 카페 401 시뮬레이션
+        return kin_html
+
+    # 게이트 내부 규칙에 결합하지 않도록, 재검사 자체는 마커 기반으로 검증한다.
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "apply_final_reject",
+        staticmethod(
+            lambda t: "ad_detected"
+            if "PROMO" in (t.content_preview or "").split("[기존답변", 1)[0]
+            else None
+        ),
+    )
+
+    enrich_me = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=1",
+        title="턱관절 비대칭 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 안면비대칭"],
+        category="안면비대칭",
+    )
+    promo_revealed = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=promo-question",
+        title="다이어트 한약 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 다이어트"],
+        category="다이어트",
+    )
+    answer_promo_survives = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=promo-answer",
+        title="다이어트 한약 부작용 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 다이어트"],
+        category="다이어트",
+    )
+    cafe_member_only = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/memberonly/123456",
+        title="멤버 전용 카페 글",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 다이어트"],
+        category="다이어트",
+    )
+    cafe_public = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/cjpublic/12345",
+        title="공개 카페 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 교통사고"],
+        category="교통사고",
+    )
+    already_rich = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=2",
+        title="이미 풍부한 글",
+        content_preview="가" * 400,
+        matched_keywords=["청주 피부"],
+        category="피부/여드름",
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = FakeDB()
+
+    kept, stats = hunter._enrich_and_regate_ai_targets(
+        [enrich_me, promo_revealed, answer_promo_survives, cafe_member_only, cafe_public, already_rich],
+        fetcher=fake_fetcher,
+    )
+
+    # 보강: kin 3건 + cafe 2건 fetch. 멤버 전용 cafe(빈 응답)와 이미 풍부한 글은 그대로.
+    assert stats["fetched"] == 5
+    assert stats["enriched"] == 4
+    assert len(enrich_me.content_preview) > 100
+    assert "[기존답변1]" in enrich_me.content_preview
+    assert (enrich_me.score_breakdown or {}).get("body_enriched") == "kin"
+    assert cafe_member_only.content_preview == "짧은 snippet"
+    assert "교통사고로 입원" in cafe_public.content_preview
+    assert (cafe_public.score_breakdown or {}).get("body_enriched") == "cafe"
+    assert len(already_rich.content_preview) == 400
+
+    # planted 질문(질문 세그먼트에 광고 신호)은 AI 예산 소모 전에 재탈락 + 영속화.
+    assert stats["regate_rejected"] == 1
+    kept_urls = {t.url for t in kept}
+    assert promo_revealed.url not in kept_urls
+    assert enrich_me.url in kept_urls
+    assert cafe_member_only.url in kept_urls
+    assert cafe_public.url in kept_urls
+    assert hunter.db.saved and hunter.db.saved[0]["url"] == promo_revealed.url
+
+    # 자연 질문 + 광고성 '답변'은 로컬 게이트가 죽이지 않는다 — AI가 전체 본문으로
+    # planted 여부/경쟁사 역공략 기회를 판단한다. (답변 텍스트는 preview에 유지)
+    assert answer_promo_survives.url in kept_urls
+    assert "[기존답변1]" in answer_promo_survives.content_preview
+    assert "PROMO" in answer_promo_survives.content_preview
+
+
+def test_cafe_article_api_url_conversion():
+    convert = viral_hunter.cafe_article_api_url
+
+    assert convert("http://cafe.naver.com/cjcjmom/3298659") == (
+        "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/cjcjmom/articles/3298659?useCafeId=false"
+    )
+    legacy = "https://cafe.naver.com/ArticleRead.nhn?clubid=11569471&articleid=3298659"
+    assert convert(legacy) == (
+        "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/11569471/articles/3298659?useCafeId=true"
+    )
+    assert convert("https://cafe.naver.com/somecafe") is None
+    assert convert("https://blog.naver.com/abc/123456") is None
+
+
+def test_extract_cafe_body_from_json():
+    valid = json.dumps({
+        "result": {"article": {"contentHtml": "<p>청주 다이어트 한약 <b>후기</b> 궁금해요</p>"}}
+    }, ensure_ascii=False)
+
+    body = viral_hunter.extract_cafe_body_from_json(valid)
+    assert "다이어트 한약" in body and "후기" in body
+
+    assert viral_hunter.extract_cafe_body_from_json("not-json") == ""
+    assert viral_hunter.extract_cafe_body_from_json(json.dumps({"result": {}})) == ""
+    assert viral_hunter.extract_cafe_body_from_json("") == ""
+
+
+def test_scar_patient_exploration_rescues_comparison_question():
+    """흉터 환자의 탐색 질문은 본문에 시술 단어(레이저)가 있어도 살아남는다."""
+    target = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/scar-rescue/123456",
+        title="여드름 흉터 병원 가야 할지 고민이에요ㅠ",
+        content_preview=(
+            "여드름 흉터 때문에 진짜 스트레스예요ㅠㅠ 거울 볼 때마다 패인 부분이 너무 신경 쓰여서 "
+            "사람 만나기도 자신감이 없어지더라고요. 여드름 흉터 병원에 가봐야 하나 싶어서 "
+            "이것저것 찾아보는데 레이저 종류도 많고..."
+        ),
+        matched_keywords=["금천동 여드름흉터"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+    )
+
+    assert viral_hunter.CommentableFilter.apply_final_reject(target) is None
+
+    # 제목 자체가 시술/피부과 주제면 구제하지 않는다 (주제 고착 글).
+    committed = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/scar-committed/123457",
+        title="여드름 흉터 프락셀 어떤지 궁금해요",
+        content_preview="여드름 흉터 프락셀 받아보신 분 후기 좀요. 프락셀 알아보는 중이에요.",
+        matched_keywords=["금천동 여드름흉터"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+    )
+
+    assert viral_hunter.CommentableFilter.apply_final_reject(committed) == "off_domain"
+
+
+def test_seoul_neighborhood_titles_hit_region_gate():
+    """닥톡류 '(서울동네 카테고리)' 템플릿 질문은 동네명만으로 지역 게이트에 걸린다."""
+    target = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=jamsil1",
+        title="여드름흉터제거 어떤 치료가 좋을까요?(잠실 여드름흉터)",
+        content_preview="잠실 30대 초반/남 여드름흉터 패인 여드름흉터는 몇 년이 지나도 그대로인 것 같아요. 치료 추천해주세요.",
+        matched_keywords=["여드름흉터"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+    )
+
+    assert viral_hunter.CommentableFilter.apply_final_reject(target) == "region_mismatch"
+
+
+def _final_gate_target(platform, title, preview, mk_cat, cat, url_suffix):
+    return ViralTarget(
+        platform=platform,
+        url=f"https://example.test/final-gate/{url_suffix}",
+        title=title,
+        content_preview=preview,
+        matched_keywords=["청주 다이어트 한약"],
+        category=cat,
+        matched_keyword_category=mk_cat,
+    )
+
+
+def test_cross_axis_discovery_rescued_on_user_question_surfaces_only():
+    """다이어트 시드가 찾은 추나/자세 질문은 cafe/kin에서만 교차축으로 구제된다."""
+    question = (
+        "청주 30대 후반/남 추나치료 평소 오래 앉아 있는 편인데 허리랑 골반이 "
+        "한쪽으로 틀어진 느낌이 있습니다. 추나치료가 도움이 되는지 궁금합니다."
+    )
+    kin = _final_gate_target("kin", "추나치료 자세 불균형에도 도움이 될까요?", question, "다이어트", "통증/디스크", "ca-kin")
+    assert viral_hunter.CommentableFilter.apply_final_reject(kin) is None
+
+    blog = _final_gate_target("blog", "추나치료 자세 불균형에도 도움이 될까요?", question, "다이어트", "통증/디스크", "ca-blog")
+    assert viral_hunter.CommentableFilter.apply_final_reject(blog) == "domain_mismatch"
+
+    # detect_category 우발 매칭(성형 글의 체형 단어)은 user-axis 앵커 요구로 차단.
+    junk = _final_gate_target(
+        "cafe",
+        "보형물로도 처진가슴 잘 잡히죠?",
+        "윗가슴부터 가득 찼음 좋겠는데 보형물로도 처진가슴 잘 잡히죠? 수술 고민이에요",
+        "다이어트", "체형교정", "ca-junk",
+    )
+    assert viral_hunter.CommentableFilter.apply_final_reject(junk) == "domain_mismatch"
+
+
+def test_kin_answer_segment_isolated_in_final_gate_everywhere():
+    """[기존답변] 분리는 게이트 본체에 있다 — 어떤 호출 경로든 답변 광고가 질문을 오살하지 않는다."""
+    question = (
+        "청주 30대 후반/남 추나치료 평소 오래 앉아 있는 편인데 허리랑 골반이 "
+        "한쪽으로 틀어진 느낌이 있습니다. 추나치료가 도움이 되는지 궁금합니다."
+    )
+    promo_answer = (
+        " [기존답변1] # 병원 위치 | 진료 예약 | 문의 전화 안녕하세요, "
+        "닥톡-네이버 지식iN 상담한의사입니다. 상담 한번 받아보세요."
+    )
+    labeled = _final_gate_target("kin", "추나치료 자세 불균형에도 도움이 될까요?", question + promo_answer, "체형교정", "체형교정", "seg-labeled")
+    assert viral_hunter.CommentableFilter.apply_final_reject(labeled) is None
+    # 게이트 통과 후에도 preview 원본(답변 포함)은 보존돼 AI가 전체를 본다.
+    assert "[기존답변1]" in labeled.content_preview
+
+    # 라벨 없는 snippet 연결(미보강)은 기존 광고 판정 규칙이 그대로 적용된다.
+    unlabeled = _final_gate_target(
+        "kin", "추나치료 자세 불균형에도 도움이 될까요?",
+        question + " # 병원 위치 | 진료 예약 | 문의 전화 안녕하세요, 닥톡-네이버 지식iN "
+        "상담한의사입니다. 상담 한번 받아보세요. 비용 부담 없이 진료받으세요",
+        "체형교정", "체형교정", "seg-unlabeled",
+    )
+    assert viral_hunter.CommentableFilter.apply_final_reject(unlabeled) == "advertorial"
+
+
+def test_asymmetry_patient_vocab_passes_anchor_gate():
+    """키워드 용어 없이 증상을 서술하는 턱 틀어짐 환자 질문이 앵커 게이트를 통과한다."""
+    jaw = _final_gate_target(
+        "kin",
+        "스트레스를 받으면 돌아가는 턱..ㅠ",
+        "안녕하세요? 저는 22세 여자인데요, 스트레스를 받으면 아래턱이 오른쪽으로 "
+        "움직이는 증상이 일어납니다. 누가 봐도 심할 만큼 아래턱이 돌아가 있습니다. 어떻게 해야 할까요?",
+        "안면비대칭", "안면비대칭", "jaw-vocab",
+    )
+    assert viral_hunter.CommentableFilter.apply_final_reject(jaw) is None

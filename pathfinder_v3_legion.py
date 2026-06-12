@@ -2438,6 +2438,14 @@ class PathfinderLegion:
             print(f"🧭 히스토리 기반 탐색 시드 추가: {len(exploration_seeds)}개")
             self.base_seeds.extend(exploration_seeds)
 
+        # discovery_audit가 지목한 blind-spot 표면을 다음 런이 실제로 탐사한다
+        # (이전까지 next_exploration_queue는 write-only였다).
+        audit_gap_seeds = self._load_discovery_audit_gap_seeds()
+        if audit_gap_seeds:
+            print(f"🕳️ 디스커버리 감사 blind-spot 시드 추가: {len(audit_gap_seeds)}개")
+            self.base_seeds.extend(audit_gap_seeds)
+            self.base_seeds = list(dict.fromkeys(self.base_seeds))
+
         # 수집된 키워드
         self.collected: Dict[str, KeywordResult] = {}
         self.analyzed_keywords: Set[str] = set()
@@ -5612,6 +5620,56 @@ class PathfinderLegion:
             print(f"⚠️ 다양성 히스토리 로드 실패: {e}")
 
         return profile
+
+    def _load_discovery_audit_gap_seeds(self, max_seeds: int = 24) -> List[str]:
+        """Pathfinder discovery_audit의 next_exploration_queue를 다음 런 시드로 소비.
+
+        감사가 blind-spot(서비스 앵커/여정 단계/동네 커버리지 결손)을 지목해도
+        아무도 듣지 않던 write-only 루프를 닫는다. 브로커/DB가 얇거나 실패하면
+        조용히 빈 리스트 — 기존 시드 구성에는 영향이 없다.
+        """
+        try:
+            from core_services.pathfinder_insight_broker import PathfinderInsightBroker
+            broker = PathfinderInsightBroker(_get_db_path())
+            cards = broker.keyword_cards(limit=80)
+            if not cards:
+                return []
+            treatment = broker._treatment_intelligence(cards, selected_cards=cards)
+            audit = broker._discovery_audit(
+                cards,
+                selected_cards=cards,
+                treatment_intelligence=treatment,
+            )
+            queue = [
+                str(seed).strip()
+                for seed in (audit.get("next_exploration_queue") or [])
+                if str(seed or "").strip()
+            ]
+        except Exception as e:
+            print(f"⚠️ 디스커버리 감사 시드 로드 실패 (무시): {e}")
+            return []
+
+        seen = set(getattr(self, "base_seeds", []) or [])
+        collector = getattr(self, "collector", None)
+        selected: List[str] = []
+        for seed in queue:
+            if seed in seen:
+                continue
+            if not GYULIM_KEYWORD_PROFILE.is_target_region(seed, include_nearby=True):
+                continue
+            # 감사 큐에는 '동네+한방+거래접미사' 같은 무앵커 조합도 섞인다 —
+            # 라이브 수율 증거(0.3%)가 있는 낭비 패턴이라 서비스 앵커를 강제한다.
+            if collector is not None:
+                try:
+                    if not collector._is_valid_keyword(seed) or not collector.is_focus_candidate(seed):
+                        continue
+                except Exception:
+                    pass
+            selected.append(seed)
+            seen.add(seed)
+            if len(selected) >= max_seeds:
+                break
+        return selected
 
     def _build_history_aware_exploration_seeds(self, max_seeds: int = 48) -> List[str]:
         profile = getattr(self, "diversity_profile", self._empty_diversity_profile())

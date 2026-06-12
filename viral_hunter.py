@@ -50,6 +50,7 @@ from core_services.viral_seed_builder import (
     ViralSeedBuilder,
     canonical_category_for_keyword,
     keyword_structure_features,
+    strip_region_tokens,
     strip_transactional_suffix,
 )
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
@@ -1048,6 +1049,164 @@ class NaverUnifiedSearch:
 
 
 # ============================================
+# 공개 표면 본문 취득 (KIN/blog — 로그인 불필요)
+# ============================================
+NAVER_BODY_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+}
+
+
+def blog_postview_url(url: str) -> Optional[str]:
+    """blog.naver.com 글 URL을 iframe 없는 PostView URL로 변환. 비대상이면 None."""
+    text = url or ""
+    if "blog.naver.com" not in text:
+        return None
+    if "PostView.naver" in text and "blogId=" in text and "logNo=" in text:
+        return text
+    m = re.search(r"blog\.naver\.com/([^/?#]+)/(\d{6,})", text)
+    if not m:
+        m = re.search(r"blogId=([^&#]+).*?logNo=(\d{6,})", text)
+    if not m:
+        return None
+    return f"https://blog.naver.com/PostView.naver?blogId={m.group(1)}&logNo={m.group(2)}"
+
+
+def _fetched_node_text(node) -> str:
+    if node is None:
+        return ""
+    text = node.get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_kin_body_from_html(
+    html: str,
+    max_answers: int = 2,
+    question_chars: int = 600,
+    answer_chars: int = 260,
+) -> str:
+    """지식인 상세 HTML에서 질문 본문 + 상위 답변 요약을 추출.
+
+    답변 텍스트를 함께 싣는 이유: KIN 광고/업체 답변 신호 대부분이 질문이 아닌
+    답변 영역에 있어, snippet만으로는 광고 게이트와 AI 판정이 보지 못한다.
+    """
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    question = _fetched_node_text(soup.select_one(".questionDetail"))[:question_chars]
+    parts: List[str] = []
+    if question:
+        parts.append(question)
+    for idx, node in enumerate(soup.select(".answerDetail")[:max_answers], 1):
+        answer = _fetched_node_text(node)[:answer_chars]
+        if answer:
+            parts.append(f"[기존답변{idx}] {answer}")
+    return " ".join(parts).strip()
+
+
+def extract_blog_body_from_html(html: str, max_chars: int = 900) -> str:
+    """블로그 PostView HTML에서 본문 텍스트를 추출 (스마트에디터/구버전 모두)."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    node = soup.select_one(".se-main-container") or soup.select_one("#postViewArea")
+    return _fetched_node_text(node)[:max_chars]
+
+
+def cafe_article_api_url(url: str) -> Optional[str]:
+    """카페 글 URL을 공개 article JSON API URL로 변환. 비대상이면 None.
+
+    공개 카페는 로그인 없이 200 + contentHtml을 주고, 멤버 전용 카페는 401을
+    반환한다(라이브 검증: 청주맘 계열 공개 / cjcjmommy 멤버 전용) — 호출자는
+    빈 결과로 fail-soft한다.
+    """
+    text = url or ""
+    if "cafe.naver.com" not in text:
+        return None
+    m = re.search(r"clubid=(\d+).*?articleid=(\d+)", text, re.IGNORECASE)
+    if m:
+        return (
+            "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/"
+            f"cafes/{m.group(1)}/articles/{m.group(2)}?useCafeId=true"
+        )
+    m = re.search(r"cafe\.naver\.com/(?:ca-fe/web/cafes/)?([\w.-]+)(?:/articles)?/(\d{3,})", text)
+    if not m:
+        return None
+    return (
+        "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/"
+        f"cafes/{m.group(1)}/articles/{m.group(2)}?useCafeId=false"
+    )
+
+
+def extract_cafe_body_from_json(json_text: str, max_chars: int = 900) -> str:
+    """카페 article API 응답(JSON)에서 본문 텍스트를 추출."""
+    if not json_text:
+        return ""
+    try:
+        data = json.loads(json_text)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    article = (data.get("result") or {}).get("article") or {}
+    if not isinstance(article, dict):
+        return ""
+    content = article.get("contentHtml") or article.get("content") or ""
+    if not content:
+        return ""
+    try:
+        soup = BeautifulSoup(str(content), "html.parser")
+    except Exception:
+        return ""
+    return _fetched_node_text(soup)[:max_chars]
+
+
+def fetch_naver_post_body(
+    url: str,
+    platform: str,
+    timeout: float = 8.0,
+    fetcher=None,
+) -> str:
+    """KIN/blog/공개 cafe 페이지에서 본문 텍스트 취득. 실패는 빈 문자열로 fail-soft."""
+    platform = (platform or "").lower()
+
+    def _default_fetch(target_url: str) -> str:
+        headers = dict(NAVER_BODY_FETCH_HEADERS)
+        if "apis.naver.com" in target_url:
+            headers["Referer"] = "https://cafe.naver.com/"
+        response = requests.get(target_url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return ""
+        return response.text or ""
+
+    fetch = fetcher or _default_fetch
+    try:
+        if platform == "kin":
+            return extract_kin_body_from_html(fetch(url))
+        if platform == "blog":
+            postview = blog_postview_url(url)
+            if not postview:
+                return ""
+            return extract_blog_body_from_html(fetch(postview))
+        if platform in {"cafe", "naver_cafe"}:
+            api_url = cafe_article_api_url(url)
+            if not api_url:
+                return ""
+            return extract_cafe_body_from_json(fetch(api_url))
+    except Exception as e:
+        logger.debug(f"본문 취득 실패({platform}, {url[:60]}): {e}")
+    return ""
+
+
+# ============================================
 # 댓글 가능 필터 클래스
 # ============================================
 class CommentableFilter:
@@ -1745,6 +1904,11 @@ class CommentableFilter:
         "asymmetry": [
             "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
             "턱 교정", "턱교정", "얼굴형", "두상비대칭",
+            # 환자 어휘 — 키워드 용어(턱관절/비대칭) 없이 증상을 서술하는 질문 구제
+            # (라이브: '아래턱이 오른쪽으로 움직이는' 턱 틀어짐 질문이 앵커 미스로
+            # domain_mismatch). 치과 고착 글은 선행 dental off_domain 게이트가 거른다.
+            "아래턱", "턱이 돌아", "턱 돌아", "턱이 틀어", "턱 틀어",
+            "얼굴이 틀어", "얼굴 틀어", "턱이 비뚤", "얼굴 비뚤",
         ],
         "body": [
             "체형", "체형교정", "골반", "골반교정", "자세", "자세교정",
@@ -1773,6 +1937,14 @@ class CommentableFilter:
         "달서구",
         "쌍용동", "불당동", "신불당동", "공주", "논산", "당진", "서산", "충주", "제천",
         "홍성", "예산", "태안", "계룡", "부여", "서천", "금산",
+        # 서울/수도권 동네명 — 닥톡류 '(지역 카테고리)' 템플릿 질문이 city명 없이
+        # 동네명만 달고 들어와 지역 게이트를 통과하는 누수를 막는다 (라이브: 잠실).
+        "잠실", "잠원동", "압구정", "청담동", "신사동", "역삼동", "서초동", "송파",
+        "노원", "천호동", "목동", "왕십리", "건대", "영등포", "일산", "동탄",
+        "청라", "송도", "평촌", "산본",
+        "도봉구", "강북구", "관악구", "구로구", "동작구", "성북구", "중랑구",
+        "광진구", "강동구", "양천구",
+        "감삼동", "수성구", "동성로", "서면", "해운대",
     ]
 
     # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
@@ -2237,6 +2409,61 @@ class CommentableFilter:
             ""
         )
         return cls._keyword_domain(getattr(target, "matched_keywords", []) or [], category=category)
+
+    @classmethod
+    def _own_content_domain(cls, target: ViralTarget) -> str:
+        """글 자체 텍스트로 감지한 진료축 도메인 (시드 lineage와 무관)."""
+        detected = cls._own_content_category(target)
+        if not detected:
+            return ""
+        return cls._keyword_domain([], category=detected)
+
+    @classmethod
+    def _own_content_category(cls, target: ViralTarget) -> str:
+        """글 자체 텍스트로 감지한 활성 프로필 진료축 카테고리."""
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(
+                f"{target.title or ''} {target.content_preview or ''}",
+                default="",
+            )
+        )
+        if not detected or not GYULIM_KEYWORD_PROFILE.profile_for(detected):
+            return ""
+        return detected
+
+    @classmethod
+    def _cross_axis_reject_reason(cls, target: ViralTarget, *, seed_domain: str) -> Optional[str]:
+        """교차축 후보를 자기 축 기준으로 1회 재귀 평가.
+
+        시드 lineage를 글 자체 카테고리로 바꾼 clone에 전체 최종 게이트를 다시
+        돌린다 — 자기 축의 노이즈/광고/지역 검사를 전부 통과해야 None. 자기 축이
+        감지되지 않거나 시드 축과 같으면(재귀 종료 조건) 구제하지 않는다.
+        """
+        if (target.score_breakdown or {}).get("_cross_axis_eval"):
+            return "domain_mismatch"
+        # 사용자 질문 표면만 — blog 교차축 후보는 라이브 리뷰 결과 대부분 업체
+        # SEO/홍보 콘텐츠였다 (블로그는 자기 축 전용 레인으로만 들어온다).
+        if (target.platform or "").lower() not in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            return "domain_mismatch"
+        own_category = cls._own_content_category(target)
+        if not own_category:
+            return "domain_mismatch"
+        own_domain = cls._keyword_domain([], category=own_category)
+        if not own_domain or own_domain == seed_domain:
+            return "domain_mismatch"
+        import copy as _copy
+        clone = _copy.copy(target)
+        clone.matched_keyword_category = own_category
+        clone.category = own_category
+        # 시드 키워드 lineage를 비워 클론 도메인이 자기 카테고리로만 풀리게 한다 —
+        # 원본 키워드(예: 다이어트 시드)가 남으면 도메인이 다시 시드 축으로 돌아간다.
+        clone.matched_keywords = []
+        clone.score_breakdown = {**(target.score_breakdown or {}), "_cross_axis_eval": True}
+        # 자기 축의 user-axis 앵커(축별 정선 패턴)까지 요구 — detect_category의
+        # 우발 매칭(성형/운동 글의 체형·비대칭 단어 등)이 구제되는 것을 막는다.
+        if not cls._has_user_axis_anchor(clone, domain=own_domain, category=own_category):
+            return "domain_mismatch"
+        return cls.final_reject_reason(clone)
 
     @classmethod
     def _profile_categories_for_target(cls, target: ViralTarget, domain: str) -> List[str]:
@@ -3506,8 +3733,32 @@ class CommentableFilter:
             return cls._contains_any(text, cls.STRICT_DOMAIN_ANCHORS[domain])
         return cls._contains_any(text, cls.DOMAIN_ANCHORS.get(domain, []))
 
+    SCAR_PATIENT_EXPLORATION_PATTERNS = [
+        "고민", "할지", "싶어서", "싶은데", "싶어요", "추천", "후기", "어떡", "어쩌",
+        "방법", "알려주", "찾고", "찾아보", "스트레스", "자신감",
+    ]
+
     @classmethod
-    def _is_off_domain(cls, domain: str, text: str) -> bool:
+    def _is_scar_patient_exploration(cls, text: str, title: str = "") -> bool:
+        """흉터 환자의 탐색 질문 구제 — 시술 단어가 본문 비교 맥락으로만 등장하는 경우.
+
+        흉터 환자가 한방 용어를 자발적으로 쓰는 일은 드물다. '레이저 종류도 많고'
+        같은 탐색 언급까지 모두 잘라내면 새살침 대안을 소개할 핵심 공급이 사라진다
+        (라이브 리뷰: 흉터 축 전 기간 91건, 68% filtered_out — 이 규칙이 1순위
+        축 기근의 구조 원인이었다). 제목 자체가 시술/피부과 주제인 글(프락셀 후기
+        요청 등)은 구제하지 않는다. 광고/지역/한방거부/AI 게이트는 이후 단계에서
+        계속 돈다.
+        """
+        if not cls._contains_any(text, cls.SCAR_USER_AXIS_ANCHOR_PATTERNS):
+            return False
+        if title and cls._contains_any(title, cls.OFF_DOMAIN_PATTERNS["cosmetic_clinic"]):
+            return False
+        return cls._contains_any(text, cls.INTERROGATIVE_PATTERNS) or cls._contains_any(
+            text, cls.SCAR_PATIENT_EXPLORATION_PATTERNS
+        )
+
+    @classmethod
+    def _is_off_domain(cls, domain: str, text: str, title: str = "") -> bool:
         """핵심 키워드와 무관한 업종/시술 글을 저장 전 제외한다."""
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["dental"]):
             return domain in {"asymmetry", "body", "general"}
@@ -3526,7 +3777,11 @@ class CommentableFilter:
             if domain in {"asymmetry", "body", "traffic", "diet"}:
                 return True
             hanbang_skin_context = cls._contains_any(text, ["새살침", "한의원", "한방", "침치료"])
-            return domain in {"scar_skin", "lifting", "general"} and not hanbang_skin_context
+            if domain not in {"scar_skin", "lifting", "general"} or hanbang_skin_context:
+                return False
+            if domain == "scar_skin" and cls._is_scar_patient_exploration(text, title):
+                return False
+            return True
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["fitness"]):
             medical_diet_context = cls._contains_any(
                 text, ["한약", "한의원", "한방", "처방", "마운자로", "위고비", "삭센다", "비만"]
@@ -3921,12 +4176,25 @@ class CommentableFilter:
     @classmethod
     def final_reject_reason(cls, target: ViralTarget) -> Optional[str]:
         """AI 적합 판정 이후 DB 저장 직전의 마지막 품질 게이트."""
+        # 보강된 KIN 본문의 [기존답변N] 구간은 글쓴이가 아닌 기존 답변이다. 답변 속
+        # 업체/치과/광고 텍스트가 자연 질문을 오살하지 않도록 게이트는 질문 세그먼트만
+        # 평가한다 — 하위 게이트 함수 다수가 target에서 텍스트를 재유도하므로 shallow
+        # clone의 preview를 질문 세그먼트로 바꿔 모든 경로(레스큐/사전 게이트/정화
+        # 스크립트 포함)에서 일관되게 만든다. 라벨 없는 검색 snippet 연결(미보강)은
+        # 전체가 평가되고, planted Q&A·광고답변 판단은 AI 레이어가 담당한다.
+        preview = target.content_preview or ""
+        if (target.platform or "").lower() in {"kin", "naver_kin"} and "[기존답변" in preview:
+            question_segment = preview.split("[기존답변", 1)[0].strip()
+            if question_segment:
+                import copy as _copy
+                target = _copy.copy(target)
+                target.content_preview = question_segment
         title = (target.title or "").lower()
         body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
         domain = cls._target_domain(target)
 
-        if cls._is_off_domain(domain, text):
+        if cls._is_off_domain(domain, text, title=title):
             return "off_domain"
         if cls._is_non_service_beauty_target(domain, text):
             return "off_domain"
@@ -3957,7 +4225,14 @@ class CommentableFilter:
         if is_advertorial:
             return "advertorial"
         if not cls._has_domain_anchor(domain, text):
-            return "domain_mismatch"
+            # 교차축 발견 구제 — 시드 축과 다르더라도 글 자체가 다른 핵심 진료축의
+            # 글이면 유효한 발견이다 (라이브: 다이어트 시드가 찾은 청주 추나/자세
+            # 질문이 diet 앵커 미스로 탈락). 단, 자기 축 기준으로 전체 게이트를
+            # 1회 재귀 평가시켜 그 축의 노이즈 검사(필라테스/헬스/성형 등)까지
+            # 통과해야 구제한다 — 앵커만 보면 운동/성형 노이즈가 부활한다.
+            own_reject = cls._cross_axis_reject_reason(target, seed_domain=domain)
+            if own_reject is not None:
+                return "domain_mismatch"
         if cls._contains_any(text, cls.STRICT_MEDICAL_PROMO_PATTERNS):
             return "medical_promo"
         return None
@@ -4154,7 +4429,7 @@ class CommentableFilter:
             if any(ad in text for ad in self._non_relevant_exclude_terms(text)):
                 stats['non_relevant'] += 1
                 continue
-            if self._is_off_domain(domain, text):
+            if self._is_off_domain(domain, text, title=(target.title or "").lower()):
                 stats['off_domain'] += 1
                 continue
             if self._is_non_service_beauty_target(domain, text):
@@ -4769,7 +5044,9 @@ class AICommentGenerator:
     UNIFIED_AD_SAFETY_NOTE = """
 
 [추가 제외 기준]
-- 검색 스니펫이 원 질문 뒤에 기존 답변/댓글을 이어 붙인 경우, 뒤쪽 답변에 특정 병원/한의원/제품 추천, 예약/위치/전화/상담/가격/이벤트/홈페이지/카카오톡 안내가 보이면 SUITABLE=false로 판정하세요.
+- 검색 스니펫이 원 질문 뒤에 기존 답변/댓글을 라벨 없이 이어 붙인 경우, 뒤쪽 답변에 특정 병원/한의원/제품 추천, 예약/위치/전화/상담/가격/이벤트/홈페이지/카카오톡 안내가 보이면 SUITABLE=false로 판정하세요.
+- 단, 본문에 "[기존답변N]" 라벨이 있으면 질문과 이미 달린 답변이 구분된 것입니다. 이때 SUITABLE 판단은 라벨 앞의 질문 부분 기준입니다: 질문이 자연스러운 환자 글이면 답변에 업체 홍보가 있어도 SUITABLE=true일 수 있습니다. 답변에 특정 한의원/병원 추천이 보이면 COMPETITOR=true와 COMPETITOR_NAME으로 보고하세요.
+- 질문 자체가 특정 업체를 칭찬하거나, 질문과 답변이 같은 업체를 짜맞춘 자문자답 마케팅으로 보이면 SUITABLE=false.
 - "저도 ... 효과", "성안길/지웰시티 쪽 OO한의원", "상담 한번 받아보세요", "네이버에서 검색", "비용 부담 없이", "할인이벤트/무제한/패키지" 같은 문구는 자연 질문이 아니라 광고성 답변 스니펫 신호입니다.
 - 제목이 질문형이어도 본문 대부분이 매끄러운 병원 홍보, 후기 가장, 기존 답변 추천이면 promotion/review/other로 제외하세요.
 """
@@ -5335,7 +5612,7 @@ POST_ID: {i}
                 prompt = template.format(posts_formatted=posts_formatted) + self.UNIFIED_AD_SAFETY_NOTE
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
-                return batch_idx, suitable, unsuit, comp, None
+                return batch_idx, suitable, unsuit, comp, None, list(batch)
             except Exception as e:
                 return batch_idx, [], 0, 0, e, list(batch)
 
@@ -5359,9 +5636,10 @@ POST_ID: {i}
                 result = fut.result()
                 if len(result) == 5:
                     batch_idx, suitable, unsuit, comp, err = result
-                    failed_batch = []
+                    batch_targets = []
                 else:
-                    batch_idx, suitable, unsuit, comp, err, failed_batch = result
+                    batch_idx, suitable, unsuit, comp, err, batch_targets = result
+                failed_batch = batch_targets if err else []
                 if err:
                     self.last_failed_ai_batches.add(batch_idx)
                     retry_saved = 0
@@ -5378,6 +5656,28 @@ POST_ID: {i}
                         f"needs_ai_retry {retry_saved}개 저장"
                     )
                     continue
+
+                # AI 부적합 판정 영속화 — 침묵 폐기하면 부적합 행이 DB에 남지 않아
+                # 구조/시드 수율 피드백의 분모와 디스커버리 감사가 왜곡되고,
+                # 레스큐된 raw_backlog 행은 매 런 재레스큐되는 루프가 생긴다.
+                ai_unsuitable_saved = 0
+                if db is not None and batch_targets:
+                    parsed_suitable_keys = {(t.url or t.id) for t in suitable}
+                    for t in batch_targets:
+                        if (t.url or t.id) in parsed_suitable_keys:
+                            continue
+                        t.ai_reviewed = True
+                        t.is_commentable = False
+                        t.comment_status = "filtered_out_ai"
+                        t.score_breakdown = {
+                            **(t.score_breakdown or {}),
+                            "ai_verdict": "unsuitable",
+                        }
+                        try:
+                            if db.insert_viral_target(t.to_dict()):
+                                ai_unsuitable_saved += 1
+                        except Exception as e:
+                            logger.warning(f"AI 부적합 상태 저장 실패: {e}")
 
                 final_suitable = []
                 final_rejected = 0
@@ -5415,6 +5715,7 @@ POST_ID: {i}
                         f"   ✅ 배치 {batch_idx}/{total_batches} 완료 "
                         f"(적합 {len(suitable)}, 최종제외 {final_rejected}, "
                         f"최종제외저장 {final_reject_saved}, 부적합 {unsuit}, "
+                        f"부적합저장 {ai_unsuitable_saved}, "
                         f"경쟁사 {comp}, 저장 {newly_saved}) "
                         f"[누적 {len(done_batches)}/{total_batches}]"
                     )
@@ -6162,6 +6463,91 @@ class ViralHunter:
     def _compact_query_text(text: str) -> str:
         return re.sub(r"\s+", "", (text or "").lower())
 
+    def _load_variant_yield_history(self, max_runs: int = 12) -> Dict[str, Dict[str, int]]:
+        """최근 viral_scan_audits 런들의 query-variant 수율을 합산해 캐시.
+
+        per_query_variant 수율은 매 런 기록만 되고 플래닝에서 소비되지 않아,
+        제로수율이 증명된 변형이 계속 SERP 예산을 태우는 갭이 있었다. 테이블이
+        아직 없으면(라이브 런 전) 빈 dict — 플래닝은 기존과 동일하게 동작한다.
+        """
+        cached = getattr(self, "_variant_yield_cache", None)
+        if cached is not None:
+            return cached
+        history: Dict[str, Dict[str, int]] = {}
+        rows = []
+        try:
+            import sqlite3 as _sql
+            conn = _sql.connect(self.db.db_path)
+            rows = conn.execute(
+                "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT ?",
+                (int(max_runs),),
+            ).fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+        for (audit_json,) in rows:
+            try:
+                audit = json.loads(audit_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            per_variant = audit.get("per_query_variant") if isinstance(audit, dict) else None
+            if not isinstance(per_variant, dict):
+                continue
+            for variant, entry in per_variant.items():
+                if not isinstance(entry, dict):
+                    continue
+                bucket = history.setdefault(
+                    str(variant),
+                    {"discovered": 0, "pending": 0, "ad_filtered": 0},
+                )
+                bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                bucket["pending"] += int(entry.get("pending", 0) or 0)
+                bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
+        self._variant_yield_cache = history
+        return history
+
+    @staticmethod
+    def _variant_proven_zero_yield(stats: Dict[str, int]) -> bool:
+        """충분한 누적 증거가 있고 pending 전환이 사실상 0인 변형만 True.
+
+        보수적 임계 — 신생 변형의 탐사를 조기에 죽이지 않는다.
+        """
+        discovered = int(stats.get("discovered", 0) or 0)
+        pending = int(stats.get("pending", 0) or 0)
+        if discovered >= 60 and pending == 0:
+            return True
+        if discovered >= 150 and (pending / discovered) < 0.004:
+            return True
+        return False
+
+    def _patient_voice_kin_variant(
+        self,
+        keyword: str,
+        category: str,
+        core_query: str,
+    ) -> Optional[Dict[str, Any]]:
+        """지역 앵커 없는 환자 질문(지식인) 표면 탐사 변형.
+
+        지식인 질문 대부분은 제목/검색 텍스트에 지역명이 없어 청주-앵커 쿼리로는
+        구조적으로 잡히지 않는다. 사용자-표면 중심 축에 한해 지역 토큰을 제거한
+        서비스 코어를 kin 위주로 1변형만 보낸다. 수율은 안정된 변형 이름
+        (patient_voice_kin)으로 측정되며, 제로수율이 증명되면 변형 수율 게이트가
+        자동으로 끈다.
+        """
+        if category not in self.USER_SURFACE_HEAVY_CATEGORIES:
+            return None
+        stripped = strip_region_tokens(core_query)
+        if not stripped or len(self._compact_query_text(stripped)) < 4:
+            return None
+        if self._compact_query_text(stripped) == self._compact_query_text(core_query):
+            return None  # 지역 토큰이 없던 시드 — 이미 비지역 쿼리라 중복
+        return {
+            "query": stripped,
+            "variant": "patient_voice_kin",
+            "source_keyword": keyword,
+            "surface_override": {"cafe": 15, "blog": 0, "kin": 40},
+        }
+
     def _search_query_variants_for_keyword(self, keyword: str) -> List[Dict[str, Any]]:
         """Create a bounded set of lens-aware search queries for one Pathfinder seed."""
         ctx = self._planning_context_for_keyword(keyword)
@@ -6219,8 +6605,34 @@ class ViralHunter:
             query_compact = self._compact_query_text(variant["query"])
             if query_compact and all(query_compact != self._compact_query_text(item["query"]) for item in variants):
                 variants.append(variant)
+        variants = variants[:max_variants]
 
-        return variants[:max_variants]
+        # 비지역 환자 질문 표면은 별도 +1 슬롯 — kin 위주 한정 예산이라 SERP 비용이 작다.
+        patient_voice = self._patient_voice_kin_variant(keyword, category, core_query)
+        if patient_voice is not None:
+            pv_compact = self._compact_query_text(patient_voice["query"])
+            if pv_compact and all(pv_compact != self._compact_query_text(item["query"]) for item in variants):
+                variants.append(patient_voice)
+
+        # 변형 수율 게이트 — 누적 증거로 제로수율이 증명된 동반 변형은 보내지 않는다.
+        # 기준(base/community_base) 변형은 절대 끄지 않는다.
+        history = self._load_variant_yield_history()
+        if history and len(variants) > 1:
+            kept = [variants[0]]
+            for variant in variants[1:]:
+                stats = history.get(str(variant.get("variant") or ""))
+                if stats and self._variant_proven_zero_yield(stats):
+                    drop_counts = getattr(self, "_variant_drop_counts", None)
+                    if drop_counts is None:
+                        drop_counts = {}
+                        self._variant_drop_counts = drop_counts
+                    name = str(variant.get("variant") or "")
+                    drop_counts[name] = drop_counts.get(name, 0) + 1
+                    continue
+                kept.append(variant)
+            variants = kept
+
+        return variants
 
     @staticmethod
     def _axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
@@ -6284,10 +6696,15 @@ class ViralHunter:
             plan = dict(base_plan)
             plan.update(variant)
             if idx > 0:
-                plan["platform_limits"] = self._scaled_platform_limits(
-                    base_plan.get("platform_limits") or {},
-                    0.45,
-                )
+                surface_override = variant.get("surface_override")
+                if surface_override:
+                    # kin 전용 등 표면 지정 변형은 비율 스케일 대신 고정 한도를 쓴다.
+                    plan["platform_limits"] = dict(surface_override)
+                else:
+                    plan["platform_limits"] = self._scaled_platform_limits(
+                        base_plan.get("platform_limits") or {},
+                        0.45,
+                    )
                 plan["query_variant_of"] = keyword
             if variant["query"] != keyword and keyword in self.keyword_context:
                 variant_context = dict(self.keyword_context[keyword])
@@ -6498,6 +6915,9 @@ class ViralHunter:
             "pathfinder_brand_intent_type": ctx.get("brand_intent_type") or "generic",
             "pathfinder_review_intent_type": ctx.get("review_intent_type") or "none",
             "pathfinder_execution_lens": ctx.get("execution_lens") or "",
+            "pathfinder_staff_reviewed_count": int(ctx.get("historical_staff_reviewed_count") or 0),
+            "pathfinder_staff_accept_rate": float(ctx.get("historical_staff_accept_rate") or 0.0),
+            "pathfinder_staff_outcome_adjustment": float(ctx.get("staff_outcome_adjustment") or 0.0),
         }
         return target
 
@@ -6720,6 +7140,141 @@ class ViralHunter:
                 seen_loaded_ids.add(target.id)
                 break
         return loaded
+
+    def _load_backlog_rescue_targets(
+        self,
+        limit: int,
+        exclude_urls: Optional[set] = None,
+        days: int = 21,
+    ) -> List[ViralTarget]:
+        """최근 raw_backlog/needs_ai_retry 타겟을 AI 재심사 후보로 로드.
+
+        AI top-N 예산에 밀려 저장만 된 공급이 영구 사장되는 갭을 메운다. 점수순
+        정렬 후 `split_ai_targets_with_category_floor`로 카테고리 균형을 강제해
+        피부/교통사고 물량이 레스큐 예산까지 독식하지 못하게 한다. 재심사 결과는
+        AI 적합 → pending 승격, 부적합 → filtered_out_ai 영속화로 끝나므로 같은
+        행이 매 런 재레스큐되는 루프는 생기지 않는다.
+        """
+        if limit <= 0:
+            return []
+        import sqlite3 as _sql
+
+        rows = []
+        try:
+            conn = _sql.connect(self.db.db_path)
+            conn.row_factory = _sql.Row
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM viral_targets
+                WHERE COALESCE(comment_status, 'pending') IN ('raw_backlog', 'needs_ai_retry')
+                  AND COALESCE(is_commentable, 1) = 1
+                  AND REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= datetime('now', ?)
+                ORDER BY COALESCE(priority_score, 0) DESC
+                LIMIT ?
+                """,
+                (f"-{int(days)} days", max(int(limit) * 6, 200)),
+            ).fetchall()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"백로그 레스큐 후보 로드 실패: {e}")
+            return []
+
+        excluded = exclude_urls or set()
+        candidates: List[ViralTarget] = []
+        seen_keys: set = set()
+        for row in rows:
+            target = self._viral_target_from_db_row(row)
+            if not target.url:
+                continue
+            key = canonicalize_viral_url(target.url) or target.url
+            if key in excluded or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            candidates.append(target)
+
+        # 레스큐 예산(기본 60)은 top-N(300) 기준 floor보다 훨씬 작아, 원본 쿼터를
+        # 그대로 쓰면 피부/교통사고 floor가 예산을 다 소진해 희소축(안면비대칭,
+        # 통증/디스크)이 한 건도 못 들어온다 — 예산 비례로 floor를 축소한다.
+        scale = min(1.0, int(limit) / 300.0)
+        scaled_quotas = {
+            category: max(2, int(round(quota * scale)))
+            for category, quota in AI_CATEGORY_MIN_QUOTAS.items()
+        }
+        selected, _rest = split_ai_targets_with_category_floor(
+            candidates,
+            int(limit),
+            category_min_quotas=scaled_quotas,
+        )
+        return selected
+
+    ENRICHABLE_BODY_PLATFORMS = {"kin", "blog", "cafe", "naver_cafe"}
+
+    def _enrich_and_regate_ai_targets(
+        self,
+        ai_targets: List[ViralTarget],
+        *,
+        max_fetch: int = 120,
+        time_budget_sec: float = 150.0,
+        min_existing_chars: int = 300,
+        fetcher=None,
+        sleep_sec: float = 0.35,
+    ) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """AI 분석 직전, 공개 표면(KIN/blog) 타겟의 실제 본문을 취득하고 게이트 재검사.
+
+        검색 API snippet(~150자)만으로는 UNIFIED_ANALYSIS_PREVIEW_CHARS(700자)의
+        설계 의도가 무력하다 — KIN 광고성 답변과 blog 광고 본문 신호는 대부분
+        snippet 밖에 있다(라이브 검증: pending 큐의 blog 광고글 2건, KIN 업체
+        답변 다수가 snippet 이후 구간에서만 식별 가능). enrichment 후 최종
+        게이트를 다시 통과시켜 드러난 광고를 AI 예산 소모 전에 제거한다.
+        cafe는 공개 카페만 article API로 취득(멤버 전용 401 → 빈 결과 fail-soft);
+        로그인 필요한 카페는 scripts/enrich_cafe_bodies.py(Selenium) 수동 경로 유지.
+        """
+        stats = {"fetched": 0, "enriched": 0, "regate_rejected": 0}
+        if not ai_targets or max_fetch <= 0:
+            return ai_targets, stats
+
+        started = time.time()
+        for target in ai_targets:
+            if stats["fetched"] >= max_fetch or (time.time() - started) > time_budget_sec:
+                break
+            if (target.platform or "").lower() not in self.ENRICHABLE_BODY_PLATFORMS:
+                continue
+            if len(target.content_preview or "") >= min_existing_chars:
+                continue
+            if not target.url:
+                continue
+            stats["fetched"] += 1
+            body = fetch_naver_post_body(target.url, target.platform, fetcher=fetcher)
+            if fetcher is None and sleep_sec:
+                time.sleep(sleep_sec)
+            if len(body) <= len(target.content_preview or ""):
+                continue
+            target.content_preview = body
+            target.score_breakdown = {
+                **(target.score_breakdown or {}),
+                "body_enriched": target.platform,
+            }
+            stats["enriched"] += 1
+
+        # 보강된 타겟만 게이트 재검사 — 미보강 타겟은 같은 증거로 이미 통과했다.
+        # KIN [기존답변] 분리는 final_reject_reason 본체가 모든 호출 경로에서
+        # 일관되게 수행한다 (여기서 별도 분리하지 않는다).
+        kept: List[ViralTarget] = []
+        for target in ai_targets:
+            if not (target.score_breakdown or {}).get("body_enriched"):
+                kept.append(target)
+                continue
+            reject_reason = CommentableFilter.apply_final_reject(target)
+            if reject_reason:
+                stats["regate_rejected"] += 1
+                try:
+                    self.db.insert_viral_target(target.to_dict())
+                except Exception as e:
+                    logger.warning(f"enrichment 게이트 제외 상태 저장 실패: {e}")
+                continue
+            kept.append(target)
+        return kept, stats
 
     @staticmethod
     def _noise_key(text: str) -> str:
@@ -7036,7 +7591,9 @@ class ViralHunter:
              use_latest_legion: bool = True,
              source_scan_run_id: Optional[int] = None,
              boost_categories: Optional[Iterable[str]] = None,
-             boost_lenses: Optional[Iterable[str]] = None) -> List[ViralTarget]:
+             boost_lenses: Optional[Iterable[str]] = None,
+             rescue_backlog: int = 60,
+             enrich_bodies: int = 120) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -7052,6 +7609,10 @@ class ViralHunter:
             발견된 ViralTarget 리스트
         """
         run_started_at = time.strftime('%Y-%m-%d %H:%M:%S')
+
+        # 변형 수율 캐시/차단 집계는 런 단위로 재계산한다 (직전 런 감사 반영).
+        self._variant_yield_cache = None
+        self._variant_drop_counts = {}
 
         if keywords is None:
             keywords = self._load_keywords(
@@ -7081,6 +7642,8 @@ class ViralHunter:
             boost_categories=boost_categories,
             boost_lenses=boost_lenses,
         )
+        # 해시 계산이 플랜을 한 번 더 생성하므로 차단 집계는 검색 패스 기준으로 리셋
+        self._variant_drop_counts = {}
 
         # 체크포인트 복원
         all_targets: List[ViralTarget] = []
@@ -7261,6 +7824,23 @@ class ViralHunter:
             except Exception as e:
                 logger.debug(f"adaptive penalty skip: {e}")
 
+        # 직원 실작업 결과 prior — 같은 카테고리/레인이라도 직원 승인율이 낮은 시드의
+        # 타겟은 AI 예산·pending 큐 순서에서 소폭 뒤로 보낸다 (카테고리 floor가 있어
+        # 소수 축이 굶지는 않는다).
+        if filtered:
+            staff_adjusted = 0
+            for t in filtered:
+                breakdown = t.score_breakdown or {}
+                staff_adj = float(breakdown.get('pathfinder_staff_outcome_adjustment') or 0.0)
+                if not staff_adj:
+                    continue
+                delta = max(-8.0, min(8.0, staff_adj * 0.5))
+                t.priority_score = max(0.0, (t.priority_score or 0.0) + delta)
+                staff_adjusted += 1
+            if staff_adjusted:
+                filtered.sort(key=lambda x: x.priority_score, reverse=True)
+                print(f"   👤 직원 결과 prior 적용: {staff_adjusted}개 타겟 점수 조정")
+
         # 상위 N개만 AI 분석 대상, 나머지는 raw 저장.
         # 단, 전역 점수순만 쓰면 피부/교통사고 물량이 많은 날 비대칭/교정 같은
         # 핵심 소수 카테고리가 전부 raw_backlog로 밀린다.
@@ -7268,6 +7848,70 @@ class ViralHunter:
             filtered,
             top_n_for_ai,
         )
+
+        # 백로그 레스큐 — AI 예산에 밀려 raw_backlog/needs_ai_retry로 사장된 최근
+        # 타겟을 매 런 일정량 재심사한다. 직접 pending 승격은 금지(광고/적합성 AI
+        # 게이트를 그대로 통과시켜야 하므로) — AI 분석 큐에 추가 투입만 한다.
+        rescued_count = 0
+        if rescue_backlog and top_n_for_ai > 0:
+            try:
+                run_urls = {
+                    canonicalize_viral_url(t.url) or t.url
+                    for t in filtered
+                    if t.url
+                }
+                rescue_quota = min(int(rescue_backlog), int(top_n_for_ai))
+                rescue_candidates = self._load_backlog_rescue_targets(rescue_quota, run_urls)
+                rescue_gate_rejected = 0
+                rescue_kept: List[ViralTarget] = []
+                for t in rescue_candidates:
+                    prior_status = t.comment_status or "raw_backlog"
+                    reject_reason = CommentableFilter.apply_final_reject(t)
+                    if reject_reason:
+                        # 게이트가 진화했으므로 과거 backlog도 최신 게이트로 재탈락 영속화
+                        rescue_gate_rejected += 1
+                        try:
+                            self.db.insert_viral_target(t.to_dict())
+                        except Exception as e:
+                            logger.warning(f"레스큐 게이트 제외 상태 저장 실패: {e}")
+                        continue
+                    t.score_breakdown = {
+                        **(t.score_breakdown or {}),
+                        "rescued_from": prior_status,
+                    }
+                    # AI 적합 판정 시 upsert CASE가 raw_backlog → pending 승격을 처리한다.
+                    t.comment_status = "pending"
+                    rescue_kept.append(t)
+                if rescue_kept:
+                    rescued_count = len(rescue_kept)
+                    ai_targets = ai_targets + rescue_kept
+                    print(
+                        f"   ♻️ 백로그 레스큐: {rescued_count}개 AI 재심사 투입 "
+                        f"(최신 게이트 재탈락 {rescue_gate_rejected}개)"
+                    )
+                elif rescue_gate_rejected:
+                    print(f"   ♻️ 백로그 레스큐: 최신 게이트 재탈락 {rescue_gate_rejected}개, 투입 0개")
+            except Exception as e:
+                logger.warning(f"백로그 레스큐 실패 (계속 진행): {e}")
+
+        # 본문 enrichment — AI가 snippet(~150자)이 아닌 실제 본문/답변을 보고
+        # 판정하도록 KIN/blog 공개 표면을 보강하고, 드러난 광고는 즉시 재탈락.
+        if ai_targets and enrich_bodies:
+            try:
+                before_enrich = len(ai_targets)
+                ai_targets, enrich_stats = self._enrich_and_regate_ai_targets(
+                    ai_targets,
+                    max_fetch=int(enrich_bodies),
+                )
+                if enrich_stats["fetched"]:
+                    print(
+                        f"   📄 본문 enrichment: fetch {enrich_stats['fetched']}건 → "
+                        f"보강 {enrich_stats['enriched']}건, 게이트 재탈락 {enrich_stats['regate_rejected']}건 "
+                        f"(AI 후보 {before_enrich} → {len(ai_targets)})"
+                    )
+            except Exception as e:
+                logger.warning(f"본문 enrichment 실패 (계속 진행): {e}")
+
         if ai_targets:
             ai_category_counts: Dict[str, int] = {}
             for target in ai_targets:
@@ -7496,6 +8140,14 @@ class ViralHunter:
         print(f"   총 발견: {len(all_targets)}개")
         print(f"   필터링 후: {len(filtered)}개")
         print(f"   DB 저장: {saved}개")
+        if rescued_count:
+            print(f"   ♻️ 백로그 레스큐 재심사: {rescued_count}개")
+        dropped_variants = getattr(self, "_variant_drop_counts", {}) or {}
+        if dropped_variants:
+            drop_summary = ", ".join(
+                f"{name}x{count}" for name, count in sorted(dropped_variants.items())
+            )
+            print(f"   ✂️ 제로수율 변형 차단: {drop_summary}")
         if audit_summary:
             audit_totals = audit_summary['summary']
             print(
@@ -7618,6 +8270,10 @@ def main():
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
     parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
+    parser.add_argument('--rescue-backlog', type=int, default=60,
+                        help='최근 raw_backlog/needs_ai_retry 타겟을 추가로 AI 재심사할 최대 수 (0=비활성, 기본 60)')
+    parser.add_argument('--enrich-bodies', type=int, default=120,
+                        help='AI 분석 전 KIN/blog 본문을 HTTP로 보강할 최대 fetch 수 (0=비활성, 기본 120)')
     parser.add_argument('--boost-category', action='append', default=[], help='먼저 실행할 Pathfinder 진료축 lane')
     parser.add_argument('--boost-lens', action='append', default=[], help='먼저 실행할 Pathfinder 실행렌즈 lane')
 
@@ -7793,7 +8449,9 @@ def main():
                     use_latest_legion=not args.legacy_keywords,
                     source_scan_run_id=args.source_scan_id,
                     boost_categories=args.boost_category,
-                    boost_lenses=args.boost_lens)
+                    boost_lenses=args.boost_lens,
+                    rescue_backlog=args.rescue_backlog,
+                    enrich_bodies=args.enrich_bodies)
         return
 
     if args.generate:

@@ -520,8 +520,10 @@ def test_todays_queue_merges_gyulim_legacy_and_matched_categories(tmp_db_path, m
         for item in group["items"]
     ]
 
-    assert set(groups) == {"피부/여드름", "다이어트"}
-    assert groups["피부/여드름"]["selected_count"] == 2
+    # 흉터/여드름흉터는 피부/여드름에서 분리된 독립 축으로 그룹핑된다.
+    assert set(groups) == {"흉터/여드름흉터", "피부/여드름", "다이어트"}
+    assert groups["흉터/여드름흉터"]["selected_count"] == 1
+    assert groups["피부/여드름"]["selected_count"] == 1
     assert "legacy-scar-top" in selected_ids
     assert "canonical-skin" in selected_ids
     assert "matched-skin-overflow" not in selected_ids

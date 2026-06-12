@@ -1021,3 +1021,105 @@ def test_pathfinder_codex_synthesis_falls_back_when_ai_unavailable(tmp_path, mon
     assert brief["codex_synthesis"]["status"] == "fallback"
     assert brief["codex_synthesis"]["model"] == "deterministic_fallback"
     assert "청주 한의원 주차 편한 곳" in brief["codex_synthesis"]["executive_summary"]
+
+
+
+def _discovery_audit_card(profile, market):
+    service_term = (profile.direct_service_anchors or profile.seed_terms or profile.core_tokens)[0]
+    core_term = (profile.core_tokens or profile.seed_terms or profile.category_terms)[0]
+    return {
+        "keyword": f"{market} {service_term} {core_term}",
+        "category": profile.category,
+        "handoff_id": "pf-discovery-viral-a",
+        "source_signals": ["autocomplete", "serp"],
+        "metrics": {},
+        "signals": {},
+    }
+
+
+def test_pathfinder_discovery_audit_consumes_viral_scan_yield(tmp_path):
+    import json
+
+    db_path = tmp_path / "discovery_viral.db"
+    profile = GYULIM_KEYWORD_PROFILE.profiles[0]
+    market = GYULIM_KEYWORD_PROFILE.neighborhoods[0]
+    audit_json = {
+        "summary": {
+            "discovered": 40,
+            "pending": 1,
+            "pending_rate": 0.025,
+            "ad_filtered": 12,
+            "ad_rate": 0.3,
+        },
+        "per_category": {
+            profile.category: {"discovered": 30, "pending": 0, "ad_filtered": 12},
+            "기타": {"discovered": 10, "pending": 1, "ad_filtered": 0},
+        },
+        "zero_yield_seeds": [
+            {"seed": "청주 제로수율 시드", "discovered": 28, "ad_filtered": 11}
+        ],
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                source_scan_run_id INTEGER,
+                keyword_count INTEGER,
+                discovered_count INTEGER,
+                pending_count INTEGER,
+                pending_rate REAL,
+                ad_filtered_count INTEGER,
+                audit_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            (
+                "2026-06-12 09:00:00",
+                "2026-06-12 10:00:00",
+                json.dumps(audit_json, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    cards = [_discovery_audit_card(profile, market)]
+    audit = broker._discovery_audit(cards, selected_cards=cards)
+
+    viral_yield = audit["viral_yield"]
+    assert viral_yield["status"] == "ready"
+    assert viral_yield["pending_rate"] == 0.025
+    assert viral_yield["zero_yield_seeds"][0]["seed"] == "청주 제로수율 시드"
+
+    zero_categories = {item["category"] for item in viral_yield["zero_yield_categories"]}
+    assert profile.category in zero_categories
+
+    surface = next(
+        item for item in audit["category_surface_map"] if item["category"] == profile.category
+    )
+    assert surface["viral_discovered"] == 30
+    assert surface["viral_pending"] == 0
+    assert surface["viral_pending_rate"] == 0.0
+
+    # keyword 커버리지는 있는데 바이럴 수율이 0인 축은 blind spot으로 승격된다.
+    assert any(
+        item.get("status") == "viral_zero_yield" and item.get("category") == profile.category
+        for item in audit["blind_spots"]
+    )
+
+
+def test_pathfinder_discovery_audit_without_viral_audit_table_has_no_viral_yield(tmp_path):
+    broker = PathfinderInsightBroker(str(tmp_path / "discovery_no_viral.db"))
+    profile = GYULIM_KEYWORD_PROFILE.profiles[0]
+    market = GYULIM_KEYWORD_PROFILE.neighborhoods[0]
+    cards = [_discovery_audit_card(profile, market)]
+
+    audit = broker._discovery_audit(cards, selected_cards=cards)
+
+    assert audit["status"] == "ready"
+    assert "viral_yield" not in audit
+    assert all(item.get("status") != "viral_zero_yield" for item in audit["blind_spots"])

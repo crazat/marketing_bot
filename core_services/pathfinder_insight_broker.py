@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
+from core_services.viral_seed_builder import canonical_category_for_keyword
 
 
 AGENT_ALIASES = {
@@ -609,7 +610,10 @@ class PathfinderInsightBroker:
 
     def _card_focus_category(self, card: Dict[str, Any]) -> str:
         raw_category = str(card.get("category") or "기타")
-        normalized = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        # 파이프라인 공통 정준화 — 레거시 scar 행은 피부/여드름으로 저장돼 있어
+        # keyword 텍스트 기반으로 흉터 축을 복원해야 분리된 프로필의 의미 각도
+        # 용어(패인흉터/수두흉터 등)가 semantic signature에 살아난다.
+        normalized = canonical_category_for_keyword(str(card.get("keyword") or ""), raw_category)
         return normalized if normalized in GYULIM_KEYWORD_PROFILE.focus_categories else raw_category
 
     def _selection_reason(
@@ -3214,11 +3218,30 @@ class PathfinderInsightBroker:
         ) if total_weight else 0.0
         profile_term_score = round(sum(term_scores) / len(term_scores), 3) if term_scores else 0.0
         source_diversity_score = round(min(1.0, len(source_counts) / 5), 3) if source_counts else 0.0
+        viral_yield = self._viral_yield_feedback(category_surface_map)
+        if viral_yield:
+            # keyword 커버리지가 healthy/partial인데 실제 바이럴 스캔에서 pending이
+            # 0인 축은 점수표가 아니라 실행 단계가 막힌 것 — blind spot으로 승격해
+            # 다음 탐사가 키워드 추가가 아니라 쿼리/게이트 재설계로 가도록 한다.
+            for gap in viral_yield.get("zero_yield_categories", []):
+                blind_spots.append({
+                    "category": gap.get("category"),
+                    "status": "viral_zero_yield",
+                    "surface_score": 0.0,
+                    "keyword_count": int(gap.get("viral_discovered") or 0),
+                    "missing_terms": [],
+                    "missing_journey_stages": [],
+                    "missing_priority_markets": [],
+                    "next_seed_examples": [],
+                    "viral_discovered": int(gap.get("viral_discovered") or 0),
+                    "viral_ad_filtered": int(gap.get("viral_ad_filtered") or 0),
+                    "note": "keyword coverage looks healthy but the latest viral scan produced zero pending targets",
+                })
         blind_spots.sort(key=lambda item: (float(item.get("surface_score") or 0.0), -int(item.get("keyword_count") or 0)))
         category_surface_map.sort(key=lambda item: (float(item.get("surface_score") or 0.0), str(item.get("category") or "")))
         next_queue = list(dict.fromkeys(seed for seed in next_queue if seed))[:36]
         healthy_count = sum(1 for item in category_surface_map if item.get("status") == "healthy")
-        return {
+        audit_result = {
             "status": "ready",
             "breadth_score": breadth_score,
             "profile_term_coverage_score": profile_term_score,
@@ -3235,6 +3258,116 @@ class PathfinderInsightBroker:
             "next_exploration_queue": next_queue,
             "operating_rule": (
                 "Audit discovery before scaling: every priority treatment axis should have service, core symptom, journey-stage, local-market, and multi-source evidence coverage."
+            ),
+        }
+        if viral_yield:
+            audit_result["viral_yield"] = viral_yield
+        return audit_result
+
+    def _latest_viral_scan_audit(self) -> Optional[Dict[str, Any]]:
+        """Latest Viral Hunter discovery audit row, or None when absent."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT run_started_at, created_at, audit_json
+                    FROM viral_scan_audits
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        if not row:
+            return None
+        try:
+            audit = json.loads(row[2] or "{}")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(audit, dict):
+            return None
+        audit["run_started_at"] = row[0]
+        audit["created_at"] = row[1]
+        return audit
+
+    def _viral_yield_feedback(
+        self,
+        category_surface_map: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Close the loop: latest viral_scan_audits run → discovery audit.
+
+        Keyword-side coverage can look healthy while the same axis converts ~0%
+        of viral discovery into commentable pending targets. This attaches the
+        actual yield per axis to the surface map and flags healthy-but-zero-yield
+        axes so the next exploration pass reshapes queries instead of adding
+        more keyword rows.
+        """
+        audit = self._latest_viral_scan_audit()
+        if not audit:
+            return None
+        per_category = audit.get("per_category") or {}
+        summary = audit.get("summary") or {}
+        if not isinstance(per_category, dict) or not per_category:
+            return None
+
+        surface_by_category = {
+            str(item.get("category") or ""): item for item in category_surface_map
+        }
+        category_yield: List[Dict[str, Any]] = []
+        zero_yield_categories: List[Dict[str, Any]] = []
+        for raw_category, entry in per_category.items():
+            if not isinstance(entry, dict):
+                continue
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(raw_category))
+            discovered = int(entry.get("discovered", 0) or 0)
+            pending = int(entry.get("pending", 0) or 0)
+            ad_filtered = int(entry.get("ad_filtered", 0) or 0)
+            pending_rate = round((pending / discovered), 4) if discovered else 0.0
+            category_yield.append({
+                "category": category,
+                "discovered": discovered,
+                "pending": pending,
+                "pending_rate": pending_rate,
+                "ad_filtered": ad_filtered,
+            })
+            surface = surface_by_category.get(category)
+            if surface is not None:
+                surface["viral_discovered"] = discovered
+                surface["viral_pending"] = pending
+                surface["viral_pending_rate"] = pending_rate
+            if (
+                discovered >= 25
+                and pending == 0
+                and surface is not None
+                and int(surface.get("keyword_count") or 0) > 0
+                and surface.get("status") in {"healthy", "partial", "thin"}
+            ):
+                zero_yield_categories.append({
+                    "category": category,
+                    "viral_discovered": discovered,
+                    "viral_ad_filtered": ad_filtered,
+                    "keyword_surface_status": surface.get("status"),
+                })
+
+        category_yield.sort(key=lambda item: -int(item.get("discovered") or 0))
+        return {
+            "status": "ready",
+            "run_started_at": audit.get("run_started_at"),
+            "created_at": audit.get("created_at"),
+            "discovered": int(summary.get("discovered", 0) or 0),
+            "pending": int(summary.get("pending", 0) or 0),
+            "pending_rate": float(summary.get("pending_rate", 0.0) or 0.0),
+            "ad_rate": float(summary.get("ad_rate", 0.0) or 0.0),
+            "category_yield": category_yield[:12],
+            "zero_yield_categories": zero_yield_categories,
+            "zero_yield_seeds": [
+                item for item in (audit.get("zero_yield_seeds") or [])[:8]
+            ],
+            "operating_rule": (
+                "Treat healthy-keyword/zero-viral axes as query-shape or gate problems, not keyword-supply problems."
             ),
         }
 
@@ -5058,6 +5191,16 @@ Keyword cards:
                 "coverage": (discovery_audit or {}).get("coverage", {}),
                 "blind_spots": (discovery_audit or {}).get("blind_spots", [])[:6],
                 "next_exploration_queue": (discovery_audit or {}).get("next_exploration_queue", [])[:10],
+                "viral_yield": {
+                    key: value
+                    for key, value in (
+                        ((discovery_audit or {}).get("viral_yield") or {}).items()
+                    )
+                    if key in {
+                        "status", "run_started_at", "discovered", "pending",
+                        "pending_rate", "ad_rate", "zero_yield_categories",
+                    }
+                },
             },
             "why_this_is_not_generic": "Pathfinder의 사업가치, 롱테일, 로컬/예약/비용/접근성/리뷰 신호와 가드레일을 함께 사용해 생성된 실행 브리프입니다.",
         }

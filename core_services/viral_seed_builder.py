@@ -181,6 +181,32 @@ def strip_transactional_suffix(keyword: str) -> str:
     return stripped
 
 
+def strip_region_tokens(keyword: str) -> str:
+    """Return a region-free service query for non-regional patient-question surfaces.
+
+    KIN/community patient questions usually omit the region from searchable text,
+    so region-anchored queries structurally miss them. Returns "" when nothing
+    but region tokens remain — callers must skip such seeds instead of searching
+    an empty query.
+    """
+    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    if not text:
+        return ""
+    region_tokens = _region_tokens()
+
+    def _is_region(token: str) -> bool:
+        if token in region_tokens or token.startswith("청주"):
+            return True
+        # 행정 접미 변형(오창읍/상당구 등): 지역명 + 1글자까지만 지역으로 본다.
+        return any(
+            len(region) >= 2 and token.startswith(region) and len(token) <= len(region) + 1
+            for region in region_tokens
+        )
+
+    kept = [token for token in text.split() if not _is_region(token)]
+    return " ".join(kept).strip()
+
+
 def normalize_seed_keyword_text(keyword: str) -> str:
     """Clean mechanical seed artifacts before they become search queries."""
     text = re.sub(r"\s+", " ", (keyword or "").strip())
@@ -292,6 +318,9 @@ class ViralSeed:
     historical_structure_target_count: int = 0
     historical_structure_quality_rate: float = 0.0
     structure_yield_adjustment: float = 0.0
+    historical_staff_reviewed_count: int = 0
+    historical_staff_accept_rate: float = 0.0
+    staff_outcome_adjustment: float = 0.0
     longtail_score: float = 0.0
     business_value_score: float = 0.0
     high_value_longtail: bool = False
@@ -481,6 +510,12 @@ class ViralSeedBuilder:
             structure = keyword_structure_features(keyword, row_data["category"])
             structure_fb = feedback.get(str(structure["structure_key"])) or {}
             structure_yield_adjustment = self._structure_yield_adjustment(structure_fb)
+            staff_fb = self._staff_feedback_bucket(
+                fb,
+                axis_lens_fb,
+                feedback.get(f"axis:{row_data['category']}") or {},
+            )
+            staff_outcome_adjustment = self._staff_outcome_adjustment(staff_fb)
             final_gate_count = fb.get("final_gate_count", 0)
             skip_rate = fb.get("skip_rate", 0.0)
             total_count = fb.get("total_count", 0)
@@ -510,6 +545,7 @@ class ViralSeedBuilder:
                 + min(46.0, viral_readiness_score * 0.52)
                 + axis_lens_feedback_adjustment
                 + structure_yield_adjustment
+                + staff_outcome_adjustment
                 - feedback_penalty
                 - history_penalty
                 - execution_risk_penalty
@@ -538,6 +574,10 @@ class ViralSeedBuilder:
                 0.0,
                 round(viral_seed_fit_score + structure_yield_adjustment * 1.1, 2),
             )
+            viral_seed_fit_score = max(
+                0.0,
+                round(viral_seed_fit_score + staff_outcome_adjustment * 1.1, 2),
+            )
             candidate_item = {
                 "adjusted_priority": adjusted_priority,
                 "novelty_score": novelty_score,
@@ -549,6 +589,8 @@ class ViralSeedBuilder:
                 "structure": structure,
                 "structure_feedback": structure_fb,
                 "structure_yield_adjustment": structure_yield_adjustment,
+                "staff_feedback": staff_fb,
+                "staff_outcome_adjustment": staff_outcome_adjustment,
                 "feedback": fb,
                 "row": row_data,
             }
@@ -622,6 +664,13 @@ class ViralSeedBuilder:
                             (item.get("structure_feedback") or {}).get("quality_rate", 0.0) or 0.0
                         ),
                         structure_yield_adjustment=float(item.get("structure_yield_adjustment") or 0.0),
+                        historical_staff_reviewed_count=int(
+                            (item.get("staff_feedback") or {}).get("staff_reviewed_count", 0) or 0
+                        ),
+                        historical_staff_accept_rate=float(
+                            (item.get("staff_feedback") or {}).get("staff_accept_rate", 0.0) or 0.0
+                        ),
+                        staff_outcome_adjustment=float(item.get("staff_outcome_adjustment") or 0.0),
                         longtail_score=float(row["longtail_score"] or 0),
                         business_value_score=float(row["business_value_score"] or 0),
                         high_value_longtail=bool(row["high_value_longtail"] or 0),
@@ -1025,6 +1074,46 @@ class ViralSeedBuilder:
         if quality_rate >= 0.05:
             return round(min(12.0, 6.0 + quality_rate * 60.0) * evidence_weight, 2)
         return 0.0
+
+    @staticmethod
+    def _staff_outcome_adjustment(feedback: dict) -> float:
+        """Staff-decision verdict for a seed lane (posted vs skipped + explicit ratings).
+
+        Discovery-time statuses can look healthy while staff reject nearly every
+        target during review (live data: traffic-accident accept 4.5% vs diet
+        18.3%), and model-score "qualified" proxies cannot see that gap. This is
+        the only human-grounded signal in the loop. Evidence-weighted and bounded
+        so it reorders lanes without starving category quotas.
+        """
+        reviewed = int(feedback.get("staff_reviewed_count", 0) or 0)
+        if reviewed < 8:
+            return 0.0
+        accept_rate = ViralSeedBuilder._as_float(feedback.get("staff_accept_rate"))
+        evidence_weight = min(1.0, reviewed / 40.0)
+        if accept_rate < 0.05:
+            return round(-14.0 * evidence_weight, 2)
+        if accept_rate < 0.10:
+            return round(-8.0 * evidence_weight, 2)
+        if accept_rate >= 0.30:
+            return round(min(12.0, 6.0 + accept_rate * 12.0) * evidence_weight, 2)
+        if accept_rate >= 0.20:
+            return round(5.0 * evidence_weight, 2)
+        return 0.0
+
+    @staticmethod
+    def _staff_feedback_bucket(
+        keyword_fb: dict,
+        axis_lens_fb: dict,
+        axis_fb: dict,
+    ) -> dict:
+        """Most granular bucket with enough staff-review evidence to be meaningful."""
+        if int(keyword_fb.get("staff_reviewed_count", 0) or 0) >= 8:
+            return keyword_fb
+        if int(axis_lens_fb.get("staff_reviewed_count", 0) or 0) >= 12:
+            return axis_lens_fb
+        if int(axis_fb.get("staff_reviewed_count", 0) or 0) >= 20:
+            return axis_fb
+        return {}
 
     @staticmethod
     def _allow_contextual_skin_comparison(keyword: str, blocked_pattern: str) -> bool:
@@ -2052,6 +2141,7 @@ class ViralSeedBuilder:
                     priority_expr = "0"
                 matched_category_expr = self._select_expr(columns, "matched_keyword_category", "''")
                 target_category_expr = self._select_expr(columns, "category", "''", alias="target_category")
+                target_id_expr = self._select_expr(columns, "id", "''", alias="target_id")
                 keyword_where = "1=1"
                 if "matched_keyword" in columns and "matched_keywords" in columns:
                     keyword_where = """
@@ -2074,11 +2164,13 @@ class ViralSeedBuilder:
                            {score_breakdown_expr} AS score_breakdown,
                            {priority_expr} AS priority_score,
                            {matched_category_expr},
-                           {target_category_expr}
+                           {target_category_expr},
+                           {target_id_expr}
                     FROM viral_targets
                     WHERE {keyword_where}
                     """
                 ).fetchall()
+                staff_ratings = self._load_staff_rating_map(conn)
         except sqlite3.Error:
             return {}
 
@@ -2102,6 +2194,8 @@ class ViralSeedBuilder:
                     "lens_mismatch_count": 0,
                     "priority_sum": 0.0,
                     "priority_count": 0,
+                    "staff_positive_count": 0,
+                    "staff_negative_count": 0,
                 },
             )
 
@@ -2129,6 +2223,11 @@ class ViralSeedBuilder:
             priority_score = float(row["priority_score"] or 0.0)
             is_final_gate = generated_comment.startswith("final_gate:") or comment_status.startswith("filtered_out_")
             is_skipped = comment_status == "skipped"
+            target_rating = staff_ratings.get(str(row["target_id"] or ""), "")
+            is_staff_positive = (
+                comment_status in {"posted", "completed", "approved"} or target_rating == "good"
+            )
+            is_staff_negative = not is_staff_positive and (is_skipped or target_rating == "bad")
             is_lens_match = lens_fit >= 70.0 or lens_tier == "strong"
             is_lens_mismatch = (0.0 < lens_fit < 45.0) or lens_tier == "mismatch"
             is_qualified = (
@@ -2169,6 +2268,8 @@ class ViralSeedBuilder:
                 if priority_score:
                     bucket["priority_sum"] += priority_score
                     bucket["priority_count"] += 1
+                bucket["staff_positive_count"] += 1 if is_staff_positive else 0
+                bucket["staff_negative_count"] += 1 if is_staff_negative else 0
 
         feedback: Dict[str, dict] = {}
         for key, bucket in buckets.items():
@@ -2179,6 +2280,9 @@ class ViralSeedBuilder:
             score_count = int(bucket["score_count"] or 0)
             lens_score_count = int(bucket["lens_score_count"] or 0)
             priority_count = int(bucket["priority_count"] or 0)
+            staff_positive = int(bucket["staff_positive_count"] or 0)
+            staff_negative = int(bucket["staff_negative_count"] or 0)
+            staff_reviewed = staff_positive + staff_negative
             feedback[key] = {
                 "total_count": total,
                 "skipped_count": skipped,
@@ -2198,8 +2302,35 @@ class ViralSeedBuilder:
                     float(bucket["worksite_efficiency_sum"]) / score_count
                 ) if score_count else 0.0,
                 "avg_priority_score": (float(bucket["priority_sum"]) / priority_count) if priority_count else 0.0,
+                "staff_positive_count": staff_positive,
+                "staff_negative_count": staff_negative,
+                "staff_reviewed_count": staff_reviewed,
+                "staff_accept_rate": (staff_positive / staff_reviewed) if staff_reviewed else 0.0,
             }
         return feedback
+
+    def _load_staff_rating_map(self, conn) -> Dict[str, str]:
+        """Latest explicit staff rating per target ('good'/'bad'; 'needs_edit' is neutral)."""
+        try:
+            if not self._table_exists(conn, "viral_target_feedback"):
+                return {}
+            rows = conn.execute(
+                """
+                SELECT target_id, rating
+                FROM viral_target_feedback
+                WHERE rating IN ('good', 'bad')
+                ORDER BY created_at ASC, id ASC
+                """
+            ).fetchall()
+        except sqlite3.Error:
+            return {}
+        ratings: Dict[str, str] = {}
+        for row in rows:
+            target_id = row["target_id"] if hasattr(row, "keys") else row[0]
+            rating = row["rating"] if hasattr(row, "keys") else row[1]
+            if target_id and rating:
+                ratings[str(target_id)] = str(rating)
+        return ratings
 
     @staticmethod
     def _parse_score_breakdown(value: object) -> dict:
