@@ -1,6 +1,20 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-12 Memory: Viral Discovery Yield Loop (Structure Feedback + Patient-Voice Queries)
+
+- Live 14d funnel audit exposed a structural waste pattern: seeds shaped "동네명 + 시술 + 거래형 접미사(예약/비용/상담 가능한곳/야간)" consumed ~45% of SERP discovery volume (163 seeds, 7,734 discovered) but yielded 0.3% pending with 51% advertorial-filtered, while plain `청주 + 시술` seeds yielded 5.2%. Query-variant evidence: `community:추천` 4.5%, `axis_body:추나추천` 31.7% vs `cost:비용` 0.5%, `safety:부작용` 0%.
+- Root cause: per-keyword feedback in `viral_seed_builder.py` cannot catch Legion's fresh suffix permutations — each new combination has a clean history plus a novelty bonus. Fixed at pattern granularity: `keyword_structure_features()` / `strip_transactional_suffix()` (module-level in `core_services/viral_seed_builder.py`) classify seeds into `structure:{category}:{suffix|plain}:{neigh|city}` buckets, `_load_keyword_feedback()` aggregates outcomes per bucket, and `_structure_yield_adjustment()` applies evidence-weighted penalties (-18/-30 when ≥80 targets and quality_rate <2%/<1%) or bonuses (+10~12 when ≥5%). It reorders within category only — quotas still fill, thin axes are not starved. Calibrated live: `다이어트:suffix:city` legitimately earns a bonus (7.1% yield), so do not replace this with a blanket suffix ban.
+- `viral_hunter.py::_search_query_variants_for_keyword()` now transforms the search surface: transactional-suffix seeds search their stripped service core (`variant=community_base`), and cost/consultation/availability/safety lenses send 추천/후기/어디-style companions (`cost_community:추천` etc.) instead of literal 비용/예약/상담/부작용. The suffix still drives lens scoring and lineage; only the query sent to Naver changes. Keep variant names stable — they are the yield-measurement key.
+- Every `hunt()` run now persists a discovery audit row into `viral_scan_audits` (created lazily): per-category/per-variant/per-structure funnel counts, pending/ad rates, and top-20 zero-yield seeds (discovered ≥25, pending 0). Use it to verify the next live scan's yield shift instead of re-deriving from viral_targets.
+- ViralSeed gained `keyword_structure`, `historical_structure_target_count`, `historical_structure_quality_rate`, `structure_yield_adjustment` (defaulted; to_context() carries them into viral_hunter keyword_context).
+- Focused verification for this layer:
+  - `python -m py_compile viral_hunter.py core_services\viral_seed_builder.py`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q` (175 passed)
+  - `python -m pytest tests/test_pathfinder_insight_broker.py tests/test_gyulim_keyword_profile.py tests/test_viral_target_repo.py tests/test_router_smoke.py -q`
+- Next live validation: run the standard Legion → Viral Hunter sequence and compare `viral_scan_audits` pending_rate/ad_rate and zero-yield seed count against the 2026-06-12 baseline (0.3% suffix+neigh yield, 51% ad rate). Known open gap (intentionally deferred): raw_backlog rows still have no automatic revisit path, and `discovery_audit` in the insight broker remains keyword-only (does not consume viral_scan_audits yet).
+
+
 ## 2026-06-12 Memory: Gyulim Pathfinder to Viral Hunter Precision Loop
 
 - Current client context is Cheongju Gyulim Korean Medicine Clinic, not Recover Gangnam. Pathfinder/Viral Hunter work should optimize for Gyulim treatment axes: scar/acne/skin, facial asymmetry, diet, body correction/chuna/pain, lifting/elasticity, and traffic accident care.

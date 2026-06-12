@@ -14,7 +14,7 @@ import sqlite3
 from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass, asdict
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
@@ -88,6 +88,105 @@ DEFAULT_MAX_PER_INTENT_PER_CATEGORY = 4
 DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY = 2
 DEFAULT_MAX_PER_REGION_PER_CATEGORY = 4
 
+# Live scan evidence (scan 67 era, 14d window): seeds shaped "neighborhood + service
+# + transactional suffix" discovered 7,734 posts but converted only 22 to pending
+# (0.3%) with 51% advertorial-filtered, while plain "청주 + service" seeds converted
+# 5.2%. Legion templates mint fresh suffix permutations every scan, so per-keyword
+# history never catches them; structure buckets let new permutations inherit the
+# structural verdict.
+TRANSACTIONAL_SUFFIX_TOKENS: Tuple[str, ...] = (
+    "가능한곳",
+    "가능한",
+    "치료비",
+    "주의사항",
+    "진료시간",
+    "예약",
+    "비용",
+    "가격",
+    "얼마",
+    "문의",
+    "상담",
+    "야간",
+    "주말",
+    "당일",
+    "가능",
+)
+
+_SUFFIX_STRIP_ORDER: Tuple[str, ...] = tuple(
+    sorted(TRANSACTIONAL_SUFFIX_TOKENS, key=len, reverse=True)
+)
+
+
+def _region_tokens() -> Tuple[str, ...]:
+    profile = GYULIM_KEYWORD_PROFILE
+    return tuple(
+        dict.fromkeys(
+            list(getattr(profile, "neighborhoods", ()) or ())
+            + list(getattr(profile, "cheongju_regions", ()) or ())
+            + list(getattr(profile, "nearby_regions", ()) or ())
+        )
+    )
+
+
+def _strip_suffix_tokens(text: str) -> str:
+    kept: List[str] = []
+    for token in (text or "").split():
+        core = token
+        changed = True
+        while core and changed:
+            changed = False
+            for suffix in _SUFFIX_STRIP_ORDER:
+                if core == suffix or (core.endswith(suffix) and len(core) > len(suffix)):
+                    core = core[: len(core) - len(suffix)]
+                    changed = True
+                    break
+        if core:
+            kept.append(core)
+    if kept and kept[-1] == "곳":
+        kept.pop()
+    return " ".join(kept)
+
+
+def strip_transactional_suffix(keyword: str) -> str:
+    """Return a community-surface core query with transactional suffix tokens removed.
+
+    Falls back to the original keyword when stripping would leave no service token
+    (e.g. a bare neighborhood name), so callers can always search the result.
+    """
+    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    if not text:
+        return keyword or ""
+    stripped = _strip_suffix_tokens(text)
+    if not stripped or stripped == text:
+        return text
+    region_tokens = _region_tokens()
+    has_service_token = any(
+        all(region not in token for region in region_tokens)
+        for token in stripped.split()
+    )
+    if not has_service_token:
+        return text
+    return stripped
+
+
+def keyword_structure_features(keyword: str, category: str = "") -> Dict[str, object]:
+    """Classify a seed's query structure for bucket-level yield feedback."""
+    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    has_suffix = bool(text) and _strip_suffix_tokens(text) != text
+    neighborhoods = tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+    has_neighborhood = any(token and token in text for token in neighborhoods)
+    normalized_category = GYULIM_KEYWORD_PROFILE.normalize_category(category or "기타")
+    structure_key = (
+        f"structure:{normalized_category}:"
+        f"{'suffix' if has_suffix else 'plain'}:"
+        f"{'neigh' if has_neighborhood else 'city'}"
+    )
+    return {
+        "has_transactional_suffix": has_suffix,
+        "has_neighborhood_token": has_neighborhood,
+        "structure_key": structure_key,
+    }
+
 
 @dataclass(frozen=True)
 class ViralSeed:
@@ -110,6 +209,10 @@ class ViralSeed:
     historical_axis_lens_target_count: int = 0
     historical_axis_lens_quality_rate: float = 0.0
     historical_axis_lens_avg_lens_fit: float = 0.0
+    keyword_structure: str = ""
+    historical_structure_target_count: int = 0
+    historical_structure_quality_rate: float = 0.0
+    structure_yield_adjustment: float = 0.0
     longtail_score: float = 0.0
     business_value_score: float = 0.0
     high_value_longtail: bool = False
@@ -284,6 +387,9 @@ class ViralSeedBuilder:
             fb = self._feedback_for_keyword(feedback, keyword)
             axis_lens_fb = self._feedback_for_axis_lens(feedback, row_data)
             axis_lens_feedback_adjustment = self._axis_lens_feedback_adjustment(axis_lens_fb)
+            structure = keyword_structure_features(keyword, row_data["category"])
+            structure_fb = feedback.get(str(structure["structure_key"])) or {}
+            structure_yield_adjustment = self._structure_yield_adjustment(structure_fb)
             final_gate_count = fb.get("final_gate_count", 0)
             skip_rate = fb.get("skip_rate", 0.0)
             total_count = fb.get("total_count", 0)
@@ -312,6 +418,7 @@ class ViralSeedBuilder:
                 + quality_bonus
                 + min(46.0, viral_readiness_score * 0.52)
                 + axis_lens_feedback_adjustment
+                + structure_yield_adjustment
                 - feedback_penalty
                 - history_penalty
                 - execution_risk_penalty
@@ -336,6 +443,10 @@ class ViralSeedBuilder:
                 0.0,
                 round(viral_seed_fit_score + axis_lens_feedback_adjustment * 1.35, 2),
             )
+            viral_seed_fit_score = max(
+                0.0,
+                round(viral_seed_fit_score + structure_yield_adjustment * 1.1, 2),
+            )
             candidate_item = {
                 "adjusted_priority": adjusted_priority,
                 "novelty_score": novelty_score,
@@ -344,6 +455,9 @@ class ViralSeedBuilder:
                 "execution_risk_penalty": execution_risk_penalty,
                 "axis_lens_feedback": axis_lens_fb,
                 "axis_lens_feedback_adjustment": axis_lens_feedback_adjustment,
+                "structure": structure,
+                "structure_feedback": structure_fb,
+                "structure_yield_adjustment": structure_yield_adjustment,
                 "feedback": fb,
                 "row": row_data,
             }
@@ -409,6 +523,14 @@ class ViralSeedBuilder:
                         historical_axis_lens_target_count=int(axis_lens_fb.get("total_count", 0) or 0),
                         historical_axis_lens_quality_rate=float(axis_lens_fb.get("quality_rate", 0.0) or 0.0),
                         historical_axis_lens_avg_lens_fit=float(axis_lens_fb.get("avg_lens_fit", 0.0) or 0.0),
+                        keyword_structure=str((item.get("structure") or {}).get("structure_key") or ""),
+                        historical_structure_target_count=int(
+                            (item.get("structure_feedback") or {}).get("total_count", 0) or 0
+                        ),
+                        historical_structure_quality_rate=float(
+                            (item.get("structure_feedback") or {}).get("quality_rate", 0.0) or 0.0
+                        ),
+                        structure_yield_adjustment=float(item.get("structure_yield_adjustment") or 0.0),
                         longtail_score=float(row["longtail_score"] or 0),
                         business_value_score=float(row["business_value_score"] or 0),
                         high_value_longtail=bool(row["high_value_longtail"] or 0),
@@ -560,6 +682,29 @@ class ViralSeedBuilder:
             adjustment -= 10.0
 
         return round(max(-48.0, min(22.0, adjustment)) * evidence_weight, 2)
+
+    @staticmethod
+    def _structure_yield_adjustment(feedback: dict) -> float:
+        """Bucket-level yield verdict for a seed's query structure.
+
+        Per-keyword feedback cannot catch Legion's fresh suffix permutations (each
+        new combination starts with a clean history and a novelty bonus), so
+        structurally identical seeds share one verdict once the bucket has enough
+        evidence. The penalty reorders seeds within a category; quotas still fill,
+        so thin axes are not starved.
+        """
+        total = int(feedback.get("total_count", 0) or 0)
+        if total < 80:
+            return 0.0
+        quality_rate = ViralSeedBuilder._as_float(feedback.get("quality_rate"))
+        evidence_weight = min(1.0, total / 400.0)
+        if quality_rate < 0.01:
+            return round(-30.0 * evidence_weight, 2)
+        if quality_rate < 0.02:
+            return round(-18.0 * evidence_weight, 2)
+        if quality_rate >= 0.05:
+            return round(min(12.0, 6.0 + quality_rate * 60.0) * evidence_weight, 2)
+        return 0.0
 
     @staticmethod
     def _allow_contextual_skin_comparison(keyword: str, blocked_pattern: str) -> bool:
@@ -1623,6 +1768,9 @@ class ViralSeedBuilder:
                 feedback_keys.append(f"axis:{category}")
                 if execution_lens:
                     feedback_keys.append(f"axis_lens:{category}:{execution_lens}")
+            source_keyword = str(score_breakdown.get("pathfinder_source_keyword") or "").strip() or keywords[0]
+            structure = keyword_structure_features(source_keyword, category)
+            feedback_keys.append(str(structure["structure_key"]))
 
             for key in dict.fromkeys(feedback_keys):
                 bucket = bucket_for(key)

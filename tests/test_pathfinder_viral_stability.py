@@ -2,7 +2,11 @@ import json
 import sqlite3
 from collections import Counter
 
-from core_services.viral_seed_builder import ViralSeedBuilder
+from core_services.viral_seed_builder import (
+    ViralSeedBuilder,
+    keyword_structure_features,
+    strip_transactional_suffix,
+)
 from db.database import DatabaseManager
 from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
 from scripts.ai_ad_classify_apply import _execute_scoped_update
@@ -2571,17 +2575,21 @@ def test_viral_hunter_adds_compound_axis_companion_query_for_asymmetry_seed():
 
     plans = hunter._search_queries_for_keyword("봉명동 턱비대칭 한의원 비용", 100)
 
+    # 거래형 접미사(비용)는 광고성 공급만 노출하므로 검색 면에서는 제거되고,
+    # cost 렌즈는 커뮤니티 표면(추천) 동반 쿼리로 우회한다.
     assert [plan["query"] for plan in plans] == [
-        "봉명동 턱비대칭 한의원 비용",
+        "봉명동 턱비대칭 한의원",
+        "봉명동 턱비대칭 한의원 추천",
         "청주 턱관절 안면비대칭 한의원 추천",
-        "청주 안면비대칭 교정 한의원 추천",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
-    assert plans[1]["variant"] == "axis_asymmetry:턱관절비대칭추천"
-    assert plans[2]["variant"] == "axis_asymmetry:교정추천"
+    assert plans[0]["variant"] == "community_base"
+    assert plans[1]["variant"] == "cost_community:추천"
+    assert plans[2]["variant"] == "axis_asymmetry:턱관절비대칭추천"
+    assert hunter.keyword_context["봉명동 턱비대칭 한의원"]["pathfinder_source_keyword"] == "봉명동 턱비대칭 한의원 비용"
 
 
-def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
+def test_viral_hunter_redirects_cost_lens_seed_to_community_surface():
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
     hunter.keyword_context = {
         "청주 여드름 한의원 비용": {
@@ -2598,7 +2606,33 @@ def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
 
     plans = hunter._search_queries_for_keyword("청주 여드름 한의원 비용", 100)
 
-    assert [plan["query"] for plan in plans] == ["청주 여드름 한의원 비용"]
+    # 비용 접미사 쿼리는 그대로 검색하지 않고 서비스 코어 + 커뮤니티 표면으로 우회한다.
+    assert [plan["query"] for plan in plans] == [
+        "청주 여드름 한의원",
+        "청주 여드름 한의원 추천",
+    ]
+    assert plans[0]["variant"] == "community_base"
+    assert plans[1]["variant"] == "cost_community:추천"
+
+
+def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 여드름 한의원 추천": {
+            "viral_readiness_score": 72,
+            "community_signal": 64,
+            "conversion_signal": 20,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "review",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름 한의원 추천", 100)
+
+    assert [plan["query"] for plan in plans] == ["청주 여드름 한의원 추천"]
 
 
 def test_viral_hunter_query_variant_keeps_original_seed_lineage():
@@ -6021,3 +6055,214 @@ def test_ad_classify_apply_scopes_updates_by_source_scan_run_id():
     assert skipped == 0
     assert cur.execute("SELECT comment_status FROM viral_targets WHERE id='run9'").fetchone()[0] == "needs_ai_retry"
     assert cur.execute("SELECT comment_status FROM viral_targets WHERE id='run8'").fetchone()[0] == "pending"
+
+
+def test_strip_transactional_suffix_keeps_service_core():
+    assert strip_transactional_suffix("복대동 턱비대칭 한의원 비용") == "복대동 턱비대칭 한의원"
+    assert strip_transactional_suffix("사창동 매선침 상담 가능한곳") == "사창동 매선침"
+    assert strip_transactional_suffix("봉명동 교통사고 한의원 입원 가능") == "봉명동 교통사고 한의원 입원"
+    assert strip_transactional_suffix("분평동 안면홍조 한의원 야간 예약") == "분평동 안면홍조 한의원"
+    # 접미사가 없으면 그대로 유지
+    assert strip_transactional_suffix("청주 여드름 한의원") == "청주 여드름 한의원"
+    assert strip_transactional_suffix("청주 체형교정 한의원 추천") == "청주 체형교정 한의원 추천"
+    # 서비스 토큰이 남지 않으면 원본 유지 (동네명 단독 검색 방지)
+    assert strip_transactional_suffix("봉명동 상담") == "봉명동 상담"
+
+
+def test_keyword_structure_features_buckets():
+    suffix_neigh = keyword_structure_features("복대동 턱비대칭 한의원 비용", "안면비대칭")
+    assert suffix_neigh["has_transactional_suffix"] is True
+    assert suffix_neigh["has_neighborhood_token"] is True
+    assert suffix_neigh["structure_key"] == "structure:안면비대칭:suffix:neigh"
+
+    plain_city = keyword_structure_features("청주 여드름 한의원", "피부/여드름")
+    assert plain_city["has_transactional_suffix"] is False
+    assert plain_city["has_neighborhood_token"] is False
+    assert plain_city["structure_key"] == "structure:피부/여드름:plain:city"
+
+
+def test_seed_builder_structure_yield_adjustment_uses_evidence():
+    # 증거 부족(80건 미만)은 중립
+    assert ViralSeedBuilder._structure_yield_adjustment({"total_count": 40, "quality_rate": 0.0}) == 0.0
+    # 대량 증거 + 수율 1% 미만이면 강한 패널티
+    bad = ViralSeedBuilder._structure_yield_adjustment({"total_count": 1600, "quality_rate": 0.005})
+    assert bad == -30.0
+    # 같은 수율이라도 증거가 적으면 패널티가 비례 축소
+    smaller = ViralSeedBuilder._structure_yield_adjustment({"total_count": 160, "quality_rate": 0.005})
+    assert -30.0 < smaller < 0.0
+    # 건강한 구조(수율 5%+)는 보너스
+    good = ViralSeedBuilder._structure_yield_adjustment({"total_count": 800, "quality_rate": 0.10})
+    assert good > 0.0
+
+
+def test_seed_builder_feedback_aggregates_structure_buckets(tmp_path):
+    db_path = tmp_path / "structure_feedback.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                comment_status TEXT,
+                generated_comment TEXT,
+                scan_count INTEGER,
+                score_breakdown TEXT,
+                priority_score REAL,
+                matched_keyword_category TEXT,
+                category TEXT
+            )
+            """
+        )
+        rows = []
+        for idx in range(5):
+            rows.append(
+                (
+                    f"suffix-{idx}",
+                    "복대동 턱비대칭 한의원 비용",
+                    json.dumps(["복대동 턱비대칭 한의원 비용"], ensure_ascii=False),
+                    "filtered_out_ad",
+                    "",
+                    1,
+                    json.dumps(
+                        {"pathfinder_source_keyword": "복대동 턱비대칭 한의원 비용"},
+                        ensure_ascii=False,
+                    ),
+                    40.0,
+                    "안면비대칭",
+                    "안면비대칭",
+                )
+            )
+        rows.append(
+            (
+                "plain-1",
+                "청주 안면비대칭",
+                json.dumps(["청주 안면비대칭"], ensure_ascii=False),
+                "posted",
+                "good comment",
+                1,
+                json.dumps({"pathfinder_source_keyword": "청주 안면비대칭"}, ensure_ascii=False),
+                130.0,
+                "안면비대칭",
+                "안면비대칭",
+            )
+        )
+        conn.executemany(
+            "INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+    builder = ViralSeedBuilder(db_path=str(db_path))
+    feedback = builder._load_keyword_feedback()
+
+    suffix_bucket = feedback["structure:안면비대칭:suffix:neigh"]
+    assert suffix_bucket["total_count"] == 5
+    assert suffix_bucket["qualified_count"] == 0
+
+    plain_bucket = feedback["structure:안면비대칭:plain:city"]
+    assert plain_bucket["total_count"] == 1
+    assert plain_bucket["qualified_count"] == 1
+
+
+def test_viral_hunter_persists_discovery_audit(tmp_path):
+    db_path = tmp_path / "audit.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                comment_status TEXT,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                matched_keyword_category TEXT,
+                score_breakdown TEXT,
+                discovered_at TEXT
+            )
+            """
+        )
+        rows = []
+        for idx in range(30):
+            rows.append(
+                (
+                    f"zero-{idx}",
+                    "리프팅/탄력",
+                    "filtered_out_ad",
+                    "봉명동 한방리프팅 비용",
+                    json.dumps(["봉명동 한방리프팅 비용"], ensure_ascii=False),
+                    "리프팅/탄력",
+                    json.dumps(
+                        {
+                            "pathfinder_source_keyword": "봉명동 한방리프팅 비용",
+                            "pathfinder_query_variant": "base",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "2026-06-12T10:00:00",
+                )
+            )
+        for idx in range(2):
+            rows.append(
+                (
+                    f"good-{idx}",
+                    "피부/여드름",
+                    "pending",
+                    "청주 여드름 한의원",
+                    json.dumps(["청주 여드름 한의원"], ensure_ascii=False),
+                    "피부/여드름",
+                    json.dumps(
+                        {
+                            "pathfinder_source_keyword": "청주 여드름 한의원",
+                            "pathfinder_query_variant": "community:추천",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "2026-06-12 10:05:00",
+                )
+            )
+        # 런 시작 이전에 발견된 행은 감사에 포함되지 않아야 한다.
+        rows.append(
+            (
+                "old-1",
+                "다이어트",
+                "pending",
+                "청주 다이어트",
+                json.dumps(["청주 다이어트"], ensure_ascii=False),
+                "다이어트",
+                "{}",
+                "2026-06-11 09:00:00",
+            )
+        )
+        conn.executemany("INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    audit = hunter._persist_viral_discovery_audit(
+        "2026-06-12 00:00:00",
+        source_scan_run_id=67,
+        keyword_count=2,
+        db_path=str(db_path),
+    )
+
+    assert audit is not None
+    assert audit["summary"]["discovered"] == 32
+    assert audit["summary"]["pending"] == 2
+    assert audit["summary"]["ad_filtered"] == 30
+    assert audit["zero_yield_seeds"][0]["seed"] == "봉명동 한방리프팅 비용"
+    assert audit["per_structure"]["structure:리프팅/탄력:suffix:neigh"]["ad_filtered"] == 30
+    assert audit["per_query_variant"]["community:추천"]["pending"] == 2
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT source_scan_run_id, keyword_count, discovered_count,
+                   pending_count, ad_filtered_count, audit_json
+            FROM viral_scan_audits
+            """
+        ).fetchone()
+    assert row[0] == 67
+    assert row[1] == 2
+    assert row[2] == 32
+    assert row[3] == 2
+    assert row[4] == 30
+    persisted = json.loads(row[5])
+    assert persisted["summary"]["pending"] == 2

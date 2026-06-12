@@ -46,7 +46,11 @@ from utils import ConfigManager, logger
 from utils.json_io import atomic_write_json
 from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
-from core_services.viral_seed_builder import ViralSeedBuilder
+from core_services.viral_seed_builder import (
+    ViralSeedBuilder,
+    keyword_structure_features,
+    strip_transactional_suffix,
+)
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
@@ -6060,28 +6064,47 @@ class ViralHunter:
         ctx = self.keyword_context.get(keyword) or {}
         execution_lens = str(ctx.get("execution_lens") or "")
         category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
-        compact = self._compact_query_text(keyword)
-        variants: List[Dict[str, Any]] = [{"query": keyword, "variant": "base", "source_keyword": keyword}]
 
+        # Live scan evidence (14d window): transactional-suffix queries (예약/비용/
+        # 상담 가능한곳 등) surfaced 51% advertorial supply with 0.3% pending yield,
+        # while the same service cores in plain form converted at plain-seed rates.
+        # The suffix keeps driving lens scoring and lineage; only the search surface
+        # sent to Naver changes.
+        core_query = strip_transactional_suffix(keyword)
+        base_variant = "community_base" if core_query != keyword else "base"
+        compact = self._compact_query_text(core_query)
+        variants: List[Dict[str, Any]] = [{"query": core_query, "variant": base_variant, "source_keyword": keyword}]
+
+        # Decision lenses (cost/consultation/availability/safety) probe the community
+        # surface too: their literal companions (비용/예약/상담/부작용) measured 0~0.5%
+        # pending vs 4.5~31.7% for 추천-style companions in the same scans.
         lens_terms = {
             "review": ("추천", "후기", "어디"),
             "community": ("추천", "후기", "어디"),
-            "cost": ("비용", "가격", "얼마"),
-            "consultation": ("상담", "문의"),
-            "availability": ("예약", "주말", "야간"),
-            "safety": ("부작용", "치료기간", "회복"),
+            "cost": ("추천", "후기"),
+            "consultation": ("추천", "어디"),
+            "availability": ("추천", "어디"),
+            "safety": ("후기", "추천"),
+        }
+        community_lens_labels = {
+            "cost": "cost_community",
+            "consultation": "consultation_community",
+            "availability": "availability_community",
+            "safety": "safety_community",
         }
         terms = lens_terms.get(execution_lens, ())
+        lens_label = community_lens_labels.get(execution_lens, execution_lens or "conversion")
         if not terms and float(ctx.get("conversion_signal") or 0.0) >= 55.0:
-            terms = ("상담",)
+            terms = ("추천",)
+            lens_label = "conversion_community"
 
         if not any(self._compact_query_text(term) in compact for term in terms):
             for term in terms:
                 term_compact = self._compact_query_text(term)
                 if term_compact and term_compact not in compact:
                     variants.append({
-                        "query": f"{keyword} {term}",
-                        "variant": f"{execution_lens or 'conversion'}:{term}",
+                        "query": f"{core_query} {term}",
+                        "variant": f"{lens_label}:{term}",
                         "source_keyword": keyword,
                     })
                     break
@@ -6145,11 +6168,11 @@ class ViralHunter:
                     0.45,
                 )
                 plan["query_variant_of"] = keyword
-                if keyword in self.keyword_context:
-                    variant_context = dict(self.keyword_context[keyword])
-                    variant_context["pathfinder_source_keyword"] = keyword
-                    variant_context["pathfinder_query_variant"] = variant["variant"]
-                    self.keyword_context[variant["query"]] = variant_context
+            if variant["query"] != keyword and keyword in self.keyword_context:
+                variant_context = dict(self.keyword_context[keyword])
+                variant_context["pathfinder_source_keyword"] = keyword
+                variant_context["pathfinder_query_variant"] = variant["variant"]
+                self.keyword_context[variant["query"]] = variant_context
             plans.append(plan)
 
         return plans
@@ -6562,6 +6585,157 @@ class ViralHunter:
         )
         return fresh_targets, len(duplicate_targets) + in_batch_duplicates
 
+    def _persist_viral_discovery_audit(
+        self,
+        run_started_at: str,
+        *,
+        source_scan_run_id: Optional[int] = None,
+        keyword_count: int = 0,
+        db_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist this run's funnel yield by axis, query variant, and query structure.
+
+        Console funnel stats vanish with the terminal; this keeps per-category and
+        per-structure discovery quality queryable (viral_scan_audits) so seed review
+        and the next exploration pass can see where SERP budget actually converted
+        into workable targets.
+        """
+        import sqlite3
+
+        path = db_path or os.path.join(self.cfg.root_dir, 'db', 'marketing_data.db')
+        conn = sqlite3.connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT category, comment_status, matched_keyword, matched_keywords,
+                       matched_keyword_category, score_breakdown
+                FROM viral_targets
+                WHERE REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= ?
+                """,
+                (run_started_at,),
+            ).fetchall()
+
+            def _bucket_status(status: str) -> str:
+                if status == 'pending':
+                    return 'pending'
+                if status == 'raw_backlog':
+                    return 'raw_backlog'
+                if status == 'filtered_out_ad':
+                    return 'ad_filtered'
+                if status.startswith('filtered_out'):
+                    return 'rejected'
+                return 'other'
+
+            empty_entry = {
+                'discovered': 0, 'pending': 0, 'raw_backlog': 0,
+                'ad_filtered': 0, 'rejected': 0, 'other': 0,
+            }
+            per_category: Dict[str, Dict[str, int]] = {}
+            per_variant: Dict[str, Dict[str, int]] = {}
+            per_structure: Dict[str, Dict[str, int]] = {}
+            per_seed: Dict[str, Dict[str, int]] = {}
+            for row in rows:
+                try:
+                    breakdown = json.loads(row['score_breakdown'] or '{}')
+                except (TypeError, ValueError):
+                    breakdown = {}
+                if not isinstance(breakdown, dict):
+                    breakdown = {}
+                source_keyword = str(breakdown.get('pathfinder_source_keyword') or '').strip()
+                if not source_keyword:
+                    try:
+                        parsed = json.loads(row['matched_keywords'] or '[]')
+                    except (TypeError, ValueError):
+                        parsed = []
+                    if isinstance(parsed, list) and parsed:
+                        source_keyword = str(parsed[0] or '').strip()
+                if not source_keyword:
+                    source_keyword = str(row['matched_keyword'] or '').strip() or '(unknown)'
+                category = str(row['matched_keyword_category'] or row['category'] or '기타')
+                variant = str(breakdown.get('pathfinder_query_variant') or '(none)')
+                status_bucket = _bucket_status(str(row['comment_status'] or 'pending'))
+                structure_key = str(
+                    keyword_structure_features(source_keyword, category)['structure_key']
+                )
+                for table, key in (
+                    (per_category, category),
+                    (per_variant, variant),
+                    (per_structure, structure_key),
+                    (per_seed, source_keyword),
+                ):
+                    entry = table.setdefault(key, dict(empty_entry))
+                    entry['discovered'] += 1
+                    entry[status_bucket] += 1
+
+            discovered_total = sum(e['discovered'] for e in per_category.values())
+            pending_total = sum(e['pending'] for e in per_category.values())
+            ad_total = sum(e['ad_filtered'] for e in per_category.values())
+            zero_yield_seeds = sorted(
+                (
+                    {'seed': seed, 'discovered': entry['discovered'], 'ad_filtered': entry['ad_filtered']}
+                    for seed, entry in per_seed.items()
+                    if entry['discovered'] >= 25 and entry['pending'] == 0
+                ),
+                key=lambda item: -item['discovered'],
+            )[:20]
+
+            audit: Dict[str, Any] = {
+                'summary': {
+                    'discovered': discovered_total,
+                    'pending': pending_total,
+                    'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
+                    'ad_filtered': ad_total,
+                    'ad_rate': (ad_total / discovered_total) if discovered_total else 0.0,
+                    'keyword_count': int(keyword_count or 0),
+                },
+                'per_category': per_category,
+                'per_query_variant': per_variant,
+                'per_structure': per_structure,
+                'zero_yield_seeds': zero_yield_seeds,
+            }
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS viral_scan_audits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_started_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    source_scan_run_id INTEGER,
+                    keyword_count INTEGER DEFAULT 0,
+                    discovered_count INTEGER DEFAULT 0,
+                    pending_count INTEGER DEFAULT 0,
+                    pending_rate REAL DEFAULT 0,
+                    ad_filtered_count INTEGER DEFAULT 0,
+                    audit_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO viral_scan_audits (
+                    run_started_at, source_scan_run_id, keyword_count,
+                    discovered_count, pending_count, pending_rate,
+                    ad_filtered_count, audit_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_started_at,
+                    source_scan_run_id,
+                    int(keyword_count or 0),
+                    discovered_total,
+                    pending_total,
+                    audit['summary']['pending_rate'],
+                    ad_total,
+                    json.dumps(audit, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+            audit['audit_id'] = cursor.lastrowid
+            return audit
+        finally:
+            conn.close()
+
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
@@ -6584,6 +6758,8 @@ class ViralHunter:
         Returns:
             발견된 ViralTarget 리스트
         """
+        run_started_at = time.strftime('%Y-%m-%d %H:%M:%S')
+
         if keywords is None:
             keywords = self._load_keywords(
                 use_latest_legion=use_latest_legion,
@@ -6996,6 +7172,17 @@ class ViralHunter:
                         t.url
                     ])
 
+        # 디스커버리 감사: 이번 런의 카테고리/쿼리구조별 수율을 영속화
+        audit_summary = None
+        try:
+            audit_summary = self._persist_viral_discovery_audit(
+                run_started_at,
+                source_scan_run_id=source_scan_run_id,
+                keyword_count=len(keywords),
+            )
+        except Exception as e:
+            logger.warning(f"디스커버리 감사 저장 실패: {e}")
+
         # API 통계
         api_stats = self.searcher.get_stats()
 
@@ -7004,6 +7191,14 @@ class ViralHunter:
         print(f"   총 발견: {len(all_targets)}개")
         print(f"   필터링 후: {len(filtered)}개")
         print(f"   DB 저장: {saved}개")
+        if audit_summary:
+            audit_totals = audit_summary['summary']
+            print(
+                f"   🧭 디스커버리 감사 #{audit_summary.get('audit_id')}: "
+                f"발견 {audit_totals['discovered']}개 → pending {audit_totals['pending']}개 "
+                f"({audit_totals['pending_rate']:.1%}), 광고필터 {audit_totals['ad_rate']:.0%}, "
+                f"제로수율 시드 {len(audit_summary['zero_yield_seeds'])}개"
+            )
         if csv_path:
             print(f"   📁 CSV: {csv_path}")
         print(f"\n📊 API 통계:")
