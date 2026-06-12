@@ -1,6 +1,24 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-12 Memory: Gyulim Pathfinder -> Viral Hunter World-Class Handoff Hardening
+
+- Current work completed a deep hardening pass for Cheongju Gyulim's Pathfinder -> Viral Hunter loop. The operating goal is: broad Pathfinder discovery across Gyulim treatment axes (scar/acne scar, skin/acne, facial asymmetry, diet, body correction/chuna, pain/disc, lifting, traffic accident, and secondary axes) should translate into Viral Hunter searches that find real commentable patient/community posts, not just high-scoring keyword rows.
+- Taxonomy is now stricter: `흉터/여드름흉터` is split from `피부/여드름` across `core_services/gyulim_keyword_profile.py`, `pathfinder_v3_legion.py`, `config/business_profile.json`, `core_services/viral_seed_builder.py`, `viral_hunter.py`, and audits. Legacy scar keywords that were stored as `피부/여드름` are canonicalized to `흉터/여드름흉터` when the keyword text contains scar anchors such as `여드름흉터`, `패인흉터`, `새살침`, `수술흉터`, `켈로이드`, or `여드름자국`.
+- Viral seed handoff now uses explicit Gyulim category quotas and profile gap-fill. `DEFAULT_CATEGORY_QUOTAS` covers scar, skin, diet, asymmetry, traffic, body, pain/disc, lifting, hair, headache, digestion, respiratory, women's health, fatigue/sleep, stress/autonomic, cold/sweating, student/focus, and tonic/immunity. Undercovered profile axes can receive B-grade profile exploration seeds, but only after at least one DB-backed seed exists for that category.
+- Viral Hunter query planning is no longer context-fragile. If a manual/legacy keyword lacks full Pathfinder context, `viral_hunter.py` infers the treatment category and execution lens from the keyword text before building search plans, checkpoint hashes, and target lineage. Example: `금천동 여드름흉터 비용` becomes `흉터/여드름흉터 + cost`, strips the transactional suffix for search, adds `추천`, and adds scar-specific companion queries.
+- User-surface-heavy axes (`흉터/여드름흉터`, `피부/여드름`, `다이어트`, `안면비대칭`, `체형교정`, `리프팅/탄력`) intentionally reduce blog SEO budget and prioritize cafe/Kin user-question surfaces. Companion query variants include scar (`청주 여드름흉터 새살침 후기`, `청주 패인흉터 한의원 추천`), skin (`청주 피부질환 한의원 추천`, `청주 아토피 한의원 후기`), diet (`청주 다이어트한약 후기`, `청주 한방다이어트 한의원 추천`), plus asymmetry/body/lifting variants.
+- Final gate precision now separates close axes inside `scar_skin`. Keep `SCAR_USER_AXIS_ANCHOR_PATTERNS` and `SKIN_USER_AXIS_ANCHOR_PATTERNS`: a scar seed that only finds active acne/skin-care content should be rejected, while posts with user-authored `패인흉터`, `여드름자국`, `새살침`, `켈로이드`, etc. should survive. This prevents scar seed budget from drifting into generic acne/skin posts.
+- Discovery audits now count current-run rediscoveries. `_persist_viral_discovery_audit()` includes rows where either `discovered_at` or `last_scanned_at` is within the current run and reports `rediscovered` / `rediscovered_rate`. This is required because duplicate URL refreshes preserve old `discovered_at` but update `last_scanned_at` and `scan_count`.
+- In-run duplicate URL handling now preserves query lineage instead of discarding later matches. If the same URL is found by `community_base` and then `axis_scar:*`, `_merge_duplicate_search_target()` promotes the stronger axis/lens variant as the representative `pathfinder_query_variant` while keeping all variants/queries/sources in `pathfinder_query_variants`, `pathfinder_search_queries`, and `pathfinder_source_keywords`.
+- Handoff and scan audits both canonicalize scar/skin legacy categories. Use `core_services/viral_handoff_audit.py` for source-scan quality checks, and `viral_scan_audits` for per-run category/query-variant/structure yield. Both should agree on `흉터/여드름흉터` rather than leaking scar rows into `피부/여드름`.
+- Latest focused verification for this layer:
+  - `python -m py_compile viral_hunter.py tests\test_pathfinder_viral_stability.py`
+  - `$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_pathfinder_viral_stability.py` -> 188 passed
+  - `$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_viral_handoff_audit.py` -> 4 passed
+  - `git diff --check -- config\business_profile.json core_services\gyulim_keyword_profile.py core_services\viral_handoff_audit.py core_services\viral_seed_builder.py pathfinder_v3_legion.py tests\test_pathfinder_viral_stability.py tests\test_viral_handoff_audit.py viral_hunter.py`
+
+
 ## 2026-06-12 Memory: Viral Discovery Yield Loop (Structure Feedback + Patient-Voice Queries)
 
 - Live 14d funnel audit exposed a structural waste pattern: seeds shaped "동네명 + 시술 + 거래형 접미사(예약/비용/상담 가능한곳/야간)" consumed ~45% of SERP discovery volume (163 seeds, 7,734 discovered) but yielded 0.3% pending with 51% advertorial-filtered, while plain `청주 + 시술` seeds yielded 5.2%. Query-variant evidence: `community:추천` 4.5%, `axis_body:추나추천` 31.7% vs `cost:비용` 0.5%, `safety:부작용` 0%.

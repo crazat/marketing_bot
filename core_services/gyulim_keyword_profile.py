@@ -176,15 +176,18 @@ class GyulimKeywordProfile:
         "여드름/피부": "피부/여드름",
         "피부": "피부/여드름",
         "여드름": "피부/여드름",
-        "흉터": "피부/여드름",
-        "피부/흉터": "피부/여드름",
-        "흉터/여드름흉터": "피부/여드름",
-        "여드름흉터": "피부/여드름",
-        "패인흉터": "피부/여드름",
-        "모공흉터": "피부/여드름",
-        "수두흉터": "피부/여드름",
-        "수술흉터": "피부/여드름",
-        "새살침": "피부/여드름",
+        "흉터": "흉터/여드름흉터",
+        "피부/흉터": "흉터/여드름흉터",
+        "흉터/여드름흉터": "흉터/여드름흉터",
+        "여드름흉터": "흉터/여드름흉터",
+        "여드름자국": "흉터/여드름흉터",
+        "패인흉터": "흉터/여드름흉터",
+        "모공흉터": "흉터/여드름흉터",
+        "수두흉터": "흉터/여드름흉터",
+        "수술흉터": "흉터/여드름흉터",
+        "상처흉터": "흉터/여드름흉터",
+        "켈로이드": "흉터/여드름흉터",
+        "새살침": "흉터/여드름흉터",
         "교통사고_입원": "교통사고",
         "교통사고입원": "교통사고",
         "통증": "통증/디스크",
@@ -296,9 +299,8 @@ class GyulimKeywordProfile:
                 strategic_weight=1.2,
             ),
             TreatmentCategoryProfile(
-                category="피부/여드름",
+                category="흉터/여드름흉터",
                 seed_terms=(
-                    "여드름",
                     "여드름흉터",
                     "여드름흉터 한의원",
                     "새살침",
@@ -313,18 +315,12 @@ class GyulimKeywordProfile:
                     "흉터 새살침",
                     "피부재생",
                     "여드름자국",
-                    "피부 한의원",
-                    "피부질환",
-                    "아토피",
-                    "지루성피부염",
-                    "안면홍조",
                 ),
                 category_terms=(
-                    "여드름",
+                    "흉터",
                     "여드름흉터",
                     "여드름자국",
                     "새살침",
-                    "흉터",
                     "패인흉터",
                     "모공흉터",
                     "수두흉터",
@@ -337,15 +333,6 @@ class GyulimKeywordProfile:
                     "색소침착",
                     "붉은자국",
                     "갈색자국",
-                    "피부",
-                    "피부질환",
-                    "피부관리",
-                    "아토피",
-                    "지루성피부염",
-                    "홍조",
-                    "습진",
-                    "두드러기",
-                    "건선",
                 ),
                 direct_service_anchors=(
                     "한의원",
@@ -362,10 +349,8 @@ class GyulimKeywordProfile:
                     "피부재생",
                     "여드름흉터",
                     "여드름자국",
-                    "피부질환",
                 ),
                 core_tokens=(
-                    "여드름",
                     "여드름흉터",
                     "여드름자국",
                     "새살침",
@@ -381,6 +366,83 @@ class GyulimKeywordProfile:
                     "피부재생",
                     "색소침착",
                     "붉은자국",
+                ),
+                low_business_value_terms=(
+                    "화장품",
+                    "폼클렌징",
+                    "클렌징",
+                    "연고",
+                    "패치",
+                    "압출기",
+                    "마스크팩",
+                    "올리브영",
+                    "홈케어",
+                ),
+                longtail_suffixes=("비용", "상담", "치료기간", "예약", "후기", "추천", "부작용", "주의사항", "재발"),
+                longtail_contexts=(
+                    "패인흉터",
+                    "모공흉터",
+                    "수두흉터",
+                    "수술흉터",
+                    "상처흉터",
+                    "켈로이드",
+                    "여드름자국",
+                    "오래된 흉터",
+                    "붉은자국",
+                    "압출후",
+                ),
+                journey_suffixes={
+                    "decision": ("비용", "상담", "예약", "추천"),
+                    "access": ("주차", "야간", "주말", "진료시간"),
+                    "safety": ("부작용", "주의사항", "재발", "치료기간"),
+                },
+                strategic_weight=1.3,
+            ),
+            TreatmentCategoryProfile(
+                category="피부/여드름",
+                seed_terms=(
+                    "여드름",
+                    "여드름 한의원",
+                    "성인여드름",
+                    "피부 한의원",
+                    "피부질환",
+                    "아토피",
+                    "지루성피부염",
+                    "안면홍조",
+                    "습진",
+                    "두드러기",
+                    "건선",
+                ),
+                category_terms=(
+                    "여드름",
+                    "성인여드름",
+                    "피부트러블",
+                    "트러블",
+                    "피부",
+                    "피부질환",
+                    "피부관리",
+                    "아토피",
+                    "지루성피부염",
+                    "홍조",
+                    "습진",
+                    "두드러기",
+                    "건선",
+                ),
+                direct_service_anchors=(
+                    "한의원",
+                    "한방",
+                    "여드름",
+                    "성인여드름",
+                    "피부질환",
+                    "아토피",
+                    "지루성피부염",
+                    "습진",
+                    "홍조",
+                ),
+                core_tokens=(
+                    "여드름",
+                    "성인여드름",
+                    "피부트러블",
                     "피부질환",
                     "피부관리",
                     "아토피",
@@ -399,26 +461,21 @@ class GyulimKeywordProfile:
                 ),
                 longtail_suffixes=("비용", "상담", "치료기간", "예약", "후기", "추천", "부작용", "주의사항", "재발"),
                 longtail_contexts=(
-                    "흉터",
-                    "패인흉터",
-                    "모공흉터",
-                    "수두흉터",
-                    "수술흉터",
-                    "상처흉터",
-                    "켈로이드",
-                    "여드름자국",
+                    "성인",
+                    "턱",
+                    "볼",
                     "민감피부",
                     "재발",
-                    "성인",
                     "마스크",
-                    "압출후",
+                    "환절기",
+                    "피부장벽",
                 ),
                 journey_suffixes={
                     "decision": ("비용", "상담", "예약", "추천"),
                     "access": ("주차", "야간", "주말", "진료시간"),
                     "safety": ("부작용", "주의사항", "재발", "치료기간"),
                 },
-                strategic_weight=1.25,
+                strategic_weight=1.15,
             ),
             TreatmentCategoryProfile(
                 category="안면비대칭",
@@ -1149,7 +1206,7 @@ class GyulimKeywordProfile:
         kw = _compact(keyword)
         if category == "통증/디스크":
             return any(_compact(token) in kw for token in profile.core_tokens)
-        if category == "피부/여드름":
+        if category in {"흉터/여드름흉터", "피부/여드름"}:
             return any(_compact(token) in kw for token in profile.core_tokens)
         if profile.strategic_weight < 1.0:
             return any(_compact(token) in kw for token in profile.core_tokens)
@@ -1170,7 +1227,7 @@ class GyulimKeywordProfile:
             # Keep pain broad enough for discovery, but block bare technique terms
             # such as "청주 추나" unless an actual pain/problem token is present.
             return any(_compact(token) in kw for token in profile.core_tokens)
-        if category == "피부/여드름":
+        if category in {"흉터/여드름흉터", "피부/여드름"}:
             return any(_compact(token) in kw for token in profile.core_tokens)
         if profile.strategic_weight < 1.0:
             return self.is_business_core_keyword(keyword, category) or self.has_direct_service_anchor(keyword, category)
@@ -1289,11 +1346,11 @@ class GyulimKeywordProfile:
             "잘하는곳",
         )
         question_patterns = (
-            "{region} {term} 비용 얼마",
-            "{region} {term} " + service_anchor + " 어디",
-            "{region} {term} 상담 가능한곳",
-            "{region} {term} 야간 진료",
-            "{region} {term} 주차 편한 " + service_anchor,
+            "{region} {anchored_term} 비용 얼마",
+            "{region} {anchored_term} 어디",
+            "{region} {anchored_term} 상담 가능한곳",
+            "{region} {anchored_term} 야간 진료",
+            "{region} {anchored_term} 주차 편한",
         )
 
         seeds: List[str] = []
@@ -1321,11 +1378,16 @@ class GyulimKeywordProfile:
 
             for region in regions:
                 for term in terms[:4]:
-                    seeds.append(f"{region} {term} {service_anchor}")
+                    anchored_term = (
+                        term
+                        if _compact(service_anchor) in _compact(term)
+                        else f"{term} {service_anchor}"
+                    )
+                    seeds.append(f"{region} {anchored_term}")
                     for suffix in suffixes[:6]:
-                        seeds.append(f"{region} {term} {service_anchor} {suffix}")
+                        seeds.append(f"{region} {anchored_term} {suffix}")
                     for pattern in question_patterns[:3]:
-                        seeds.append(pattern.format(region=region, term=term))
+                        seeds.append(pattern.format(region=region, term=term, anchored_term=anchored_term))
 
             for context in contexts:
                 for term in terms[:3]:

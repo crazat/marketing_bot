@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE
+from core_services.viral_seed_builder import canonical_category_for_keyword
 
 
 ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved"}
@@ -174,9 +175,39 @@ def _status(value: object) -> str:
     return str(value or "pending").strip() or "pending"
 
 
+def _row_value(row: sqlite3.Row, name: str, default: object = "") -> object:
+    try:
+        return row[name]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def _matched_keyword_candidates(row: sqlite3.Row) -> List[str]:
+    candidates: List[str] = []
+
+    def add(value: object) -> None:
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+
+    add(_row_value(row, "matched_keyword"))
+    parsed = _parse_json(_row_value(row, "matched_keywords"), [])
+    if isinstance(parsed, list):
+        for item in parsed:
+            add(item)
+    elif isinstance(parsed, str):
+        add(parsed)
+    return candidates
+
+
 def _category(row: sqlite3.Row) -> str:
-    raw = row["matched_keyword_category"] or row["category"] or "기타"
-    return ACTIVE_KEYWORD_PROFILE.normalize_category(str(raw))
+    raw = _row_value(row, "matched_keyword_category") or _row_value(row, "category") or "기타"
+    normalized = ACTIVE_KEYWORD_PROFILE.normalize_category(str(raw))
+    for keyword in _matched_keyword_candidates(row):
+        candidate = canonical_category_for_keyword(keyword, normalized)
+        if ACTIVE_KEYWORD_PROFILE.profile_for(candidate):
+            return candidate
+    return normalized
 
 
 def _lens(score_breakdown: Dict[str, Any]) -> str:

@@ -48,6 +48,7 @@ from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 from core_services.viral_seed_builder import (
     ViralSeedBuilder,
+    canonical_category_for_keyword,
     keyword_structure_features,
     strip_transactional_suffix,
 )
@@ -88,13 +89,16 @@ def _ai_quota_category(target: "ViralTarget") -> str:
     """Return the category bucket used for balanced AI target selection."""
     category = _canonical_ai_category(str(getattr(target, "category", "") or ""))
     matched_category = _canonical_ai_category(str(getattr(target, "matched_keyword_category", "") or ""))
+    generic_categories = {"", "기타", "general", "unknown", "uncategorized"}
     core_handoff_categories = {
-        "피부/여드름", "교통사고", "다이어트", "안면비대칭", "체형교정", "리프팅/탄력"
+        "흉터/여드름흉터", "피부/여드름", "교통사고", "다이어트", "안면비대칭", "체형교정", "리프팅/탄력"
     }
     if matched_category in core_handoff_categories:
         return matched_category
-    if category:
+    if category not in generic_categories:
         return category
+    if matched_category not in generic_categories:
+        return matched_category
     return _canonical_ai_category("기타")
 
 
@@ -1512,6 +1516,19 @@ class CommentableFilter:
         "한의원", "피부한의원", "한방", "한약", "약침", "침치료",
         "새살침", "침", "한방치료", "한방 치료", "규림",
     ]
+    SCAR_USER_AXIS_ANCHOR_PATTERNS = [
+        "흉터", "여드름흉터", "여드름 흉터", "여드름자국", "여드름 자국",
+        "패인흉터", "패인 흉터", "모공흉터", "모공 흉터", "수두흉터",
+        "수두 흉터", "수술흉터", "수술 흉터", "상처흉터", "상처 흉터",
+        "켈로이드", "새살침", "흉터치료", "흉터 치료", "흉터새살침",
+        "피부재생", "색소침착", "붉은자국", "붉은 자국", "갈색자국",
+        "갈색 자국", "패인 자국", "패인자국",
+    ]
+    SKIN_USER_AXIS_ANCHOR_PATTERNS = [
+        "여드름", "성인여드름", "성인 여드름", "피부질환", "피부 질환",
+        "아토피", "지루성피부염", "지루성 피부염", "사마귀", "편평사마귀",
+        "편평 사마귀", "트러블", "피부염", "습진",
+    ]
     LEGAL_OR_SCHOOL_VIOLENCE_PATTERNS = [
         "학폭", "학교폭력", "피해학생", "가해학생", "법승", "변호사",
         "법률", "소송", "고소", "신고", "재판", "합의", "형사",
@@ -1702,8 +1719,9 @@ class CommentableFilter:
             "입원", "후유증", "염좌", "추나", "한의원", "한방병원",
         ],
         "scar_skin": [
-            "여드름", "흉터", "여드름흉터", "패인흉터", "새살침", "모공",
-            "트러블", "피부", "자국", "한의원", "한방",
+            "여드름", "흉터", "여드름흉터", "패인흉터", "모공흉터",
+            "수두흉터", "수술흉터", "상처흉터", "켈로이드", "새살침",
+            "흉터치료", "트러블", "피부", "자국", "한의원", "한방",
             "의원", "클리닉", "피부과", "레이저", "시술", "스킨부스터",
             "리쥬란", "쥬베룩", "포텐자",
         ],
@@ -2181,7 +2199,7 @@ class CommentableFilter:
         return round(max(-28.0, min(28.0, adjustment)), 2), list(dict.fromkeys(signals))
 
     @classmethod
-    def _keyword_domain(cls, matched_keywords: List[str]) -> str:
+    def _keyword_domain(cls, matched_keywords: List[str], category: str = "") -> str:
         """검색 키워드가 어느 진료 축에 속하는지 추정한다."""
         joined = " ".join(matched_keywords or []).lower()
         if any(k in joined for k in ["교통사고", "자동차사고", "자보", "입원"]):
@@ -2196,7 +2214,29 @@ class CommentableFilter:
             return "body"
         if any(k in joined for k in ["리프팅", "탄력", "매선", "주름"]):
             return "lifting"
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        category_domain_map = {
+            "흉터/여드름흉터": "scar_skin",
+            "피부/여드름": "scar_skin",
+            "다이어트": "diet",
+            "안면비대칭": "asymmetry",
+            "체형교정": "body",
+            "통증/디스크": "body",
+            "교통사고": "traffic",
+            "리프팅/탄력": "lifting",
+        }
+        if category_key in category_domain_map:
+            return category_domain_map[category_key]
         return "general"
+
+    @classmethod
+    def _target_domain(cls, target: ViralTarget) -> str:
+        category = (
+            getattr(target, "matched_keyword_category", "") or
+            getattr(target, "category", "") or
+            ""
+        )
+        return cls._keyword_domain(getattr(target, "matched_keywords", []) or [], category=category)
 
     @classmethod
     def _profile_categories_for_target(cls, target: ViralTarget, domain: str) -> List[str]:
@@ -2591,6 +2631,10 @@ class CommentableFilter:
             return cls._contains_any(user_text, cls.LIFTING_USER_AXIS_ANCHOR_PATTERNS)
         if category == "교통사고" or domain == "traffic":
             return cls._contains_any(user_text, cls.TRAFFIC_USER_CARE_ANCHOR_PATTERNS)
+        if category == "흉터/여드름흉터":
+            return cls._contains_any(user_text, cls.SCAR_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "피부/여드름":
+            return cls._contains_any(user_text, cls.SKIN_USER_AXIS_ANCHOR_PATTERNS)
         return True
 
     @classmethod
@@ -3276,7 +3320,7 @@ class CommentableFilter:
         platform = (target.platform or "").lower()
         signals: List[str] = []
         score = 0
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
 
         def matched(patterns: List[str]) -> List[str]:
             return [pattern for pattern in patterns if pattern and pattern.lower() in text]
@@ -3530,7 +3574,7 @@ class CommentableFilter:
     @classmethod
     def _is_asymmetry_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject face/asymmetry seeds that actually point to beauty, brow, dental, or esthetic services."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
@@ -3579,7 +3623,7 @@ class CommentableFilter:
     @classmethod
     def _is_body_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject broad body/Chuna companion hits whose user question is really another condition."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
@@ -3607,7 +3651,7 @@ class CommentableFilter:
     @classmethod
     def _is_diet_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject broad diet seeds that are actually gyms, sports classes, or exercise venue questions."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
@@ -3627,12 +3671,18 @@ class CommentableFilter:
     @classmethod
     def _is_skin_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject skin/acne seeds where the skin term is incidental or salon-only."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
-        if domain != "scar_skin" and category != "피부/여드름":
+        if domain != "scar_skin" and category not in {"흉터/여드름흉터", "피부/여드름"}:
             return False
+
+        user_has_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+        if category == "흉터/여드름흉터" and not user_has_axis_anchor:
+            return True
+        if cls._is_axis_companion_variant(target, "axis_skin:") and not user_has_axis_anchor:
+            return True
 
         if cls._contains_any(text, cls.SKIN_WESTERN_RX_NOISE_PATTERNS):
             return not cls._contains_any(text, cls.SKIN_HANBANG_SERVICE_RESCUE_PATTERNS)
@@ -3653,7 +3703,7 @@ class CommentableFilter:
     @classmethod
     def _is_lifting_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject lifting companion hits unless the user text is actually about lifting/elasticity."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
@@ -3674,12 +3724,12 @@ class CommentableFilter:
     @classmethod
     def _is_explicit_hanbang_exclusion(cls, target: ViralTarget, text: str) -> bool:
         """Reject targets where the asker explicitly excludes Korean-medicine care."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
         if domain not in {"diet", "scar_skin", "asymmetry", "body", "lifting", "traffic"} and category not in {
-            "다이어트", "피부/여드름", "안면비대칭", "체형교정", "리프팅/탄력", "교통사고",
+            "다이어트", "흉터/여드름흉터", "피부/여드름", "안면비대칭", "체형교정", "리프팅/탄력", "교통사고",
         }:
             return False
 
@@ -3731,7 +3781,7 @@ class CommentableFilter:
     @classmethod
     def _is_traffic_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject accident seeds that are about vehicle repair, property damage, or legal settlement."""
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
         )
@@ -3831,6 +3881,13 @@ class CommentableFilter:
             if guarded_lens and axis_score and axis_score < 60.0 and not axis_rescue:
                 return "domain_mismatch"
 
+        if category in {"흉터/여드름흉터", "피부/여드름"} or domain == "scar_skin":
+            has_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+            if axis_tier == "mismatch" and not has_axis_anchor:
+                return "domain_mismatch"
+            if guarded_lens and axis_score and axis_score < 55.0 and not has_axis_anchor:
+                return "domain_mismatch"
+
         return None
 
     @classmethod
@@ -3867,7 +3924,7 @@ class CommentableFilter:
         title = (target.title or "").lower()
         body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
 
         if cls._is_off_domain(domain, text):
             return "off_domain"
@@ -4070,7 +4127,7 @@ class CommentableFilter:
             body_clean = self._strip_internal_labels(target.content_preview or '')
             body_lower = body_clean.lower()
             text = f"{title_lower} {body_lower}"
-            domain = self._keyword_domain(target.matched_keywords)
+            domain = self._target_domain(target)
             early_is_inquiry = any(pat in text for pat in self.REAL_INQUIRY_PATTERNS)
 
             # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
@@ -5615,6 +5672,14 @@ class ViralHunter:
     - 댓글 생성 (generate_comments)
     - DB 저장/조회
     """
+    USER_SURFACE_HEAVY_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "다이어트",
+        "안면비대칭",
+        "체형교정",
+        "리프팅/탄력",
+    }
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -5919,7 +5984,7 @@ class ViralHunter:
         """Hash the exact Pathfinder handoff execution signature for resume safety."""
         query_plans: List[Dict[str, Any]] = []
         for idx, keyword in enumerate(keywords):
-            ctx = self.keyword_context.get(keyword) or {}
+            ctx = self._planning_context_for_keyword(keyword)
             category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
             lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
             context_scan_id = int(ctx.get("scan_run_id") or source_scan_run_id or 0)
@@ -5954,10 +6019,48 @@ class ViralHunter:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _inferred_execution_lens_for_keyword(keyword: str, ctx: Optional[Dict[str, Any]] = None) -> str:
+        """Infer an execution lens from the keyword when Pathfinder context is partial."""
+        ctx = ctx or {}
+        row = {
+            "keyword": keyword,
+            "category": ctx.get("category") or "",
+            "review_intent_type": ctx.get("review_intent_type") or "none",
+            "recommended_content_type": ctx.get("recommended_content_type") or "",
+            "preferred_search_surface": ctx.get("preferred_search_surface") or "",
+            "community_signal": ctx.get("community_signal") or 0,
+            "conversion_signal": ctx.get("conversion_signal") or 0,
+            "availability_intent_score": ctx.get("availability_intent_score") or 0,
+            "payment_coverage_score": ctx.get("payment_coverage_score") or 0,
+            "access_convenience_score": ctx.get("access_convenience_score") or 0,
+            "source_signals_json": ctx.get("source_signals_json") or "[]",
+        }
+        return ViralSeedBuilder._keyword_execution_lens(row)
+
+    def _planning_context_for_keyword(self, keyword: str) -> Dict[str, Any]:
+        """Return usable query-planning context even for manual or legacy keywords."""
+        ctx = dict(self.keyword_context.get(keyword) or {})
+        category = canonical_category_for_keyword(keyword, str(ctx.get("category") or ""))
+        if category not in {"", "기타"}:
+            ctx["category"] = category
+
+        execution_lens = str(ctx.get("execution_lens") or "").strip().lower()
+        if execution_lens in {"", "service"}:
+            inferred_lens = self._inferred_execution_lens_for_keyword(keyword, ctx)
+            if inferred_lens and (inferred_lens != "service" or not execution_lens):
+                ctx["execution_lens"] = inferred_lens
+
+        if ctx:
+            existing = self.keyword_context.get(keyword)
+            if existing != ctx:
+                self.keyword_context[keyword] = ctx
+        return ctx
+
     def _search_plan_for_keyword(self, keyword: str, max_per_platform: int) -> Dict[str, Any]:
         """Tune discovery depth by Pathfinder execution signals without changing the public API."""
         base_limit = max(1, int(max_per_platform or 100))
-        ctx = self.keyword_context.get(keyword) or {}
+        ctx = self._planning_context_for_keyword(keyword)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
         readiness = self._context_float(ctx, "viral_readiness_score")
         community = self._context_float(ctx, "community_signal")
@@ -6029,7 +6132,7 @@ class ViralHunter:
             limits = {"cafe": expanded_limit, "blog": base_limit, "kin": expanded_limit}
             include_blog = True
 
-        if category in {"안면비대칭", "체형교정", "리프팅/탄력"}:
+        if category in self.USER_SURFACE_HEAVY_CATEGORIES:
             # These axes are flooded by blog/provider SEO; cafe/Kin user questions are more workable.
             limits["blog"] = max(10, min(int(limits.get("blog", 0) or 0), int(round(base_limit * 0.35))))
             if execution_lens in {"review", "community", "consultation"} or review_intent_type not in {"", "none"}:
@@ -6061,7 +6164,7 @@ class ViralHunter:
 
     def _search_query_variants_for_keyword(self, keyword: str) -> List[Dict[str, Any]]:
         """Create a bounded set of lens-aware search queries for one Pathfinder seed."""
-        ctx = self.keyword_context.get(keyword) or {}
+        ctx = self._planning_context_for_keyword(keyword)
         execution_lens = str(ctx.get("execution_lens") or "")
         category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
 
@@ -6109,7 +6212,7 @@ class ViralHunter:
                     })
                     break
 
-        max_variants = 3 if category in {"안면비대칭", "체형교정", "리프팅/탄력"} else 2
+        max_variants = 3 if category in self.USER_SURFACE_HEAVY_CATEGORIES else 2
         for variant in self._axis_companion_query_variants(keyword, category):
             if len(variants) >= max_variants:
                 break
@@ -6124,7 +6227,25 @@ class ViralHunter:
         """Add one axis-specific user-question query for categories with thin organic supply."""
         compact = ViralHunter._compact_query_text(keyword)
         candidates: List[Tuple[str, str]] = []
-        if category == "체형교정":
+        if category == "흉터/여드름흉터":
+            candidates = [
+                ("청주 여드름흉터 새살침 후기", "axis_scar:새살침후기"),
+                ("청주 패인흉터 한의원 추천", "axis_scar:패인흉터추천"),
+                ("청주 여드름자국 흉터 한의원 추천", "axis_scar:여드름자국추천"),
+            ]
+        elif category == "피부/여드름":
+            candidates = [
+                ("청주 여드름 한의원 추천", "axis_skin:여드름추천"),
+                ("청주 피부질환 한의원 추천", "axis_skin:피부질환추천"),
+                ("청주 아토피 한의원 후기", "axis_skin:아토피후기"),
+            ]
+        elif category == "다이어트":
+            candidates = [
+                ("청주 다이어트한약 후기", "axis_diet:한약후기"),
+                ("청주 한방다이어트 한의원 추천", "axis_diet:한방다이어트추천"),
+                ("청주 감량 한약 상담 후기", "axis_diet:감량상담후기"),
+            ]
+        elif category == "체형교정":
             candidates = [
                 ("청주 체형교정 추나 한의원 추천", "axis_body:체형추나추천"),
                 ("청주 골반교정 추나 한의원 추천", "axis_body:골반교정추천"),
@@ -6201,6 +6322,121 @@ class ViralHunter:
         }
         return target
 
+    @staticmethod
+    def _pathfinder_variant_strength(variant: str) -> int:
+        variant = str(variant or "").strip()
+        if variant.startswith("axis_"):
+            return 40
+        if variant and variant not in {"base", "community_base", "(none)"}:
+            return 30
+        if variant == "community_base":
+            return 20
+        if variant == "base":
+            return 10
+        return 0
+
+    @staticmethod
+    def _breakdown_lineage_values(
+        breakdown: Dict[str, Any],
+        list_key: str,
+        single_key: str,
+    ) -> List[str]:
+        values: List[str] = []
+        raw_list = (breakdown or {}).get(list_key)
+        if isinstance(raw_list, list):
+            values.extend(str(item) for item in raw_list if str(item or "").strip())
+        elif raw_list:
+            values.append(str(raw_list))
+        raw_single = (breakdown or {}).get(single_key)
+        if raw_single:
+            values.append(str(raw_single))
+        return [item for item in dict.fromkeys(values) if item]
+
+    @classmethod
+    def _merge_duplicate_search_target(
+        cls,
+        current: ViralTarget,
+        incoming: ViralTarget,
+    ) -> ViralTarget:
+        """Merge an in-run duplicate URL without losing query-variant lineage."""
+        current_breakdown = current.score_breakdown or {}
+        incoming_breakdown = incoming.score_breakdown or {}
+        current_variant = str(current_breakdown.get("pathfinder_query_variant") or "base")
+        incoming_variant = str(incoming_breakdown.get("pathfinder_query_variant") or "base")
+        current_strength = cls._pathfinder_variant_strength(current_variant)
+        incoming_strength = cls._pathfinder_variant_strength(incoming_variant)
+        prefer_incoming = (
+            incoming_strength > current_strength
+            or (
+                incoming_strength == current_strength
+                and (incoming.exposure_score or incoming.priority_score or 0)
+                > (current.exposure_score or current.priority_score or 0)
+            )
+        )
+        preferred_breakdown = incoming_breakdown if prefer_incoming else current_breakdown
+
+        variants = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_query_variants", "pathfinder_query_variant")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_query_variants", "pathfinder_query_variant")
+        ))
+        queries = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_search_queries", "pathfinder_search_query")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_search_queries", "pathfinder_search_query")
+        ))
+        sources = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
+        ))
+
+        primary_source = str(preferred_breakdown.get("pathfinder_source_keyword") or "")
+        primary_query = str(preferred_breakdown.get("pathfinder_search_query") or "")
+        primary_keywords = [primary_source]
+        if primary_query and primary_query != primary_source:
+            primary_keywords.append(primary_query)
+        current.matched_keywords = [
+            keyword
+            for keyword in dict.fromkeys(
+                primary_keywords + list(current.matched_keywords or []) + list(incoming.matched_keywords or [])
+            )
+            if keyword
+        ]
+
+        appearances = list(dict.fromkeys((current.sort_appearances or []) + (incoming.sort_appearances or [])))
+        current.sort_appearances = appearances
+        best_rank = min(
+            [rank for rank in (current.search_rank or 0, incoming.search_rank or 0) if rank > 0],
+            default=current.search_rank or incoming.search_rank or 0,
+        )
+        current.search_rank = best_rank
+        current.exposure_score = max(current.exposure_score or 0, incoming.exposure_score or 0)
+        current.priority_score = max(current.priority_score or 0, incoming.priority_score or 0)
+        current.like_count = max(current.like_count or 0, incoming.like_count or 0)
+        current.comment_count = max(current.comment_count or 0, incoming.comment_count or 0)
+        current.view_count = max(current.view_count or 0, incoming.view_count or 0)
+        current.search_total = max(current.search_total or 0, incoming.search_total or 0)
+        if prefer_incoming:
+            current.title = incoming.title or current.title
+            current.content_preview = incoming.content_preview or current.content_preview
+            current.search_sort = incoming.search_sort or current.search_sort
+            current.search_start = incoming.search_start or current.search_start
+            current.author = incoming.author or current.author
+            current.date_str = incoming.date_str or current.date_str
+
+        merged_breakdown = {**current_breakdown, **incoming_breakdown}
+        if not prefer_incoming:
+            for key in ("pathfinder_source_keyword", "pathfinder_search_query", "pathfinder_query_variant"):
+                if key in current_breakdown:
+                    merged_breakdown[key] = current_breakdown[key]
+        for key in ("pathfinder_source_keyword", "pathfinder_search_query", "pathfinder_query_variant"):
+            if key in preferred_breakdown:
+                merged_breakdown[key] = preferred_breakdown[key]
+        merged_breakdown["pathfinder_query_variants"] = variants
+        merged_breakdown["pathfinder_search_queries"] = queries
+        merged_breakdown["pathfinder_source_keywords"] = sources
+        merged_breakdown["pathfinder_duplicate_query_count"] = len(variants)
+        current.score_breakdown = merged_breakdown
+        return current
+
     def _apply_keyword_context(self, target: ViralTarget) -> ViralTarget:
         """Attach Pathfinder lineage to a search result before filtering/storage."""
         if not target.matched_keywords:
@@ -6212,9 +6448,15 @@ class ViralHunter:
             if ctx:
                 break
         if not ctx:
-            self.keyword_context.update(self.seed_builder.keyword_context_for(target.matched_keywords))
+            if hasattr(self, "seed_builder") and self.seed_builder:
+                self.keyword_context.update(self.seed_builder.keyword_context_for(target.matched_keywords))
             for keyword in target.matched_keywords:
                 ctx = self.keyword_context.get(keyword)
+                if ctx:
+                    break
+        if not ctx:
+            for keyword in target.matched_keywords:
+                ctx = self._planning_context_for_keyword(keyword)
                 if ctx:
                     break
         if not ctx:
@@ -6223,8 +6465,24 @@ class ViralHunter:
         target.matched_keyword_grade = ctx.get("grade") or ""
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
         target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
-        target.matched_keyword_category = GYULIM_KEYWORD_PROFILE.normalize_category(ctx.get("category") or "")
-        if (not target.category or target.category == "기타") and target.matched_keyword_category:
+        target.matched_keyword_category = canonical_category_for_keyword(
+            target.matched_keywords[0] if target.matched_keywords else "",
+            ctx.get("category") or "",
+        )
+        current_category = GYULIM_KEYWORD_PROFILE.normalize_category(target.category or "")
+        canonical_target_category = canonical_category_for_keyword(
+            target.matched_keywords[0] if target.matched_keywords else "",
+            current_category,
+        )
+        if (
+            target.matched_keyword_category
+            and (
+                not target.category
+                or current_category in {"기타", "한의원일반"}
+                or canonical_target_category == target.matched_keyword_category
+                or not GYULIM_KEYWORD_PROFILE.profile_for(current_category)
+            )
+        ):
             target.category = target.matched_keyword_category
         target.score_breakdown = {
             **(target.score_breakdown or {}),
@@ -6606,14 +6864,36 @@ class ViralHunter:
         conn = sqlite3.connect(path)
         try:
             conn.row_factory = sqlite3.Row
+            target_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            time_filters: List[str] = []
+            time_params: List[str] = []
+            if "discovered_at" in target_columns:
+                time_filters.append("REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= ?")
+                time_params.append(run_started_at)
+            if "last_scanned_at" in target_columns:
+                time_filters.append("REPLACE(COALESCE(last_scanned_at, ''), 'T', ' ') >= ?")
+                time_params.append(run_started_at)
+            if not time_filters:
+                return None
+
+            timestamp_selects = []
+            for column in ("discovered_at", "last_scanned_at"):
+                if column in target_columns:
+                    timestamp_selects.append(column)
+                else:
+                    timestamp_selects.append(f"'' AS {column}")
             rows = conn.execute(
-                """
+                f"""
                 SELECT category, comment_status, matched_keyword, matched_keywords,
-                       matched_keyword_category, score_breakdown
+                       matched_keyword_category, score_breakdown,
+                       {", ".join(timestamp_selects)}
                 FROM viral_targets
-                WHERE REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= ?
+                WHERE {" OR ".join(time_filters)}
                 """,
-                (run_started_at,),
+                tuple(time_params),
             ).fetchall()
 
             def _bucket_status(status: str) -> str:
@@ -6629,7 +6909,7 @@ class ViralHunter:
 
             empty_entry = {
                 'discovered': 0, 'pending': 0, 'raw_backlog': 0,
-                'ad_filtered': 0, 'rejected': 0, 'other': 0,
+                'ad_filtered': 0, 'rejected': 0, 'other': 0, 'rediscovered': 0,
             }
             per_category: Dict[str, Dict[str, int]] = {}
             per_variant: Dict[str, Dict[str, int]] = {}
@@ -6652,9 +6932,17 @@ class ViralHunter:
                         source_keyword = str(parsed[0] or '').strip()
                 if not source_keyword:
                     source_keyword = str(row['matched_keyword'] or '').strip() or '(unknown)'
-                category = str(row['matched_keyword_category'] or row['category'] or '기타')
+                raw_category = str(row['matched_keyword_category'] or row['category'] or '기타')
+                category = canonical_category_for_keyword(source_keyword, raw_category)
                 variant = str(breakdown.get('pathfinder_query_variant') or '(none)')
                 status_bucket = _bucket_status(str(row['comment_status'] or 'pending'))
+                discovered_current = (
+                    str(row['discovered_at'] or '').replace('T', ' ') >= run_started_at
+                )
+                scanned_current = (
+                    str(row['last_scanned_at'] or '').replace('T', ' ') >= run_started_at
+                )
+                rediscovered_current = bool(scanned_current and not discovered_current)
                 structure_key = str(
                     keyword_structure_features(source_keyword, category)['structure_key']
                 )
@@ -6667,10 +6955,13 @@ class ViralHunter:
                     entry = table.setdefault(key, dict(empty_entry))
                     entry['discovered'] += 1
                     entry[status_bucket] += 1
+                    if rediscovered_current:
+                        entry['rediscovered'] += 1
 
             discovered_total = sum(e['discovered'] for e in per_category.values())
             pending_total = sum(e['pending'] for e in per_category.values())
             ad_total = sum(e['ad_filtered'] for e in per_category.values())
+            rediscovered_total = sum(e.get('rediscovered', 0) for e in per_category.values())
             zero_yield_seeds = sorted(
                 (
                     {'seed': seed, 'discovered': entry['discovered'], 'ad_filtered': entry['ad_filtered']}
@@ -6687,6 +6978,8 @@ class ViralHunter:
                     'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
                     'ad_filtered': ad_total,
                     'ad_rate': (ad_total / discovered_total) if discovered_total else 0.0,
+                    'rediscovered': rediscovered_total,
+                    'rediscovered_rate': (rediscovered_total / discovered_total) if discovered_total else 0.0,
                     'keyword_count': int(keyword_count or 0),
                 },
                 'per_category': per_category,
@@ -6793,6 +7086,7 @@ class ViralHunter:
         all_targets: List[ViralTarget] = []
         seen_urls: set = set()
         processed_set: set = set()
+        targets_by_url: Dict[str, ViralTarget] = {}
 
         if not fresh:
             cp = self._load_checkpoint(kw_hash)
@@ -6806,6 +7100,11 @@ class ViralHunter:
                     self._viral_target_from_dict(d)
                     for d in (cp.get('all_targets') or [])
                 ]
+                targets_by_url = {
+                    canonicalize_viral_url(target.url) or target.url: target
+                    for target in all_targets
+                    if target.url
+                }
                 print(f"\n♻️  체크포인트 복원: 처리 완료 {len(processed_set)}/{len(keywords)}, "
                       f"수집 {len(all_targets)}개 (저장 시각 {cp.get('saved_at')})")
 
@@ -6868,10 +7167,16 @@ class ViralHunter:
             # 중복 제거
             for target in results:
                 canonical_key = canonicalize_viral_url(target.url) or target.url
+                existing_target = targets_by_url.get(canonical_key)
+                if existing_target:
+                    self._merge_duplicate_search_target(existing_target, target)
+                    self._apply_keyword_context(existing_target)
+                    continue
                 if canonical_key not in seen_urls:
                     seen_urls.add(canonical_key)
                     self._apply_keyword_context(target)
                     all_targets.append(target)
+                    targets_by_url[canonical_key] = target
 
             processed_set.add(kw)
             checkpoint_counter += 1

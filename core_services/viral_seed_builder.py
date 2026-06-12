@@ -20,13 +20,25 @@ from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULI
 
 
 DEFAULT_CATEGORY_QUOTAS: Dict[str, int] = {
-    "흉터/여드름흉터": 14,
-    "피부/여드름": 14,
+    "흉터/여드름흉터": 12,
+    "피부/여드름": 10,
     "다이어트": 12,
     "안면비대칭": 10,
     "체형교정": 7,
-    "리프팅/탄력": 6,
     "교통사고": 8,
+    "통증/디스크": 6,
+    "리프팅/탄력": 5,
+    "탈모/두피": 4,
+    "두통/어지럼": 3,
+    "소화/위장": 3,
+    "호흡기/알레르기": 3,
+    "갱년기/여성": 2,
+    "수면/피로": 2,
+    "스트레스/자율신경": 2,
+    "여성/산후": 2,
+    "다한증/냉증": 2,
+    "수험생/집중력": 2,
+    "면역/보약": 2,
 }
 
 DEFAULT_EXCLUDE_PATTERNS = [
@@ -169,13 +181,31 @@ def strip_transactional_suffix(keyword: str) -> str:
     return stripped
 
 
+def normalize_seed_keyword_text(keyword: str) -> str:
+    """Clean mechanical seed artifacts before they become search queries."""
+    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    if not text:
+        return ""
+
+    anchor = str(getattr(GYULIM_KEYWORD_PROFILE, "service_query_anchor", "") or "").strip()
+    if anchor:
+        anchor_re = re.escape(anchor)
+        for _ in range(3):
+            text = re.sub(rf"({anchor_re})\s*{anchor_re}", anchor, text)
+        for suffix in tuple(dict.fromkeys(TRANSACTIONAL_SUFFIX_TOKENS + ("후기", "추천", "부작용", "치료기간"))):
+            if suffix and suffix != anchor:
+                text = re.sub(rf"({anchor_re})({re.escape(suffix)})", rf"\1 {suffix}", text)
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def keyword_structure_features(keyword: str, category: str = "") -> Dict[str, object]:
     """Classify a seed's query structure for bucket-level yield feedback."""
-    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    text = normalize_seed_keyword_text(keyword)
     has_suffix = bool(text) and _strip_suffix_tokens(text) != text
     neighborhoods = tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
     has_neighborhood = any(token and token in text for token in neighborhoods)
-    normalized_category = GYULIM_KEYWORD_PROFILE.normalize_category(category or "기타")
+    normalized_category = _canonical_category_for_keyword(keyword, category)
     structure_key = (
         f"structure:{normalized_category}:"
         f"{'suffix' if has_suffix else 'plain'}:"
@@ -186,6 +216,55 @@ def keyword_structure_features(keyword: str, category: str = "") -> Dict[str, ob
         "has_neighborhood_token": has_neighborhood,
         "structure_key": structure_key,
     }
+
+
+def canonical_category_for_keyword(keyword: str, category: str = "") -> str:
+    """Resolve stale or aliased category labels against the active clinic profile."""
+    normalized = GYULIM_KEYWORD_PROFILE.normalize_category(category or "기타")
+    detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+        GYULIM_KEYWORD_PROFILE.detect_category(keyword or "", default=normalized)
+    )
+    if detected in {"", "기타"}:
+        return normalized
+
+    stale_or_generic = normalized in {"", "기타", "한의원일반"}
+    scar_split_from_legacy_skin = (
+        normalized == "피부/여드름"
+        and detected == "흉터/여드름흉터"
+        and GYULIM_KEYWORD_PROFILE.profile_for(detected)
+    )
+    if stale_or_generic or scar_split_from_legacy_skin:
+        return detected
+    return normalized
+
+
+def _canonical_category_for_keyword(keyword: str, category: str = "") -> str:
+    return canonical_category_for_keyword(keyword, category)
+
+
+def default_category_quotas() -> Dict[str, int]:
+    """Return quota defaults that only include categories in the active profile.
+
+    The constant above expresses the Gyulim operating preference.  This helper
+    normalizes aliases and fills any newly-added focus categories with a small
+    exploratory quota so Viral Hunter does not silently ignore real services.
+    """
+    normalized: Dict[str, int] = {}
+    for raw_category, quota in DEFAULT_CATEGORY_QUOTAS.items():
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        if not GYULIM_KEYWORD_PROFILE.profile_for(category):
+            continue
+        normalized[category] = normalized.get(category, 0) + int(quota or 0)
+
+    for category in getattr(GYULIM_KEYWORD_PROFILE, "focus_categories", ()):
+        if category in normalized:
+            continue
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            continue
+        exploratory_quota = int(round(2.0 + max(0.0, float(profile.strategic_weight or 1.0))))
+        normalized[category] = max(2, min(4, exploratory_quota))
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -279,12 +358,17 @@ class ViralSeedBuilder:
         max_per_intent_per_category: int = DEFAULT_MAX_PER_INTENT_PER_CATEGORY,
         max_per_cluster_per_category: int = DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY,
         max_per_region_per_category: int = DEFAULT_MAX_PER_REGION_PER_CATEGORY,
+        fill_profile_gaps: Optional[bool] = None,
     ) -> List[ViralSeed]:
         scan_id = scan_run_id or self.latest_completed_legion_scan_id()
         if not scan_id:
             return []
 
-        quotas = self._normalize_quota_map(quotas or DEFAULT_CATEGORY_QUOTAS)
+        use_default_quotas = quotas is None
+        explicit_gap_fill = fill_profile_gaps is not None
+        if fill_profile_gaps is None:
+            fill_profile_gaps = use_default_quotas
+        quotas = self._normalize_quota_map(quotas or default_category_quotas())
         excludes = list(exclude_patterns or DEFAULT_EXCLUDE_PATTERNS)
         grades = tuple(include_grades)
 
@@ -377,14 +461,21 @@ class ViralSeedBuilder:
         feedback = self._load_keyword_feedback()
         scored_rows = []
         for row in rows:
-            keyword = row["keyword"] or ""
+            raw_keyword = row["keyword"] or ""
+            keyword = normalize_seed_keyword_text(raw_keyword)
             if self._is_excluded_keyword(keyword, excludes):
                 continue
             row_data = dict(row)
-            row_data["category"] = GYULIM_KEYWORD_PROFILE.normalize_category(row_data.get("category") or "기타")
+            row_data["keyword"] = keyword
+            row_data["category"] = self._canonical_category_for_keyword(
+                keyword,
+                row_data.get("category") or "기타",
+            )
             if self._is_non_hanbang_diet_seed(row_data):
                 continue
             fb = self._feedback_for_keyword(feedback, keyword)
+            if not fb and raw_keyword != keyword:
+                fb = self._feedback_for_keyword(feedback, raw_keyword)
             axis_lens_fb = self._feedback_for_axis_lens(feedback, row_data)
             axis_lens_feedback_adjustment = self._axis_lens_feedback_adjustment(axis_lens_fb)
             structure = keyword_structure_features(keyword, row_data["category"])
@@ -550,6 +641,23 @@ class ViralSeedBuilder:
                 )
                 seen.add(keyword)
 
+        observed_categories = {
+            seed.category
+            for seed in selected
+            if GYULIM_KEYWORD_PROFILE.profile_for(seed.category)
+        }
+        broad_enough_for_default_gap_fill = len(observed_categories) >= 3
+        if fill_profile_gaps and (explicit_gap_fill or broad_enough_for_default_gap_fill):
+            self._append_profile_gap_fill_seeds(
+                selected,
+                seen,
+                quotas,
+                scan_id,
+                excludes,
+                max_per_cluster_per_category=max_per_cluster_per_category,
+                max_per_region_per_category=max_per_region_per_category,
+            )
+
         return self._interleave_seed_portfolio(selected)
 
     @staticmethod
@@ -560,6 +668,215 @@ class ViralSeedBuilder:
             category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
             normalized[category] = normalized.get(category, 0) + int(quota or 0)
         return normalized
+
+    @staticmethod
+    def _canonical_category_for_keyword(keyword: str, category: str = "") -> str:
+        return _canonical_category_for_keyword(keyword, category)
+
+    def _append_profile_gap_fill_seeds(
+        self,
+        selected: List[ViralSeed],
+        seen: set,
+        quotas: Dict[str, int],
+        scan_id: int,
+        excludes: Iterable[str],
+        *,
+        max_per_cluster_per_category: int,
+        max_per_region_per_category: int,
+    ) -> None:
+        """Fill quota holes with profile exploration seeds after DB-backed seeds.
+
+        Pathfinder scan rows remain the source of truth.  This only prevents a
+        real treatment axis from disappearing from Viral Hunter when a recent
+        scan has too few eligible rows for that axis.
+        """
+        category_counts = Counter(seed.category for seed in selected)
+        normalized_seen = {
+            self._keyword_feedback_key(seed.keyword)
+            for seed in selected
+        }
+        normalized_seen.update(self._keyword_feedback_key(keyword) for keyword in seen)
+
+        for raw_category, quota in quotas.items():
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+            if int(category_counts.get(category, 0) or 0) <= 0:
+                continue
+            needed = int(quota or 0) - int(category_counts.get(category, 0) or 0)
+            if needed <= 0:
+                continue
+            profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+            if not profile:
+                continue
+
+            candidates = self._profile_gap_seed_candidates(category, max(needed * 12, 48))
+            cluster_counts: Counter = Counter(
+                self._keyword_cluster_key(seed.keyword, seed.category)
+                for seed in selected
+                if seed.category == category
+            )
+            region_counts: Counter = Counter(
+                self._keyword_region_key(seed.keyword)
+                for seed in selected
+                if seed.category == category
+            )
+
+            added = 0
+            for row in candidates:
+                keyword = row["keyword"]
+                normalized_keyword = self._keyword_feedback_key(keyword)
+                if not keyword or normalized_keyword in normalized_seen:
+                    continue
+                if self._is_excluded_keyword(keyword, excludes):
+                    continue
+                if self._is_non_hanbang_diet_seed(row):
+                    continue
+
+                cluster = self._keyword_cluster_key(keyword, category)
+                region = self._keyword_region_key(keyword)
+                if cluster_counts[cluster] >= max(1, max_per_cluster_per_category):
+                    continue
+                if region_counts[region] >= max(1, max_per_region_per_category):
+                    continue
+
+                selected.append(self._profile_gap_seed_from_row(row, scan_id))
+                normalized_seen.add(normalized_keyword)
+                seen.add(keyword)
+                category_counts[category] += 1
+                cluster_counts[cluster] += 1
+                region_counts[region] += 1
+                added += 1
+                if added >= needed:
+                    break
+
+    def _profile_gap_seed_candidates(self, category: str, limit: int) -> List[dict]:
+        raw_keywords = GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+            categories=[category],
+            max_terms_per_category=6,
+            max_suffixes_per_category=6,
+            max_contexts_per_category=3,
+            max_neighborhoods_per_category=5,
+        )
+        rows: List[dict] = []
+        for raw_keyword in raw_keywords:
+            keyword = normalize_seed_keyword_text(raw_keyword)
+            canonical = self._canonical_category_for_keyword(keyword, category)
+            if canonical != category:
+                continue
+            row = self._profile_gap_seed_row(keyword, canonical)
+            rows.append(row)
+
+        rows.sort(
+            key=lambda row: (
+                -self._profile_gap_seed_score(row),
+                self._keyword_execution_lens(row) not in {"review", "community", "consultation"},
+                len(str(row.get("keyword") or "")),
+            )
+        )
+        return rows[:limit]
+
+    @staticmethod
+    def _profile_gap_seed_row(keyword: str, category: str) -> dict:
+        compact = re.sub(r"\s+", "", (keyword or "").lower())
+        has_recommendation = any(term in compact for term in ("추천", "어디", "잘하는곳", "괜찮은곳", "후기"))
+        has_consult = any(term in compact for term in ("상담", "문의", "처방", "진단"))
+        has_cost = any(term in compact for term in ("비용", "가격", "얼마"))
+        has_access = any(term in compact for term in ("예약", "야간", "주말", "진료시간", "주차", "근처"))
+        has_safety = any(term in compact for term in ("부작용", "주의사항", "치료기간", "회복", "통증", "재발"))
+
+        community = 42.0 if has_recommendation else 28.0
+        conversion = 38.0 if has_consult or has_cost else 22.0
+        availability = 56.0 if has_access else 28.0
+        review_surface = 58.0 if has_recommendation else 35.0
+        recommended_type = "faq_safety" if has_safety else "proof_safe_guide"
+        review_intent = "community_recommendation" if has_recommendation else "none"
+
+        return {
+            "keyword": keyword,
+            "category": category,
+            "grade": "B",
+            "search_volume": 0,
+            "document_count": 0,
+            "kei": 0.0,
+            "priority_v3": 58.0,
+            "search_intent": "commercial" if has_recommendation else ("transactional" if has_cost or has_consult else "informational"),
+            "high_value_longtail": 1,
+            "longtail_score": 76.0,
+            "business_value_score": 74.0,
+            "local_service_fit_score": 82.0,
+            "content_actionability_score": 72.0,
+            "medical_ad_risk_score": 12.0 if not has_safety else 18.0,
+            "community_signal": community,
+            "conversion_signal": conversion,
+            "profile_action_signal": 30.0 if has_access else 18.0,
+            "local_surface_score": 62.0,
+            "review_surface_score": review_surface,
+            "reputation_risk_score": 8.0,
+            "competitor_brand_risk_score": 0.0,
+            "availability_intent_score": availability,
+            "payment_coverage_score": 55.0 if has_cost else 25.0,
+            "access_convenience_score": 50.0 if has_access else 20.0,
+            "verification_score": 58.0,
+            "pathfinder_novelty_score": 82.0,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": recommended_type,
+            "brand_intent_type": "generic",
+            "review_intent_type": review_intent,
+            "quality_flags_json": "[]",
+            "source_signals_json": json.dumps(["profile_gap_fill"], ensure_ascii=False),
+        }
+
+    @staticmethod
+    def _profile_gap_seed_score(row: dict) -> float:
+        keyword = str(row.get("keyword") or "")
+        compact = re.sub(r"\s+", "", keyword)
+        score = 40.0 + ViralSeedBuilder._axis_execution_query_bonus(row)
+        if any(term in compact for term in ("추천", "어디", "괜찮은곳", "잘하는곳")):
+            score += 24.0
+        if "한의원" in compact or "한방" in compact:
+            score += 16.0
+        if any(term in compact for term in ("상담", "비용", "후기")):
+            score += 10.0
+        if GYULIM_KEYWORD_PROFILE.is_target_region(keyword, include_nearby=True):
+            score += 8.0
+        if any(term in compact for term in ("예약", "진료시간", "주차")) and not any(
+            term in compact for term in ("추천", "어디", "괜찮은곳", "잘하는곳")
+        ):
+            score -= 10.0
+        return score
+
+    @staticmethod
+    def _profile_gap_seed_from_row(row: dict, scan_id: int) -> ViralSeed:
+        keyword = str(row.get("keyword") or "")
+        category = _canonical_category_for_keyword(keyword, str(row.get("category") or ""))
+        structure = keyword_structure_features(keyword, category)
+        return ViralSeed(
+            keyword=keyword,
+            scan_run_id=scan_id,
+            category=category,
+            grade=str(row.get("grade") or "B"),
+            search_volume=0,
+            document_count=0,
+            kei=0.0,
+            priority_v3=float(row.get("priority_v3") or 0.0),
+            search_intent=str(row.get("search_intent") or "informational"),
+            novelty_score=88.0,
+            keyword_structure=str(structure.get("structure_key") or ""),
+            longtail_score=float(row.get("longtail_score") or 0.0),
+            business_value_score=float(row.get("business_value_score") or 0.0),
+            high_value_longtail=bool(row.get("high_value_longtail") or 0),
+            viral_readiness_score=ViralSeedBuilder._viral_readiness_score(row),
+            local_service_fit_score=float(row.get("local_service_fit_score") or 0.0),
+            content_actionability_score=float(row.get("content_actionability_score") or 0.0),
+            medical_ad_risk_score=float(row.get("medical_ad_risk_score") or 0.0),
+            community_signal=float(row.get("community_signal") or 0.0),
+            conversion_signal=float(row.get("conversion_signal") or 0.0),
+            profile_action_signal=float(row.get("profile_action_signal") or 0.0),
+            preferred_search_surface=str(row.get("preferred_search_surface") or ""),
+            recommended_content_type=str(row.get("recommended_content_type") or ""),
+            brand_intent_type=str(row.get("brand_intent_type") or "generic"),
+            review_intent_type=str(row.get("review_intent_type") or "none"),
+            execution_lens=ViralSeedBuilder._keyword_execution_lens(row),
+        )
 
     @staticmethod
     def _interleave_seed_portfolio(seeds: List[ViralSeed]) -> List[ViralSeed]:
@@ -616,6 +933,9 @@ class ViralSeedBuilder:
             text = str(value or "").strip()
             if text:
                 keywords.append(text)
+                cleaned = normalize_seed_keyword_text(text)
+                if cleaned and cleaned != text:
+                    keywords.append(cleaned)
 
         add(matched_keyword)
         if isinstance(matched_keywords, list):
@@ -640,7 +960,7 @@ class ViralSeedBuilder:
 
     @staticmethod
     def _feedback_for_axis_lens(feedback: Dict[str, dict], row: dict) -> dict:
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
+        category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
         execution_lens = ViralSeedBuilder._keyword_execution_lens(row)
         return feedback.get(f"axis_lens:{category}:{execution_lens}") or feedback.get(f"axis:{category}") or {}
 
@@ -715,7 +1035,7 @@ class ViralSeedBuilder:
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             GYULIM_KEYWORD_PROFILE.detect_category(keyword, default="")
         )
-        if category != "피부/여드름":
+        if category not in {"흉터/여드름흉터", "피부/여드름"}:
             return False
 
         profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
@@ -749,7 +1069,7 @@ class ViralSeedBuilder:
     @staticmethod
     def _is_non_hanbang_diet_seed(row: dict) -> bool:
         """Exclude diet seeds for injection/obesity-clinic care outside Gyulim's hanbang lane."""
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
+        category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
         if category != "다이어트":
             return False
 
@@ -882,7 +1202,7 @@ class ViralSeedBuilder:
         review_intent_type = str(row.get("review_intent_type") or "none")
         grade = str(row.get("grade") or "")
         keyword = str(row.get("keyword") or "")
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
+        category = _canonical_category_for_keyword(keyword, str(row.get("category") or ""))
         execution_lens = ViralSeedBuilder._keyword_execution_lens(row)
 
         score = 0.0
@@ -948,8 +1268,16 @@ class ViralSeedBuilder:
     @staticmethod
     def _axis_execution_query_bonus(row: dict) -> float:
         """Prefer query shapes that actually produce workable posts for body/asymmetry axes."""
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
-        if category not in {"안면비대칭", "체형교정", "다이어트", "리프팅/탄력", "교통사고"}:
+        category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
+        if category not in {
+            "흉터/여드름흉터",
+            "피부/여드름",
+            "안면비대칭",
+            "체형교정",
+            "다이어트",
+            "리프팅/탄력",
+            "교통사고",
+        }:
             return 0.0
 
         keyword = str(row.get("keyword") or "")
@@ -1005,6 +1333,55 @@ class ViralSeedBuilder:
 
         if category == "안면비대칭" and "턱관절" in compact and has_recommendation and has_clinic:
             bonus += 22.0
+        if category == "흉터/여드름흉터":
+            has_scar_axis = any(
+                term in compact
+                for term in (
+                    "여드름흉터", "패인흉터", "모공흉터", "수두흉터", "수술흉터",
+                    "상처흉터", "켈로이드", "새살침", "흉터치료", "여드름자국",
+                    "붉은자국", "피부재생",
+                )
+            )
+            has_scar_clinic = any(
+                term in compact
+                for term in ("한의원", "한방", "새살침", "흉터치료", "피부재생", "상담", "치료")
+            )
+            product_noise = any(
+                term in compact
+                for term in ("화장품", "연고", "패치", "홈케어", "올리브영", "마스크팩", "압출기")
+            )
+            western_only = any(term in compact for term in ("피부과", "레이저", "프락셀")) and not has_scar_clinic
+            if has_scar_axis and has_scar_clinic and (has_recommendation or has_decision):
+                bonus += 24.0
+            if "새살침" in compact and (has_recommendation or has_decision or "상담" in compact):
+                bonus += 16.0
+            if has_scar_axis and has_recommendation:
+                bonus += 10.0
+            if product_noise and not has_scar_clinic:
+                bonus -= 42.0
+            if western_only:
+                bonus -= 22.0
+            if has_booking and not (has_recommendation or has_scar_clinic):
+                bonus -= 16.0
+        if category == "피부/여드름":
+            has_skin_axis = any(
+                term in compact
+                for term in (
+                    "여드름", "성인여드름", "피부질환", "아토피", "지루성피부염",
+                    "습진", "두드러기", "건선", "홍조", "피부트러블",
+                )
+            )
+            has_skin_clinic = any(term in compact for term in ("한의원", "한방", "피부질환", "상담", "치료"))
+            product_noise = any(
+                term in compact
+                for term in ("화장품", "폼클렌징", "클렌징", "홈케어", "올리브영", "마스크팩")
+            )
+            if has_skin_axis and has_skin_clinic and (has_recommendation or has_decision):
+                bonus += 18.0
+            if has_skin_axis and has_recommendation:
+                bonus += 8.0
+            if product_noise and not has_skin_clinic:
+                bonus -= 34.0
         if category == "안면비대칭":
             has_hanbang_or_tmj = any(
                 term in compact
@@ -1287,7 +1664,7 @@ class ViralSeedBuilder:
             context[keyword] = ViralSeed(
                 keyword=keyword,
                 scan_run_id=int(row["scan_run_id"] or 0),
-                category=GYULIM_KEYWORD_PROFILE.normalize_category(row["category"] or "기타"),
+                category=self._canonical_category_for_keyword(keyword, row["category"] or "기타"),
                 grade=row["grade"] or "C",
                 search_volume=int(row["search_volume"] or 0),
                 document_count=int(row["document_count"] or 0),
@@ -1427,7 +1804,7 @@ class ViralSeedBuilder:
         """Drop axis/lens query shapes that repeatedly create non-workable posts."""
         row = item.get("row", {}) if isinstance(item, dict) else {}
         feedback = item.get("axis_lens_feedback", {}) if isinstance(item, dict) else {}
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
+        category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
         lens = ViralSeedBuilder._keyword_execution_lens(row)
         weak_lenses = {
             "체형교정": {"cost", "safety", "availability", "service", "consultation", "community"},
@@ -1484,7 +1861,7 @@ class ViralSeedBuilder:
             return False
         row = item.get("row", {}) if isinstance(item, dict) else {}
         feedback = item.get("axis_lens_feedback", {}) if isinstance(item, dict) else {}
-        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(row.get("category") or ""))
+        category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
         lens = ViralSeedBuilder._keyword_execution_lens(row)
         total = int(feedback.get("total_count", 0) or 0)
         quality_rate = ViralSeedBuilder._as_float(feedback.get("quality_rate"))
@@ -1741,12 +2118,14 @@ class ViralSeedBuilder:
             worksite_efficiency = self._score_breakdown_number(score_breakdown, "worksite_efficiency_score")
             lens_fit = self._score_breakdown_number(score_breakdown, "pathfinder_lens_fit_score")
             lens_tier = str(score_breakdown.get("pathfinder_lens_fit_tier") or "")
-            category = GYULIM_KEYWORD_PROFILE.normalize_category(
-                row["matched_keyword_category"] or row["target_category"] or ""
+            source_keyword = normalize_seed_keyword_text(
+                str(score_breakdown.get("pathfinder_source_keyword") or "").strip() or keywords[0]
             )
+            raw_category = row["matched_keyword_category"] or row["target_category"] or ""
+            category = self._canonical_category_for_keyword(source_keyword, raw_category)
             execution_lens = str(score_breakdown.get("pathfinder_execution_lens") or "").strip().lower()
             if not execution_lens:
-                execution_lens = self._keyword_execution_lens({"keyword": keywords[0], "category": category})
+                execution_lens = self._keyword_execution_lens({"keyword": source_keyword, "category": category})
             priority_score = float(row["priority_score"] or 0.0)
             is_final_gate = generated_comment.startswith("final_gate:") or comment_status.startswith("filtered_out_")
             is_skipped = comment_status == "skipped"
@@ -1768,7 +2147,6 @@ class ViralSeedBuilder:
                 feedback_keys.append(f"axis:{category}")
                 if execution_lens:
                     feedback_keys.append(f"axis_lens:{category}:{execution_lens}")
-            source_keyword = str(score_breakdown.get("pathfinder_source_keyword") or "").strip() or keywords[0]
             structure = keyword_structure_features(source_keyword, category)
             feedback_keys.append(str(structure["structure_key"]))
 

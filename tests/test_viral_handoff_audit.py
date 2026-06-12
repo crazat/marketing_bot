@@ -214,6 +214,55 @@ def test_viral_handoff_audit_defaults_to_latest_source_scan_id(tmp_path):
     assert set(report["by_category"]) == {"다이어트"}
 
 
+def test_viral_handoff_audit_recategorizes_legacy_skin_scar_targets(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO viral_targets (
+            id, url, title, platform, category, matched_keyword, matched_keywords,
+            matched_keyword_grade, matched_keyword_category, comment_status,
+            priority_score, score_breakdown, source_scan_run_id, discovered_at
+        ) VALUES (?, ?, ?, 'kin', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            "legacy-scar",
+            "https://example.com/legacy-scar",
+            "청주 여드름흉터 새살침 상담",
+            "피부/여드름",
+            "청주 여드름흉터 새살침 상담",
+            json.dumps(["청주 여드름흉터 새살침 상담"], ensure_ascii=False),
+            "A",
+            "피부/여드름",
+            "pending",
+            120,
+            json.dumps(
+                {
+                    "pathfinder_execution_lens": "consultation",
+                    "pathfinder_axis_fit_score": 86,
+                    "pathfinder_lens_fit_score": 80,
+                    "clinic_treatment_fit_score": 88,
+                    "worksite_efficiency_score": 82,
+                },
+                ensure_ascii=False,
+            ),
+            77,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=77,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    assert set(report["by_category"]) == {"흉터/여드름흉터"}
+    assert report["by_category"]["흉터/여드름흉터"]["total"] == 1
+    assert report["review_samples"]["weak_lane_samples"] == []
+
+
 def test_seed_target_coverage_builds_next_run_playbook_for_undercovered_lanes():
     baseline = {
         "seed_count": 10,

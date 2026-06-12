@@ -1975,8 +1975,18 @@ class PathfinderLegion:
     CATEGORY_CANONICAL_SERVICES = {
         "다이어트": ("다이어트 한의원", "다이어트 한약", "비만 한의원", "다이어트약 처방", "비만클리닉", "식욕억제 상담"),
         "교통사고": ("교통사고 한의원", "교통사고 입원", "교통사고 후유증"),
-        "흉터/여드름흉터": ("흉터 클리닉", "여드름흉터 치료", "패인흉터 상담", "수술흉터 치료", "켈로이드 상담"),
-        "피부/여드름": ("여드름흉터 한의원", "패인흉터 새살침", "수두흉터 한의원", "새살침", "여드름 치료", "피부 클리닉", "스킨부스터 상담"),
+        "흉터/여드름흉터": (
+            "여드름흉터 한의원",
+            "패인흉터 새살침",
+            "수두흉터 한의원",
+            "흉터 클리닉",
+            "여드름흉터 치료",
+            "패인흉터 상담",
+            "새살침 상담",
+            "수술흉터 치료",
+            "켈로이드 상담",
+        ),
+        "피부/여드름": ("여드름 치료", "성인여드름 한의원", "피부질환 한의원", "아토피 한의원", "안면홍조 상담", "지루성피부염 한의원"),
         "안면비대칭": ("안면비대칭 교정", "얼굴비대칭 교정", "턱관절 한의원", "안면비대칭 상담", "얼굴비대칭 클리닉"),
         "체형교정": ("체형교정 한의원", "골반교정 한의원", "자세교정 한의원", "바디라인 클리닉", "체형교정 상담"),
         "통증/디스크": ("허리통증 한의원", "디스크 한의원", "추나요법"),
@@ -1993,8 +2003,9 @@ class PathfinderLegion:
         "수험생/집중력": ("수험생 한약", "총명탕", "집중력 한의원"),
         "면역/보약": ("보약 한의원", "공진단", "경옥고"),
     }
-    STRATEGIC_SA_DENSITY_CATEGORIES = ("피부/여드름", "다이어트", "안면비대칭")
+    STRATEGIC_SA_DENSITY_CATEGORIES = ("흉터/여드름흉터", "피부/여드름", "다이어트", "안면비대칭")
     STRATEGIC_SA_DENSITY_SUFFIXES = {
+        "흉터/여드름흉터": ("비용", "상담", "예약", "후기", "추천", "치료기간"),
         "피부/여드름": ("비용", "상담", "예약", "후기", "추천", "치료기간"),
         "다이어트": ("상담", "예약", "비용", "후기", "추천", "가격"),
         "안면비대칭": ("상담", "예약", "비용", "후기", "추천", "교정"),
@@ -2002,7 +2013,7 @@ class PathfinderLegion:
     HIGH_VALUE_LONGTAIL_SUFFIXES = {
         "다이어트": ("비용", "상담", "예약", "추천", "주차", "야간"),
         "교통사고": ("입원", "자보", "자동차보험", "치료비", "주말", "야간"),
-        "흉터/여드름흉터": ("비용", "상담", "예약", "추천", "후기", "회복기간", "부작용", "주의사항", "통증"),
+        "흉터/여드름흉터": ("비용", "상담", "치료기간", "예약", "추천", "후기", "회복기간", "부작용", "주의사항", "통증"),
         "피부/여드름": ("비용", "상담", "치료기간", "추천", "예약", "부작용", "주의사항"),
         "안면비대칭": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
         "체형교정": ("비용", "상담", "예약", "추천", "주차", "주의사항"),
@@ -2024,7 +2035,7 @@ class PathfinderLegion:
         "다이어트": ("직장인", "산후", "출산후", "갱년기", "웨딩", "요요", "식욕억제"),
         "교통사고": ("입원 가능한", "야간", "주말", "목통증", "허리통증", "합의전"),
         "흉터/여드름흉터": ("패인흉터", "모공흉터", "수술흉터", "수두흉터", "켈로이드", "오래된", "얼굴", "볼", "코"),
-        "피부/여드름": ("흉터", "패인흉터", "모공흉터", "수두흉터", "여드름자국", "민감피부", "재발", "성인", "압출후"),
+        "피부/여드름": ("성인여드름", "화농성여드름", "좁쌀여드름", "피부질환", "민감피부", "재발", "성인", "압출후"),
         "안면비대칭": ("턱관절", "얼굴형", "사진", "교정 전후", "통증", "비수술"),
         "체형교정": ("골반", "라운드숄더", "거북목", "허리통증", "산후", "비수술"),
         "통증/디스크": ("직장인", "야간", "주말", "재발", "만성", "비수술"),
@@ -2517,6 +2528,20 @@ class PathfinderLegion:
         if not hasattr(self, "collector") or self.collector is None:
             self.collector = LegionCollector(delay=0.0, use_google=False)
         return self.collector
+
+    @staticmethod
+    def _canonical_profile_category(keyword: str, category: Optional[str] = None) -> str:
+        normalized = GYULIM_KEYWORD_PROFILE.normalize_category(category or "기타")
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(keyword or "", default=normalized)
+        )
+        if detected in {"", "기타"}:
+            return normalized
+        stale_or_generic = normalized in {"", "기타", "한의원일반"}
+        legacy_skin_scar = normalized == "피부/여드름" and detected == "흉터/여드름흉터"
+        if stale_or_generic or legacy_skin_scar:
+            return detected
+        return normalized
 
     @staticmethod
     def _normalize_brand_term(term: str) -> str:
@@ -3168,7 +3193,7 @@ class PathfinderLegion:
         keyword = keyword or ""
         kw_lower = keyword.lower()
         compact = self._compact_keyword(keyword)
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         flags: List[str] = []
         score = 0.0
@@ -3238,7 +3263,7 @@ class PathfinderLegion:
         """Score whether a keyword is best handled through local/map/profile surfaces."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if service_fit_score is None:
             service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
@@ -3310,7 +3335,7 @@ class PathfinderLegion:
         """Score time-sensitive availability queries such as same-day, hours, weekend, and booking intent."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if service_fit_score is None:
             service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
@@ -3422,7 +3447,7 @@ class PathfinderLegion:
         """Score cost, insurance, reimbursement, and payment-coverage decision intent."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if service_fit_score is None:
             service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
@@ -3533,7 +3558,7 @@ class PathfinderLegion:
         """Score visit-readiness terms such as parking, wheelchair access, transit, and route finding."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if service_fit_score is None:
             service_fit_score = float(self._calculate_service_fit_profile(keyword, category, search_intent)["score"])
@@ -3845,7 +3870,7 @@ class PathfinderLegion:
         """Score whether a keyword can become a distinct, helpful page without thin/unsafe content."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if medical_ad_risk_score is None:
             medical_ad_risk_score = float(self._calculate_medical_ad_risk_profile(keyword, search_intent)["score"])
@@ -3936,7 +3961,7 @@ class PathfinderLegion:
         """검색량이 작은 롱테일도 사업 전환 가치가 있으면 보존하기 위한 별도 프로필."""
         collector = self._collector_or_default()
         keyword = keyword or ""
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         if has_real_volume is None:
             has_real_volume = search_volume > 0
@@ -4201,6 +4226,7 @@ class PathfinderLegion:
         )
 
         return {
+            "category": category,
             "is_longtail": is_longtail,
             "high_value_longtail": high_value_longtail,
             "longtail_score": longtail_score,
@@ -4397,7 +4423,9 @@ class PathfinderLegion:
             + min(100.0, max(0.0, market_signal)) * 0.16
         )
 
-        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(category or "")
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(
+            str(value_profile.get("category") or category or "")
+        )
         skin_service_axis_signal = (
             category_key == "피부/여드름"
             and local_surface_score >= 70.0
@@ -4408,6 +4436,7 @@ class PathfinderLegion:
             and longtail_score >= 90.0
         )
         strategic_focus_service_floor = {
+            "흉터/여드름흉터": 90.0,
             "피부/여드름": 90.0,
             "다이어트": 90.0,
             "안면비대칭": 80.0,
@@ -4515,7 +4544,7 @@ class PathfinderLegion:
         category_order: List[str] = []
         region_order: List[str] = []
         for seed in seed_keywords:
-            category = collector._detect_category(seed)
+            category = self._canonical_profile_category(seed, collector._detect_category(seed))
             if category in self.CATEGORY_CANONICAL_SERVICES and category not in category_order:
                 category_order.append(category)
             region = self._extract_target_region(seed)
@@ -4544,7 +4573,7 @@ class PathfinderLegion:
         journey_limit = min(max_keywords, max(first_pass_limit, int(max_keywords * 0.62)))
         question_limit = min(max_keywords, max(journey_limit, int(max_keywords * 0.82)))
 
-        # Strategic density pass: secure high-intent skin, diet, and asymmetry
+        # Strategic density pass: secure high-intent scar, skin, diet, and asymmetry
         # variants before broad medical categories consume the early quota.
         # Build them round-robin so scar/skin terms do not consume the whole
         # strategic slice before diet and asymmetry get coverage.
@@ -4993,7 +5022,7 @@ class PathfinderLegion:
     def _content_cluster_key(self, keyword: str, category: Optional[str] = None, search_intent: Optional[str] = None) -> str:
         keyword = keyword or ""
         collector = self._collector_or_default()
-        category = category or collector._detect_category(keyword)
+        category = self._canonical_profile_category(keyword, category or collector._detect_category(keyword))
         search_intent = search_intent or SearchIntentClassifier.classify(keyword)
         region = self._extract_target_region(keyword)
 
