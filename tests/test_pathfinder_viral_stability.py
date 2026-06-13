@@ -4606,6 +4606,76 @@ def test_viral_final_gate_rejects_distant_region_title():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) == "region_mismatch"
 
 
+def test_local_venue_anchor_detection():
+    """청주 로컬 카페명은 지역 앵커, 인접/타지역/빈값/블로그는 아님."""
+    F = viral_hunter.CommentableFilter
+
+    def cafe(name):
+        return ViralTarget(platform="cafe", url="x", title="t", author=name)
+
+    assert F._has_local_venue_anchor(cafe("청주맘스캠프 (충북맘,청주맘카페)")) is True
+    assert F._has_local_venue_anchor(cafe("러브인오송")) is True
+    assert F._has_local_venue_anchor(cafe("오창맘들 모여라")) is True
+    assert F._has_local_venue_anchor(cafe("복대동 사는 사람들")) is True
+    assert F._has_local_venue_anchor(cafe("세종맘카페")) is False     # 인접이나 청주 본권 아님
+    assert F._has_local_venue_anchor(cafe("강남언니")) is False
+    assert F._has_local_venue_anchor(cafe("")) is False
+    # 블로그 bloggername은 업체 SEO 비중이 높아 앵커로 쓰지 않는다
+    assert F._has_local_venue_anchor(
+        ViralTarget(platform="blog", url="x", title="t", author="청주맘일기")
+    ) is False
+
+
+def test_distant_local_target_respects_local_venue():
+    """로컬 카페 글은 본문의 우연한 타지역 언급으로 false-kill 되지 않는다.
+    단, 제목이 명시적으로 타지역을 타겟하면 카페가 로컬이어도 킬 유지."""
+    F = viral_hunter.CommentableFilter
+    # 로컬 카페 + 본문 우연 타지역 → keep
+    assert F._is_distant_local_target(
+        "여드름흉터 고민", "여드름흉터 고민 강남언니 앱에서 봤는데", local_venue=True
+    ) is False
+    # 로컬 카페여도 제목이 명시적 타지역 타겟 → kill
+    assert F._is_distant_local_target("강남 성형외과 추천", "강남 성형외과 추천", local_venue=True) is True
+    # 비로컬 카페 + 본문 타지역 → kill (회귀 방지)
+    assert F._is_distant_local_target(
+        "여드름흉터 고민", "여드름흉터 고민 강남 압구정 피부과", local_venue=False
+    ) is True
+
+
+def test_region_fit_signal_credits_local_venue_without_double_count():
+    """카페 로컬 앵커는 본문에 지역이 없을 때만 가산(중복 가산 방지)."""
+    F = viral_hunter.CommentableFilter
+    base, _ = F._region_fit_signal("여드름 흉터 자국 고민이에요", local_venue=False)
+    boosted, signals = F._region_fit_signal("여드름 흉터 자국 고민이에요", local_venue=True)
+    assert boosted > base
+    assert "local_venue_anchor" in signals
+    # 텍스트에 이미 청주가 있으면 venue 가산을 중복으로 더하지 않는다
+    with_text, _ = F._region_fit_signal("청주 여드름 흉터 고민", local_venue=False)
+    with_both, _ = F._region_fit_signal("청주 여드름 흉터 고민", local_venue=True)
+    assert with_text == with_both
+
+
+def test_viral_final_gate_keeps_local_cafe_with_incidental_distant_mention():
+    """청주 로컬 카페 글이 본문에 우연히 타지역을 언급해도 region_mismatch로 죽지 않고,
+    동일 글이 비로컬 카페면 타지역 언급으로 죽는다(카페 정체성이 지역 앵커)."""
+    F = viral_hunter.CommentableFilter
+
+    def asymmetry_post(author):
+        return ViralTarget(
+            platform="cafe", url="https://cafe.naver.com/x/1",
+            title="턱이 자꾸 돌아가고 얼굴비대칭이 심해서 한의원 추천 받고싶어요",
+            content_preview=(
+                "얼굴 비뚤어진게 너무 스트레스에요. 친구는 강남까지 다닌다는데 "
+                "저는 가까운 데서 받고싶어요 후기 궁금해요"
+            ),
+            author=author, category="안면비대칭",
+            matched_keyword_category="안면비대칭", matched_keyword_grade="B",
+        )
+
+    assert F.final_reject_reason(asymmetry_post("청주맘스캠프 (충북맘,청주맘카페)")) != "region_mismatch"
+    assert F.final_reject_reason(asymmetry_post("전국여성수다카페")) == "region_mismatch"
+
+
 def test_viral_final_gate_rejects_more_distant_skin_region_title():
     target = ViralTarget(
         platform="cafe",

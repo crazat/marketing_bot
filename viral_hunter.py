@@ -2491,7 +2491,9 @@ class CommentableFilter:
             score -= 20.0
             signals.append("pathfinder_axis_no_primary_terms")
 
-        region_score, region_signals = cls._region_fit_signal(text_lc)
+        region_score, region_signals = cls._region_fit_signal(
+            text_lc, local_venue=cls._has_local_venue_anchor(target)
+        )
         if region_score > 0:
             score += min(6.0, region_score * 0.20)
             signals.append("pathfinder_axis_local_context")
@@ -2732,8 +2734,44 @@ class CommentableFilter:
                 normalized.append(profile.category)
         return normalized
 
+    _LOCAL_VENUE_TOKENS_CACHE: Optional[List[str]] = None
+
     @classmethod
-    def _region_fit_signal(cls, text: str) -> Tuple[int, List[str]]:
+    def _local_venue_tokens(cls) -> List[str]:
+        """청주 로컬 커뮤니티 식별 토큰(시·구·동). nearby(진천/증평 등)는 제외 —
+        진료권 정밀도를 위해 청주 본권만. 1글자/모호 토큰은 카페명 오매칭 방지로 제외."""
+        if cls._LOCAL_VENUE_TOKENS_CACHE is None:
+            toks: set = set()
+            for raw in (
+                list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+            ):
+                token = (raw or "").strip()
+                if len(token) >= 2:
+                    toks.add(token)
+            cls._LOCAL_VENUE_TOKENS_CACHE = sorted(toks, key=len, reverse=True)
+        return cls._LOCAL_VENUE_TOKENS_CACHE
+
+    @classmethod
+    def _has_local_venue_anchor(cls, target: ViralTarget) -> bool:
+        """카페 식별명이 청주 로컬 커뮤니티임을 나타내면 True.
+
+        환자는 user-surface 축(흉터/피부/비대칭) 질문에 지역을 거의 안 적지만,
+        '청주맘스캠프'·'러브인오송' 같은 카페 정체성 자체가 강한 지역 신호다.
+        텍스트-온리 지역 판정이 구조적으로 놓치던 recall 공백을 메운다(라이브
+        감사 2026-06-13: 핵심축 청주-카페 글 362건이 본문 무지역으로 저평가).
+        cafe만 사용 — 블로그 bloggername은 업체 SEO 비중이 높아 제외.
+        """
+        platform = (getattr(target, "platform", "") or "").lower()
+        if platform not in {"cafe", "naver_cafe"}:
+            return False
+        venue = getattr(target, "author", "") or ""
+        if not venue:
+            return False
+        return cls._contains_any(venue, cls._local_venue_tokens())
+
+    @classmethod
+    def _region_fit_signal(cls, text: str, local_venue: bool = False) -> Tuple[int, List[str]]:
         """Score how close the post is to the clinic's real operating area."""
         score = 0
         signals: List[str] = []
@@ -2749,6 +2787,13 @@ class CommentableFilter:
             score += 7
             signals.append("nearby_region")
 
+        # 카페 정체성 기반 로컬 앵커 — 본문에 지역 토큰이 없을 때만 보강(중복 가산 방지).
+        # '청주맘카페' 글이 지역명 없이도 로컬로 정당하게 평가받게 한다.
+        if local_venue and area_signal not in signals and neighborhood_signal not in signals:
+            score += 15
+            signals.append(area_signal)
+            signals.append("local_venue_anchor")
+
         active_local_terms = set(GYULIM_KEYWORD_PROFILE.cheongju_regions) | set(GYULIM_KEYWORD_PROFILE.neighborhoods) | set(GYULIM_KEYWORD_PROFILE.nearby_regions)
         distant_regions = list(cls.DISTANT_REGION_KEYWORDS)
         distant_regions = [region for region in distant_regions if region not in active_local_terms]
@@ -2759,7 +2804,7 @@ class CommentableFilter:
         return score, signals
 
     @classmethod
-    def _is_distant_local_target(cls, title: str, text: str) -> bool:
+    def _is_distant_local_target(cls, title: str, text: str, local_venue: bool = False) -> bool:
         """Reject posts whose visible target market is outside the active clinic area."""
         active_local_terms = (
             set(GYULIM_KEYWORD_PROFILE.cheongju_regions)
@@ -2773,7 +2818,14 @@ class CommentableFilter:
         title_has_distant = cls._contains_any(title, distant_regions)
         title_has_active = cls._contains_any(title, active_local_terms)
         if title_has_distant and not title_has_active:
+            # 제목이 명시적으로 타지역을 타겟 — 카페가 로컬이어도 그 글은 타지역 글.
             return True
+
+        # 청주 로컬 카페 글은 본문이 우연히 타지역을 언급해도 로컬로 간주한다(앵커
+        # = 카페 정체성). 제목 명시 타겟 킬은 위에서 이미 처리했고, 업체 답변/광고
+        # 침투는 advertorial 게이트가 별도로 잡으므로 여기서 구멍이 나지 않는다.
+        if local_venue:
+            return False
 
         text_has_distant = cls._contains_any(text, distant_regions)
         text_has_active = cls._contains_any(text, active_local_terms)
@@ -2791,7 +2843,9 @@ class CommentableFilter:
         is_health: bool,
     ) -> Tuple[int, str, List[str]]:
         """Score whether the post fits the active clinic's actual treatment portfolio."""
-        score, signals = cls._region_fit_signal(text)
+        score, signals = cls._region_fit_signal(
+            text, local_venue=cls._has_local_venue_anchor(target)
+        )
         categories = cls._profile_categories_for_target(target, domain)
         profiles = [
             GYULIM_KEYWORD_PROFILE.profile_for(category)
@@ -4455,7 +4509,7 @@ class CommentableFilter:
             return pathfinder_reason
         if cls._is_route_navigation(text):
             return "route_navigation"
-        if cls._is_distant_local_target(title, text):
+        if cls._is_distant_local_target(title, text, local_venue=cls._has_local_venue_anchor(target)):
             return "region_mismatch"
         if cls._contains_any(text, cls._non_relevant_exclude_terms(text)):
             return "non_relevant"
@@ -4688,7 +4742,7 @@ class CommentableFilter:
             if self._is_route_navigation(text):
                 stats['non_relevant'] += 1
                 continue
-            if self._is_distant_local_target(title_lower, text):
+            if self._is_distant_local_target(title_lower, text, local_venue=self._has_local_venue_anchor(target)):
                 stats['no_region'] += 1
                 continue
 
