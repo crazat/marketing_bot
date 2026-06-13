@@ -489,6 +489,10 @@ class ViralSeedBuilder:
 
         feedback = self._load_keyword_feedback()
         scored_rows = []
+        # 구조 수율 하드블록 집계 (런 단위). 변형/플랫폼 수율 게이트와 같은 철학을
+        # 구조(category×suffix×neigh/city) 단위로 확장 — 증명된 제로수율 파생 구조는
+        # 선택에서 제외해 SERP/AI 예산 낭비를 막는다.
+        self._structure_blocked_buckets: Dict[str, int] = {}
         for row in rows:
             raw_keyword = row["keyword"] or ""
             keyword = normalize_seed_keyword_text(raw_keyword)
@@ -509,6 +513,14 @@ class ViralSeedBuilder:
             axis_lens_feedback_adjustment = self._axis_lens_feedback_adjustment(axis_lens_fb)
             structure = keyword_structure_features(keyword, row_data["category"])
             structure_fb = feedback.get(str(structure["structure_key"])) or {}
+            # 제로수율이 증명된 파생 구조(동네/거래형 접미사)는 하드블록. 기본 plain:city
+            # 레인은 항상 보존하므로 어떤 진료축도 기본 탐사를 잃지 않는다.
+            if self._structure_proven_zero_yield(structure, structure_fb):
+                bucket = str(structure["structure_key"])
+                self._structure_blocked_buckets[bucket] = (
+                    self._structure_blocked_buckets.get(bucket, 0) + 1
+                )
+                continue
             structure_yield_adjustment = self._structure_yield_adjustment(structure_fb)
             staff_fb = self._staff_feedback_bucket(
                 fb,
@@ -1051,6 +1063,36 @@ class ViralSeedBuilder:
             adjustment -= 10.0
 
         return round(max(-48.0, min(22.0, adjustment)) * evidence_weight, 2)
+
+    @staticmethod
+    def _structure_proven_zero_yield(structure: dict, feedback: dict) -> bool:
+        """Hard-block a seed whose query STRUCTURE bucket has overwhelming zero-yield
+        evidence — but only DERIVATIVE structures (neighborhood token or transactional
+        suffix). The base plain+city lane per category is always preserved, so no axis
+        loses its base exploration; `_structure_yield_adjustment` (ranking penalty)
+        still handles weaker/under-evidenced cases.
+
+        Why a hard block on top of the ranking penalty: the penalty only reorders
+        within a category, so when an axis's only available supply is a dead-structure
+        permutation it still fills the quota and burns budget. Live basis (2026-06-13):
+        neighborhood+suffix permutations (봉명동 침리프팅 상담 가능한곳 예약, 복대동 교통사고
+        입원 한의원 자동차보험 등) — 92 such seeds burned 10.4k discoveries / 0 pending in
+        30d. Mirrors the variant/platform yield gates' evidence-gated philosophy;
+        thresholds are conservative so a genuinely thin axis is never blocked early.
+        """
+        is_derivative = bool(
+            structure.get("has_neighborhood_token") or structure.get("has_transactional_suffix")
+        )
+        if not is_derivative:
+            return False
+        total = int(feedback.get("total_count", 0) or 0)
+        qualified = int(feedback.get("qualified_count", 0) or 0)
+        quality_rate = ViralSeedBuilder._as_float(feedback.get("quality_rate"))
+        if total >= 150 and qualified == 0:
+            return True
+        if total >= 300 and quality_rate < 0.005:
+            return True
+        return False
 
     @staticmethod
     def _structure_yield_adjustment(feedback: dict) -> float:

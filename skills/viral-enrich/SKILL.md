@@ -24,17 +24,42 @@ license: Internal
 ```
 사용자 의도 → 도구 선택
 ─────────────────────────────────
-"본문 짧아" / "preview 부실"        → enrich_cafe_bodies.py
-"AI 분류 다시 돌려야겠어"            → enrich_cafe_bodies.py 먼저
+"본문 짧아" (KIN/blog/공개카페)      → enrich_pending_bodies.py (HTTP, 빠름)
+"본문 짧아" (로그인 필요 카페)        → enrich_cafe_bodies.py (Selenium)
+"오래된 글 / 게시일 / 몇 년 전 질문이 큐에" → enrich_pending_bodies.py (게시일 복원 + 타이밍 만료)
+"AI 분류 다시 돌려야겠어"            → enrich_pending_bodies.py 먼저
+"pending 큐 너무 많아 / 죽은 재고 / 정리" → expire_stale_pending.py
 "댓글 달렸나" / "변화 감지"          → rescan_hot_targets.py
 "1주일/N일 전 글"                   → rescan_hot_targets.py --age-hours N*24
-명시 X + viral_targets 자연질문 부족 → enrich (본문 부족이 root cause 가능성)
+명시 X + 자연질문 부족              → enrich_pending_bodies (본문/게시일 부족이 root cause)
 ```
+
+**HTTP enrich vs Selenium enrich:**
+- `enrich_pending_bodies.py` (HTTP) = KIN/blog/공개 카페. 본문 + **게시일**(KIN 작성일·blog se_publishDate·cafe writeDate) + 댓글/뷰 지표를 한 번에 복원. 로그인 불필요, 빠름. 게시일이 밝혀져 댓글 타이밍 윈도우가 지난 글은 자동 `filtered_out_stale_window`로 만료 (검색 API가 KIN/cafe 게시일을 안 줘 sim 정렬이 끌어온 수년 전 질문이 '신선'으로 통과하던 구조적 맹점 차단).
+- `enrich_cafe_bodies.py` (Selenium) = 로그인 필요 카페만. 느림.
+
+**pending TTL 정리 (`expire_stale_pending.py`):**
+- 직원이 손대지 않은 채 댓글 적시성 윈도우가 지난 pending을 만료 (cafe 30d / blog·kin 45d).
+- `hunt()` 시작 시 자동 실행되지만(`--skip-pending-expiry`로 끔), 큐가 적체됐을 때 명시 실행 가능.
+- 게시물 나이 판정은 발견 게이트(`_assess_timing_window`)가, '큐 체류 기간' 판정은 이 TTL이 담당 — 책임 분리. lineage는 score_breakdown에 보존하고 rescue 레인(raw_backlog만 소비)과 루프 없음.
 
 ## Commands
 
 ```bash
-# === Enrich (본문 채우기) ===
+# === Enrich (본문 + 게시일 + 지표 복원, HTTP) ===
+
+# 기본: 14일 내 pending KIN/blog/공개카페 중 snippet(<300자) 최대 200건
+python scripts/enrich_pending_bodies.py --dry-run     # 대상만 확인
+python scripts/enrich_pending_bodies.py               # 실제 fetch + 게이트/타이밍 재검사
+
+# 더 넓게 (큐 적체 시 게시일 복원으로 오래된 글 만료)
+python scripts/enrich_pending_bodies.py --days 60 --limit 1000
+
+# === pending TTL 정리 ===
+python scripts/expire_stale_pending.py --dry-run      # 만료 대상 집계만
+python scripts/expire_stale_pending.py                # 백업 후 실제 만료
+
+# === Enrich (로그인 카페 본문, Selenium) ===
 
 # 기본: priority>=80 + content<200자 상위 30건
 python scripts/enrich_cafe_bodies.py --dry-run    # 대상만 확인

@@ -75,9 +75,10 @@ class ViralTargetRepository:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """필터·정렬·페이지네이션된 목록 조회."""
-        order_by = self._build_order_by(sort)
         with self._conn() as conn:
-            where, params = self._build_where(filters or {}, self._columns_for_conn(conn))
+            columns = self._columns_for_conn(conn)
+            order_by = self._build_order_by(sort, columns)
+            where, params = self._build_where(filters or {}, columns)
             cur = conn.cursor()
             cur.execute(
                 f"SELECT * FROM {self.TABLE} {where} {order_by} LIMIT ? OFFSET ?",
@@ -566,7 +567,14 @@ class ViralTargetRepository:
         return ("WHERE " + " AND ".join(clauses), params)
 
     @staticmethod
-    def _build_order_by(sort: str) -> str:
+    def _build_order_by(sort: str, columns: Optional[set] = None) -> str:
+        # columns가 주어지면 score_breakdown/특정 컬럼 의존 정렬을 컬럼 존재 여부로 가드
+        # (구 스키마/최소 테이블에서 'no such column' 회피). None이면 전부 있다고 가정.
+        has_breakdown = columns is None or "score_breakdown" in columns
+
+        def _bd(key: str) -> str:
+            return ViralTargetRepository._score_breakdown_number_expr(key)
+
         if sort == "date":
             return "ORDER BY discovered_at DESC"
         if sort == "scan_count":
@@ -575,19 +583,27 @@ class ViralTargetRepository:
             return "ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC"
         if sort == "workability":
             return "ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC"
-        if sort == "clinic_fit":
-            expr = ViralTargetRepository._score_breakdown_number_expr("clinic_treatment_fit_score")
-            return f"ORDER BY {expr} DESC, priority_score DESC, discovered_at DESC"
-        if sort == "worksite_efficiency":
-            expr = ViralTargetRepository._score_breakdown_number_expr("worksite_efficiency_score")
-            return f"ORDER BY {expr} DESC, priority_score DESC, discovered_at DESC"
-        if sort == "specialty":
+        if sort == "clinic_fit" and has_breakdown:
+            return f"ORDER BY {_bd('clinic_treatment_fit_score')} DESC, priority_score DESC, discovered_at DESC"
+        if sort == "worksite_efficiency" and has_breakdown:
+            return f"ORDER BY {_bd('worksite_efficiency_score')} DESC, priority_score DESC, discovered_at DESC"
+        if sort == "specialty" and (columns is None or "specialty_match" in columns):
             # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
             return ("ORDER BY CASE specialty_match "
                     "WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
                     "ai_ad_confidence DESC, priority_score DESC")
-        if sort == "ai_confidence":
+        if sort == "ai_confidence" and (columns is None or "ai_ad_confidence" in columns):
             return "ORDER BY ai_ad_confidence DESC, priority_score DESC"
+        # 기본(priority) 정렬: priority_score는 150에서 캡되어 큐 상단(54건+ 동점)에서
+        # 변별력을 잃는다 — 동점 묶음이 recency로만 깨지면 고볼륨 commodity 축(다이어트,
+        # clinic_fit 34.8)이 시그니처 축(흉터/안면비대칭, clinic_fit 82~89)을 큐 상단에서
+        # 밀어낸다. todays-queue(골든큐)와 동일한 전략 신호(worksite→clinic_fit)로 동점을
+        # 깨서 두 화면의 순서를 일치시킨다. priority는 여전히 1차 키라 HOT LEAD 임계는 보존.
+        if has_breakdown:
+            return (
+                f"ORDER BY priority_score DESC, {_bd('worksite_efficiency_score')} DESC, "
+                f"{_bd('clinic_treatment_fit_score')} DESC, discovered_at DESC"
+            )
         return "ORDER BY priority_score DESC, discovered_at DESC"
 
     @staticmethod

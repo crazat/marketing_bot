@@ -335,6 +335,49 @@ def test_insert_persists_viral_efficiency_breakdown_and_filters(tmp_db):
     assert [row["id"] for row in rows] == ["eff-high"]
 
 
+def test_default_priority_sort_breaks_cap_ties_by_strategic_fit(tmp_db):
+    """priority가 동점(150 캡)일 때 worksite/clinic_fit 높은 시그니처 축이 먼저 온다.
+
+    캡 압축으로 큐 상단이 변별력을 잃을 때, 고볼륨 commodity(다이어트, 저 clinic_fit)가
+    시그니처 축(흉터/안면비대칭, 고 clinic_fit)을 밀어내던 문제 회귀 방지.
+    """
+    with sqlite3.connect(tmp_db) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        conn.commit()
+
+    repo = ViralTargetRepository(tmp_db)
+    # 모두 priority 150(캡) 동점. discovered_at은 commodity가 더 최근(과거 recency 동점
+    # 깨기였다면 commodity가 상단을 차지했을 상황).
+    repo.insert({
+        "id": "commodity-diet", "platform": "kin", "url": "https://x/diet",
+        "title": "청주 다이어트 한약", "comment_status": "pending", "priority_score": 150,
+        "category": "다이어트", "discovered_at": "2026-06-13 10:00:00",
+        "matched_keywords": ["청주 다이어트"],
+        "score_breakdown": {"clinic_treatment_fit_score": 35, "worksite_efficiency_score": 44},
+    })
+    repo.insert({
+        "id": "signature-scar", "platform": "kin", "url": "https://x/scar",
+        "title": "청주 여드름흉터 새살침", "comment_status": "pending", "priority_score": 150,
+        "category": "흉터/여드름흉터", "discovered_at": "2026-06-01 10:00:00",
+        "matched_keywords": ["청주 여드름흉터"],
+        "score_breakdown": {"clinic_treatment_fit_score": 88, "worksite_efficiency_score": 95},
+    })
+    repo.insert({
+        "id": "signature-asym", "platform": "cafe", "url": "https://x/asym",
+        "title": "청주 안면비대칭 교정", "comment_status": "pending", "priority_score": 150,
+        "category": "안면비대칭", "discovered_at": "2026-06-02 10:00:00",
+        "matched_keywords": ["청주 안면비대칭"],
+        "score_breakdown": {"clinic_treatment_fit_score": 82, "worksite_efficiency_score": 90},
+    })
+
+    rows = repo.list({"comment_status": "pending"}, sort="priority", limit=10)
+    order = [r["id"] for r in rows]
+    # 시그니처 축이 commodity보다 먼저, 그 안에서 worksite 높은 흉터가 안면비대칭보다 먼저
+    assert order.index("signature-scar") < order.index("commodity-diet")
+    assert order.index("signature-asym") < order.index("commodity-diet")
+    assert order.index("signature-scar") < order.index("signature-asym")
+
+
 def test_insert_conflict_recovers_null_scan_count(tmp_db):
     repo = ViralTargetRepository(tmp_db)
     sample = {

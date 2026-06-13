@@ -6324,6 +6324,101 @@ def test_unified_ai_bonus_keeps_hot_lead_score_above_tier_threshold():
     assert suitable[0].priority_score >= 120
 
 
+def test_competitor_reference_uses_curated_list_with_criticals():
+    """프롬프트 경쟁사 참조는 큐레이트된 config(로랑/데이릴 critical)에서 온다."""
+    note = AICommentGenerator._competitor_reference_note()
+    assert "로랑한의원" in note and "데이릴한의원" in note
+    # 자기 업체 제외 지시 포함
+    assert "규림" in note and "COMPETITOR=false" in note
+    # 빌더가 프롬프트에 주입
+    prompt = AICommentGenerator.__new__(AICommentGenerator)._build_unified_prompt(
+        "분석:\n{posts_formatted}\n경쟁사:\n{competitor_reference}", "POST_ID: 1"
+    )
+    assert "로랑한의원" in prompt and "데이릴한의원" in prompt
+    # competitor_reference 플레이스홀더 없는 구버전 템플릿도 안전하게 append
+    legacy = AICommentGenerator.__new__(AICommentGenerator)._build_unified_prompt(
+        "분석:\n{posts_formatted}", "POST_ID: 1"
+    )
+    assert "로랑한의원" in legacy
+
+
+def test_classify_competitor_name_self_critical_known_unknown():
+    f = AICommentGenerator._classify_competitor_name
+    assert f("로랑한의원") == "critical"
+    assert f("데이릴한의원 (간접 언급)") == "critical"
+    assert f("자연과한의원 청주점") == "critical"
+    assert f("규림한의원 청주점") == "self"      # 자기 업체
+    assert f("kyurim clinic") == "self"
+    assert f("이름없는동네한의원") == "unknown"
+    assert f("N/A") == "unknown"
+    assert f("") == "unknown"
+
+
+def test_parse_unified_self_recommendation_not_counterattack():
+    """답변이 우리 한의원(규림)을 추천한 글은 역공략 대상이 아니다."""
+    generator = AICommentGenerator()
+    target = ViralTarget(
+        platform="kin", url="https://example.com/self-rec",
+        title="청주 안면비대칭 어디가 잘해요",
+        content_preview="청주 안면비대칭 잘하는 곳 추천해주세요",
+        matched_keywords=["청주 안면비대칭"], category="안면비대칭", priority_score=80,
+    )
+    suitable, _unsuit, competitor_count = generator._parse_unified_results(
+        [target],
+        """
+        ---
+        POST_ID: 1
+        SUITABLE: true
+        SCORE: 80
+        TYPE: recommendation_request
+        COMPETITOR: true
+        COMPETITOR_NAME: 규림한의원 청주점
+        COUNTER_SCORE: 70
+        REASON: 우리 한의원 추천됨
+        ---
+        """,
+    )
+    assert competitor_count == 0                       # 자기 추천 → 역공략 카운트 안 함
+    assert suitable[0].ai_competitor is False
+    assert suitable[0].category != "경쟁사_역공략"        # 경쟁사_역공략으로 바뀌지 않음
+
+
+def test_parse_unified_critical_competitor_gets_priority_boost():
+    """critical 경쟁사(로랑) 가로채기는 일반 경쟁사보다 우선순위 부스트를 더 받는다."""
+    generator = AICommentGenerator()
+
+    def run(comp_name):
+        t = ViralTarget(
+            platform="kin", url=f"https://example.com/{comp_name}",
+            title="청주 안면비대칭 추천", content_preview="청주 안면비대칭 어디가 좋아요?",
+            matched_keywords=["청주 안면비대칭"], category="안면비대칭", priority_score=80,
+        )
+        generator._parse_unified_results(
+            [t],
+            f"""
+            ---
+            POST_ID: 1
+            SUITABLE: true
+            SCORE: 80
+            TYPE: recommendation_request
+            COMPETITOR: true
+            COMPETITOR_NAME: {comp_name}
+            COUNTER_SCORE: 80
+            REASON: 경쟁사 추천됨
+            ---
+            """,
+        )
+        return t
+
+    critical = run("로랑한의원")
+    generic = run("이름없는동네한의원")
+    assert critical.category == "경쟁사_역공략" and generic.category == "경쟁사_역공략"
+    assert (critical.score_breakdown or {}).get("competitor_class") == "critical"
+    assert (critical.score_breakdown or {}).get("competitor_critical_boost") == 10.0
+    assert "competitor_critical_boost" not in (generic.score_breakdown or {})
+    assert critical.priority_score > generic.priority_score   # critical 부스트로 더 높음
+
+
 def test_raw_backlog_can_be_promoted_to_pending_on_later_ai_success(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral_promote.db"))
     raw = {
@@ -6488,6 +6583,24 @@ def test_seed_builder_structure_yield_adjustment_uses_evidence():
     # 건강한 구조(수율 5%+)는 보너스
     good = ViralSeedBuilder._structure_yield_adjustment({"total_count": 800, "quality_rate": 0.10})
     assert good > 0.0
+
+
+def test_structure_proven_zero_yield_blocks_only_dead_derivatives():
+    """제로수율 파생 구조(동네/접미사)는 하드블록, 기본 plain:city 레인은 보존."""
+    block = ViralSeedBuilder._structure_proven_zero_yield
+    neigh = {"has_neighborhood_token": True, "has_transactional_suffix": False}
+    suffix = {"has_neighborhood_token": False, "has_transactional_suffix": True}
+    base = {"has_neighborhood_token": False, "has_transactional_suffix": False}
+
+    # 파생 구조 + 압도적 제로수율 증거 → 차단
+    assert block(neigh, {"total_count": 535, "qualified_count": 0, "quality_rate": 0.0}) is True
+    assert block(suffix, {"total_count": 400, "qualified_count": 1, "quality_rate": 0.0025}) is True
+    # 기본 plain:city 레인은 제로수율이어도 절대 차단 안 함 (진료축 기본 탐사 보존)
+    assert block(base, {"total_count": 1000, "qualified_count": 0, "quality_rate": 0.0}) is False
+    # 증거 부족(thin signature axis)은 차단 안 함 — 랭킹 패널티만
+    assert block(neigh, {"total_count": 80, "qualified_count": 0, "quality_rate": 0.0}) is False
+    # 파생 구조라도 수율이 살아있으면 보존
+    assert block(neigh, {"total_count": 500, "qualified_count": 21, "quality_rate": 0.042}) is False
 
 
 def test_seed_builder_feedback_aggregates_structure_buckets(tmp_path):
@@ -7377,6 +7490,308 @@ def test_extract_cafe_body_from_json():
     assert viral_hunter.extract_cafe_body_from_json("not-json") == ""
     assert viral_hunter.extract_cafe_body_from_json(json.dumps({"result": {}})) == ""
     assert viral_hunter.extract_cafe_body_from_json("") == ""
+
+
+def test_extract_post_dates_from_surfaces():
+    """KIN/blog/cafe 공개 표면에서 게시일을 YYYYMMDD로 복원 (라이브 마크업 기준)."""
+    kin_html = (
+        '<div class="questionInfo"><span class="infoItem">조회수 46</span>'
+        '<span class="infoItem"><span class="blind">작성일</span>2026.05.25</span></div>'
+        '<div class="questionDetail">청주 다이어트 한약 질문이에요</div>'
+    )
+    assert viral_hunter.extract_kin_post_date_from_html(kin_html) == "20260525"
+    assert viral_hunter.extract_kin_view_count_from_html(kin_html) == 46
+
+    blog_html = '<div><span class="se_publishDate pcol2">2026. 6. 10. 2:49</span></div>'
+    assert viral_hunter.extract_blog_post_date_from_html(blog_html) == "20260610"
+
+    # writeDate epoch ms — 정오(UTC)로 잡아 KST(+9) day-boundary flakiness 회피.
+    cafe_json = json.dumps({
+        "result": {"article": {"writeDate": 1710504000000, "commentCount": 3, "readCount": 594}}
+    })
+    assert viral_hunter.extract_cafe_post_date_from_json(cafe_json) == "20240315"
+
+    # 게시일 마크업이 없으면 빈 문자열로 fail-soft.
+    assert viral_hunter.extract_kin_post_date_from_html("<div>no date</div>") == ""
+    assert viral_hunter.extract_blog_post_date_from_html("") == ""
+    assert viral_hunter.extract_cafe_post_date_from_json(json.dumps({"result": {}})) == ""
+    # 잘못된 날짜(13월)는 거부.
+    assert viral_hunter.extract_blog_post_date_from_html('<span class="date">2026.13.40</span>') == ""
+
+
+def test_fetch_naver_post_detail_collects_date_body_and_metrics():
+    """fetch_naver_post_detail은 한 번의 fetch로 본문+게시일+참여 지표를 모은다."""
+    kin_html = (
+        '<div class="questionInfo"><span class="infoItem"><span class="blind">작성일</span>'
+        '2015.01.08</span></div>'
+        '<div class="questionDetail">추나요법으로 허리치료 되는지 궁금합니다.</div>'
+        '<div class="answerDetail">답변1</div><div class="answerDetail">답변2</div>'
+    )
+
+    detail = viral_hunter.fetch_naver_post_detail(
+        "https://kin.naver.com/qna/detail.naver?docId=214897865",
+        "kin",
+        fetcher=lambda url: kin_html,
+    )
+    assert detail["posted_date"] == "20150108"
+    assert "허리치료" in detail["body"]
+    assert detail["comment_count"] == 2
+
+    cafe_json = json.dumps({
+        "result": {"article": {
+            "contentHtml": "<p>교통사고 입원 한방병원 추천해주세요</p>",
+            "writeDate": 1710504000000, "commentCount": 5, "readCount": 800,
+        }}
+    })
+    cafe_detail = viral_hunter.fetch_naver_post_detail(
+        "https://cafe.naver.com/cjpublic/12345", "cafe", fetcher=lambda url: cafe_json,
+    )
+    assert cafe_detail["posted_date"] == "20240315"
+    assert cafe_detail["comment_count"] == 5
+    assert cafe_detail["view_count"] == 800
+    assert "교통사고 입원" in cafe_detail["body"]
+
+
+def test_enrichment_regate_expires_stale_dated_post():
+    """검색 API가 날짜를 안 줘 '신선'으로 통과한 글이, 게시일 복원 후 타이밍 만료된다."""
+    from datetime import datetime
+
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    # 본문은 충분히 길어 본문 재fetch 대상은 아니지만(>=300), snippet<300이라 fetch는 됨.
+    # 핵심: 게시일이 2015년으로 밝혀지면 타이밍 윈도우 점수가 만료 임계 아래로 떨어진다.
+    old_kin_html = (
+        '<div class="questionInfo"><span class="infoItem"><span class="blind">작성일</span>'
+        '2015.01.08</span></div>'
+        '<div class="questionDetail">추나요법으로 허리치료 되는지 궁금합니다. 청주에서 잘하는 곳 알려주세요.</div>'
+        '<div class="answerDetail">답1</div><div class="answerDetail">답2</div>'
+        '<div class="answerDetail">답3</div><div class="answerDetail">답4</div>'
+    )
+    fresh_kin_html = (
+        '<div class="questionInfo"><span class="infoItem"><span class="blind">작성일</span>'
+        + datetime.now().strftime("%Y.%m.%d")
+        + '</span></div>'
+        '<div class="questionDetail">청주 디스크 한의원 추천 부탁드려요. 어제부터 허리가 너무 아픕니다.</div>'
+    )
+
+    def fetcher(url):
+        return old_kin_html if "old" in url else fresh_kin_html
+
+    stale_target = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=old",
+        title="추나요법 허리치료 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 추나"],
+        category="통증/디스크",
+        discovered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    fresh_target = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=fresh",
+        title="청주 디스크 한의원 추천 질문",
+        content_preview="짧은 snippet",
+        matched_keywords=["청주 디스크 한의원"],
+        category="통증/디스크",
+        discovered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = FakeDB()
+    kept, stats = hunter._enrich_and_regate_ai_targets(
+        [stale_target, fresh_target], fetcher=fetcher,
+    )
+
+    assert stats["dated"] == 2
+    assert stats["stale_rejected"] == 1
+    kept_urls = {t.url for t in kept}
+    assert stale_target.url not in kept_urls
+    assert fresh_target.url in kept_urls
+    assert stale_target.comment_status == "filtered_out_stale_window"
+    assert (stale_target.score_breakdown or {}).get("post_date_enriched") == "20150108"
+    assert hunter.db.saved and hunter.db.saved[0]["url"] == stale_target.url
+
+
+def _create_pending_ttl_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE viral_targets (
+            id TEXT PRIMARY KEY, platform TEXT, url TEXT UNIQUE, category TEXT,
+            comment_status TEXT, is_commentable INTEGER, discovered_at TEXT,
+            first_seen_at TEXT, posted_at TEXT, score_breakdown TEXT, updated_at TEXT
+        )
+        """
+    )
+
+
+def test_expire_stale_pending_targets(tmp_path):
+    """플랫폼별 TTL을 넘긴 pending만 만료되고, 다른 상태/신선한 행은 보존."""
+    from datetime import datetime, timedelta
+
+    db_path = tmp_path / "ttl.db"
+    now = datetime.now()
+
+    def days_ago(n):
+        return (now - timedelta(days=n)).strftime("%Y-%m-%d %H:%M:%S")
+
+    rows = [
+        # (id, platform, status, discovered_days_ago) — TTL: cafe 30, blog/kin 45
+        ("cafe-old", "cafe", "pending", 40),       # 만료 (>30)
+        ("cafe-fresh", "cafe", "pending", 20),     # 보존 (<=30)
+        ("kin-old", "kin", "pending", 60),         # 만료 (>45)
+        ("kin-edge", "kin", "pending", 40),        # 보존 (<=45)
+        ("blog-old", "blog", "pending", 50),       # 만료 (>45)
+        ("raw-old", "cafe", "raw_backlog", 90),    # pending 아님 → 무시
+        ("posted-old", "kin", "posted", 90),       # pending 아님 → 무시
+    ]
+    with sqlite3.connect(db_path) as conn:
+        _create_pending_ttl_table(conn)
+        for tid, plat, status, age in rows:
+            conn.execute(
+                "INSERT INTO viral_targets (id, platform, url, category, comment_status, "
+                "is_commentable, discovered_at, score_breakdown) VALUES (?,?,?,?,?,1,?,'{}')",
+                (tid, plat, f"https://x/{tid}", "통증/디스크", status, days_ago(age)),
+            )
+        conn.commit()
+
+    stats = viral_hunter.expire_stale_pending_targets(str(db_path))
+    assert stats["expired"] == 3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        statuses = {
+            r["id"]: r["comment_status"]
+            for r in conn.execute("SELECT id, comment_status FROM viral_targets")
+        }
+        breakdown = conn.execute(
+            "SELECT score_breakdown FROM viral_targets WHERE id='cafe-old'"
+        ).fetchone()[0]
+
+    assert statuses["cafe-old"] == "filtered_out_stale_window"
+    assert statuses["kin-old"] == "filtered_out_stale_window"
+    assert statuses["blog-old"] == "filtered_out_stale_window"
+    assert statuses["cafe-fresh"] == "pending"
+    assert statuses["kin-edge"] == "pending"
+    assert statuses["raw-old"] == "raw_backlog"
+    assert statuses["posted-old"] == "posted"
+    assert "pending_ttl" in breakdown and "pending_age_days" in breakdown
+
+    # dry-run은 상태를 바꾸지 않는다.
+    dry = viral_hunter.expire_stale_pending_targets(str(db_path), dry_run=True)
+    assert dry["expired"] == 0  # 이미 만료된 행 외 남은 pending은 신선
+
+
+def test_expire_stale_pending_targets_post_age(tmp_path):
+    """발견은 최근이어도 게시물 자체가 오래되면(post-age) 만료된다."""
+    from datetime import datetime, timedelta
+
+    db_path = tmp_path / "ttl_postage.db"
+    now = datetime.now()
+    recent = (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")  # 큐 체류는 신선
+
+    rows = [
+        # (id, posted_at YYYYMMDD, 기대)
+        ("kin-ancient", "20150108", True),    # 11년 전 글 → post-age 만료
+        ("kin-1yr", (now - timedelta(days=300)).strftime("%Y%m%d"), True),   # 300일 > 270 만료
+        ("kin-recent-post", (now - timedelta(days=20)).strftime("%Y%m%d"), False),  # 20일 글 보존
+        ("kin-no-date", "", False),           # 게시일 모름 → post-age 미적용, 체류 신선 → 보존
+    ]
+    with sqlite3.connect(db_path) as conn:
+        _create_pending_ttl_table(conn)
+        for tid, posted, _ in rows:
+            conn.execute(
+                "INSERT INTO viral_targets (id, platform, url, category, comment_status, "
+                "is_commentable, discovered_at, posted_at, score_breakdown) "
+                "VALUES (?,?,?,?,'pending',1,?,?,'{}')",
+                (tid, "kin", f"https://x/{tid}", "통증/디스크", recent, posted),
+            )
+        conn.commit()
+
+    stats = viral_hunter.expire_stale_pending_targets(str(db_path))
+    assert stats["expired"] == 2
+    assert stats["expired_post_age"] == 2
+    assert stats["expired_dwell"] == 0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        statuses = {
+            r["id"]: r["comment_status"]
+            for r in conn.execute("SELECT id, comment_status FROM viral_targets")
+        }
+        breakdown = conn.execute(
+            "SELECT score_breakdown FROM viral_targets WHERE id='kin-ancient'"
+        ).fetchone()[0]
+
+    assert statuses["kin-ancient"] == "filtered_out_stale_window"
+    assert statuses["kin-1yr"] == "filtered_out_stale_window"
+    assert statuses["kin-recent-post"] == "pending"
+    assert statuses["kin-no-date"] == "pending"
+    assert "pending_post_age" in breakdown and "post_age_days" in breakdown
+
+
+def test_platform_yield_acceptance_to_factor():
+    """수용률 → 발견 예산 가중치 매핑 (바닥 0.2, 상한 1.0)."""
+    f = viral_hunter.ViralHunter._acceptance_to_yield_factor
+    assert f(0.20) == 1.0      # kin 19.7%급
+    assert f(0.15) == 1.0
+    assert f(0.10) == 0.85
+    assert f(0.069) == 0.6     # cafe 6.9%급
+    assert f(0.02) == 0.35
+    assert f(0.004) == 0.2     # blog 0.4%급 → 바닥
+    assert f(0.0) == 0.2
+
+
+def test_platform_yield_factors_and_budget_application(tmp_path):
+    """staff 수용률에서 플랫폼 가중치를 학습하고 발견 예산에 적용 (바닥 보장)."""
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "platyield.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE viral_targets (id TEXT PRIMARY KEY, platform TEXT, comment_status TEXT)"
+        )
+
+        def seed(platform, good, skipped):
+            n = 0
+            for _ in range(good):
+                conn.execute("INSERT INTO viral_targets VALUES (?,?,?)",
+                             (f"{platform}-g{n}", platform, "posted")); n += 1
+            for _ in range(skipped):
+                conn.execute("INSERT INTO viral_targets VALUES (?,?,?)",
+                             (f"{platform}-s{n}", platform, "skipped")); n += 1
+
+        seed("blog", 2, 498)    # 0.4% → 바닥 0.2
+        seed("cafe", 35, 465)   # 7.0% → 0.6
+        seed("kin", 100, 400)   # 20%  → 1.0
+        seed("instagram", 0, 10)  # 표본<40 → 미개입(dict 제외)
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter._platform_yield_cache = None
+    hunter._platform_drop_counts = {}
+
+    factors = hunter._load_platform_yield_factors()
+    assert factors.get("blog") == 0.2
+    assert factors.get("cafe") == 0.6
+    assert "kin" not in factors          # 1.0은 dict에서 제외(미개입)
+    assert "instagram" not in factors    # 표본 부족
+
+    limits = hunter._apply_platform_yield_factors({"cafe": 100, "blog": 100, "kin": 100})
+    assert limits["kin"] == 100          # 고수율 플랫폼 그대로
+    assert limits["cafe"] == 60          # 0.6배
+    assert limits["blog"] == 20          # 0.2배
+    # 바닥 limit: 작은 예산도 완전히 0이 되지 않는다.
+    floored = hunter._apply_platform_yield_factors({"blog": 30})
+    assert floored["blog"] == viral_hunter.ViralHunter.PLATFORM_YIELD_FLOOR_LIMIT
+    # 차단량 집계.
+    assert hunter._platform_drop_counts.get("blog", 0) > 0
 
 
 def test_scar_patient_exploration_rescues_comparison_question():

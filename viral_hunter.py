@@ -22,6 +22,7 @@ except Exception:
     pass
 import json
 import socket
+import sqlite3
 socket.setdefaulttimeout(15)
 import time
 import re
@@ -1121,6 +1122,70 @@ def extract_blog_body_from_html(html: str, max_chars: int = 900) -> str:
     return _fetched_node_text(node)[:max_chars]
 
 
+# 게시일 표기: "2026.05.25", "2026. 6. 10. 2:49" 등 (라이브 검증 2026-06-13)
+NAVER_POST_DATE_RE = re.compile(r"(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})")
+
+
+def _yyyymmdd_from_text(text: str) -> str:
+    m = NAVER_POST_DATE_RE.search(text or "")
+    if not m:
+        return ""
+    try:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        datetime(year, month, day)
+    except ValueError:
+        return ""
+    return f"{year:04d}{month:02d}{day:02d}"
+
+
+def extract_kin_post_date_from_html(html: str) -> str:
+    """지식인 상세 HTML에서 질문 작성일을 YYYYMMDD로 추출 (없으면 빈 문자열).
+
+    질문 메타: <span class="infoItem"><span class="blind">작성일</span>2026.05.25</span>
+    검색 API는 KIN 게시일을 주지 않아 sim 정렬로 발굴된 수년 전 질문이
+    '방금 발견 = 신선' 보너스를 받아왔다 — enrichment에서 실제 날짜를 복원한다.
+    """
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    for node in soup.select(".infoItem"):
+        blind = node.select_one(".blind")
+        if blind and "작성일" in blind.get_text():
+            return _yyyymmdd_from_text(node.get_text(" ", strip=True))
+    m = re.search(r"작성일</span>\s*([0-9.\s]{8,14})", html)
+    if m:
+        return _yyyymmdd_from_text(m.group(1))
+    return ""
+
+
+def extract_kin_view_count_from_html(html: str) -> Optional[int]:
+    """지식인 질문 메타의 '조회수 N'을 추출 (없으면 None)."""
+    if not html:
+        return None
+    m = re.search(r"조회수[^0-9]{0,10}([\d,]+)", html)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def extract_blog_post_date_from_html(html: str) -> str:
+    """블로그 PostView HTML에서 게시일을 YYYYMMDD로 추출 (없으면 빈 문자열)."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    node = soup.select_one(".se_publishDate") or soup.select_one(".date")
+    return _yyyymmdd_from_text(_fetched_node_text(node))
+
+
 def cafe_article_api_url(url: str) -> Optional[str]:
     """카페 글 URL을 공개 article JSON API URL로 변환. 비대상이면 None.
 
@@ -1146,19 +1211,23 @@ def cafe_article_api_url(url: str) -> Optional[str]:
     )
 
 
-def extract_cafe_body_from_json(json_text: str, max_chars: int = 900) -> str:
-    """카페 article API 응답(JSON)에서 본문 텍스트를 추출."""
+def _cafe_article_from_json(json_text: str) -> Dict[str, Any]:
+    """카페 article API 응답(JSON)에서 result.article dict를 추출 (실패 시 {})."""
     if not json_text:
-        return ""
+        return {}
     try:
         data = json.loads(json_text)
     except (TypeError, ValueError):
-        return ""
+        return {}
     if not isinstance(data, dict):
-        return ""
+        return {}
     article = (data.get("result") or {}).get("article") or {}
-    if not isinstance(article, dict):
-        return ""
+    return article if isinstance(article, dict) else {}
+
+
+def extract_cafe_body_from_json(json_text: str, max_chars: int = 900) -> str:
+    """카페 article API 응답(JSON)에서 본문 텍스트를 추출."""
+    article = _cafe_article_from_json(json_text)
     content = article.get("contentHtml") or article.get("content") or ""
     if not content:
         return ""
@@ -1169,14 +1238,39 @@ def extract_cafe_body_from_json(json_text: str, max_chars: int = 900) -> str:
     return _fetched_node_text(soup)[:max_chars]
 
 
-def fetch_naver_post_body(
+def extract_cafe_post_date_from_json(json_text: str) -> str:
+    """카페 article API의 writeDate(epoch ms)를 YYYYMMDD로 변환 (없으면 빈 문자열)."""
+    write_date = _cafe_article_from_json(json_text).get("writeDate")
+    try:
+        millis = float(write_date)
+    except (TypeError, ValueError):
+        return ""
+    if millis <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(millis / 1000.0).strftime("%Y%m%d")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def fetch_naver_post_detail(
     url: str,
     platform: str,
     timeout: float = 8.0,
     fetcher=None,
-) -> str:
-    """KIN/blog/공개 cafe 페이지에서 본문 텍스트 취득. 실패는 빈 문자열로 fail-soft."""
+) -> Dict[str, Any]:
+    """KIN/blog/공개 cafe 페이지에서 본문 + 게시일 + 참여 지표를 한 번의 fetch로 취득.
+
+    반환: {"body": str, "posted_date": "YYYYMMDD"|"" , "comment_count": int|None,
+           "view_count": int|None}. 실패는 빈 값으로 fail-soft.
+    게시일/참여 지표가 필요한 이유: 검색 API는 KIN/cafe 게시일을 주지 않아
+    타이밍 윈도우 게이트가 구조적으로 장님이었다 (sim 정렬이 끌어온 수년 전
+    글이 '발견 직후 = 신선' 보너스를 받음 — 라이브 검증 2026-06-13).
+    """
     platform = (platform or "").lower()
+    detail: Dict[str, Any] = {
+        "body": "", "posted_date": "", "comment_count": None, "view_count": None,
+    }
 
     def _default_fetch(target_url: str) -> str:
         headers = dict(NAVER_BODY_FETCH_HEADERS)
@@ -1190,20 +1284,166 @@ def fetch_naver_post_body(
     fetch = fetcher or _default_fetch
     try:
         if platform == "kin":
-            return extract_kin_body_from_html(fetch(url))
-        if platform == "blog":
+            html = fetch(url)
+            detail["body"] = extract_kin_body_from_html(html)
+            detail["posted_date"] = extract_kin_post_date_from_html(html)
+            detail["view_count"] = extract_kin_view_count_from_html(html)
+            if html:
+                try:
+                    answer_nodes = BeautifulSoup(html, "html.parser").select(".answerDetail")
+                    detail["comment_count"] = len(answer_nodes)
+                except Exception:
+                    pass
+        elif platform == "blog":
             postview = blog_postview_url(url)
-            if not postview:
-                return ""
-            return extract_blog_body_from_html(fetch(postview))
-        if platform in {"cafe", "naver_cafe"}:
+            if postview:
+                html = fetch(postview)
+                detail["body"] = extract_blog_body_from_html(html)
+                detail["posted_date"] = extract_blog_post_date_from_html(html)
+        elif platform in {"cafe", "naver_cafe"}:
             api_url = cafe_article_api_url(url)
-            if not api_url:
-                return ""
-            return extract_cafe_body_from_json(fetch(api_url))
+            if api_url:
+                payload = fetch(api_url)
+                detail["body"] = extract_cafe_body_from_json(payload)
+                detail["posted_date"] = extract_cafe_post_date_from_json(payload)
+                article = _cafe_article_from_json(payload)
+                for src_key, dst_key in (("commentCount", "comment_count"), ("readCount", "view_count")):
+                    try:
+                        detail[dst_key] = int(article.get(src_key))
+                    except (TypeError, ValueError):
+                        pass
     except Exception as e:
         logger.debug(f"본문 취득 실패({platform}, {url[:60]}): {e}")
-    return ""
+    return detail
+
+
+def fetch_naver_post_body(
+    url: str,
+    platform: str,
+    timeout: float = 8.0,
+    fetcher=None,
+) -> str:
+    """KIN/blog/공개 cafe 페이지에서 본문 텍스트 취득. 실패는 빈 문자열로 fail-soft."""
+    return fetch_naver_post_detail(url, platform, timeout=timeout, fetcher=fetcher)["body"]
+
+
+# pending 큐 체류 TTL (일). 게시물 나이는 발견/enrichment 게이트(_assess_timing_window)가
+# 판정하고, 여기는 '큐에 들어온 뒤 직원이 손대지 않은 기간'만 판정한다 — 책임 분리.
+# cafe 댓글 스레드가 가장 빨리 식고, KIN은 검색 유입이 오래 가서 더 길다.
+# 라이브 근거(2026-06-13): pending 4,002건 중 3,484건(87%)이 31~90일 적체,
+# 그중 2,510건은 2026-04 분류 개선 이전의 '기타' 레거시 — TTL 부재가 원인.
+PENDING_TTL_DAYS = {
+    "cafe": 30,
+    "naver_cafe": 30,
+    "blog": 45,
+    "kin": 45,
+    "naver_kin": 45,
+}
+PENDING_TTL_DEFAULT_DAYS = 45
+
+# 게시물 자체 나이 상한. posted_at이 알려진 pending이 이 일수보다 오래된 글이면
+# 발견 시점(discovered_at)과 무관하게 만료한다 — 댓글 적시성 윈도우가 명백히 지난
+# 글. 라이브 근거(2026-06-13): 검색 sim 정렬이 2007~2016년 KIN 질문을 끌어와
+# pending에 잔류(53/73 이미 답변 완료). 270일은 보수적(계절성 후기 재유입 여지를
+# 남기되 1년+ 묵은 글은 확실히 차단).
+PENDING_POST_AGE_TTL_DAYS = 270
+
+
+def expire_stale_pending_targets(
+    db_path: str,
+    now: Optional[datetime] = None,
+    ttl_days: Optional[Dict[str, int]] = None,
+    default_ttl_days: int = PENDING_TTL_DEFAULT_DAYS,
+    post_age_ttl_days: int = PENDING_POST_AGE_TTL_DAYS,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """댓글 적시성 윈도우가 지난 pending 행을 filtered_out_stale_window로 만료.
+
+    두 축으로 만료한다 (책임 분리):
+    - queue-dwell: 발견 후 직원이 손대지 않은 채 plataform TTL(cafe 30 / blog·kin 45)이 지남
+    - post-age: posted_at이 알려졌고 게시물 자체가 post_age_ttl_days(270)보다 오래됨
+      — 검색 sim 정렬이 끌어온 수년 전 글이 enrichment fetch 예산/길이 가드를 비껴가
+      pending에 잔류하던 갭을 메운다.
+
+    rescue 레인은 raw_backlog/needs_ai_retry만 소비하므로 만료 행이 자동
+    재승격되는 루프는 없다. lineage는 score_breakdown에 보존한다 (삭제 금지).
+    """
+    now = now or datetime.now()
+    ttl_map = dict(PENDING_TTL_DAYS)
+    if ttl_days:
+        ttl_map.update(ttl_days)
+
+    stats: Dict[str, Any] = {
+        "checked": 0, "expired": 0, "expired_dwell": 0, "expired_post_age": 0,
+        "by_platform": {}, "by_category": {},
+    }
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, platform, category, discovered_at, first_seen_at,
+                   posted_at, score_breakdown
+              FROM viral_targets
+             WHERE comment_status = 'pending'
+            """
+        ).fetchall()
+        stats["checked"] = len(rows)
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        for row in rows:
+            discovered = CommentableFilter._parse_datetime(
+                row["discovered_at"] or row["first_seen_at"], now
+            )
+            ttl = ttl_map.get((row["platform"] or "").lower(), default_ttl_days)
+            dwell_age = (now - discovered).total_seconds() / 86400.0 if discovered else None
+
+            posted = CommentableFilter._parse_datetime(row["posted_at"], now)
+            post_age = (now - posted).total_seconds() / 86400.0 if posted else None
+
+            reason = None
+            if dwell_age is not None and dwell_age > ttl:
+                reason = "pending_ttl"
+            elif post_age is not None and post_age > post_age_ttl_days:
+                reason = "pending_post_age"
+            if reason is None:
+                continue
+
+            stats["expired"] += 1
+            stats["expired_dwell" if reason == "pending_ttl" else "expired_post_age"] += 1
+            platform = (row["platform"] or "?").lower()
+            category = row["category"] or "기타"
+            stats["by_platform"][platform] = stats["by_platform"].get(platform, 0) + 1
+            stats["by_category"][category] = stats["by_category"].get(category, 0) + 1
+            if dry_run:
+                continue
+            try:
+                breakdown = json.loads(row["score_breakdown"] or "{}") or {}
+            except (TypeError, ValueError):
+                breakdown = {}
+            breakdown.update({
+                "expired_from": "pending",
+                "expired_reason": reason,
+                "pending_age_days": round(dwell_age, 1) if dwell_age is not None else None,
+                "post_age_days": round(post_age, 1) if post_age is not None else None,
+                "pending_ttl_days": ttl,
+                "expired_at": now_str,
+            })
+            conn.execute(
+                """
+                UPDATE viral_targets
+                   SET comment_status = 'filtered_out_stale_window',
+                       is_commentable = 0,
+                       score_breakdown = ?,
+                       updated_at = ?
+                 WHERE id = ? AND comment_status = 'pending'
+                """,
+                (json.dumps(breakdown, ensure_ascii=False), now_str, row["id"]),
+            )
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    return stats
 
 
 # ============================================
@@ -2014,12 +2254,10 @@ class CommentableFilter:
         "가격", "비용", "얼마", "저렴", "착한", "합리적"
     ]
 
-    # 🎯 경쟁사 키워드 (AI 탐지 참고용 - 실제 탐지는 AI가 수행)
-    # 아래 키워드는 AI 프롬프트에서 참조됨
-    COMPETITORS_REFERENCE = [
-        "자연과한의원", "경희한의원", "동의보감", "청주한방병원",
-        "수한의원", "참조은한의원", "보명한의원", "생기한의원", "자생한의원"
-    ]
+    # 🎯 경쟁사 참조는 더 이상 여기에 하드코딩하지 않는다 (stale 목록이 로랑/데이릴
+    # 같은 핵심 경쟁사를 누락시켜 역공략 레인을 무력화한 이력). 단일 소스는
+    # config/competitors.json이며 AICommentGenerator._load_curated_competitors()가
+    # 로드해 AI 프롬프트에 주입한다.
 
     # 건강 관련 키워드 (대폭 확장 - 양치기용)
     HEALTH_KEYWORDS = [
@@ -5063,6 +5301,123 @@ class AICommentGenerator:
         except Exception:
             return {}
 
+    # 경쟁사 탐지 참조는 단일 소스(config/competitors.json)에서 로드한다. 과거에는
+    # 프롬프트에 하드코딩된 stale 목록(로랑·데이릴 누락)을 AI에 줘서, 사용자의 #1
+    # 경쟁사(로랑/데이릴 안면비대칭)를 한 번도 못 잡고 엉뚱한 한의원만 플래그했다.
+    _curated_competitors_cache: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def _load_curated_competitors(cls) -> Dict[str, Any]:
+        """config/competitors.json + business_profile.json에서 경쟁사/자기업체 참조 로드.
+
+        반환: {'critical': [...], 'others': [...], 'self': [...], 'all': set(lower)}.
+        rank tracking·competitor analysis와 동일 소스라 목록이 다시 stale되지 않는다.
+        """
+        if cls._curated_competitors_cache is not None:
+            return cls._curated_competitors_cache
+        import os as _os
+        here = _os.path.dirname(_os.path.abspath(__file__))
+        critical: List[str] = []
+        others: List[str] = []
+        self_names: List[str] = []
+        try:
+            with open(_os.path.join(here, "config", "competitors.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            for _cat, info in (data.get("category_competitors") or {}).items():
+                for comp in (info.get("main_competitors") or []):
+                    name = str(comp.get("name") or "").strip()
+                    if not name:
+                        continue
+                    bucket = critical if comp.get("priority") == "critical" else others
+                    if name not in bucket:
+                        bucket.append(name)
+        except Exception as e:
+            logger.warning(f"[AICommentGenerator] competitors.json 로드 실패: {e}")
+        try:
+            with open(_os.path.join(here, "config", "business_profile.json"), encoding="utf-8") as f:
+                profile = json.load(f)
+            se = profile.get("self_exclusion", {}) or {}
+            self_names = [str(k).strip() for k in (se.get("title_keywords") or []) if str(k).strip()]
+        except Exception as e:
+            logger.warning(f"[AICommentGenerator] business_profile.json 로드 실패: {e}")
+        if not self_names:
+            self_names = ["규림", "kyurim"]
+        # critical에 들어간 이름이 others에 중복되지 않게
+        others = [n for n in others if n not in critical]
+        all_lower = {n.lower() for n in critical + others}
+        cls._curated_competitors_cache = {
+            "critical": critical,
+            "others": others,
+            "self": self_names,
+            "all": all_lower,
+        }
+        return cls._curated_competitors_cache
+
+    @classmethod
+    def _classify_competitor_name(cls, name: str) -> str:
+        """detected COMPETITOR_NAME → 'self' | 'critical' | 'known' | 'unknown'.
+
+        자기 업체 추천은 역공략 대상이 아니므로 분리하고, 큐레이트된 critical
+        경쟁사(로랑/데이릴 등)는 우선순위 부스트 대상으로 표시한다.
+        """
+        raw = (name or "").strip().lower()
+        if not raw or raw in {"n/a", "na", "none", "없음", "-"}:
+            return "unknown"
+        data = cls._load_curated_competitors()
+        for self_token in data["self"]:
+            if self_token and self_token.lower() in raw:
+                return "self"
+
+        def _matches(curated: List[str]) -> bool:
+            for c in curated:
+                cl = c.lower().strip()
+                if not cl:
+                    continue
+                core = cl.split()[0]  # "자연과한의원 청주점" → "자연과한의원"
+                if cl in raw or raw in cl or (len(core) >= 3 and core in raw):
+                    return True
+            return False
+
+        if _matches(data["critical"]):
+            return "critical"
+        if _matches(data["others"]):
+            return "known"
+        return "unknown"
+
+    @classmethod
+    def _competitor_reference_note(cls) -> str:
+        """AI 프롬프트에 덧붙일 권위 있는 경쟁사 참조 블록 (자기업체 제외 지시 포함)."""
+        data = cls._load_curated_competitors()
+        critical = ", ".join(data["critical"]) or "(없음)"
+        others = ", ".join(data["others"]) or "(없음)"
+        self_names = ", ".join(data["self"]) or "규림"
+        return (
+            "\n\n[청주 경쟁사 참조 — 아래 목록을 권위 기준으로 사용]\n"
+            f"- 최우선 역공략 경쟁사(언급 시 COMPETITOR=true, COMPETITOR_NAME에 정식명 그대로): {critical}\n"
+            f"- 기타 청주 경쟁사: {others}\n"
+            f"- 목록에 없는 다른 한의원/병원이 추천돼도 COMPETITOR=true로 보고하되 COMPETITOR_NAME에 실제명을 적으세요.\n"
+            f"- ※ 다음은 '우리 한의원'입니다. 절대 COMPETITOR로 보고하지 마세요: {self_names}. "
+            "우리 한의원이 추천된 글은 COMPETITOR=false로 두세요.\n"
+        )
+
+    def _build_unified_prompt(self, template: str, posts_formatted: str) -> str:
+        """통합 분석 프롬프트 조립 — 두 호출 경로(순차/병렬)가 공유.
+
+        competitor_reference 플레이스홀더가 있으면 채우고, 없으면(구버전 템플릿)
+        권위 블록을 안전하게 append 한다. 광고 안전 노트도 항상 덧붙인다.
+        """
+        comp_note = self._competitor_reference_note()
+        try:
+            body = template.format(
+                posts_formatted=posts_formatted,
+                competitor_reference=comp_note,
+            )
+            if "{competitor_reference}" not in template:
+                body += comp_note
+        except (KeyError, IndexError):
+            body = template.format(posts_formatted=posts_formatted) + comp_note
+        return body + self.UNIFIED_AD_SAFETY_NOTE
+
     @classmethod
     def _format_unified_target(cls, post_id: int, target: ViralTarget) -> str:
         body = CommentableFilter._strip_internal_labels(target.content_preview or "")
@@ -5531,7 +5886,7 @@ POST_ID: {i}
                 posts_formatted += self._format_unified_target(i, target)
 
             try:
-                prompt = template.format(posts_formatted=posts_formatted) + self.UNIFIED_AD_SAFETY_NOTE
+                prompt = self._build_unified_prompt(template, posts_formatted)
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
@@ -5609,7 +5964,7 @@ POST_ID: {i}
             for i, t in enumerate(batch, 1):
                 posts_formatted += self._format_unified_target(i, t)
             try:
-                prompt = template.format(posts_formatted=posts_formatted) + self.UNIFIED_AD_SAFETY_NOTE
+                prompt = self._build_unified_prompt(template, posts_formatted)
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
                 return batch_idx, suitable, unsuit, comp, None, list(batch)
@@ -5803,6 +6158,12 @@ POST_ID: {i}
             name_match = re.search(r'COMPETITOR_NAME:\s*(.+?)(?:\n|$)', post_result)
             comp_name = name_match.group(1).strip() if name_match else "N/A"
 
+            # 자기 업체(규림/리커버) 추천은 역공략 대상이 아니다 — competitor 플래그 해제.
+            # critical(로랑/데이릴 등)은 우선순위 부스트 대상으로 분류.
+            comp_class = self._classify_competitor_name(comp_name) if has_competitor else "unknown"
+            if comp_class == "self":
+                has_competitor = False
+
             # COUNTER_SCORE 추출
             counter_match = re.search(r'COUNTER_SCORE:\s*(\d+)', post_result)
             counter_score = int(counter_match.group(1)) if counter_match else 0
@@ -5847,10 +6208,19 @@ POST_ID: {i}
                         **(target.score_breakdown or {}),
                         "ai_counter_bonus": float(counter_bonus),
                         "ai_counter_score": float(counter_score),
+                        "competitor_class": comp_class,
                     }
 
+                    # 큐레이트된 critical 경쟁사(사용자 #1 위협: 로랑/데이릴 안면비대칭 등)
+                    # 가로채기는 직원 큐 최상단으로 끌어올린다.
+                    if comp_class == "critical":
+                        crit_boost = 10
+                        target.priority_score = min((target.priority_score or 0) + crit_boost, 150)
+                        target.score_breakdown["competitor_critical_boost"] = float(crit_boost)
+
                     if comp_name and comp_name != "N/A" and "⚔️" not in target.content_preview:
-                        target.content_preview = f"[⚔️{comp_name}] {target.content_preview}"
+                        flag = "⚔️🎯" if comp_class == "critical" else "⚔️"
+                        target.content_preview = f"[{flag}{comp_name}] {target.content_preview}"
 
                 suitable.append(target)
             else:
@@ -6441,6 +6811,11 @@ class ViralHunter:
                 limits["cafe"] = max(int(limits.get("cafe", 0) or 0), user_surface_limit)
                 limits["kin"] = max(int(limits.get("kin", 0) or 0), user_surface_limit)
 
+        # 플랫폼 수율 게이트(증거 기반): 위의 카테고리/렌즈 튜닝 결과에 직원 수용률
+        # 가중치를 곱한다. 카테고리 룰이 못 보는 플랫폼-단위 ROI 격차(blog 0.4% 등)를
+        # 보정 — 카테고리 무관하게 적용되고, 바닥 limit가 탐사를 유지한다.
+        limits = self._apply_platform_yield_factors(limits)
+
         return {
             "include_blog": include_blog,
             "platform_limits": limits,
@@ -6519,6 +6894,89 @@ class ViralHunter:
         if discovered >= 150 and (pending / discovered) < 0.004:
             return True
         return False
+
+    # 플랫폼별 staff 수용률 → 발견 예산 가중치. 변형 수율 게이트의 철학을
+    # 플랫폼 단위로 확장: 직원이 실제로 작업하는 비율(posted/generated vs skipped)에
+    # 발견 예산을 비례시킨다. 라이브 근거(2026-06-13): blog 0.4% vs kin 19.7%
+    # 수용률인데 발견량은 blog가 최대(21일 9,536)·kin이 최소(7,841)로 역전.
+    PLATFORM_YIELD_MIN_SAMPLE = 40   # 이 미만 staff 액션은 미개입(1.0)
+    PLATFORM_YIELD_FLOOR_LIMIT = 12  # 가중 후에도 최소 이만큼은 탐사 (완전 블라인드 방지)
+
+    @staticmethod
+    def _acceptance_to_yield_factor(accept_rate: float) -> float:
+        """staff 수용률을 발견 예산 가중치[0.2, 1.0]로 매핑 (증거 기반·바닥 보장)."""
+        if accept_rate >= 0.15:
+            return 1.0
+        if accept_rate >= 0.08:
+            return 0.85
+        if accept_rate >= 0.04:
+            return 0.6
+        if accept_rate >= 0.015:
+            return 0.35
+        return 0.2
+
+    def _load_platform_yield_factors(self) -> Dict[str, float]:
+        """플랫폼별 staff 수용률로 발견 예산 가중치를 산출 (런 단위 캐시).
+
+        수용률 = posted+generated / (posted+generated+skipped) — 직원에게 노출된
+        타겟 중 실제 작업 비율. 표본<MIN_SAMPLE 플랫폼은 dict에서 제외(=미개입,
+        1.0 취급). blog처럼 구조적으로 댓글 가치가 낮은 표면은 자동으로 바닥
+        가중치로 수렴하고, 바닥 limit가 탐사를 유지해 갑자기 가치가 생기면
+        수용률이 올라 가중치도 회복된다 (영구 사장 방지).
+        """
+        cached = getattr(self, "_platform_yield_cache", None)
+        if cached is not None:
+            return cached
+        factors: Dict[str, float] = {}
+        rows = []
+        try:
+            import sqlite3 as _sql
+            conn = _sql.connect(self.db.db_path)
+            rows = conn.execute(
+                """
+                SELECT LOWER(COALESCE(platform, '')) p,
+                       SUM(CASE WHEN comment_status IN ('posted', 'generated') THEN 1 ELSE 0 END) good,
+                       SUM(CASE WHEN comment_status = 'skipped' THEN 1 ELSE 0 END) skipped
+                FROM viral_targets
+                WHERE comment_status IN ('posted', 'generated', 'skipped')
+                GROUP BY LOWER(COALESCE(platform, ''))
+                """
+            ).fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+        for platform, good, skipped in rows:
+            good = int(good or 0)
+            skipped = int(skipped or 0)
+            sample = good + skipped
+            if not platform or sample < self.PLATFORM_YIELD_MIN_SAMPLE:
+                continue
+            factor = self._acceptance_to_yield_factor(good / sample)
+            if factor < 1.0:
+                factors[platform] = factor
+        self._platform_yield_cache = factors
+        return factors
+
+    def _apply_platform_yield_factors(self, limits: Dict[str, int]) -> Dict[str, int]:
+        """발견 예산에 플랫폼 수율 가중치를 적용. 차단량은 _platform_drop_counts에 집계."""
+        factors = self._load_platform_yield_factors()
+        if not factors:
+            return limits
+        drop_counts = getattr(self, "_platform_drop_counts", None)
+        if drop_counts is None:
+            drop_counts = {}
+            self._platform_drop_counts = drop_counts
+        for platform in list(limits.keys()):
+            original = int(limits.get(platform, 0) or 0)
+            factor = factors.get(platform)
+            if not factor or original <= 0:
+                continue
+            scaled = max(self.PLATFORM_YIELD_FLOOR_LIMIT, int(round(original * factor)))
+            scaled = min(original, scaled)
+            if scaled < original:
+                drop_counts[platform] = drop_counts.get(platform, 0) + (original - scaled)
+                limits[platform] = scaled
+        return limits
 
     def _patient_voice_kin_variant(
         self,
@@ -7230,7 +7688,10 @@ class ViralHunter:
         cafe는 공개 카페만 article API로 취득(멤버 전용 401 → 빈 결과 fail-soft);
         로그인 필요한 카페는 scripts/enrich_cafe_bodies.py(Selenium) 수동 경로 유지.
         """
-        stats = {"fetched": 0, "enriched": 0, "regate_rejected": 0}
+        stats = {
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
         if not ai_targets or max_fetch <= 0:
             return ai_targets, stats
 
@@ -7245,9 +7706,25 @@ class ViralHunter:
             if not target.url:
                 continue
             stats["fetched"] += 1
-            body = fetch_naver_post_body(target.url, target.platform, fetcher=fetcher)
+            detail = fetch_naver_post_detail(target.url, target.platform, fetcher=fetcher)
             if fetcher is None and sleep_sec:
                 time.sleep(sleep_sec)
+
+            # 게시일/참여 지표는 본문 개선 여부와 무관하게 채운다 — 검색 API가
+            # KIN/cafe 게시일을 주지 않아 타이밍 게이트가 장님이었던 지점.
+            if detail["posted_date"] and not target.date_str:
+                target.date_str = detail["posted_date"]
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "post_date_enriched": detail["posted_date"],
+                }
+                stats["dated"] += 1
+            for key in ("comment_count", "view_count"):
+                value = detail.get(key)
+                if value is not None:
+                    setattr(target, key, max(int(getattr(target, key, 0) or 0), int(value)))
+
+            body = detail["body"]
             if len(body) <= len(target.content_preview or ""):
                 continue
             target.content_preview = body
@@ -7262,19 +7739,56 @@ class ViralHunter:
         # 일관되게 수행한다 (여기서 별도 분리하지 않는다).
         kept: List[ViralTarget] = []
         for target in ai_targets:
-            if not (target.score_breakdown or {}).get("body_enriched"):
+            breakdown = target.score_breakdown or {}
+            if not (breakdown.get("body_enriched") or breakdown.get("post_date_enriched")):
                 kept.append(target)
                 continue
-            reject_reason = CommentableFilter.apply_final_reject(target)
-            if reject_reason:
-                stats["regate_rejected"] += 1
+            if breakdown.get("body_enriched"):
+                reject_reason = CommentableFilter.apply_final_reject(target)
+                if reject_reason:
+                    stats["regate_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(target.to_dict())
+                    except Exception as e:
+                        logger.warning(f"enrichment 게이트 제외 상태 저장 실패: {e}")
+                    continue
+            # 게시일이 새로 밝혀진 타겟은 타이밍 윈도우를 실제 날짜로 재판정.
+            # 발견 시점에는 no_post_date 경로로 '발견 직후 신선' 보너스를 받았다.
+            if breakdown.get("post_date_enriched") and not self._timing_regate_keep(target):
+                stats["stale_rejected"] += 1
                 try:
                     self.db.insert_viral_target(target.to_dict())
                 except Exception as e:
-                    logger.warning(f"enrichment 게이트 제외 상태 저장 실패: {e}")
+                    logger.warning(f"enrichment 타이밍 제외 상태 저장 실패: {e}")
                 continue
             kept.append(target)
         return kept, stats
+
+    @staticmethod
+    def _timing_regate_keep(target: ViralTarget) -> bool:
+        """게시일 enrichment 후 타이밍 윈도우 재판정. 미달이면 타겟을 만료 상태로 바꾼다.
+
+        viral_need/reply_opportunity 신호는 발견 시점 score_breakdown에 콤마 문자열로
+        남아 있어 그대로 복원한다 (rescue 경로 등 신호가 없으면 빈 리스트 fail-soft).
+        """
+        breakdown = target.score_breakdown or {}
+        need_signals = [s for s in str(breakdown.get("viral_need_signals", "")).split(",") if s]
+        reply_signals = [s for s in str(breakdown.get("reply_opportunity_signals", "")).split(",") if s]
+        score, tier, signals = CommentableFilter._assess_timing_window(
+            target, need_signals, reply_signals
+        )
+        target.score_breakdown = {
+            **breakdown,
+            "timing_window_score": float(score),
+            "timing_window_tier": tier,
+            "timing_window_signals": ",".join(signals),
+            "timing_regated_after_date_enrichment": True,
+        }
+        if score >= CommentableFilter.MIN_TIMING_WINDOW_SCORE:
+            return True
+        target.is_commentable = False
+        target.comment_status = "filtered_out_stale_window"
+        return False
 
     @staticmethod
     def _noise_key(text: str) -> str:
@@ -7593,7 +8107,8 @@ class ViralHunter:
              boost_categories: Optional[Iterable[str]] = None,
              boost_lenses: Optional[Iterable[str]] = None,
              rescue_backlog: int = 60,
-             enrich_bodies: int = 120) -> List[ViralTarget]:
+             enrich_bodies: int = 120,
+             expire_pending: bool = True) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -7610,9 +8125,28 @@ class ViralHunter:
         """
         run_started_at = time.strftime('%Y-%m-%d %H:%M:%S')
 
-        # 변형 수율 캐시/차단 집계는 런 단위로 재계산한다 (직전 런 감사 반영).
+        # pending 큐 TTL 정리 — 직원이 손대지 않은 채 댓글 적시성 윈도우가 지난
+        # 행을 만료시킨다. 큐가 죽은 재고로 차면 골든큐/우선순위가 모두 오염된다.
+        if expire_pending:
+            try:
+                expiry = expire_stale_pending_targets(self.db.db_path)
+                if expiry["expired"]:
+                    platform_summary = ", ".join(
+                        f"{p} {n}" for p, n in sorted(expiry["by_platform"].items())
+                    )
+                    print(
+                        f"🧽 pending TTL 정리: {expiry['expired']}건 만료 "
+                        f"(체류초과 {expiry['expired_dwell']}, 게시물노후 {expiry['expired_post_age']}) / "
+                        f"검사 {expiry['checked']}건 ({platform_summary})"
+                    )
+            except Exception as e:
+                logger.warning(f"pending TTL 정리 실패 (계속 진행): {e}")
+
+        # 변형/플랫폼 수율 캐시·차단 집계는 런 단위로 재계산한다 (직전 런 결과 반영).
         self._variant_yield_cache = None
         self._variant_drop_counts = {}
+        self._platform_yield_cache = None
+        self._platform_drop_counts = {}
 
         if keywords is None:
             keywords = self._load_keywords(
@@ -7644,6 +8178,7 @@ class ViralHunter:
         )
         # 해시 계산이 플랜을 한 번 더 생성하므로 차단 집계는 검색 패스 기준으로 리셋
         self._variant_drop_counts = {}
+        self._platform_drop_counts = {}
 
         # 체크포인트 복원
         all_targets: List[ViralTarget] = []
@@ -7906,7 +8441,9 @@ class ViralHunter:
                 if enrich_stats["fetched"]:
                     print(
                         f"   📄 본문 enrichment: fetch {enrich_stats['fetched']}건 → "
-                        f"보강 {enrich_stats['enriched']}건, 게이트 재탈락 {enrich_stats['regate_rejected']}건 "
+                        f"보강 {enrich_stats['enriched']}건, 게시일 복원 {enrich_stats['dated']}건, "
+                        f"게이트 재탈락 {enrich_stats['regate_rejected']}건, "
+                        f"타이밍 만료 {enrich_stats['stale_rejected']}건 "
                         f"(AI 후보 {before_enrich} → {len(ai_targets)})"
                     )
             except Exception as e:
@@ -8148,6 +8685,20 @@ class ViralHunter:
                 f"{name}x{count}" for name, count in sorted(dropped_variants.items())
             )
             print(f"   ✂️ 제로수율 변형 차단: {drop_summary}")
+        dropped_platforms = getattr(self, "_platform_drop_counts", {}) or {}
+        if dropped_platforms:
+            factors = self._load_platform_yield_factors()
+            plat_summary = ", ".join(
+                f"{p} -{n}(가중 {factors.get(p, 1.0):.2f})"
+                for p, n in sorted(dropped_platforms.items(), key=lambda kv: -kv[1])
+            )
+            print(f"   ⚖️ 플랫폼 수율 예산 절감: {plat_summary}")
+        blocked_structures = getattr(getattr(self, "seed_builder", None), "_structure_blocked_buckets", {}) or {}
+        if blocked_structures:
+            struct_summary = ", ".join(
+                f"{b}x{n}" for b, n in sorted(blocked_structures.items(), key=lambda kv: -kv[1])[:8]
+            )
+            print(f"   🚫 제로수율 구조 시드 차단: {struct_summary}")
         if audit_summary:
             audit_totals = audit_summary['summary']
             print(
@@ -8274,6 +8825,8 @@ def main():
                         help='최근 raw_backlog/needs_ai_retry 타겟을 추가로 AI 재심사할 최대 수 (0=비활성, 기본 60)')
     parser.add_argument('--enrich-bodies', type=int, default=120,
                         help='AI 분석 전 KIN/blog 본문을 HTTP로 보강할 최대 fetch 수 (0=비활성, 기본 120)')
+    parser.add_argument('--skip-pending-expiry', action='store_true',
+                        help='스캔 시작 시 pending TTL 만료 정리를 건너뜀 (기본: 실행)')
     parser.add_argument('--boost-category', action='append', default=[], help='먼저 실행할 Pathfinder 진료축 lane')
     parser.add_argument('--boost-lens', action='append', default=[], help='먼저 실행할 Pathfinder 실행렌즈 lane')
 
@@ -8451,7 +9004,8 @@ def main():
                     boost_categories=args.boost_category,
                     boost_lenses=args.boost_lens,
                     rescue_backlog=args.rescue_backlog,
-                    enrich_bodies=args.enrich_bodies)
+                    enrich_bodies=args.enrich_bodies,
+                    expire_pending=not args.skip_pending_expiry)
         return
 
     if args.generate:

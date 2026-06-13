@@ -64,7 +64,8 @@ def main() -> int:
     rows = conn.execute(
         """
         SELECT platform, url, title, content_preview, category, matched_keywords,
-               score_breakdown
+               score_breakdown, discovered_at, first_seen_at, last_scanned_at,
+               scan_count, comment_count, view_count, posted_at
           FROM viral_targets
          WHERE comment_status = 'pending'
            AND platform IN ('kin', 'blog', 'cafe', 'naver_cafe')
@@ -97,6 +98,8 @@ def main() -> int:
 
     # 게이트는 pathfinder 축/렌즈 lineage(score_breakdown)를 사용한다 — 누락하면
     # 약화된 컨텍스트로 평가되고, reject 영속화가 원본 lineage를 덮어쓴다.
+    # 타이밍 윈도우 재판정(_assess_timing_window)은 발견 시각/참여 지표를 함께
+    # 사용한다 — 누락하면 0건 답변/스캔 0회로 잘못 후하게 평가된다.
     targets = []
     for r in rows:
         target = ViralTarget(
@@ -106,6 +109,13 @@ def main() -> int:
             content_preview=r['content_preview'] or '',
             category=r['category'] or '기타',
             matched_keywords=json.loads(r['matched_keywords'] or '[]'),
+            date_str=str(r['posted_at'] or ''),
+            discovered_at=r['discovered_at'] or '',
+            first_seen_at=r['first_seen_at'] or '',
+            last_scanned_at=r['last_scanned_at'] or '',
+            scan_count=r['scan_count'] or 0,
+            comment_count=r['comment_count'] or 0,
+            view_count=r['view_count'] or 0,
         )
         try:
             target.score_breakdown = json.loads(r['score_breakdown'] or '{}') or {}
@@ -124,33 +134,41 @@ def main() -> int:
     )
     print(
         f"fetch {stats['fetched']}건 → 보강 {stats['enriched']}건, "
-        f"게이트 재탈락 {stats['regate_rejected']}건"
+        f"게시일 복원 {stats['dated']}건, 게이트 재탈락 {stats['regate_rejected']}건, "
+        f"타이밍 만료 {stats['stale_rejected']}건"
     )
 
-    # 생존 + 보강된 행은 본문을 직접 UPDATE (scan_count 등 재발견 부수효과 없이)
+    # 생존 + (본문 또는 게시일) 보강된 행을 직접 UPDATE (scan_count 등 재발견 부수효과 없이).
+    # 게시일이 복원된 행은 posted_at도 저장해 다음 런이 재fetch하지 않도록 한다.
     conn = sqlite3.connect(DB_PATH)
     updated = 0
     for target in kept:
         breakdown = target.score_breakdown or {}
-        if not breakdown.get('body_enriched'):
+        if not (breakdown.get('body_enriched') or breakdown.get('post_date_enriched')):
             continue
         cur = conn.execute(
             """
             UPDATE viral_targets
                SET content_preview = ?,
-                   score_breakdown = ?
+                   score_breakdown = ?,
+                   posted_at = COALESCE(NULLIF(?, ''), posted_at),
+                   comment_count = MAX(COALESCE(comment_count, 0), ?),
+                   view_count = MAX(COALESCE(view_count, 0), ?)
              WHERE url = ? AND comment_status = 'pending'
             """,
             (
                 target.content_preview,
                 json.dumps(breakdown, ensure_ascii=False),
+                breakdown.get('post_date_enriched') or '',
+                int(getattr(target, 'comment_count', 0) or 0),
+                int(getattr(target, 'view_count', 0) or 0),
                 target.url,
             ),
         )
         updated += cur.rowcount
     conn.commit()
     conn.close()
-    print(f'생존 행 본문 저장: {updated}건')
+    print(f'생존 행 보강 저장: {updated}건')
 
     print('\n완료. 직원 큐에서 light한 snippet 대신 실제 본문이 보입니다.')
     return 0
