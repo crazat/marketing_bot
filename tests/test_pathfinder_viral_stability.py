@@ -6603,6 +6603,77 @@ def test_structure_proven_zero_yield_blocks_only_dead_derivatives():
     assert block(neigh, {"total_count": 500, "qualified_count": 21, "quality_rate": 0.042}) is False
 
 
+def test_category_demand_factor_rules():
+    """Rule A(증거 충분+저acceptance) / Rule B(공급有 제로전환) / 저표본 보존."""
+    f = ViralSeedBuilder._category_demand_factor
+    # Rule B: 공급 충분(>=150) + 한 번도 작업 안 됨(posted==0) → 프로브 플로어.
+    # decided 표본이 얇아도(=4) 트립한다 — gap-fill 제로수요 축을 잡는 핵심.
+    factor, reason = f({"total_count": 700, "staff_positive_count": 0,
+                        "staff_reviewed_count": 4, "staff_accept_rate": 0.0})
+    assert factor == 0.2 and "zero_conversion" in reason
+    # Rule A: 표본 충분 + acceptance 구간별 매핑
+    assert f({"total_count": 4000, "staff_positive_count": 2,
+              "staff_reviewed_count": 299, "staff_accept_rate": 0.007})[0] == 0.25
+    assert f({"total_count": 800, "staff_positive_count": 3,
+              "staff_reviewed_count": 88, "staff_accept_rate": 0.034})[0] == 0.4
+    assert f({"total_count": 3900, "staff_positive_count": 40,
+              "staff_reviewed_count": 600, "staff_accept_rate": 0.067})[0] == 0.6
+    # acceptance 충분(>=12%) → 게이트 안 함
+    assert f({"total_count": 19000, "staff_positive_count": 446,
+              "staff_reviewed_count": 3249, "staff_accept_rate": 0.137})[0] == 1.0
+    # 저표본 + 공급도 적음(total<150) → 보존(탐사 유지). 어느 룰도 미발동.
+    assert f({"total_count": 60, "staff_positive_count": 0,
+              "staff_reviewed_count": 5, "staff_accept_rate": 0.0})[0] == 1.0
+
+
+def test_apply_category_demand_gate_protects_and_redistributes():
+    """저수요 축은 프로브 플로어로 축소, 보호 축은 불변, 절감분은 시그니처 축으로."""
+    builder = ViralSeedBuilder(db_path="unused.db")  # __init__는 연결하지 않음
+    quotas = {
+        "흉터/여드름흉터": 12,   # protected signature (boost 대상)
+        "안면비대칭": 10,        # protected signature (boost 대상)
+        "교통사고": 8,           # protected (고LTV) — 저acceptance여도 절대 게이트 안 됨
+        "다이어트": 12,          # protected
+        "통증/디스크": 6,        # gate (Rule A)
+        "호흡기/알레르기": 3,     # gate (Rule A, 저acceptance)
+    }
+    feedback = {
+        "axis:흉터/여드름흉터": {"total_count": 8000, "staff_positive_count": 80,
+                            "staff_reviewed_count": 1000, "staff_accept_rate": 0.08},
+        "axis:안면비대칭": {"total_count": 7000, "staff_positive_count": 84,
+                        "staff_reviewed_count": 900, "staff_accept_rate": 0.093},
+        "axis:교통사고": {"total_count": 15000, "staff_positive_count": 42,
+                      "staff_reviewed_count": 1655, "staff_accept_rate": 0.025},
+        "axis:다이어트": {"total_count": 19000, "staff_positive_count": 446,
+                      "staff_reviewed_count": 3249, "staff_accept_rate": 0.137},
+        "axis:통증/디스크": {"total_count": 4000, "staff_positive_count": 2,
+                        "staff_reviewed_count": 299, "staff_accept_rate": 0.007},
+        "axis:호흡기/알레르기": {"total_count": 700, "staff_positive_count": 1,
+                           "staff_reviewed_count": 30, "staff_accept_rate": 0.033},
+    }
+    adjusted = builder._apply_category_demand_gate(quotas, feedback)
+
+    # 보호 축은 저acceptance여도 불변 (교통사고 = 사용자 명시 보호)
+    assert adjusted["교통사고"] == 8
+    assert adjusted["다이어트"] == 12
+    # 통증/디스크: 0.7% → 0.25 → round(6*0.25)=2
+    assert adjusted["통증/디스크"] == 2
+    assert builder._category_demand_adjustments["통증/디스크"]["factor"] == 0.25
+    # 호흡기: 3.3% → Rule A 0.4 → round(3*0.4)=1 (프로브 플로어 이상)
+    assert adjusted["호흡기/알레르기"] == 1
+    # freed = (6-2)+(3-1)=6 → 시그니처 축당 max(1, 6//2)=3 재투입
+    assert adjusted["흉터/여드름흉터"] == 15
+    assert adjusted["안면비대칭"] == 13
+    assert builder._category_demand_boosts == {"흉터/여드름흉터": 3, "안면비대칭": 3}
+    # 게이트된 어떤 축도 0으로 떨어지지 않음 (자동 회복 가능한 프로브)
+    assert all(v >= 1 for v in adjusted.values())
+
+    # 증거(feedback) 없으면 no-op — 라이브 누적 전까지 계획 불변 (다른 게이트와 동일)
+    untouched = builder._apply_category_demand_gate({"통증/디스크": 6}, {})
+    assert untouched == {"통증/디스크": 6}
+    assert builder._category_demand_adjustments == {}
+
+
 def test_seed_builder_feedback_aggregates_structure_buckets(tmp_path):
     db_path = tmp_path / "structure_feedback.db"
     with sqlite3.connect(db_path) as conn:

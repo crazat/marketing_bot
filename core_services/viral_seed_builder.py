@@ -41,6 +41,37 @@ DEFAULT_CATEGORY_QUOTAS: Dict[str, int] = {
     "면역/보약": 2,
 }
 
+# ---------------------------------------------------------------------------
+# 진료축(카테고리) 단위 수요 게이트 — 플랫폼/구조 수율 게이트와 동일 철학을
+# 카테고리 예산에 적용. 직원이 실제로 작업(posted/approved)하는 비율(=드러난 수요)이
+# 입증된 저조 진료축은 디스커버리 시드 예산을 줄이고(절대 0이 아닌 프로브 플로어),
+# 절감분을 공급 부족한 시그니처 축으로 재배분한다. _staff_outcome_adjustment 는
+# 카테고리 안에서 순서만 바꿀 뿐 quota 자체는 줄이지 못해(설계상) 제로수요 축이
+# 계속 quota·AI예산·pending 큐를 점유하던 구조적 누수를 막는다(2026-06-13 라이브 감사).
+#
+# PROTECTED: 시그니처/미용 축 + 교통사고(고LTV 자보 입원, 사용자 명시 보호) + 역공략.
+#            낮은 acceptance여도 절대 게이트하지 않음.
+CATEGORY_DEMAND_PROTECTED_AXES = frozenset({
+    "흉터/여드름흉터",
+    "피부/여드름",
+    "다이어트",
+    "안면비대칭",
+    "체형교정",
+    "리프팅/탄력",
+    "교통사고",
+    "경쟁사_역공략",
+})
+# 절감분을 흘려보낼 공급 부족 시그니처 축(흉터=새살침, 안면비대칭=로랑/데이릴 경쟁).
+CATEGORY_DEMAND_SIGNATURE_BOOST_AXES = ("흉터/여드름흉터", "안면비대칭")
+# Rule A: staff 결정 표본이 이 이상일 때만 acceptance로 판단(저표본 축은 탐사 유지).
+CATEGORY_DEMAND_MIN_DECIDED = 25
+# Rule B: 충분한 공급에도 한 번도 작업되지 않음(posted==0) — 표본이 얇어도 폐기 신호.
+CATEGORY_DEMAND_ZERO_CONV_MIN_TOTAL = 150
+# 프로브 플로어: 게이트되어도 최소 1 시드 유지 → acceptance 회복 시 예산 자동 복귀.
+CATEGORY_DEMAND_PROBE_FLOOR = 1
+# 축당 시그니처 부스트 상한(공급이 얇으면 선택이 알아서 적게 뽑으므로 무해).
+CATEGORY_DEMAND_SIGNATURE_BOOST_CAP = 6
+
 DEFAULT_EXCLUDE_PATTERNS = [
     "전후",
     "다이어트댄스",
@@ -488,6 +519,10 @@ class ViralSeedBuilder:
             return []
 
         feedback = self._load_keyword_feedback()
+        # 카테고리 수요 게이트: 드러난 직원 작업 수요로 진료축 예산을 재배분
+        # (저수요 축 축소 → 시그니처 축 재투입). main 선택 루프와 gap-fill 모두
+        # 이 quotas 를 소비하므로 단일 지점에서 한 번만 적용한다.
+        quotas = self._apply_category_demand_gate(quotas, feedback)
         scored_rows = []
         # 구조 수율 하드블록 집계 (런 단위). 변형/플랫폼 수율 게이트와 같은 철학을
         # 구조(category×suffix×neigh/city) 단위로 확장 — 증명된 제로수율 파생 구조는
@@ -1141,6 +1176,104 @@ class ViralSeedBuilder:
         if accept_rate >= 0.20:
             return round(5.0 * evidence_weight, 2)
         return 0.0
+
+    @staticmethod
+    def _category_demand_factor(stats: dict) -> Tuple[float, str]:
+        """Per-axis discovery-budget factor from revealed staff conversion.
+
+        Mirrors `_acceptance_to_yield_factor` (platform yield gate) but at the
+        category level and with two evidence rules so genuinely thin axes are
+        never punished for low sample size:
+
+        - Rule B (zero-conversion-despite-supply): ample all-time supply yet
+          never once worked by staff -> probe floor. Catches profile gap-fill
+          axes (호흡기/다한증/여성·산후/갱년기/소화 …) that produce hundreds of
+          discoveries but 0 posts, even when their decided sample is tiny.
+        - Rule A (low acceptance with evidence): enough staff decisions to
+          trust acceptance -> map acceptance to a factor.
+
+        Returns (factor, reason). factor==1.0 means "do not gate".
+        """
+        total = int(stats.get("total_count", 0) or 0)
+        positive = int(stats.get("staff_positive_count", 0) or 0)
+        reviewed = int(stats.get("staff_reviewed_count", 0) or 0)
+        accept = ViralSeedBuilder._as_float(stats.get("staff_accept_rate"))
+        # Rule B — never once worked despite ample supply.
+        if positive == 0 and total >= CATEGORY_DEMAND_ZERO_CONV_MIN_TOTAL:
+            return 0.2, f"zero_conversion(total={total},posted=0)"
+        # Rule A — enough staff decisions to judge revealed demand.
+        if reviewed >= CATEGORY_DEMAND_MIN_DECIDED:
+            if accept >= 0.12:
+                return 1.0, ""
+            if accept >= 0.06:
+                return 0.6, f"low_demand(accept={accept * 100:.1f}%)"
+            if accept >= 0.02:
+                return 0.4, f"low_demand(accept={accept * 100:.1f}%)"
+            return 0.25, f"near_zero_demand(accept={accept * 100:.1f}%)"
+        # Under-evidenced (thin sample, some conversion) — keep exploring.
+        return 1.0, ""
+
+    def _apply_category_demand_gate(
+        self,
+        quotas: Dict[str, int],
+        feedback: Dict[str, dict],
+    ) -> Dict[str, int]:
+        """Reweight per-category seed quota by revealed staff conversion.
+
+        Protected signature/primary axes (incl. high-LTV 교통사고) are never
+        reduced; proven low-demand axes shrink toward a probe floor (>=1,
+        recoverable); the freed budget flows to supply-starved signature axes.
+        Records decisions on the instance for the scan summary + audit, reset
+        every build() (single source, like `_structure_blocked_buckets`).
+        """
+        self._category_demand_adjustments: Dict[str, dict] = {}
+        self._category_demand_boosts: Dict[str, int] = {}
+        if not quotas or not feedback:
+            return quotas
+
+        adjusted = dict(quotas)
+        freed = 0
+        for category, original_quota in quotas.items():
+            original = int(original_quota or 0)
+            if original <= 0 or category in CATEGORY_DEMAND_PROTECTED_AXES:
+                continue
+            stats = feedback.get(f"axis:{category}") or {}
+            factor, reason = self._category_demand_factor(stats)
+            if factor >= 1.0:
+                continue
+            new_quota = min(
+                original,
+                max(CATEGORY_DEMAND_PROBE_FLOOR, int(round(original * factor))),
+            )
+            if new_quota >= original:
+                continue
+            adjusted[category] = new_quota
+            freed += original - new_quota
+            self._category_demand_adjustments[category] = {
+                "original": original,
+                "adjusted": new_quota,
+                "factor": factor,
+                "reason": reason,
+                "accept_rate": ViralSeedBuilder._as_float(stats.get("staff_accept_rate")),
+                "reviewed": int(stats.get("staff_reviewed_count", 0) or 0),
+                "total": int(stats.get("total_count", 0) or 0),
+            }
+
+        # Redirect freed budget to supply-starved signature axes. Raising the
+        # ceiling is harmless when scar/asymmetry supply is thin — selection
+        # only ever picks rows that exist (extra slots fall to profile gap-fill
+        # exploration, which is the desired remediation for the scar famine).
+        if freed > 0:
+            boost_targets = [c for c in CATEGORY_DEMAND_SIGNATURE_BOOST_AXES if c in adjusted]
+            if boost_targets:
+                per_axis = max(1, freed // len(boost_targets))
+                for category in boost_targets:
+                    add = min(per_axis, CATEGORY_DEMAND_SIGNATURE_BOOST_CAP)
+                    if add <= 0:
+                        continue
+                    adjusted[category] = int(adjusted.get(category, 0)) + add
+                    self._category_demand_boosts[category] = add
+        return adjusted
 
     @staticmethod
     def _staff_feedback_bucket(

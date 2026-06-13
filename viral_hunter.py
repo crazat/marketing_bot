@@ -8055,6 +8055,10 @@ class ViralHunter:
                 'per_query_variant': per_variant,
                 'per_structure': per_structure,
                 'zero_yield_seeds': zero_yield_seeds,
+                'category_demand': {
+                    'adjustments': getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {},
+                    'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
+                },
             }
 
             conn.execute(
@@ -8699,6 +8703,17 @@ class ViralHunter:
                 f"{b}x{n}" for b, n in sorted(blocked_structures.items(), key=lambda kv: -kv[1])[:8]
             )
             print(f"   🚫 제로수율 구조 시드 차단: {struct_summary}")
+        demand_adjustments = getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {}
+        if demand_adjustments:
+            demand_summary = ", ".join(
+                f"{cat} {info['original']}→{info['adjusted']}({info['accept_rate'] * 100:.1f}%)"
+                for cat, info in sorted(demand_adjustments.items(), key=lambda kv: kv[1]["original"] - kv[1]["adjusted"], reverse=True)[:8]
+            )
+            print(f"   📉 저수요 진료축 예산 절감: {demand_summary}")
+        demand_boosts = getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {}
+        if demand_boosts:
+            boost_summary = ", ".join(f"{cat} +{n}" for cat, n in sorted(demand_boosts.items(), key=lambda kv: -kv[1]))
+            print(f"   📈 시그니처 축 예산 재투입: {boost_summary}")
         if audit_summary:
             audit_totals = audit_summary['summary']
             print(
