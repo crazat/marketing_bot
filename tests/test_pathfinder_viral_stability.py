@@ -7,6 +7,8 @@ from core_services.viral_seed_builder import (
     ViralSeedBuilder,
     keyword_structure_features,
     strip_transactional_suffix,
+    is_qualified_viral_outcome,
+    load_proven_dead_structures,
 )
 from db.database import DatabaseManager
 from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
@@ -6671,6 +6673,152 @@ def test_structure_proven_zero_yield_blocks_only_dead_derivatives():
     assert block(neigh, {"total_count": 80, "qualified_count": 0, "quality_rate": 0.0}) is False
     # 파생 구조라도 수율이 살아있으면 보존
     assert block(neigh, {"total_count": 500, "qualified_count": 21, "quality_rate": 0.042}) is False
+
+
+def test_is_qualified_viral_outcome_single_definition():
+    """단일 workable 판정 — 시드빌더 quality_rate와 Legion 등급게이트가 같은 규칙을 공유."""
+    assert is_qualified_viral_outcome("posted", 0.0, 0.0, 0.0) is True
+    assert is_qualified_viral_outcome("ai_approved", 0.0, 0.0, 0.0) is True
+    # 게시상태 아니어도 임상적합+작업효율 동시 충족이면 workable
+    assert is_qualified_viral_outcome("pending", 80.0, 72.0, 0.0) is True
+    # 우선순위 120+ & 적합 60+ 도 workable
+    assert is_qualified_viral_outcome("pending", 60.0, 60.0, 121.0) is True
+    # 저적합 pending은 workable 아님
+    assert is_qualified_viral_outcome("pending", 10.0, 10.0, 10.0) is False
+    # 한쪽 점수만 높은 부분 충족은 workable 아님
+    assert is_qualified_viral_outcome("filtered_out_ad", 80.0, 50.0, 0.0) is False
+
+
+def _create_dead_structure_viral_targets(conn):
+    conn.execute(
+        """
+        CREATE TABLE viral_targets (
+            id TEXT PRIMARY KEY,
+            matched_keyword TEXT,
+            comment_status TEXT,
+            score_breakdown TEXT,
+            priority_score REAL,
+            matched_keyword_category TEXT,
+            category TEXT
+        )
+        """
+    )
+
+
+def _insert_dead_struct_row(conn, idx, keyword, category, status, sb, priority):
+    conn.execute(
+        "INSERT INTO viral_targets VALUES (?,?,?,?,?,?,?)",
+        (
+            f"{keyword}-{idx}",
+            keyword,
+            status,
+            json.dumps({"pathfinder_source_keyword": keyword, **sb}, ensure_ascii=False),
+            priority,
+            category,
+            category,
+        ),
+    )
+
+
+def test_load_proven_dead_structures_mirrors_structure_block(tmp_path):
+    """바이럴 viral_targets에서 제로수율 파생 구조만 dead로 — Legion 등급게이트 단일원천."""
+    db_path = tmp_path / "dead_structures.db"
+    dead_kw = "봉명동 비염 한의원 예약"            # 호흡기 suffix:neigh (제로수율)
+    alive_kw = "복대동 여드름흉터 한의원 상담"      # 흉터 suffix:neigh (수율 살아있음)
+    base_kw = "청주 비염 한의원"                    # 호흡기 plain:city (base 레인 — 절대 차단 X)
+    thin_kw = "가경동 매선리프팅 한의원 예약"        # 리프팅 suffix:neigh (증거 부족)
+
+    dead_key = keyword_structure_features(dead_kw, "호흡기/알레르기")["structure_key"]
+    alive_key = keyword_structure_features(alive_kw, "흉터/여드름흉터")["structure_key"]
+    base_key = keyword_structure_features(base_kw, "호흡기/알레르기")["structure_key"]
+    thin_key = keyword_structure_features(thin_kw, "리프팅/탄력")["structure_key"]
+
+    with sqlite3.connect(db_path) as conn:
+        _create_dead_structure_viral_targets(conn)
+        # dead: 파생 + 160건 + qualified 0 → 차단
+        for idx in range(160):
+            _insert_dead_struct_row(conn, idx, dead_kw, "호흡기/알레르기", "pending", {}, 40.0)
+        # alive: 파생 + 200건 중 20건 posted(=qualified) → 보존
+        for idx in range(180):
+            _insert_dead_struct_row(conn, idx, alive_kw, "흉터/여드름흉터", "pending", {}, 40.0)
+        for idx in range(180, 200):
+            _insert_dead_struct_row(conn, idx, alive_kw, "흉터/여드름흉터", "posted", {}, 40.0)
+        # base plain:city: 200건 제로수율이어도 derivative 아니라 절대 차단 X
+        for idx in range(200):
+            _insert_dead_struct_row(conn, idx, base_kw, "호흡기/알레르기", "pending", {}, 40.0)
+        # thin: 파생이지만 80건뿐 → 증거 부족, 차단 X
+        for idx in range(80):
+            _insert_dead_struct_row(conn, idx, thin_kw, "리프팅/탄력", "pending", {}, 40.0)
+        conn.commit()
+        dead = load_proven_dead_structures(conn)
+
+    assert dead_key in dead
+    assert alive_key not in dead     # 수율 살아있는 파생 구조는 보존
+    assert base_key not in dead      # 기본 plain:city 레인은 절대 차단 안 됨
+    assert thin_key not in dead      # 증거 부족 파생은 차단 안 됨 (자동 회복 여지)
+
+
+def test_load_proven_dead_structures_failsoft_without_table(tmp_path):
+    """viral_targets 테이블/증거 없으면 빈 set — 등급 무변경(라이브 누적 전 no-op)."""
+    db_path = tmp_path / "empty.db"
+    with sqlite3.connect(db_path) as conn:
+        assert load_proven_dead_structures(conn) == set()
+        conn.execute(
+            "CREATE TABLE viral_targets (id TEXT, matched_keyword TEXT, comment_status TEXT)"
+        )
+        conn.commit()
+        assert load_proven_dead_structures(conn) == set()
+
+
+def test_best_learned_quality_rate_prefers_granular_evidence():
+    """가장 granular하고 증거 충분한 버킷의 workable 수율을 채택, 없으면 (0,0)."""
+    pick = ViralSeedBuilder._best_learned_quality_rate
+    kw = {"total_count": 10, "quality_rate": 0.20}
+    axis = {"total_count": 50, "quality_rate": 0.08}
+    struct = {"total_count": 400, "quality_rate": 0.03}
+    # 키워드 버킷 증거 충분 → 키워드 수율 우선
+    assert pick(kw, axis, struct) == (0.20, 10)
+    # 키워드 얇음 → axis_lens로
+    assert pick({"total_count": 3}, axis, struct) == (0.08, 50)
+    # 둘 다 얇음 → structure로
+    assert pick({"total_count": 3}, {"total_count": 2}, struct) == (0.03, 400)
+    # 전부 증거 부족 → (0,0) no-op
+    assert pick({"total_count": 3}, {"total_count": 2}, {"total_count": 5}) == (0.0, 0)
+
+
+def _fit_row(grade="B", kei=0.1, category="흉터/여드름흉터", keyword="청주 여드름흉터 한의원 후기"):
+    return {
+        "keyword": keyword, "category": category, "grade": grade, "kei": kei,
+        "community_signal": 30.0, "conversion_signal": 10.0, "profile_action_signal": 10.0,
+        "local_service_fit_score": 70.0, "content_actionability_score": 65.0,
+        "preferred_search_surface": "web_content", "recommended_content_type": "proof_safe_guide",
+        "review_intent_type": "none",
+    }
+
+
+def test_viral_seed_fit_score_grade_no_longer_rewards_anti_predictive_tier():
+    """역방향 grade bonus 제거 — 동일 신호라면 A가 B보다 높게 점수받지 않음(라이브: A<B)."""
+    fit = ViralSeedBuilder._viral_seed_fit_score
+    common = dict(adjusted_priority=50.0, viral_readiness_score=40.0, execution_risk_penalty=0.0)
+    score_a = fit(_fit_row(grade="A", kei=0.1), **common)
+    score_b = fit(_fit_row(grade="B", kei=0.1), **common)
+    # 동일 KEI/신호 → 등급만으로 A가 B를 못 이긴다 (예전엔 A=+5 > B=+2)
+    assert score_a == score_b
+    # 진짜 KEI 수요는 여전히 소폭 보상 (인플레가 아닌 실수요)
+    score_kei = fit(_fit_row(grade="A", kei=600.0), **common)
+    assert score_kei > score_b
+
+
+def test_viral_seed_fit_score_rewards_learned_workable_yield():
+    """학습된 workable 수율(예측 신호)이 점수를 끌어올린다 — 증거 없으면 no-op."""
+    fit = ViralSeedBuilder._viral_seed_fit_score
+    common = dict(adjusted_priority=50.0, viral_readiness_score=40.0, execution_risk_penalty=0.0)
+    base = fit(_fit_row(), learned_quality_rate=0.0, learned_evidence=0, **common)
+    high = fit(_fit_row(), learned_quality_rate=0.15, learned_evidence=40, **common)
+    assert high > base
+    # 증거(evidence=0)면 수율값이 있어도 무시 (no-op)
+    no_evi = fit(_fit_row(), learned_quality_rate=0.15, learned_evidence=0, **common)
+    assert no_evi == base
 
 
 def test_category_demand_factor_rules():

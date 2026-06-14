@@ -299,6 +299,133 @@ def _canonical_category_for_keyword(keyword: str, category: str = "") -> str:
     return canonical_category_for_keyword(keyword, category)
 
 
+def _coerce_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_qualified_viral_outcome(
+    comment_status: str,
+    clinic_fit: float,
+    worksite_efficiency: float,
+    priority_score: float,
+) -> bool:
+    """Single definition of a 'workable/converted' viral target outcome.
+
+    Shared by ViralSeedBuilder._load_keyword_feedback (per-bucket quality_rate) and
+    load_proven_dead_structures (the Pathfinder grade-promotion gate) so both layers
+    judge viral yield by the exact same rule — keep this the only place the rule lives.
+    """
+    return (
+        comment_status in {"posted", "completed", "approved", "ai_approved"}
+        or (clinic_fit >= 75.0 and worksite_efficiency >= 70.0)
+        or (priority_score >= 120.0 and clinic_fit >= 60.0 and worksite_efficiency >= 60.0)
+    )
+
+
+def load_proven_dead_structures(conn: sqlite3.Connection) -> set:
+    """Return the set of query-structure keys the Viral Hunter has proven produce
+    ZERO workable targets.
+
+    Uses the SAME derivative gate + thresholds as
+    ``ViralSeedBuilder._structure_proven_zero_yield`` and the SAME qualified rule as
+    ``_load_keyword_feedback`` (via ``is_qualified_viral_outcome``). Pathfinder Legion
+    consumes this to gate execution-fit grade promotion so a floor-volume keyword is
+    never inflated to S/A inside a structure downstream viral discovery already proved
+    dead. The seed builder still hard-blocks the same structures from discovery; this
+    closes the loop one layer upstream at GRADING.
+
+    Fail-soft: returns an empty set on any sqlite error or missing table/columns, so
+    grading is unchanged until viral evidence accumulates (same no-op-without-data
+    philosophy as the variant/platform/structure yield gates).
+    """
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(viral_targets)").fetchall()}
+    except sqlite3.Error:
+        return set()
+    if not {"matched_keyword", "comment_status"} <= columns:
+        return set()
+
+    matched_cat_expr = (
+        "matched_keyword_category"
+        if "matched_keyword_category" in columns
+        else ("category" if "category" in columns else "''")
+    )
+    target_cat_expr = "category" if "category" in columns else "''"
+    score_expr = "score_breakdown" if "score_breakdown" in columns else "''"
+    priority_expr = "priority_score" if "priority_score" in columns else "0"
+
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT matched_keyword,
+                   {matched_cat_expr} AS matched_keyword_category,
+                   {target_cat_expr} AS target_category,
+                   comment_status,
+                   {score_expr} AS score_breakdown,
+                   {priority_expr} AS priority_score
+            FROM viral_targets
+            WHERE matched_keyword IS NOT NULL AND TRIM(matched_keyword) != ''
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
+
+    agg: Dict[str, dict] = {}
+    for matched_keyword, matched_cat, target_cat, status, score_raw, priority in rows:
+        try:
+            score_breakdown = json.loads(score_raw) if score_raw else {}
+            if not isinstance(score_breakdown, dict):
+                score_breakdown = {}
+        except (ValueError, TypeError):
+            score_breakdown = {}
+        source_keyword = normalize_seed_keyword_text(
+            str(score_breakdown.get("pathfinder_source_keyword") or "").strip()
+            or str(matched_keyword or "")
+        )
+        if not source_keyword:
+            continue
+        category = canonical_category_for_keyword(
+            source_keyword, str(matched_cat or target_cat or "")
+        )
+        features = keyword_structure_features(source_keyword, category)
+        structure_key = features.get("structure_key")
+        if not structure_key:
+            continue
+        qualified = is_qualified_viral_outcome(
+            str(status or "pending"),
+            _coerce_float(score_breakdown.get("clinic_treatment_fit_score")),
+            _coerce_float(score_breakdown.get("worksite_efficiency_score")),
+            _coerce_float(priority),
+        )
+        bucket = agg.setdefault(
+            structure_key,
+            {
+                "total_count": 0,
+                "qualified_count": 0,
+                "has_neighborhood_token": bool(features.get("has_neighborhood_token")),
+                "has_transactional_suffix": bool(features.get("has_transactional_suffix")),
+            },
+        )
+        bucket["total_count"] += 1
+        bucket["qualified_count"] += 1 if qualified else 0
+
+    dead: set = set()
+    for structure_key, bucket in agg.items():
+        total = int(bucket["total_count"] or 0)
+        qualified = int(bucket["qualified_count"] or 0)
+        feedback = {
+            "total_count": total,
+            "qualified_count": qualified,
+            "quality_rate": (qualified / total) if total else 0.0,
+        }
+        if ViralSeedBuilder._structure_proven_zero_yield(bucket, feedback):
+            dead.add(structure_key)
+    return dead
+
+
 def default_category_quotas() -> Dict[str, int]:
     """Return quota defaults that only include categories in the active profile.
 
@@ -607,11 +734,16 @@ class ViralSeedBuilder:
             novelty_score = min(100.0, novelty_score + min(18.0, qualified_count * 1.5))
             if float(row_data.get("pathfinder_novelty_score") or 0.0) >= 65.0:
                 novelty_score = min(100.0, novelty_score + 6.0)
+            learned_quality_rate, learned_evidence = self._best_learned_quality_rate(
+                fb, axis_lens_fb, structure_fb
+            )
             viral_seed_fit_score = self._viral_seed_fit_score(
                 row_data,
                 adjusted_priority=adjusted_priority,
                 viral_readiness_score=viral_readiness_score,
                 execution_risk_penalty=execution_risk_penalty,
+                learned_quality_rate=learned_quality_rate,
+                learned_evidence=learned_evidence,
             )
             viral_seed_fit_score = max(
                 0.0,
@@ -1443,12 +1575,34 @@ class ViralSeedBuilder:
         return round(max(0.0, min(100.0, score)), 2)
 
     @staticmethod
+    def _best_learned_quality_rate(
+        keyword_fb: dict, axis_lens_fb: dict, structure_fb: dict
+    ) -> Tuple[float, int]:
+        """Best-available LEARNED viral-workable yield for a seed, preferring the most
+        granular bucket with enough evidence (keyword -> axis_lens -> structure).
+
+        The live bridge audit (2026-06-14) found this is the ONLY signal that POSITIVELY
+        predicts viral workability — per-(axis,lens)/structure `quality_rate` discriminates
+        (community lens 18% vs safety 2.5%; 교통사고 consultation 35%), whereas demand
+        grade/KEI ANTI-predict (grade A 3.4% converts WORSE than B 8.3%). Returns
+        (quality_rate, evidence_total), or (0.0, 0) when no bucket has enough evidence —
+        a no-op that leaves selection on the other signals until data accumulates.
+        """
+        for bucket, min_total in ((keyword_fb, 8), (axis_lens_fb, 8), (structure_fb, 12)):
+            total = int((bucket or {}).get("total_count") or 0)
+            if total >= min_total:
+                return ViralSeedBuilder._as_float((bucket or {}).get("quality_rate")), total
+        return 0.0, 0
+
+    @staticmethod
     def _viral_seed_fit_score(
         row: dict,
         *,
         adjusted_priority: float,
         viral_readiness_score: float,
         execution_risk_penalty: float,
+        learned_quality_rate: float = 0.0,
+        learned_evidence: int = 0,
     ) -> float:
         """Rank seed keywords for Viral Hunter execution, not just search demand.
 
@@ -1464,7 +1618,6 @@ class ViralSeedBuilder:
         preferred_surface = str(row.get("preferred_search_surface") or "")
         recommended_type = str(row.get("recommended_content_type") or "")
         review_intent_type = str(row.get("review_intent_type") or "none")
-        grade = str(row.get("grade") or "")
         keyword = str(row.get("keyword") or "")
         category = _canonical_category_for_keyword(keyword, str(row.get("category") or ""))
         execution_lens = ViralSeedBuilder._keyword_execution_lens(row)
@@ -1509,7 +1662,23 @@ class ViralSeedBuilder:
             score -= 16.0
 
         score += ViralSeedBuilder._axis_execution_query_bonus(row)
-        score += {"S": 8.0, "A": 5.0, "B": 2.0}.get(grade, 0.0)
+
+        # Learned viral-workable yield is the ONE signal the live bridge audit found to
+        # POSITIVELY predict workability. Trust it directly as a primary term (evidence-
+        # gated; 0 -> no-op). 8% -> +12.8, 15% -> +24 (capped).
+        if learned_evidence > 0 and learned_quality_rate > 0.0:
+            score += min(24.0, learned_quality_rate * 160.0)
+
+        # Demand grade does NOT positively predict viral workability (live: A 3.4% < B 8.3%,
+        # S 6.3% < B 8.3% — A/S are ~entirely execution-fit promotions of floor-volume
+        # longtails). The old {S:8,A:5,B:2} bonus rewarded the WORSE-converting tier MORE.
+        # Reward only GENUINE KEI-earned demand, slightly, so an inflated promotion gets no
+        # unearned edge over a real B converter.
+        kei_val = ViralSeedBuilder._as_float(row.get("kei"))
+        if kei_val >= 500.0:
+            score += 4.0
+        elif kei_val >= 200.0:
+            score += 2.0
 
         pure_profile_term = (
             community < 15.0
@@ -2405,10 +2574,8 @@ class ViralSeedBuilder:
             is_staff_negative = not is_staff_positive and (is_skipped or target_rating == "bad")
             is_lens_match = lens_fit >= 70.0 or lens_tier == "strong"
             is_lens_mismatch = (0.0 < lens_fit < 45.0) or lens_tier == "mismatch"
-            is_qualified = (
-                comment_status in {"posted", "completed", "approved", "ai_approved"}
-                or (clinic_fit >= 75.0 and worksite_efficiency >= 70.0)
-                or (priority_score >= 120.0 and clinic_fit >= 60.0 and worksite_efficiency >= 60.0)
+            is_qualified = is_qualified_viral_outcome(
+                comment_status, clinic_fit, worksite_efficiency, priority_score
             )
 
             feedback_keys: List[str] = []

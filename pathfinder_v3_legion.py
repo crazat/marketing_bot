@@ -2303,6 +2303,9 @@ class PathfinderLegion:
         self.collector = LegionCollector(delay=0.2, use_google=True)  # Multi-Source 수집
         self.serp = SERPAnalyzer(delay=0.3, max_workers=10)  # 병렬 처리 강화
 
+        # 바이럴 제로수율 구조 캐시 (실행적합 등급 승격 게이트용; None=미로드)
+        self._viral_dead_structures = None
+
         # 품질 필터 초기화
         if HAS_QUALITY_FILTER:
             self.quality_filter = KeywordQualityFilter()
@@ -4356,11 +4359,40 @@ class PathfinderLegion:
             return "B", flags
         return grade, flags
 
+    def _ensure_viral_dead_structures(self) -> set:
+        """Load (once, cached) the query structures the Viral Hunter has proven yield
+        zero workable targets, so execution-fit promotion cannot inflate a floor-volume
+        keyword into a dead structure. Same evidence + threshold as the seed builder's
+        structure hard-block (single source of truth in viral_seed_builder). Fail-soft:
+        any error -> empty set -> grading unchanged until viral evidence exists."""
+        cached = getattr(self, "_viral_dead_structures", None)
+        if cached is not None:
+            return cached
+        dead: set = set()
+        try:
+            from core_services.viral_seed_builder import load_proven_dead_structures
+            conn = sqlite3.connect(get_db_path())
+            try:
+                dead = load_proven_dead_structures(conn)
+            finally:
+                conn.close()
+        except Exception:
+            dead = set()
+        self._viral_dead_structures = dead
+        if dead:
+            preview = ", ".join(sorted(dead))
+            print(
+                f"🚫 바이럴 제로수율 구조 {len(dead)}개 → 실행적합 등급 승격 차단: "
+                f"{preview[:220]}"
+            )
+        return dead
+
     def _promote_grade_for_execution_fit(
         self,
         grade: str,
         value_profile: Dict[str, object],
         *,
+        keyword: str = "",
         has_real_volume: bool,
         search_volume: int,
         verification_score: float,
@@ -4434,6 +4466,26 @@ class PathfinderLegion:
         category_key = GYULIM_KEYWORD_PROFILE.normalize_category(
             str(value_profile.get("category") or category or "")
         )
+
+        # 바이럴 발견수율 게이트: KEI가 아니라 실행적합으로 S/A 승격되려는 키워드라도,
+        # 그 (카테고리,구조) 버킷이 바이럴 헌터에서 zero-workable로 증명됐으면 승격 보류.
+        # 기본 plain:city 레인은 derivative가 아니라 절대 차단 안 됨. KEI 기본등급은 유지.
+        dead_structures = self._ensure_viral_dead_structures()
+        if keyword and dead_structures:
+            try:
+                from core_services.viral_seed_builder import keyword_structure_features
+                features = keyword_structure_features(keyword, category_key or category)
+                is_derivative = bool(
+                    features.get("has_neighborhood_token")
+                    or features.get("has_transactional_suffix")
+                )
+                if is_derivative and features.get("structure_key") in dead_structures:
+                    if "viral_dead_structure_no_exec_promote" not in flags:
+                        flags.append("viral_dead_structure_no_exec_promote")
+                    return grade, flags
+            except Exception:
+                pass
+
         skin_service_axis_signal = (
             category_key == "피부/여드름"
             and local_surface_score >= 70.0
@@ -5415,6 +5467,7 @@ class PathfinderLegion:
         result.grade, result.quality_flags = self._promote_grade_for_execution_fit(
             result.grade,
             value_profile,
+            keyword=result.keyword,
             has_real_volume=has_real_volume,
             search_volume=result.search_volume,
             verification_score=result.verification_score,
@@ -6661,6 +6714,7 @@ class PathfinderLegion:
             grade, quality_flags = self._promote_grade_for_execution_fit(
                 grade,
                 value_profile,
+                keyword=kw,
                 has_real_volume=has_real_volume,
                 search_volume=search_volume,
                 verification_score=verification_score,
