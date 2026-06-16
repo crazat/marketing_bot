@@ -3719,6 +3719,15 @@ class DatabaseManager:
         try:
             query = 'SELECT * FROM viral_targets WHERE 1=1'
             params = []
+            target_columns = {
+                row[1]
+                for row in self.cursor.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            scanned_expr = (
+                "COALESCE(last_scanned_at, discovered_at)"
+                if "last_scanned_at" in target_columns
+                else "discovered_at"
+            )
 
             # comment_status가 있으면 우선, 없으면 status 사용
             effective_status = comment_status if comment_status else status
@@ -3741,15 +3750,23 @@ class DatabaseManager:
 
             # 스캔 배치 필터 (YYYY-MM-DD HH 형식)
             if scan_batch:
-                query += " AND strftime('%Y-%m-%d %H', discovered_at) = ?"
-                params.append(scan_batch)
+                batch = str(scan_batch).strip()
+                if batch.startswith("run:") and "source_scan_run_id" in target_columns:
+                    try:
+                        query += " AND source_scan_run_id = ?"
+                        params.append(int(batch.split(":", 1)[1]))
+                    except (TypeError, ValueError):
+                        query += " AND 1=0"
+                else:
+                    query += f" AND strftime('%Y-%m-%d %H', {scanned_expr}) = ?"
+                    params.append(batch)
             elif date_filter:
                 if date_filter == "오늘":
-                    query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+                    query += f" AND DATE({scanned_expr}) = DATE('now', 'localtime')"
                 elif date_filter == "최근 7일":
-                    query += " AND discovered_at >= datetime('now', '-7 days')"
+                    query += f" AND {scanned_expr} >= datetime('now', '-7 days')"
                 elif date_filter == "최근 30일":
-                    query += " AND discovered_at >= datetime('now', '-30 days')"
+                    query += f" AND {scanned_expr} >= datetime('now', '-30 days')"
 
             # 재발견 필터
             if min_scan_count is not None and min_scan_count > 0:
@@ -3765,15 +3782,15 @@ class DatabaseManager:
 
             # 정렬
             if sort == 'date':
-                query += ' ORDER BY discovered_at DESC'
+                query += f' ORDER BY {scanned_expr} DESC'
             elif sort == 'scan_count':
-                query += ' ORDER BY scan_count DESC, discovered_at DESC'
+                query += f' ORDER BY scan_count DESC, {scanned_expr} DESC'
             elif sort == 'exposure':
-                query += ' ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY exposure_score DESC, priority_score DESC, {scanned_expr} DESC'
             elif sort == 'workability':
-                query += ' ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY workability_score DESC, priority_score DESC, {scanned_expr} DESC'
             else:  # 기본: priority
-                query += ' ORDER BY priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY priority_score DESC, {scanned_expr} DESC'
 
             query += ' LIMIT ? OFFSET ?'
             params.append(limit)

@@ -396,6 +396,7 @@ class ViralTargetRepository:
         clauses: List[str] = ["1=1"]
         params: List[Any] = []
 
+        scan_batch = filters.get("scan_batch")
         effective_status = filters.get("comment_status") or filters.get("status")
         if effective_status:
             clauses.append("comment_status = ?")
@@ -494,16 +495,29 @@ class ViralTargetRepository:
 
         scan_batch = filters.get("scan_batch")
         date_filter = filters.get("date_filter")
+        scanned_expr = (
+            "COALESCE(last_scanned_at, discovered_at)"
+            if table_columns and "last_scanned_at" in table_columns
+            else "discovered_at"
+        )
         if scan_batch:
-            clauses.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
-            params.append(scan_batch)
+            batch = str(scan_batch).strip()
+            if batch.startswith("run:") and table_columns and "source_scan_run_id" in table_columns:
+                try:
+                    clauses.append("source_scan_run_id = ?")
+                    params.append(int(batch.split(":", 1)[1]))
+                except (TypeError, ValueError):
+                    pass
+            else:
+                clauses.append(f"strftime('%Y-%m-%d %H', {scanned_expr}) = ?")
+                params.append(batch)
         elif date_filter:
             if date_filter == "오늘":
-                clauses.append("DATE(discovered_at) = DATE('now', 'localtime')")
+                clauses.append(f"DATE({scanned_expr}) = DATE('now', 'localtime')")
             elif date_filter == "최근 7일":
-                clauses.append("discovered_at >= datetime('now', '-7 days')")
+                clauses.append(f"{scanned_expr} >= datetime('now', '-7 days')")
             elif date_filter == "최근 30일":
-                clauses.append("discovered_at >= datetime('now', '-30 days')")
+                clauses.append(f"{scanned_expr} >= datetime('now', '-30 days')")
 
         min_scan_count = filters.get("min_scan_count")
         if min_scan_count and min_scan_count > 0:
@@ -571,22 +585,27 @@ class ViralTargetRepository:
         # columns가 주어지면 score_breakdown/특정 컬럼 의존 정렬을 컬럼 존재 여부로 가드
         # (구 스키마/최소 테이블에서 'no such column' 회피). None이면 전부 있다고 가정.
         has_breakdown = columns is None or "score_breakdown" in columns
+        scanned_expr = (
+            "COALESCE(last_scanned_at, discovered_at)"
+            if columns is None or "last_scanned_at" in columns
+            else "discovered_at"
+        )
 
         def _bd(key: str) -> str:
             return ViralTargetRepository._score_breakdown_number_expr(key)
 
         if sort == "date":
-            return "ORDER BY discovered_at DESC"
+            return f"ORDER BY {scanned_expr} DESC"
         if sort == "scan_count":
-            return "ORDER BY scan_count DESC, discovered_at DESC"
+            return f"ORDER BY scan_count DESC, {scanned_expr} DESC"
         if sort == "exposure":
-            return "ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC"
+            return f"ORDER BY exposure_score DESC, priority_score DESC, {scanned_expr} DESC"
         if sort == "workability":
-            return "ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC"
+            return f"ORDER BY workability_score DESC, priority_score DESC, {scanned_expr} DESC"
         if sort == "clinic_fit" and has_breakdown:
-            return f"ORDER BY {_bd('clinic_treatment_fit_score')} DESC, priority_score DESC, discovered_at DESC"
+            return f"ORDER BY {_bd('clinic_treatment_fit_score')} DESC, priority_score DESC, {scanned_expr} DESC"
         if sort == "worksite_efficiency" and has_breakdown:
-            return f"ORDER BY {_bd('worksite_efficiency_score')} DESC, priority_score DESC, discovered_at DESC"
+            return f"ORDER BY {_bd('worksite_efficiency_score')} DESC, priority_score DESC, {scanned_expr} DESC"
         if sort == "specialty" and (columns is None or "specialty_match" in columns):
             # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
             return ("ORDER BY CASE specialty_match "
@@ -602,9 +621,9 @@ class ViralTargetRepository:
         if has_breakdown:
             return (
                 f"ORDER BY priority_score DESC, {_bd('worksite_efficiency_score')} DESC, "
-                f"{_bd('clinic_treatment_fit_score')} DESC, discovered_at DESC"
+                f"{_bd('clinic_treatment_fit_score')} DESC, {scanned_expr} DESC"
             )
-        return "ORDER BY priority_score DESC, discovered_at DESC"
+        return f"ORDER BY priority_score DESC, {scanned_expr} DESC"
 
     @staticmethod
     def _score_breakdown_number_expr(key: str) -> str:

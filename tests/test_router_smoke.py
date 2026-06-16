@@ -589,6 +589,130 @@ def test_all_backlog_staff_queries_hide_revisited_by_default(tmp_db_path, monkey
     assert recurring_count == {"total": 1}
 
 
+def test_scan_batches_use_scan_run_lineage_for_rediscovered_targets(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+    core_category = viral_router.VIRAL_CORE_CATEGORIES[0]
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN source_scan_run_id INTEGER DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                status TEXT,
+                scan_type TEXT,
+                mode TEXT,
+                started_at TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO scan_runs(id, status, scan_type, mode, started_at, completed_at)
+            VALUES (75, 'completed', 'legion', 'legion', '2026-06-15 16:00:00', '2026-06-15 16:12:29')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, category, comment_status,
+                priority_score, discovered_at, last_scanned_at, scan_count, source_scan_run_id
+            )
+            VALUES (?, 'cafe', ?, ?, ?, 'pending', 92, '2026-06-12T09:00:00', '2026-06-16T01:15:00', 2, 75)
+            """,
+            ("rediscovered-run-target", "http://x/rediscovered-run-target", "rediscovered", core_category),
+        )
+        conn.commit()
+
+    batches = asyncio.run(viral_router.get_scan_batches())
+
+    assert batches[0]["batch_id"] == "run:75"
+    assert batches[0]["batch_date"] == "2026-06-15"
+    assert batches[0]["count"] == 1
+
+
+def test_todays_queue_uses_latest_scan_run_for_rediscovered_targets(tmp_db_path, monkeypatch):
+    from routers import viral as viral_router
+
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+    core_category = viral_router.VIRAL_CORE_CATEGORIES[0]
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN source_scan_run_id INTEGER DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                status TEXT,
+                scan_type TEXT,
+                mode TEXT,
+                started_at TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO scan_runs(id, status, scan_type, mode, started_at, completed_at)
+            VALUES (?, 'completed', 'legion', 'legion', ?, ?)
+            """,
+            [
+                (74, "2026-06-14 16:00:00", "2026-06-14 16:10:00"),
+                (75, "2026-06-15 16:00:00", "2026-06-15 16:12:29"),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, category, comment_status,
+                priority_score, discovered_at, last_scanned_at, scan_count, source_scan_run_id
+            )
+            VALUES (
+                'rediscovered-latest-queue', 'cafe', 'http://x/rediscovered-latest-queue',
+                'rediscovered latest queue', ?, 'pending', 96,
+                '2026-06-10T09:00:00', '2026-06-15T16:12:00', 2, 75
+            )
+            """,
+            (core_category,),
+        )
+        conn.execute(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, category, comment_status,
+                priority_score, discovered_at, last_scanned_at, scan_count, source_scan_run_id
+            )
+            VALUES (
+                'older-run-queue', 'cafe', 'http://x/older-run-queue',
+                'older run queue', ?, 'pending', 120,
+                '2026-06-10T09:00:00', '2026-06-14T16:09:00', 1, 74
+            )
+            """,
+            (core_category,),
+        )
+        conn.commit()
+
+    result = asyncio.run(
+        viral_router.get_todays_queue(
+            total_limit=5,
+            per_category=5,
+            today_only=True,
+            work_scope="latest_legion",
+            exclude_revisited=None,
+        )
+    )
+    selected_ids = [
+        item["id"]
+        for group in result["groups"]
+        for item in group["items"]
+    ]
+
+    assert "rediscovered-latest-queue" in selected_ids
+    assert "older-run-queue" not in selected_ids
+
+
 def test_invalid_work_scope_falls_back_to_staff_default(tmp_db_path, monkeypatch):
     from routers import viral as viral_router
 

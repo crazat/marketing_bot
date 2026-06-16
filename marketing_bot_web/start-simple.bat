@@ -77,6 +77,17 @@ echo.
 
 REM 백엔드 시작 (백그라운드)
 echo 🔧 백엔드 서버 시작 (백그라운드)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000
+set "PORT_CHECK=%ERRORLEVEL%"
+if "%PORT_CHECK%"=="2" (
+    echo.
+    echo Existing Marketing Bot server was left running.
+    exit /b 0
+)
+if not "%PORT_CHECK%"=="0" (
+    pause
+    exit /b %PORT_CHECK%
+)
 cd backend
 start /b python -m uvicorn main:app --reload --port 8000 > nul 2>&1
 cd ..
@@ -124,7 +135,7 @@ REM Node 프로세스 종료
 tasklist | findstr "node.exe" > nul 2>&1
 if %errorlevel% equ 0 (
     echo 🎨 프론트엔드 서버 중지...
-    taskkill /F /IM node.exe > nul 2>&1
+    for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do taskkill /F /PID %%a > nul 2>&1
 )
 
 REM Python/Uvicorn 프로세스 종료
@@ -133,7 +144,7 @@ if %errorlevel% equ 0 (
     echo 🔧 백엔드 서버 중지...
     for /f "tokens=2" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
         for /f "tokens=5" %%b in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
-            taskkill /F /PID %%b > nul 2>&1
+            powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000 -Restart > nul
         )
     )
 )

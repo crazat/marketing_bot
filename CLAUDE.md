@@ -1,6 +1,15 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-16 Viral Hunter Recent-Scan Queue and Server Port Safety Lock
+
+- Viral Hunter work queues, scan-batch filters, bulk actions, and legacy `DatabaseManager.get_viral_targets()` must treat rediscovery as current work. For explicit scan batches, prefer `scan_batch=run:<source_scan_run_id>`; for hour/date filters and recency sorting, use `COALESCE(last_scanned_at, discovered_at)`.
+- Do not regress to calendar-only `discovered_at` semantics for "today" work. A target first discovered earlier but scanned yesterday/today must remain visible through the recent-scan workflow and selectable scan batches.
+- Scan batch lists should be based on `scan_runs` plus `viral_targets.source_scan_run_id` where available, with the `last_scanned_at`/`discovered_at` hour bucket only as a compatibility fallback.
+- Start scripts must not kill or replace an existing port-8000 Marketing Bot server by default. Use `marketing_bot_web/scripts/server_port_check.ps1`; default behavior is "leave existing server untouched", and force restart must be explicit (`--restart` or `MARKETING_BOT_RESTART=1` where supported).
+- Do not use blanket `taskkill /IM python.exe` or `taskkill /IM node.exe` in startup flows. Any backend stop/restart path must be limited to a Marketing Bot-like process on port 8000.
+- Required validation for related work: `python -m py_compile db\database.py repositories\viral_target_repo.py marketing_bot_web\backend\routers\viral.py`, focused Viral Hunter pytest coverage, `cd marketing_bot_web\frontend && npm run typecheck`, `git diff --check`, and a port check confirming the active server PID is preserved when restart was not requested.
+
 ## 2026-06-14 Memory: BRIDGE INSIGHT PREDICTIVENESS — Seed-Fit Score Rewarded Anti-Predictive Demand/Grade While the Only Positive Predictor (Learned Workable-Yield) Was Negligibly Weighted
 
 - New-angle round on the BRIDGE: the prior round fixed the GRADING layer; this one asked the world-class litmus question — **do Pathfinder's extracted INSIGHT signals (grade, viral_readiness, execution_lens, preferred_surface, lens_fit) actually PREDICT which keywords produce workable viral posts, or are they decorative?** Measured empirically by bucketing 48,567 lineage-carrying `viral_targets` by each insight signal (snapshotted in `score_breakdown`) and computing the live workable-rate (`is_qualified_viral_outcome`).

@@ -7,13 +7,24 @@ echo.
 
 REM 1. 기존 프로세스 모두 종료
 echo 🛑 기존 프로세스 종료 중...
-taskkill /F /IM node.exe > nul 2>&1
-taskkill /F /IM python.exe > nul 2>&1
-timeout /t 2 > nul
+set "RESTART_ARG="
+if /I "%~1"=="--restart" set "RESTART_ARG=-Restart"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000 %RESTART_ARG%
+set "PORT_CHECK=%ERRORLEVEL%"
+if "%PORT_CHECK%"=="2" (
+    echo.
+    echo Existing Marketing Bot server was left running.
+    echo To force a restart, run: fix-and-start.bat --restart
+    exit /b 0
+)
+if not "%PORT_CHECK%"=="0" (
+    pause
+    exit /b %PORT_CHECK%
+)
 
 REM 2. 포트 확인 및 정리
 echo 🔍 포트 8000, 5173 정리 중...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do taskkill /F /PID %%a > nul 2>&1
+REM Backend port 8000 is handled by scripts\server_port_check.ps1 above.
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do taskkill /F /PID %%a > nul 2>&1
 timeout /t 2 > nul
 
@@ -71,6 +82,17 @@ echo.
 
 REM 백엔드 시작
 echo 🔧 백엔드 서버 시작 중...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000
+set "PORT_CHECK=%ERRORLEVEL%"
+if "%PORT_CHECK%"=="2" (
+    echo.
+    echo Existing Marketing Bot server was left running.
+    exit /b 0
+)
+if not "%PORT_CHECK%"=="0" (
+    pause
+    exit /b %PORT_CHECK%
+)
 cd backend
 start /b python -m uvicorn main:app --reload --port 8000 > ..\backend.log 2>&1
 cd ..

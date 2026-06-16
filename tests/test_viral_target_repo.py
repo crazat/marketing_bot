@@ -194,6 +194,81 @@ def test_exclude_revisited_hides_duplicate_scan_targets(tmp_db):
     assert [row["url"] for row in rediscovered] == ["https://x/duplicate"]
 
 
+def test_scan_batch_run_filter_uses_source_scan_run_id_and_keeps_status(tmp_db):
+    with sqlite3.connect(tmp_db) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN source_scan_run_id INTEGER DEFAULT 0")
+        conn.commit()
+
+    repo = ViralTargetRepository(tmp_db)
+    assert repo.insert({
+        "id": "old-rediscovered",
+        "platform": "kin",
+        "url": "https://x/old-rediscovered",
+        "title": "old rediscovered",
+        "comment_status": "pending",
+        "priority_score": 90,
+        "matched_keywords": [],
+        "source_scan_run_id": 75,
+    })
+    assert repo.insert({
+        "id": "old-rediscovered-skipped",
+        "platform": "kin",
+        "url": "https://x/old-rediscovered-skipped",
+        "title": "old rediscovered skipped",
+        "comment_status": "skipped",
+        "priority_score": 95,
+        "matched_keywords": [],
+        "source_scan_run_id": 75,
+    })
+    assert repo.insert({
+        "id": "other-run",
+        "platform": "kin",
+        "url": "https://x/other-run",
+        "title": "other run",
+        "comment_status": "pending",
+        "priority_score": 100,
+        "matched_keywords": [],
+        "source_scan_run_id": 74,
+    })
+    assert repo.insert({
+        "id": "today-rescanned",
+        "platform": "blog",
+        "url": "https://x/today-rescanned",
+        "title": "today rescanned",
+        "comment_status": "pending",
+        "priority_score": 80,
+        "matched_keywords": [],
+        "source_scan_run_id": 76,
+    })
+
+    with sqlite3.connect(tmp_db) as conn:
+        conn.execute(
+            """
+            UPDATE viral_targets
+               SET discovered_at = '2026-06-01 10:00:00',
+                   last_scanned_at = '2026-06-15 16:10:00'
+             WHERE id = 'old-rediscovered'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE viral_targets
+               SET discovered_at = '2026-06-01 10:00:00',
+                   last_scanned_at = datetime('now', 'localtime')
+             WHERE id = 'today-rescanned'
+            """
+        )
+        conn.commit()
+
+    rows = repo.list({"status": "pending", "scan_batch": "run:75"}, limit=10)
+    hour_rows = repo.list({"status": "pending", "scan_batch": "2026-06-15 16"}, limit=10)
+    today_rows = repo.list({"status": "pending", "date_filter": "오늘"}, limit=10)
+
+    assert [row["id"] for row in rows] == ["old-rediscovered"]
+    assert [row["id"] for row in hour_rows] == ["old-rediscovered"]
+    assert "today-rescanned" in {row["id"] for row in today_rows}
+
+
 def test_insert_uses_canonical_url_for_naver_duplicates(tmp_db):
     repo = ViralTargetRepository(tmp_db)
     first_url = "https://kin.naver.com/qna/detail.naver?docId=123&qb=old"

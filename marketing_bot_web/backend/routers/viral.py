@@ -219,7 +219,7 @@ def _apply_work_scope_sql(
         return
     if scope == "latest_legion":
         scan_id = _latest_legion_scan_id(cursor)
-        if scan_id:
+        if scan_id and "source_scan_run_id" in _viral_target_columns(cursor):
             where.append("source_scan_run_id = ?")
             params.append(scan_id)
     if scope in ("latest_legion", "core"):
@@ -228,16 +228,133 @@ def _apply_work_scope_sql(
         where.append("COALESCE(scan_count, 1) <= 1")
 
 
-def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], work_scope: Optional[str]) -> None:
+def _apply_work_scope_filters(
+    cursor: sqlite3.Cursor,
+    filters: Dict[str, Any],
+    work_scope: Optional[str],
+) -> None:
     scope = _normalize_work_scope(work_scope)
-    if scope in ("latest_legion", "core") and not filters.get("category"):
+    explicit_batch = bool(filters.get("scan_batch"))
+
+    if scope in ("latest_legion", "core") and not explicit_batch and not filters.get("category"):
         filters["include_categories"] = VIRAL_CORE_CATEGORIES
-    if scope == "latest_legion":
+    if scope == "latest_legion" and not explicit_batch:
         scan_id = _latest_legion_scan_id(cursor)
         if scan_id:
             filters["source_scan_run_id"] = scan_id
-    if filters.get("exclude_revisited") is None and not filters.get("min_scan_count"):
+    if (
+        filters.get("exclude_revisited") is None
+        and not filters.get("min_scan_count")
+        and not explicit_batch
+    ):
         filters["exclude_revisited"] = True
+
+
+def _append_scan_batch_sql(
+    cursor: sqlite3.Cursor,
+    where: List[str],
+    params: List[Any],
+    scan_batch: str,
+) -> None:
+    batch = (scan_batch or "").strip()
+    if not batch:
+        return
+    columns = _viral_target_columns(cursor)
+    if batch.startswith("run:") and "source_scan_run_id" in columns:
+        try:
+            where.append("source_scan_run_id = ?")
+            params.append(int(batch.split(":", 1)[1]))
+            return
+        except (TypeError, ValueError):
+            pass
+    scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in columns else "discovered_at"
+    where.append(f"strftime('%Y-%m-%d %H', {scanned_expr}) = ?")
+    params.append(batch)
+
+
+def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
+    with closing(sqlite3.connect(get_db_path())) as conn:
+        cursor = conn.cursor()
+        target_columns = _viral_target_columns(cursor)
+        has_source_scan = "source_scan_run_id" in target_columns
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_runs'")
+        has_scan_runs = bool(cursor.fetchone())
+
+        batches: List[Dict[str, Any]] = []
+        if has_scan_runs and has_source_scan:
+            run_columns = {row[1] for row in cursor.execute("PRAGMA table_info(scan_runs)").fetchall()}
+            completed_expr = "sr.completed_at" if "completed_at" in run_columns else "NULL"
+            started_expr = "sr.started_at" if "started_at" in run_columns else "NULL"
+            scan_type_filter = ""
+            if "scan_type" in run_columns and "mode" in run_columns:
+                scan_type_filter = "AND (sr.scan_type = 'legion' OR sr.mode LIKE '%legion%')"
+            elif "scan_type" in run_columns:
+                scan_type_filter = "AND sr.scan_type = 'legion'"
+            elif "mode" in run_columns:
+                scan_type_filter = "AND sr.mode LIKE '%legion%'"
+
+            query = f"""
+                SELECT
+                    sr.id as scan_run_id,
+                    COALESCE({completed_expr}, {started_expr}, MAX(v.last_scanned_at), MAX(v.discovered_at)) as batch_time,
+                    COUNT(*) as count,
+                    MIN(COALESCE(v.last_scanned_at, v.discovered_at)) as first_discovered,
+                    MAX(COALESCE(v.last_scanned_at, v.discovered_at)) as last_discovered
+                FROM scan_runs sr
+                JOIN viral_targets v ON v.source_scan_run_id = sr.id
+                WHERE v.comment_status = 'pending'
+                  {scan_type_filter}
+                GROUP BY sr.id
+                HAVING count > 0
+                ORDER BY batch_time DESC, sr.id DESC
+                LIMIT 30
+            """
+            for scan_run_id, batch_time, count, first_discovered, last_discovered in cursor.execute(query).fetchall():
+                batch_dt = datetime.fromisoformat(str(batch_time).replace(" ", "T"))
+                batch_date = batch_dt.strftime("%Y-%m-%d")
+                hour = batch_dt.strftime("%H")
+                batches.append({
+                    "batch_id": f"run:{int(scan_run_id)}",
+                    "batch_label": f"{batch_date} {hour}시 ({int(count):,}개)",
+                    "batch_date": batch_date,
+                    "batch_hour": int(hour),
+                    "count": int(count),
+                    "first_discovered": first_discovered,
+                    "last_discovered": last_discovered,
+                    "source_scan_run_id": int(scan_run_id),
+                })
+
+        if batches:
+            return batches
+
+        scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
+        query = f"""
+            SELECT
+                strftime('%Y-%m-%d %H', {scanned_expr}) as batch_hour,
+                strftime('%Y-%m-%d', {scanned_expr}) as batch_date,
+                strftime('%H', {scanned_expr}) as hour,
+                COUNT(*) as count,
+                MIN({scanned_expr}) as first_discovered,
+                MAX({scanned_expr}) as last_discovered
+            FROM viral_targets
+            WHERE comment_status = 'pending'
+            GROUP BY strftime('%Y-%m-%d %H', {scanned_expr})
+            ORDER BY batch_hour DESC
+            LIMIT 30
+        """
+
+        for batch_hour, batch_date, hour, count, first_discovered, last_discovered in cursor.execute(query).fetchall():
+            batches.append({
+                "batch_id": batch_hour,
+                "batch_label": f"{batch_date} {hour}시 ({int(count):,}개)",
+                "batch_date": batch_date,
+                "batch_hour": int(hour),
+                "count": int(count),
+                "first_discovered": first_discovered,
+                "last_discovered": last_discovered,
+            })
+
+        return batches
 
 
 def _viral_score_breakdown_expr(cursor: sqlite3.Cursor, key: str) -> str:
@@ -919,6 +1036,7 @@ async def get_scan_batches() -> List[Dict[str, Any]]:
         스캔 배치 목록 [{batch_id, batch_label, count, scan_time}]
     """
     try:
+        return _list_scan_batches_from_db()
         db = DatabaseManager()
 
         # discovered_at을 시간 단위로 그룹화 (같은 스캔 세션)
@@ -1029,10 +1147,17 @@ async def get_viral_home_stats(
         # 스캔 배치 필터 조건
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
+        effective_work_scope = "all_backlog" if scan_batch else work_scope
+        effective_exclude_revisited = False if scan_batch else exclude_revisited
+        _apply_work_scope_sql(
+            cursor,
+            effective_work_scope,
+            scope_where,
+            params,
+            exclude_revisited=effective_exclude_revisited,
+        )
         if scan_batch:
-            scope_where.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
-            params.append(scan_batch)
+            _append_scan_batch_sql(cursor, scope_where, params, scan_batch)
         batch_condition = f"AND {' AND '.join(scope_where)}" if scope_where else ""
 
         # 1. 플랫폼별 통계 (DB 집계)
@@ -1619,21 +1744,33 @@ async def get_todays_queue(
         cursor = conn.cursor()
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
+        scope = _normalize_work_scope(work_scope)
+        latest_scan_id = _latest_legion_scan_id(cursor) if scope == "latest_legion" else 0
+        effective_exclude_revisited = exclude_revisited
+        if today_only and effective_exclude_revisited is None:
+            effective_exclude_revisited = False
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=effective_exclude_revisited)
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
         clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
         worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
         target_columns = _viral_target_columns(cursor)
+        scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
+        last_scanned_select = "last_scanned_at" if "last_scanned_at" in target_columns else "NULL AS last_scanned_at"
         matched_category_select = (
             "matched_keyword_category"
             if "matched_keyword_category" in target_columns
             else "NULL AS matched_keyword_category"
         )
+        matched_keyword_select = (
+            "matched_keyword"
+            if "matched_keyword" in target_columns
+            else "NULL AS matched_keyword"
+        )
         candidate_limit = min(500, max(total_limit * 4, total_limit + per_category * len(VIRAL_CORE_CATEGORIES)))
 
         query = f"""
             SELECT id, platform, url, title, content_preview, matched_keywords,
-                   category, {matched_category_select}, priority_score, discovered_at, author, matched_keyword,
+                   category, {matched_category_select}, priority_score, discovered_at, {last_scanned_select}, author, {matched_keyword_select},
                    {clinic_fit_expr} AS clinic_treatment_fit_score,
                    {worksite_efficiency_expr} AS worksite_efficiency_score
             FROM viral_targets
@@ -1641,14 +1778,14 @@ async def get_todays_queue(
               AND priority_score >= 80
               {scope_condition}
         """
-        if today_only:
-            query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+        if today_only and not (scope == "latest_legion" and latest_scan_id):
+            query += f" AND {scanned_expr} >= datetime('now', '-48 hours')"
         query += f"""
             ORDER BY
                 {worksite_efficiency_expr} DESC,
                 {clinic_fit_expr} DESC,
                 priority_score DESC,
-                discovered_at DESC
+                {scanned_expr} DESC
             LIMIT ?
         """
         params.append(candidate_limit)
@@ -2492,11 +2629,13 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         params: List[Any] = []
         scope_where: List[str] = []
         exclude_revisited = req.exclude_revisited
+        if req.scan_batch:
+            exclude_revisited = False
         if exclude_revisited is None and req.min_scan_count and req.min_scan_count > 0:
             exclude_revisited = False
         _apply_work_scope_sql(
             cursor,
-            req.work_scope,
+            "all_backlog" if req.scan_batch else req.work_scope,
             scope_where,
             params,
             exclude_revisited=exclude_revisited,
@@ -2515,15 +2654,23 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
             where += " AND category = ?"
             params.append(req.category)
         if req.scan_batch:
-            where += " AND strftime('%Y-%m-%d %H', discovered_at) = ?"
-            params.append(req.scan_batch)
+            batch_where: List[str] = []
+            _append_scan_batch_sql(cursor, batch_where, params, req.scan_batch)
+            if batch_where:
+                where += " AND " + " AND ".join(batch_where)
         elif req.date_filter:
+            target_columns = _viral_target_columns(cursor)
+            scanned_expr = (
+                "COALESCE(last_scanned_at, discovered_at)"
+                if "last_scanned_at" in target_columns
+                else "discovered_at"
+            )
             if req.date_filter == "오늘":
-                where += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+                where += f" AND DATE({scanned_expr}) = DATE('now', 'localtime')"
             elif req.date_filter == "최근 7일":
-                where += " AND discovered_at >= datetime('now', '-7 days')"
+                where += f" AND {scanned_expr} >= datetime('now', '-7 days')"
             elif req.date_filter == "최근 30일":
-                where += " AND discovered_at >= datetime('now', '-30 days')"
+                where += f" AND {scanned_expr} >= datetime('now', '-30 days')"
         if req.min_scan_count and req.min_scan_count > 0:
             where += " AND scan_count >= ?"
             params.append(req.min_scan_count)

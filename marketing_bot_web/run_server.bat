@@ -19,6 +19,18 @@ if not exist "..\frontend\dist" (
     exit /b 1
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000
+set "PORT_CHECK=%ERRORLEVEL%"
+if "%PORT_CHECK%"=="2" (
+    echo.
+    echo Existing Marketing Bot server was left running.
+    exit /b 0
+)
+if not "%PORT_CHECK%"=="0" (
+    pause
+    exit /b %PORT_CHECK%
+)
+
 python main.py
 
 pause

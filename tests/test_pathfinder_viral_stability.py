@@ -6026,6 +6026,48 @@ def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_pat
     assert db.get_existing_viral_urls([target["url"], "https://example.com/new"]) == {target["url"]}
 
 
+def test_database_get_viral_targets_uses_recent_scan_filters(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_list_filters.db"))
+
+    rows = [
+        ("run75-pending", "https://example.com/run75-pending", "pending", 95, 75, "2026-06-01 10:00:00", "2026-06-15 16:12:00"),
+        ("run75-posted", "https://example.com/run75-posted", "posted", 99, 75, "2026-06-01 10:00:00", "2026-06-15 16:13:00"),
+        ("run74-pending", "https://example.com/run74-pending", "pending", 100, 74, "2026-06-01 10:00:00", "2026-06-14 16:09:00"),
+        ("today-rescanned", "https://example.com/today-rescanned", "pending", 80, 76, "2026-06-01 10:00:00", None),
+    ]
+    for row_id, url, status, score, scan_id, discovered_at, last_scanned_at in rows:
+        assert db.insert_viral_target({
+            "id": row_id,
+            "platform": "cafe",
+            "url": url,
+            "title": row_id,
+            "matched_keywords": ["keyword"],
+            "comment_status": status,
+            "priority_score": score,
+            "source_scan_run_id": scan_id,
+        })
+        with sqlite3.connect(db.db_path) as conn:
+            if last_scanned_at is None:
+                conn.execute(
+                    "UPDATE viral_targets SET discovered_at = ?, last_scanned_at = datetime('now', 'localtime') WHERE id = ?",
+                    (discovered_at, row_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE viral_targets SET discovered_at = ?, last_scanned_at = ? WHERE id = ?",
+                    (discovered_at, last_scanned_at, row_id),
+                )
+            conn.commit()
+
+    run_rows = db.get_viral_targets(status="pending", scan_batch="run:75", sort="date")
+    hour_rows = db.get_viral_targets(status="pending", scan_batch="2026-06-15 16", sort="date")
+    today_rows = db.get_viral_targets(status="pending", date_filter="오늘", sort="date")
+
+    assert [row["id"] for row in run_rows] == ["run75-pending"]
+    assert [row["id"] for row in hour_rows] == ["run75-pending"]
+    assert "today-rescanned" in {row["id"] for row in today_rows}
+
+
 def test_viral_url_canonicalizer_uses_naver_post_identity():
     assert (
         canonicalize_viral_url(
