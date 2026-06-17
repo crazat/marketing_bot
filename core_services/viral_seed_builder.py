@@ -489,6 +489,9 @@ class ViralSeed:
     community_signal: float = 0.0
     conversion_signal: float = 0.0
     profile_action_signal: float = 0.0
+    availability_intent_score: float = 0.0
+    payment_coverage_score: float = 0.0
+    access_convenience_score: float = 0.0
     preferred_search_surface: str = ""
     recommended_content_type: str = ""
     brand_intent_type: str = "generic"
@@ -860,6 +863,9 @@ class ViralSeedBuilder:
                         community_signal=float(row["community_signal"] or 0),
                         conversion_signal=float(row["conversion_signal"] or 0),
                         profile_action_signal=float(row["profile_action_signal"] or 0),
+                        availability_intent_score=float(row["availability_intent_score"] or 0),
+                        payment_coverage_score=float(row["payment_coverage_score"] or 0),
+                        access_convenience_score=float(row["access_convenience_score"] or 0),
                         preferred_search_surface=row["preferred_search_surface"] or "",
                         recommended_content_type=row["recommended_content_type"] or "",
                         brand_intent_type=row["brand_intent_type"] or "generic",
@@ -1099,6 +1105,9 @@ class ViralSeedBuilder:
             community_signal=float(row.get("community_signal") or 0.0),
             conversion_signal=float(row.get("conversion_signal") or 0.0),
             profile_action_signal=float(row.get("profile_action_signal") or 0.0),
+            availability_intent_score=float(row.get("availability_intent_score") or 0.0),
+            payment_coverage_score=float(row.get("payment_coverage_score") or 0.0),
+            access_convenience_score=float(row.get("access_convenience_score") or 0.0),
             preferred_search_surface=str(row.get("preferred_search_surface") or ""),
             recommended_content_type=str(row.get("recommended_content_type") or ""),
             brand_intent_type=str(row.get("brand_intent_type") or "generic"),
@@ -2114,6 +2123,9 @@ class ViralSeedBuilder:
                 community_signal=float(row["community_signal"] or 0),
                 conversion_signal=float(row["conversion_signal"] or 0),
                 profile_action_signal=float(row["profile_action_signal"] or 0),
+                availability_intent_score=float(row["availability_intent_score"] or 0),
+                payment_coverage_score=float(row["payment_coverage_score"] or 0),
+                access_convenience_score=float(row["access_convenience_score"] or 0),
                 preferred_search_surface=row["preferred_search_surface"] or "",
                 recommended_content_type=row["recommended_content_type"] or "",
                 brand_intent_type=row["brand_intent_type"] or "generic",

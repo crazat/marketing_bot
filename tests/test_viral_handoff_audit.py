@@ -152,6 +152,8 @@ def test_viral_handoff_audit_summarizes_grade_axis_lens_and_fit_rates(tmp_path):
     assert report["by_grade"]["B"]["survived"] == 1
     assert report["by_lens"]["community"]["strict_fit"] == 0
     assert report["by_lens"]["cost"]["query_variant_counts"]["cost:비용"] == 1
+    assert report["by_query_variant"]["cost:비용"]["strict_fit"] == 1
+    assert report["by_category_lens"]["피부/여드름::cost"]["total"] == 2
     assert any(
         lane["lane"] == "community" and "low_lens_fit" in lane["reasons"]
         for lane in report["weak_lanes"]
@@ -212,6 +214,43 @@ def test_viral_handoff_audit_defaults_to_latest_source_scan_id(tmp_path):
     assert report["source_scan_run_id"] == 11
     assert report["row_count"] == 1
     assert set(report["by_category"]) == {"다이어트"}
+
+
+def test_viral_handoff_audit_counts_ai_approved_as_actionable_and_survived(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="ai-approved",
+        scan_id=12,
+        category="흉터/여드름흉터",
+        grade="S",
+        status="ai_approved",
+        priority=142,
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+            "pathfinder_axis_fit_score": 91,
+            "pathfinder_lens_fit_score": 88,
+            "clinic_treatment_fit_score": 93,
+            "worksite_efficiency_score": 89,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=12,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    assert report["row_count"] == 1
+    assert report["overall"]["status_counts"]["ai_approved"] == 1
+    assert report["overall"]["actionable"] == 1
+    assert report["overall"]["survived"] == 1
+    assert report["overall"]["filtered"] == 0
+    assert report["by_query_variant"]["axis_scar:specific_수술흉터"]["actionable"] == 1
 
 
 def test_viral_handoff_audit_recategorizes_legacy_skin_scar_targets(tmp_path):
@@ -323,3 +362,85 @@ def test_seed_target_coverage_builds_next_run_playbook_for_undercovered_lanes():
     assert "--boost-category" in playbook["suggested_commands"]["live_scan"]
     assert '--boost-lens "community"' in playbook["suggested_commands"]["live_scan"]
     assert playbook["suggested_commands"]["post_run_audit"] == "python scripts/viral_handoff_audit.py --scan-id 66 --sample-per-lane 3"
+
+
+def test_seed_target_coverage_detects_category_lens_gaps():
+    baseline = {
+        "seed_count": 2,
+        "seed_category_counts": {"흉터/여드름흉터": 1, "다이어트": 1},
+        "seed_lens_counts": {"cost": 1, "review": 1},
+        "seed_category_lens_counts": {
+            "흉터/여드름흉터::cost": 1,
+            "다이어트::review": 1,
+        },
+    }
+    category_summary = {
+        "흉터/여드름흉터": {
+            "total": 1,
+            "survived": 1,
+            "strict_fit": 1,
+            "survival_rate": 1.0,
+            "strict_fit_rate": 1.0,
+        },
+        "다이어트": {
+            "total": 1,
+            "survived": 1,
+            "strict_fit": 1,
+            "survival_rate": 1.0,
+            "strict_fit_rate": 1.0,
+        },
+    }
+    lens_summary = {
+        "cost": {
+            "total": 1,
+            "survived": 1,
+            "strict_fit": 1,
+            "survival_rate": 1.0,
+            "strict_fit_rate": 1.0,
+        },
+        "review": {
+            "total": 1,
+            "survived": 1,
+            "strict_fit": 1,
+            "survival_rate": 1.0,
+            "strict_fit_rate": 1.0,
+        },
+    }
+    category_lens_summary = {
+        "다이어트::review": {
+            "total": 1,
+            "survived": 1,
+            "strict_fit": 1,
+            "survival_rate": 1.0,
+            "strict_fit_rate": 1.0,
+        }
+    }
+
+    coverage = _seed_target_coverage(
+        baseline,
+        category_summary=category_summary,
+        lens_summary=lens_summary,
+        category_lens_summary=category_lens_summary,
+        min_targets_per_seed=1.0,
+        min_strict_fit_per_seed=0.25,
+    )
+    playbook = _next_run_playbook(
+        source_scan_run_id=91,
+        row_count=1,
+        overall={"axis_coverage_rate": 1.0, "lens_coverage_rate": 1.0},
+        seed_target_coverage=coverage,
+        weak_lanes=[],
+        recommendations=[{"code": "undercovered_seed_category_lenses"}],
+        sample_per_lane=3,
+    )
+
+    assert coverage["by_category"]["흉터/여드름흉터"]["gap_reasons"] == []
+    assert coverage["by_lens"]["cost"]["gap_reasons"] == []
+    assert coverage["by_category_lens"]["흉터/여드름흉터::cost"]["gap_reasons"] == [
+        "no_targets",
+        "low_strict_fit_per_seed",
+    ]
+    assert coverage["undercovered_category_lenses"] == ["흉터/여드름흉터::cost"]
+    assert [item["category_lens"] for item in playbook["boost_category_lenses"]] == ["흉터/여드름흉터::cost"]
+    assert '--boost-category "흉터/여드름흉터"' in playbook["suggested_commands"]["live_scan"]
+    assert '--boost-lens "cost"' in playbook["suggested_commands"]["live_scan"]

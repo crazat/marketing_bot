@@ -1409,8 +1409,14 @@ def test_viral_seed_builder_uses_pathfinder_execution_signals_for_viral_readines
     assert seeds[0].viral_readiness_score >= 80
     assert seeds[0].content_actionability_score == 88.0
     assert seeds[0].medical_ad_risk_score == 8.0
+    assert seeds[0].availability_intent_score == 72.0
+    assert seeds[0].payment_coverage_score == 70.0
+    assert seeds[0].access_convenience_score == 70.0
     assert context["청주 다이어트 한약 비용 상담 후기"]["viral_readiness_score"] >= 80
     assert context["청주 다이어트 한약 비용 상담 후기"]["preferred_search_surface"] == "hybrid_local_content"
+    assert context["청주 다이어트 한약 비용 상담 후기"]["availability_intent_score"] == 72.0
+    assert context["청주 다이어트 한약 비용 상담 후기"]["payment_coverage_score"] == 70.0
+    assert context["청주 다이어트 한약 비용 상담 후기"]["access_convenience_score"] == 70.0
 
 
 def test_viral_seed_builder_prefers_community_fit_over_pure_profile_grade(tmp_path):
@@ -2534,6 +2540,34 @@ def test_viral_hunter_search_plan_uses_execution_lens_to_reduce_blog_noise():
     assert plan["platform_limits"]["blog"] == 65
 
 
+def test_viral_hunter_search_plan_treats_availability_lens_as_decision_surface():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 교통사고 한의원 주차 가능": {
+            "category": "교통사고",
+            "viral_readiness_score": 50,
+            "community_signal": 10,
+            "conversion_signal": 20,
+            "profile_action_signal": 25,
+            "availability_intent_score": 20,
+            "access_convenience_score": 82,
+            "medical_ad_risk_score": 8,
+            "content_actionability_score": 82,
+            "preferred_search_surface": "",
+            "recommended_content_type": "",
+            "review_intent_type": "none",
+            "execution_lens": "availability",
+        }
+    }
+
+    plan = hunter._search_plan_for_keyword("청주 교통사고 한의원 주차 가능", 100)
+
+    assert plan["execution_lens"] == "availability"
+    assert plan["platform_limits"]["cafe"] == 100
+    assert plan["platform_limits"]["kin"] == 100
+    assert plan["platform_limits"]["blog"] == 65
+
+
 def test_viral_hunter_builds_lens_aware_search_query_variants():
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
     hunter.keyword_context = {
@@ -2616,6 +2650,44 @@ def test_viral_hunter_applies_inferred_context_when_db_context_is_missing():
     assert target.score_breakdown["pathfinder_execution_lens"] == "cost"
 
 
+def test_viral_hunter_applies_pathfinder_access_scores_to_target_breakdown():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 여드름 한의원 주차 가능": {
+            "category": "피부/여드름",
+            "viral_readiness_score": 68,
+            "local_service_fit_score": 82,
+            "content_actionability_score": 80,
+            "medical_ad_risk_score": 7,
+            "community_signal": 22,
+            "conversion_signal": 38,
+            "profile_action_signal": 55,
+            "availability_intent_score": 62,
+            "payment_coverage_score": 10,
+            "access_convenience_score": 84,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "access_landing",
+            "review_intent_type": "none",
+            "execution_lens": "availability",
+        }
+    }
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/skin-access-context",
+        title="청주 여드름 한의원 주차 가능한 곳",
+        content_preview="차로 가기 편하고 위치 찾기 쉬운 곳이 궁금합니다.",
+        matched_keywords=["청주 여드름 한의원 주차 가능"],
+        category="피부/여드름",
+    )
+
+    hunter._apply_keyword_context(target)
+
+    assert target.score_breakdown["pathfinder_execution_lens"] == "availability"
+    assert target.score_breakdown["pathfinder_availability_intent_score"] == 62.0
+    assert target.score_breakdown["pathfinder_access_convenience_score"] == 84.0
+    assert target.score_breakdown["pathfinder_payment_coverage_score"] == 10.0
+
+
 def test_viral_hunter_adds_axis_companion_query_for_scar_seed():
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
     hunter.keyword_context = {
@@ -2678,6 +2750,63 @@ def test_viral_hunter_adds_axis_companion_query_for_skin_seed_without_duplicate(
     ]
     assert plans[2]["variant"] == "axis_skin:피부질환추천"
     assert plans[3]["variant"] == "patient_voice_kin"
+
+
+def test_viral_hunter_preserves_specific_scar_context_in_axis_companion():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 수술흉터 새살침 상담": {
+            "category": "흉터/여드름흉터",
+            "viral_readiness_score": 73,
+            "community_signal": 42,
+            "conversion_signal": 58,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 82,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "review_intent_type": "none",
+            "execution_lens": "consultation",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 수술흉터 새살침 상담", 100)
+
+    assert [plan["query"] for plan in plans] == [
+        "청주 수술흉터 새살침",
+        "청주 수술흉터 새살침 추천",
+        "청주 수술흉터 새살침 후기",
+        "수술흉터 새살침",
+    ]
+    assert plans[2]["variant"] == "axis_scar:specific_수술흉터"
+    assert hunter.keyword_context["청주 수술흉터 새살침 후기"]["pathfinder_source_keyword"] == "청주 수술흉터 새살침 상담"
+
+
+def test_viral_hunter_preserves_specific_skin_context_before_generic_companion():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 아토피 한의원 비용": {
+            "category": "피부/여드름",
+            "viral_readiness_score": 67,
+            "community_signal": 35,
+            "conversion_signal": 55,
+            "medical_ad_risk_score": 8,
+            "content_actionability_score": 78,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "review_intent_type": "none",
+            "execution_lens": "cost",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 아토피 한의원 비용", 100)
+
+    assert [plan["query"] for plan in plans] == [
+        "청주 아토피 한의원",
+        "청주 아토피 한의원 추천",
+        "청주 아토피 한의원 후기",
+        "아토피 한의원",
+    ]
+    assert plans[2]["variant"] == "axis_skin:specific_아토피"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_diet_review_seed():
@@ -2944,6 +3073,57 @@ def test_viral_hunter_merges_duplicate_search_result_with_stronger_query_variant
     assert current.search_rank == 2
     assert current.exposure_score == 45
     assert current.sort_appearances == ["sim", "date"]
+
+
+def test_viral_hunter_duplicate_merge_prefers_specific_axis_variant_over_generic_axis_exposure():
+    current = ViralTarget(
+        platform="kin",
+        url="https://example.com/duplicate-surgery-scar",
+        title="청주 여드름흉터 새살침 후기",
+        content_preview="청주에서 여드름흉터 새살침 상담 받아보신 분 계신가요?",
+        matched_keywords=["청주 여드름흉터 새살침 후기"],
+        search_rank=1,
+        exposure_score=90,
+        sort_appearances=["sim"],
+    )
+    incoming = ViralTarget(
+        platform="kin",
+        url="https://example.com/duplicate-surgery-scar",
+        title="청주 수술흉터 새살침 후기",
+        content_preview="수술흉터랑 켈로이드 때문에 새살침 상담 후기가 궁금합니다.",
+        matched_keywords=["청주 수술흉터 새살침 후기"],
+        search_rank=7,
+        exposure_score=25,
+        sort_appearances=["date"],
+    )
+    viral_hunter.ViralHunter._attach_search_query_lineage(
+        current,
+        source_keyword="청주 수술흉터 새살침 상담",
+        search_query="청주 여드름흉터 새살침 후기",
+        query_variant="axis_scar:새살침후기",
+    )
+    viral_hunter.ViralHunter._attach_search_query_lineage(
+        incoming,
+        source_keyword="청주 수술흉터 새살침 상담",
+        search_query="청주 수술흉터 새살침 후기",
+        query_variant="axis_scar:specific_수술흉터",
+    )
+
+    viral_hunter.ViralHunter._merge_duplicate_search_target(current, incoming)
+
+    assert current.score_breakdown["pathfinder_query_variant"] == "axis_scar:specific_수술흉터"
+    assert current.score_breakdown["pathfinder_search_query"] == "청주 수술흉터 새살침 후기"
+    assert current.score_breakdown["pathfinder_query_variants"] == [
+        "axis_scar:새살침후기",
+        "axis_scar:specific_수술흉터",
+    ]
+    assert current.matched_keywords[:2] == [
+        "청주 수술흉터 새살침 상담",
+        "청주 수술흉터 새살침 후기",
+    ]
+    # Exposure remains the best observed URL-level value even when lineage prefers specific context.
+    assert current.exposure_score == 90
+    assert current.search_rank == 1
 
 
 def test_viral_hunter_checkpoint_hash_includes_query_variants(tmp_path):
@@ -4357,6 +4537,70 @@ def test_ai_target_split_caps_dominant_skin_floor_and_uses_matched_category():
     assert selected_urls.isdisjoint(rest_urls)
 
 
+def test_ai_target_split_preserves_pathfinder_lens_diversity_inside_category_floor():
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/scar/review/{i}",
+            title=f"scar review {i}",
+            category="흉터/여드름흉터",
+            matched_keyword_category="흉터/여드름흉터",
+            priority_score=1000 - i,
+            score_breakdown={"pathfinder_execution_lens": "review"},
+        )
+        for i in range(8)
+    ]
+    targets += [
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/scar/cost",
+            title="scar cost",
+            category="흉터/여드름흉터",
+            matched_keyword_category="흉터/여드름흉터",
+            priority_score=120,
+            score_breakdown={"pathfinder_execution_lens": "cost"},
+        ),
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/scar/consultation",
+            title="scar consultation",
+            category="흉터/여드름흉터",
+            matched_keyword_category="흉터/여드름흉터",
+            priority_score=110,
+            score_breakdown={"pathfinder_execution_lens": "consultation"},
+        ),
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/diet/review",
+            title="diet review",
+            category="다이어트",
+            priority_score=105,
+            score_breakdown={"pathfinder_execution_lens": "review"},
+        ),
+    ]
+    targets.sort(key=lambda target: target.priority_score, reverse=True)
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=5,
+        category_min_quotas={"흉터/여드름흉터": 4},
+    )
+
+    scar_lenses = {
+        viral_hunter._ai_target_execution_lens(target)
+        for target in selected
+        if viral_hunter._ai_quota_category(target) == "흉터/여드름흉터"
+    }
+    selected_urls = {target.url for target in selected}
+    rest_urls = {target.url for target in rest}
+
+    assert len(selected) == 5
+    assert scar_lenses >= {"review", "cost", "consultation"}
+    assert "https://example.com/scar/cost" in selected_urls
+    assert "https://example.com/scar/consultation" in selected_urls
+    assert selected_urls.isdisjoint(rest_urls)
+
+
 def test_naver_multi_sort_collect_tracks_exposure_metadata():
     searcher = viral_hunter.NaverUnifiedSearch(delay=0, use_cache=False)
 
@@ -4434,6 +4678,103 @@ def test_viral_filter_scores_gyulim_skin_scar_worksite_fit():
     assert filtered[0].priority_score >= 120
 
 
+def test_viral_filter_routes_sensitive_medication_advice_to_manual_review():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/pregnancy-diet-medication-advice",
+        title="청주 임신 중 다이어트한약 복용해도 되나요",
+        content_preview=(
+            "임신 초기인데 체중이 너무 늘어서 청주에서 다이어트한약 상담을 알아보고 있습니다. "
+            "한약을 복용해도 되는지, 계속 먹어도 되는지 궁금합니다. "
+            "비용이나 예약 가능한 한의원보다 안전하게 상담받을 수 있는 곳을 찾고 있습니다."
+        ),
+        matched_keywords=["청주 다이어트한약 상담"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="B",
+        date_str="방금 전",
+        comment_count=0,
+        view_count=120,
+    )
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert filtered == []
+    assert target.comment_status == "manual_review"
+    assert target.score_breakdown["manual_review"] == 1.0
+    assert "medication_advice_request" in target.score_breakdown["reply_risk_flags"]
+
+
+def test_viral_reply_risk_routes_drug_combination_and_acute_side_effect_to_human_only():
+    F = viral_hunter.CommentableFilter
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/skin-drug-combination",
+        title="청주 여드름 한약 항생제 같이 복용해도 되나요",
+        content_preview=(
+            "피부과 항생제를 먹고 있는데 청주 여드름 한의원 한약을 같이 복용해도 되는지 "
+            "궁금합니다. 상담 전에 비슷한 경험 있으신 분 이야기를 듣고 싶습니다."
+        ),
+        matched_keywords=["청주 여드름 한의원 상담"],
+        category="피부/여드름",
+        matched_keyword_category="피부/여드름",
+        matched_keyword_grade="B",
+    )
+    combo_text = f"{target.title} {target.content_preview}".lower()
+
+    penalty, flags, human_only = F._assess_reply_risk(combo_text, target)
+
+    assert human_only is True
+    assert penalty <= -60
+    assert "sensitive_medical" in flags
+    assert "medication_advice_request" in flags
+
+    side_effect = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet-acute-side-effect",
+        title="청주 다이어트한약 부작용 심장 두근거림",
+        content_preview=(
+            "다이어트한약을 먹고 심장 두근거림과 어지럼이 있는데 계속 먹어도 될까요? "
+            "청주에서 어디에 상담해야 할지 궁금합니다."
+        ),
+        matched_keywords=["청주 다이어트한약 상담"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="B",
+    )
+    acute_text = f"{side_effect.title} {side_effect.content_preview}".lower()
+
+    _, acute_flags, acute_human_only = F._assess_reply_risk(acute_text, side_effect)
+
+    assert acute_human_only is True
+    assert "acute_side_effect" in acute_flags
+
+
+def test_viral_reply_risk_keeps_general_side_effect_experience_as_non_human_only():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet-side-effect-experience",
+        title="청주 다이어트한약 부작용 경험 궁금해요",
+        content_preview=(
+            "청주에서 다이어트한약 상담 받아보신 분들 중 부작용 경험이나 주의사항이 "
+            "어땠는지 궁금합니다. 비용과 상담 후기도 같이 알고 싶습니다."
+        ),
+        matched_keywords=["청주 다이어트한약 후기"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="B",
+    )
+
+    _, flags, human_only = viral_hunter.CommentableFilter._assess_reply_risk(
+        f"{target.title} {target.content_preview}".lower(),
+        target,
+    )
+
+    assert human_only is False
+    assert "sensitive_medical" in flags
+    assert "medication_advice_request" not in flags
+
+
 def test_viral_filter_keeps_surgery_scar_when_new_skin_care_context_is_hanbang():
     target = ViralTarget(
         platform="kin",
@@ -4460,6 +4801,133 @@ def test_viral_filter_keeps_surgery_scar_when_new_skin_care_context_is_hanbang()
     assert breakdown["clinic_treatment_fit_score"] >= 80
     assert "gyulim_profile_match" in breakdown["clinic_treatment_fit_signals"]
     assert filtered[0].comment_status == "pending"
+
+
+def test_pathfinder_lens_fit_accepts_cost_seed_community_bridge_variant():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/cost-community-bridge",
+        title="청주 여드름흉터 새살침 추천 부탁드려요",
+        content_preview="금액 언급은 없지만 실제 경험이나 후기 있는 곳이 궁금합니다.",
+        matched_keywords=["금천동 여드름흉터 비용", "금천동 여드름흉터 추천"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        score_breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost_community:추천",
+        },
+    )
+
+    score, tier, signals = viral_hunter.CommentableFilter._pathfinder_lens_post_fit(
+        target,
+        platform=target.platform,
+        text=f"{target.title} {target.content_preview}".lower(),
+    )
+
+    assert score >= 55
+    assert tier in {"acceptable", "strong"}
+    assert "pathfinder_lens_cost_community_bridge" in signals
+
+
+def test_pathfinder_lens_fit_keeps_plain_cost_seed_mismatch_without_bridge_or_cost_term():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/cost-plain-mismatch",
+        title="청주 여드름흉터 새살침 추천 부탁드려요",
+        content_preview="실제 경험이나 후기 있는 곳이 궁금합니다.",
+        matched_keywords=["금천동 여드름흉터 비용"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        score_breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "community_base",
+        },
+    )
+
+    score, tier, signals = viral_hunter.CommentableFilter._pathfinder_lens_post_fit(
+        target,
+        platform=target.platform,
+        text=f"{target.title} {target.content_preview}".lower(),
+    )
+
+    assert score < 50
+    assert tier == "mismatch"
+    assert "pathfinder_lens_cost_mismatch" in signals
+
+
+def test_pathfinder_lens_fit_accepts_access_convenience_terms_as_availability():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/access-availability-fit",
+        title="청주 여드름 한의원 주차 가능한 곳",
+        content_preview=(
+            "차로 가야 해서 주차랑 길찾기가 편한지 궁금합니다. "
+            "엘리베이터도 있으면 좋겠어요."
+        ),
+        matched_keywords=["청주 여드름 한의원 주차 가능"],
+        category="피부/여드름",
+        matched_keyword_category="피부/여드름",
+        score_breakdown={
+            "pathfinder_execution_lens": "availability",
+            "pathfinder_availability_intent_score": 62.0,
+            "pathfinder_access_convenience_score": 84.0,
+        },
+    )
+
+    score, tier, signals = viral_hunter.CommentableFilter._pathfinder_lens_post_fit(
+        target,
+        platform=target.platform,
+        text=f"{target.title} {target.content_preview}".lower(),
+    )
+
+    assert score >= 75
+    assert tier == "strong"
+    assert "pathfinder_lens_availability_match" in signals
+
+
+def test_pathfinder_axis_fit_rewards_source_specific_scar_context():
+    source_keyword = "청주 수술흉터 새살침 상담"
+    matching_target = ViralTarget(
+        platform="kin",
+        url="https://example.com/surgery-scar-specific",
+        title="청주 수술흉터 새살침 후기 궁금합니다",
+        content_preview="수술 흉터와 켈로이드 때문에 한의원 새살침 상담을 알아보고 있습니다.",
+        matched_keywords=[source_keyword, "청주 수술흉터 새살침 후기"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        score_breakdown={
+            "pathfinder_source_keyword": source_keyword,
+            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+        },
+    )
+    broad_target = ViralTarget(
+        platform="kin",
+        url="https://example.com/general-acne-scar",
+        title="청주 여드름흉터 새살침 후기 궁금합니다",
+        content_preview="패인 여드름흉터와 여드름자국 때문에 한의원 상담을 알아보고 있습니다.",
+        matched_keywords=[source_keyword, "청주 여드름흉터 새살침 후기"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        score_breakdown={
+            "pathfinder_source_keyword": source_keyword,
+            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+        },
+    )
+
+    matching_score, _, matching_signals = viral_hunter.CommentableFilter._pathfinder_axis_post_fit(
+        matching_target,
+        domain="scar_skin",
+        text=f"{matching_target.title} {matching_target.content_preview}".lower(),
+    )
+    broad_score, _, broad_signals = viral_hunter.CommentableFilter._pathfinder_axis_post_fit(
+        broad_target,
+        domain="scar_skin",
+        text=f"{broad_target.title} {broad_target.content_preview}".lower(),
+    )
+
+    assert "pathfinder_axis_specific_context_match" in matching_signals
+    assert "pathfinder_axis_specific_context_missing" in broad_signals
+    assert matching_score >= broad_score + 20
 
 
 def test_viral_final_gate_rejects_scar_seed_when_post_is_only_active_acne():
@@ -4655,6 +5123,52 @@ def test_region_fit_signal_credits_local_venue_without_double_count():
     with_text, _ = F._region_fit_signal("청주 여드름 흉터 고민", local_venue=False)
     with_both, _ = F._region_fit_signal("청주 여드름 흉터 고민", local_venue=True)
     assert with_text == with_both
+
+
+def test_region_gate_ignores_ambiguous_cheongju_stem_false_positive():
+    F = viral_hunter.CommentableFilter
+    text = (
+        "국민청원에 올리고 싶을 정도로 여드름흉터가 고민입니다. "
+        "상당히 오래된 패인흉터라 한의원 새살침 후기와 비용이 궁금해요."
+    )
+
+    assert F._contains_region_terms(text, F.REGION_KEYWORDS) is False
+    assert F._has_ambiguous_region_false_positive(text) is True
+
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/petition-not-cheongju",
+        title="여드름흉터 새살침 후기 궁금합니다",
+        content_preview=text,
+        matched_keywords=["청주 여드름흉터 새살침 후기"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    assert F.final_reject_reason(target) == "region_mismatch"
+
+
+def test_region_gate_keeps_unambiguous_cheongju_district_context():
+    F = viral_hunter.CommentableFilter
+    valid_text = "청주 상당구에서 수술흉터 새살침 상담 받아보신 분 후기 궁금합니다."
+    shorthand_text = "청주 서원 여드름흉터 한의원 비용 궁금합니다."
+
+    assert F._contains_region_terms(valid_text, F.REGION_KEYWORDS) is True
+    assert F._contains_region_terms(shorthand_text, F.REGION_KEYWORDS) is True
+
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/cheongju-district-scar",
+        title="청주 상당구 수술흉터 새살침 후기 궁금합니다",
+        content_preview=valid_text,
+        matched_keywords=["청주 수술흉터 새살침 후기"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    assert F.final_reject_reason(target) is None
 
 
 def test_viral_final_gate_keeps_local_cafe_with_incidental_distant_mention():
@@ -4982,6 +5496,43 @@ def test_viral_final_gate_rejects_asymmetry_kin_answer_axis_near_snippet_start()
     assert viral_hunter.CommentableFilter.final_reject_reason(target) == "off_domain"
 
 
+def test_kin_labeled_answer_is_not_used_as_user_axis_anchor():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/asymmetry-labeled-answer-axis-only",
+        title="청주에 담적치료 한의원 추천해주세요",
+        content_preview=(
+            "담적치료를 잘하는 한의원 추천 부탁드립니다. "
+            "소화가 안 되고 명치가 답답해서 한약 상담 경험을 듣고 싶습니다. "
+            "[기존답변1] 턱관절 안면비대칭 교정은 한의원 추나와 교정 상담으로 접근할 수 있습니다. "
+            "청주 안면비대칭 비용과 예약도 확인하세요."
+        ),
+        matched_keywords=["청주 턱관절 안면비대칭 한의원 추천"],
+        category="안면비대칭",
+        matched_keyword_category="안면비대칭",
+        matched_keyword_grade="B",
+        score_breakdown={
+            "pathfinder_query_variant": "axis_asymmetry:턱관절비대칭추천",
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 80.0,
+            "pathfinder_axis_fit_tier": "strong",
+            "pathfinder_lens_fit_score": 78.0,
+            "pathfinder_lens_fit_tier": "strong",
+        },
+    )
+
+    user_text = viral_hunter.CommentableFilter._user_need_text(target)
+
+    assert "[기존답변1]" not in user_text
+    assert "턱관절" not in user_text
+    assert viral_hunter.CommentableFilter._has_user_axis_anchor(
+        target,
+        domain="asymmetry",
+        category="안면비대칭",
+    ) is False
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "off_domain"
+
+
 def test_viral_final_gate_rejects_conversion_lens_mismatch():
     target = ViralTarget(
         platform="kin",
@@ -5123,6 +5674,136 @@ def test_viral_final_gate_rejects_provider_info_posts_without_user_ask():
     assert viral_hunter.CommentableFilter.final_reject_reason(guide_post) == "advertorial"
     assert viral_hunter.CommentableFilter.final_reject_reason(treatment_guide) == "advertorial"
     assert viral_hunter.CommentableFilter.final_reject_reason(chuna_situation_guide) == "advertorial"
+
+
+def test_viral_final_gate_rejects_question_like_blog_provider_cta_body():
+    target = ViralTarget(
+        platform="blog",
+        url="https://example.com/provider-question-like-scar-guide",
+        title="청주 수술흉터 새살침 후기 궁금하다면",
+        content_preview=(
+            "본원에서는 수술흉터 피부 상태에 맞춘 맞춤 진료를 진행합니다. "
+            "네이버 예약 또는 카카오톡 상담으로 문의주세요. "
+            "오시는 길과 진료시간은 아래에서 확인 가능합니다."
+        ),
+        matched_keywords=["청주 수술흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    text = f"{target.title} {target.content_preview}".lower()
+    is_advertorial, signals, score = viral_hunter.CommentableFilter._detect_advertorial(target, text)
+
+    assert is_advertorial is True
+    assert score >= 5
+    assert "provider_cta_body" in signals
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "advertorial"
+
+
+def test_viral_final_gate_keeps_cafe_user_question_with_provider_terms_but_no_cta_body():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-scar-real-user-question",
+        title="청주 수술흉터 새살침 후기 궁금해요",
+        content_preview=(
+            "수술흉터 때문에 한의원 상담 받아보신 분 계신가요? "
+            "비용이나 치료기간 후기가 궁금합니다. "
+            "광고 말고 직접 경험 있으신 분 부탁드려요."
+        ),
+        matched_keywords=["청주 수술흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter._provider_cta_body_signal(target, "") == (False, [])
+    assert viral_hunter.CommentableFilter._is_response_restricted_surface(target) is False
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
+
+
+def test_viral_final_gate_rejects_response_restricted_user_surface():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-scar-response-restricted",
+        title="청주 수술흉터 새살침 후기 궁금해요",
+        content_preview=(
+            "수술흉터와 켈로이드 때문에 한의원 새살침 상담을 알아보고 있습니다. "
+            "비용, 치료기간, 주말 상담 가능 여부가 궁금해서 실제 경험담을 찾습니다. "
+            "업체 사절 홍보 금지 댓글 사절입니다."
+        ),
+        matched_keywords=["청주 수술흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+        date_str="방금 전",
+        comment_count=0,
+        view_count=120,
+    )
+
+    assert viral_hunter.CommentableFilter._is_response_restricted_surface(target) is True
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "response_restricted"
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert filtered == []
+    assert target.is_commentable is False
+    assert target.comment_status == "filtered_out"
+    assert target.score_breakdown["final_reject_reason"] == "response_restricted"
+
+
+def test_viral_final_gate_rejects_self_owned_blog_and_brand_title():
+    owned_blog = ViralTarget(
+        platform="blog",
+        url="https://blog.naver.com/sangshan1/223456789012",
+        title="청주 여드름흉터 새살침 후기 정리",
+        content_preview="청주에서 여드름흉터와 새살침 상담을 알아보는 분들을 위한 글입니다.",
+        matched_keywords=["청주 여드름흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+    brand_title = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-brand-title-question",
+        title="청주 규림한의원 여드름흉터 상담 받아보신 분 있나요",
+        content_preview=(
+            "여드름흉터랑 새살침 비용이 궁금해서 실제 상담 후기 찾고 있습니다. "
+            "광고 말고 경험 있으신 분 계실까요?"
+        ),
+        matched_keywords=["청주 여드름흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(owned_blog) == "self_target"
+    assert viral_hunter.CommentableFilter.final_reject_reason(brand_title) == "self_target"
+
+    assert viral_hunter.CommentableFilter.apply_final_reject(owned_blog) == "self_target"
+    assert owned_blog.is_commentable is False
+    assert owned_blog.comment_status == "filtered_out"
+    assert owned_blog.score_breakdown["final_reject_reason"] == "self_target"
+
+
+def test_viral_filter_marks_self_target_status_for_audit():
+    target = ViralTarget(
+        platform="blog",
+        url="https://blog.naver.com/cozypark5959/223456789013",
+        title="청주 수술흉터 새살침 후기",
+        content_preview="수술흉터와 켈로이드 치료 상담 정보를 정리한 글입니다.",
+        matched_keywords=["청주 수술흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert filtered == []
+    assert target.is_commentable is False
+    assert target.comment_status == "filtered_out"
+    assert target.score_breakdown["final_reject_reason"] == "self_target"
 
 
 def test_viral_final_gate_rejects_body_seed_without_body_anchor():
@@ -7034,6 +7715,7 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
                         {
                             "pathfinder_source_keyword": "봉명동 한방리프팅 비용",
                             "pathfinder_query_variant": "base",
+                            "pathfinder_execution_lens": "cost",
                         },
                         ensure_ascii=False,
                     ),
@@ -7053,6 +7735,7 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
                         {
                             "pathfinder_source_keyword": "청주 여드름 한의원",
                             "pathfinder_query_variant": "community:추천",
+                            "pathfinder_execution_lens": "review",
                         },
                         ensure_ascii=False,
                     ),
@@ -7089,6 +7772,9 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
     assert audit["zero_yield_seeds"][0]["seed"] == "봉명동 한방리프팅 비용"
     assert audit["per_structure"]["structure:리프팅/탄력:suffix:neigh"]["ad_filtered"] == 30
     assert audit["per_query_variant"]["community:추천"]["pending"] == 2
+    assert audit["per_category_lens"]["리프팅/탄력::cost"]["ad_filtered"] == 30
+    assert audit["per_category_lens"]["피부/여드름::review"]["pending"] == 2
+    assert audit["per_category_lens_query_variant"]["피부/여드름::review::community:추천"]["pending"] == 2
 
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
@@ -7105,6 +7791,61 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
     assert row[4] == 30
     persisted = json.loads(row[5])
     assert persisted["summary"]["pending"] == 2
+    assert persisted["per_category_lens_query_variant"]["피부/여드름::review::community:추천"]["pending"] == 2
+
+
+def test_viral_hunter_discovery_audit_counts_actionable_statuses_as_yield(tmp_path):
+    db_path = tmp_path / "audit_actionable.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                comment_status TEXT,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                matched_keyword_category TEXT,
+                score_breakdown TEXT,
+                discovered_at TEXT
+            )
+            """
+        )
+        rows = []
+        for status in ("generated", "posted", "ai_approved"):
+            rows.append(
+                (
+                    f"target-{status}",
+                    "흉터/여드름흉터",
+                    status,
+                    "청주 수술흉터 새살침 후기",
+                    json.dumps(["청주 수술흉터 새살침 후기"], ensure_ascii=False),
+                    "흉터/여드름흉터",
+                    json.dumps(
+                        {
+                            "pathfinder_source_keyword": "청주 수술흉터 새살침 상담",
+                            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+                            "pathfinder_execution_lens": "consultation",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "2026-06-12 10:05:00",
+                )
+            )
+        conn.executemany("INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    audit = hunter._persist_viral_discovery_audit(
+        "2026-06-12 00:00:00",
+        source_scan_run_id=68,
+        keyword_count=1,
+        db_path=str(db_path),
+    )
+
+    assert audit is not None
+    assert audit["summary"]["pending"] == 3
+    assert audit["per_query_variant"]["axis_scar:specific_수술흉터"]["pending"] == 3
+    assert audit["per_category_lens"]["흉터/여드름흉터::consultation"]["pending"] == 3
 
 
 def test_viral_hunter_discovery_audit_canonicalizes_legacy_scar_category(tmp_path):
@@ -7615,6 +8356,245 @@ def test_viral_hunter_variant_yield_gate_drops_proven_zero_yield_companions(tmp_
     assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
 
 
+def test_viral_hunter_variant_yield_gate_prefers_category_lens_specific_evidence(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "variant_lane_yield.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        audit_json = json.dumps(
+            {
+                "per_query_variant": {
+                    "axis_skin:아토피후기": {"discovered": 100, "pending": 0, "ad_filtered": 70},
+                },
+                "per_category_lens_query_variant": {
+                    "피부/여드름::review::axis_skin:아토피후기": {
+                        "discovered": 8,
+                        "pending": 1,
+                        "ad_filtered": 2,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", audit_json),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름 한의원 추천": {
+            "category": "피부/여드름",
+            "viral_readiness_score": 72,
+            "community_signal": 64,
+            "conversion_signal": 20,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "review",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름 한의원 추천", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    assert "axis_skin:아토피후기" in variants
+    assert getattr(hunter, "_variant_drop_counts", {}) == {}
+
+
+def test_viral_hunter_variant_yield_gate_drops_category_lens_zero_yield_even_when_global_survives(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "variant_lane_zero.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        audit_json = json.dumps(
+            {
+                "per_query_variant": {
+                    "axis_skin:아토피후기": {"discovered": 100, "pending": 8, "ad_filtered": 20},
+                },
+                "per_category_lens_query_variant": {
+                    "피부/여드름::review::axis_skin:아토피후기": {
+                        "discovered": 70,
+                        "pending": 0,
+                        "ad_filtered": 60,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", audit_json),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름 한의원 추천": {
+            "category": "피부/여드름",
+            "viral_readiness_score": 72,
+            "community_signal": 64,
+            "conversion_signal": 20,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "review",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름 한의원 추천", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    assert "axis_skin:아토피후기" not in variants
+    assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
+
+
+def test_viral_hunter_variant_yield_gate_does_not_drop_patient_voice_from_global_only_evidence(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "patient_voice_global_only.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        audit_json = json.dumps(
+            {
+                "per_query_variant": {
+                    "patient_voice_kin": {"discovered": 90, "pending": 0, "ad_filtered": 60},
+                }
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", audit_json),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름흉터 비용": {
+            "category": "흉터/여드름흉터",
+            "viral_readiness_score": 72,
+            "community_signal": 35,
+            "conversion_signal": 55,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "cost",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름흉터 비용", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    assert "patient_voice_kin" in variants
+    assert getattr(hunter, "_variant_drop_counts", {}) == {}
+
+
+def test_viral_hunter_specific_axis_variant_needs_two_bad_runs_before_drop(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "specific_variant_cold_start.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        one_bad_run = {
+            "per_category_lens_query_variant": {
+                "흉터/여드름흉터::consultation::axis_scar:specific_수술흉터": {
+                    "discovered": 80,
+                    "pending": 0,
+                    "ad_filtered": 45,
+                }
+            }
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", json.dumps(one_bad_run, ensure_ascii=False)),
+        )
+
+    def make_hunter():
+        hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+        hunter.db = SimpleNamespace(db_path=str(db_path))
+        hunter.keyword_context = {
+            "청주 수술흉터 새살침 상담": {
+                "category": "흉터/여드름흉터",
+                "viral_readiness_score": 73,
+                "community_signal": 42,
+                "conversion_signal": 58,
+                "medical_ad_risk_score": 5,
+                "content_actionability_score": 82,
+                "preferred_search_surface": "hybrid_local_content",
+                "recommended_content_type": "proof_safe_guide",
+                "execution_lens": "consultation",
+            }
+        }
+        return hunter
+
+    first_hunter = make_hunter()
+    first_variants = [
+        plan["variant"]
+        for plan in first_hunter._search_queries_for_keyword("청주 수술흉터 새살침 상담", 100)
+    ]
+
+    assert "axis_scar:specific_수술흉터" in first_variants
+    assert getattr(first_hunter, "_variant_drop_counts", {}) == {}
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-13 09:00:00", "2026-06-13 10:00:00", json.dumps(one_bad_run, ensure_ascii=False)),
+        )
+
+    second_hunter = make_hunter()
+    second_variants = [
+        plan["variant"]
+        for plan in second_hunter._search_queries_for_keyword("청주 수술흉터 새살침 상담", 100)
+    ]
+
+    assert "axis_scar:specific_수술흉터" not in second_variants
+    assert second_hunter._variant_drop_counts == {"axis_scar:specific_수술흉터": 1}
+
+
 
 def test_blog_postview_url_conversion():
     convert = viral_hunter.blog_postview_url
@@ -7947,6 +8927,71 @@ def test_enrichment_regate_expires_stale_dated_post():
     assert stale_target.comment_status == "filtered_out_stale_window"
     assert (stale_target.score_breakdown or {}).get("post_date_enriched") == "20150108"
     assert hunter.db.saved and hunter.db.saved[0]["url"] == stale_target.url
+
+
+def test_timing_parser_handles_naver_relative_and_spaced_date_formats():
+    from datetime import datetime
+
+    now = datetime(2026, 6, 17, 17, 30, 0)
+    parse = viral_hunter.CommentableFilter._parse_datetime
+
+    assert parse("오늘", now) == datetime(2026, 6, 17, 0, 0, 0)
+    assert parse("그제 작성", now) == datetime(2026, 6, 15, 17, 30, 0)
+    assert parse("오후 3:20", now) == datetime(2026, 6, 17, 15, 20, 0)
+    assert parse("어제 오전 9:05", now) == datetime(2026, 6, 16, 9, 5, 0)
+    assert parse("2026. 6. 10. 오후 3:20", now) == datetime(2026, 6, 10, 15, 20, 0)
+
+
+def test_timing_window_uses_spaced_naver_date_as_real_post_age_penalty():
+    from datetime import datetime
+
+    now = datetime(2026, 6, 17, 17, 30, 0)
+    old_target = ViralTarget(
+        platform="kin",
+        url="https://example.com/spaced-date-old",
+        title="청주 여드름흉터 새살침 후기 궁금합니다",
+        content_preview="청주 여드름흉터 새살침 상담 받아보신 분 후기와 비용이 궁금합니다.",
+        matched_keywords=["청주 여드름흉터 새살침 후기"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        date_str="2026. 5. 1. 오후 3:20",
+        discovered_at="2026-06-17 16:30:00",
+        comment_count=0,
+        view_count=150,
+    )
+
+    score, tier, signals = viral_hunter.CommentableFilter._assess_timing_window(
+        old_target,
+        viral_need_signals=["recommendation_request", "ready_to_act"],
+        reply_opportunity_signals=["clear_question_shape"],
+        now=now,
+    )
+    no_date_target = ViralTarget(
+        platform=old_target.platform,
+        url="https://example.com/spaced-date-unknown",
+        title=old_target.title,
+        content_preview=old_target.content_preview,
+        matched_keywords=old_target.matched_keywords,
+        category=old_target.category,
+        matched_keyword_category=old_target.matched_keyword_category,
+        date_str="",
+        discovered_at=old_target.discovered_at,
+        comment_count=old_target.comment_count,
+        view_count=old_target.view_count,
+    )
+    no_date_score, _, no_date_signals = viral_hunter.CommentableFilter._assess_timing_window(
+        no_date_target,
+        viral_need_signals=["recommendation_request", "ready_to_act"],
+        reply_opportunity_signals=["clear_question_shape"],
+        now=now,
+    )
+
+    assert "posted_over_30d" in signals
+    assert "freshly_discovered" in signals
+    assert "no_post_date" not in signals
+    assert "no_post_date" in no_date_signals
+    assert score <= no_date_score - 25
+    assert tier in {"aging", "stale"}
 
 
 def _create_pending_ttl_table(conn):

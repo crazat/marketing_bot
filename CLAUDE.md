@@ -1,6 +1,35 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-17 Memory: Pathfinder -> Viral Hunter Handoff Hardening for Gyulim Cheongju
+
+- New-angle audit focused on whether Pathfinder's broad Cheongju Gyulim treatment discovery (scar/acne scar, asymmetry, skin/acne, diet, body correction, lifting, traffic, etc.) survives into Viral Hunter as workable post discovery instead of collapsing into generic SEO/ad supply.
+- Main fixes in `viral_hunter.py`:
+  - Axis companion queries now preserve Pathfinder-specific treatment context (`수술흉터`, `켈로이드`, `아토피`, `산후`, `라운드숄더`, `팔자주름`) instead of falling back only to broad category companions.
+  - Query-variant lineage prefers source-specific variants over generic axis variants during duplicate URL merges, while keeping the best observed exposure/rank.
+  - Category/lens/variant yield feedback is read before global variant feedback, with cold-start protection for exploratory lanes (`patient_voice_kin`, `:specific_` variants).
+  - AI target selection keeps lens diversity inside category floors so one dominant review lane does not crowd out cost/consultation/availability opportunities in the same treatment axis.
+  - Provider/advertorial detection now inspects body CTA/author patterns, rejects response-restricted surfaces (`댓글/쪽지/홍보/업체 사절`), and preserves genuine cafe user questions asking for direct experience.
+  - Region precision was tightened: ambiguous stems like `상당`, `서원`, `청원` no longer match inside unrelated words (`상당히`, `국민청원`) unless an active Cheongju anchor exists; local district contexts still pass.
+  - KIN enriched bodies split labeled `[기존답변]` sections before final gating so answer snippets do not become user-axis anchors.
+  - Relative/time-only dates now parse (`오늘`, `그제`, `오전/오후 3:20`, spaced Naver dates), improving stale-window decisions.
+  - Medical reply risk routes medication-advice and acute side-effect questions to human-only/manual review while keeping general experience questions eligible.
+  - Self-owned Gyulim content now fails both the first filter and the final DB gate as `self_target`; this prevents own blogs/brand-title posts from re-entering via enrichment, AI retry, or DB re-gate paths.
+  - Pathfinder availability/access intent now survives the handoff: `availability_intent_score`, `payment_coverage_score`, and `access_convenience_score` are carried in `ViralSeed`, copied into target `score_breakdown`, and availability lens matching recognizes `주차`, `위치`, `길찾기`, `도보`, `엘리베이터`, `휠체어`, `대중교통`.
+- Main fixes in `core_services/viral_handoff_audit.py` and `core_services/viral_seed_builder.py`:
+  - Handoff audit counts `ai_approved` as actionable, reports by query variant and category/lens, and emits under-covered lens playbooks.
+  - Discovery audit persists `per_category_lens` and `per_category_lens_query_variant`, and treats `generated/posted/approved/ai_approved` as successful pending-yield outcomes for closed-loop planning.
+  - Viral seed context now preserves availability/payment/access scores so manual/legacy keyword context does not drop Pathfinder's high-intent rationale.
+- Guardrails to keep:
+  - Do not add a flat global execution-lens prior. Lens yield is category-dependent; use category/lens/variant evidence first.
+  - Do not remove cold-start protection for source-specific and patient-voice variants; these lanes need lane-specific evidence before retirement.
+  - Do not weaken `self_target`, response-restricted, or medical human-only gates for short-term recall gains.
+  - Do not use substring-only Cheongju region matching; keep `_has_active_region_anchor()` / region-aware helpers.
+- Verification for this layer:
+  - `python -m py_compile viral_hunter.py core_services\viral_seed_builder.py core_services\viral_handoff_audit.py`
+  - `$env:PYTHONPATH='.'; pytest -q tests\test_pathfinder_viral_stability.py tests\test_viral_handoff_audit.py tests\test_gyulim_keyword_profile.py` -> 273 passed
+
+
 ## 2026-06-16 Viral Hunter Recent-Scan Queue and Server Port Safety Lock
 
 - Viral Hunter work queues, scan-batch filters, bulk actions, and legacy `DatabaseManager.get_viral_targets()` must treat rediscovery as current work. For explicit scan batches, prefer `scan_batch=run:<source_scan_run_id>`; for hour/date filters and recency sorting, use `COALESCE(last_scanned_at, discovered_at)`.

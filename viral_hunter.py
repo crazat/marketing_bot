@@ -104,12 +104,161 @@ def _ai_quota_category(target: "ViralTarget") -> str:
     return _canonical_ai_category("기타")
 
 
+PATHFINDER_AXIS_COMPANION_GENERIC_TERMS: Dict[str, set[str]] = {
+    "흉터/여드름흉터": {
+        "흉터", "여드름흉터", "흉터치료", "흉터새살침", "새살침", "피부재생",
+    },
+    "피부/여드름": {
+        "피부", "피부관리", "피부질환", "피부트러블", "트러블", "여드름",
+    },
+    "다이어트": {
+        "다이어트", "다이어트한약", "다이어트 한약", "한방다이어트",
+        "비만", "체중", "감량",
+    },
+    "안면비대칭": {
+        "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭교정", "안면교정",
+    },
+    "체형교정": {
+        "체형교정", "자세교정", "척추교정",
+    },
+    "리프팅/탄력": {
+        "리프팅", "탄력", "한방리프팅", "매선리프팅",
+    },
+}
+
+PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX: Dict[str, str] = {
+    "흉터/여드름흉터": "axis_scar",
+    "피부/여드름": "axis_skin",
+    "다이어트": "axis_diet",
+    "안면비대칭": "axis_asymmetry",
+    "체형교정": "axis_body",
+    "리프팅/탄력": "axis_lifting",
+}
+
+
+def _compact_query_text(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _pathfinder_axis_specific_terms_for_keyword(keyword: str, category: str, limit: int = 2) -> List[str]:
+    """Specific treatment/context terms from the active Pathfinder profile."""
+    profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+    if not profile:
+        return []
+
+    compact_keyword = _compact_query_text(keyword)
+    generic_terms = {
+        _compact_query_text(term)
+        for term in PATHFINDER_AXIS_COMPANION_GENERIC_TERMS.get(category, set())
+    }
+    low_value_terms = {
+        _compact_query_text(term)
+        for term in getattr(profile, "low_business_value_terms", ()) or ()
+    }
+    region_terms = {
+        _compact_query_text(term)
+        for term in (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()) or ())
+        )
+    }
+    generic_anchor_terms = {
+        _compact_query_text(term)
+        for term in ("한의원", "한방", "한약", "치료", "상담", "예약", "추천", "후기")
+    }
+
+    ordered_terms: List[str] = []
+    ordered_terms.extend(getattr(profile, "longtail_contexts", ()) or ())
+    ordered_terms.extend(getattr(profile, "core_tokens", ()) or ())
+    ordered_terms.extend(getattr(profile, "category_terms", ()) or ())
+
+    scored: List[Tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for index, raw_term in enumerate(ordered_terms):
+        term = str(raw_term or "").strip()
+        compact = _compact_query_text(term)
+        if not compact or compact in seen:
+            continue
+        if compact not in compact_keyword:
+            continue
+        if len(compact) < 3:
+            continue
+        if compact in generic_terms or compact in low_value_terms:
+            continue
+        if compact in region_terms or compact in generic_anchor_terms:
+            continue
+        seen.add(compact)
+        scored.append((index, -len(compact), term))
+
+    scored.sort()
+    return [term for _, __, term in scored[:max(0, int(limit or 0))]]
+
+
 def _normalized_ai_category_quotas(quotas: Dict[str, int]) -> Dict[str, int]:
     normalized: Dict[str, int] = {}
     for raw_category, quota in (quotas or {}).items():
         category = _canonical_ai_category(raw_category)
         normalized[category] = normalized.get(category, 0) + int(quota or 0)
     return normalized
+
+
+def _ai_target_execution_lens(target: "ViralTarget") -> str:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        breakdown = {}
+    lens = str(breakdown.get("pathfinder_execution_lens") or "").strip().lower()
+    return lens or "service"
+
+
+def _select_category_floor_targets(
+    targets: List["ViralTarget"],
+    *,
+    category: str,
+    quota: int,
+    selected_urls: set[str],
+) -> List["ViralTarget"]:
+    """Pick a category floor while preserving Pathfinder execution-lens variety."""
+    if quota <= 0:
+        return []
+
+    candidates = [
+        target
+        for target in targets
+        if (target.url or target.id) not in selected_urls
+        and _ai_quota_category(target) == category
+    ]
+    if not candidates:
+        return []
+
+    picked: List[ViralTarget] = []
+    local_urls: set[str] = set()
+    covered_lenses: set[str] = set()
+
+    # First reserve one high-ranked target per non-generic lens. This keeps
+    # Pathfinder's cost/consultation/safety discoveries from being crowded out
+    # by one dominant review lane inside the same treatment axis.
+    for target in candidates:
+        if len(picked) >= quota:
+            break
+        lens = _ai_target_execution_lens(target)
+        if lens == "service" or lens in covered_lenses:
+            continue
+        url = target.url or target.id
+        picked.append(target)
+        local_urls.add(url)
+        covered_lenses.add(lens)
+
+    for target in candidates:
+        if len(picked) >= quota:
+            break
+        url = target.url or target.id
+        if url in local_urls:
+            continue
+        picked.append(target)
+        local_urls.add(url)
+
+    return picked
 
 
 def split_ai_targets_with_category_floor(
@@ -138,17 +287,15 @@ def split_ai_targets_with_category_floor(
         if len(selected) >= top_n:
             break
         remaining_quota = min(quota, per_category_floor_cap, top_n - len(selected))
-        picked = 0
-        for target in targets:
-            url = target.url or target.id
-            if url in selected_urls:
-                continue
-            if _ai_quota_category(target) != category:
-                continue
+        for target in _select_category_floor_targets(
+            targets,
+            category=category,
+            quota=remaining_quota,
+            selected_urls=selected_urls,
+        ):
             selected.append(target)
-            selected_urls.add(url)
-            picked += 1
-            if picked >= remaining_quota or len(selected) >= top_n:
+            selected_urls.add(target.url or target.id)
+            if len(selected) >= top_n:
                 break
 
     for target in targets:
@@ -1701,6 +1848,8 @@ class CommentableFilter:
         "region_mismatch": "filtered_out",
         "domain_mismatch": "filtered_out",
         "lens_mismatch": "filtered_out",
+        "response_restricted": "filtered_out",
+        "self_target": "filtered_out",
     }
 
     INTERROGATIVE_PATTERNS = [
@@ -1786,6 +1935,16 @@ class CommentableFilter:
         "홍보 금지", "홍보금지", "광고 금지", "광고금지", "업체 사절",
         "업체사절", "광고 사절", "광고사절", "쪽지 사절", "쪽지사절",
         "댓글 사절", "댓글사절", "영업 사절", "영업사절",
+    ]
+    RESPONSE_HARD_REJECTION_PATTERNS = [
+        "댓글 사절", "댓글사절", "댓글 달지", "댓글달지", "답글 사절",
+        "답글사절", "답변 사절", "답변사절", "쪽지 사절", "쪽지사절",
+        "쪽지 보내지", "비댓 사절", "비댓사절", "비밀댓글 사절",
+        "업체 사절", "업체사절", "업체분 사절", "업체분들 사절",
+        "병원 관계자 사절", "한의원 관계자 사절", "관계자 사절",
+        "브로커 사절", "영업 사절", "영업사절", "홍보 금지",
+        "홍보금지", "홍보 사절", "홍보사절", "광고 금지",
+        "광고금지", "광고 사절", "광고사절",
     ]
 
     DECISION_ACTOR_PATTERNS = [
@@ -2043,6 +2202,19 @@ class CommentableFilter:
         "효과는 무엇일까", "통증을 사로잡는다", "차이점", "필요할까",
         "어떤 상황에서", " - ",
     ]
+    PROVIDER_BODY_AUTHOR_PATTERNS = [
+        "본원", "본 한의원", "저희 병원", "저희 한의원", "저희 의원",
+        "저희 클리닉", "청주점에서는", "한의원입니다", "한의사입니다",
+        "대표원장", "의료진", "내원해보세요", "예약하세요",
+        "관리해드립니다", "관리해 드립니다",
+    ]
+    PROVIDER_BODY_REAL_USER_ASK_PATTERNS = [
+        "광고 말고", "업체 말고", "홍보 말고", "직접 경험", "경험 있으",
+        "해보신 분", "해보신분", "받아보신 분", "받아보신분",
+        "가보신 분", "가보신분", "다녀보신 분", "다녀보신분",
+        "아시는 분", "아시는분", "추천 부탁", "추천부탁",
+        "후기 부탁", "정보 부탁",
+    ]
     TRAFFIC_USER_CARE_ANCHOR_PATTERNS = [
         "교통사고", "자동차사고", "차사고", "사고 후", "사고후",
         "입원", "통원", "치료", "진료", "후유증", "염좌", "통증",
@@ -2168,6 +2340,7 @@ class CommentableFilter:
         + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
         + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
     ))
+    AMBIGUOUS_CHEONGJU_REGION_STEMS = {"상당", "서원", "청원"}
     DISTANT_REGION_KEYWORDS = [
         "서울", "부산", "대구", "인천", "대전", "대전광역시", "광주", "광주광역시", "울산",
         "수원", "천안", "전주", "강남", "분당", "판교", "유성", "도안", "둔산", "노은",
@@ -2201,6 +2374,18 @@ class CommentableFilter:
         "임신", "수유", "소아", "아기", "영유아", "아이", "청소년", "약 부작용",
         "부작용", "스테로이드", "항생제", "당뇨", "고혈압", "암", "간수치", "신장",
         "신부전", "심장", "알레르기", "두드러기", "쇼크", "수술 후", "수술후",
+    ]
+    MEDICATION_ADVICE_PATTERNS = [
+        "먹어도 되", "먹어도될", "복용해도 되", "복용해도될", "복용 가능",
+        "같이 먹", "같이 복용", "함께 먹", "함께 복용", "병용", "동시에 먹",
+        "계속 먹어도", "계속 복용", "끊어야", "중단해야", "중단할까요",
+        "용량", "몇 알", "몇알", "하루 몇", "처방받아도", "처방 받아도",
+        "먹고 있는데", "복용 중", "복용중", "약 먹는 중", "약먹는중",
+    ]
+    ACUTE_SIDE_EFFECT_PATTERNS = [
+        "심장 두근", "두근거림", "두근거려", "가슴 두근", "숨이 답답",
+        "숨차", "호흡이 답답", "어지러", "어지럼", "실신", "기절",
+        "발진", "붓기", "부어오", "두드러기", "쇼크",
     ]
     TESTIMONIAL_SENSITIVE_KEYWORDS = [
         "후기", "경험담", "치료 경험", "효과", "완치", "보장", "전후", "비포애프터",
@@ -2345,6 +2530,9 @@ class CommentableFilter:
             "community_signal": cls._score_breakdown_float(target, "pathfinder_community_signal"),
             "conversion_signal": cls._score_breakdown_float(target, "pathfinder_conversion_signal"),
             "profile_action_signal": cls._score_breakdown_float(target, "pathfinder_profile_action_signal"),
+            "availability_intent_score": cls._score_breakdown_float(target, "pathfinder_availability_intent_score"),
+            "payment_coverage_score": cls._score_breakdown_float(target, "pathfinder_payment_coverage_score"),
+            "access_convenience_score": cls._score_breakdown_float(target, "pathfinder_access_convenience_score"),
             "preferred_surface": cls._score_breakdown_text(target, "pathfinder_preferred_search_surface"),
             "recommended_type": cls._score_breakdown_text(target, "pathfinder_recommended_content_type"),
             "brand_intent_type": cls._score_breakdown_text(target, "pathfinder_brand_intent_type", "generic"),
@@ -2389,7 +2577,9 @@ class CommentableFilter:
                 "\uc608\uc57d", "\uc608\uc57d\uac00\ub2a5", "\uc57c\uac04", "\uc8fc\ub9d0",
                 "\uc9c4\ub8cc\uc2dc\uac04", "\ub2f9\uc77c\uc9c4\ub8cc",
                 "\uc624\ub298", "\ub2f9\uc77c", "booking", "appointment",
-                "near", "hours",
+                "\uc704\uce58", "\uae38\ucc3e\uae30", "\uc8fc\ucc28", "\ub3c4\ubcf4",
+                "\uc5d8\ub9ac\ubca0\uc774\ud130", "\ud720\uccb4\uc5b4", "\ub300\uc911\uad50\ud1b5",
+                "\uadfc\ucc98", "\uac00\uae4c\uc6b4", "near", "hours", "parking",
             ),
             "safety": (
                 "\ubd80\uc791\uc6a9", "\uc8fc\uc758", "\uce58\ub8cc\uae30\uac04", "\ud1b5\uc99d", "\ud68c\ubcf5",
@@ -2402,6 +2592,22 @@ class CommentableFilter:
             return 50.0, "neutral", []
 
         matched_terms = [term for term in terms if term and term in text_lc]
+        community_bridge_terms = (
+            "추천", "후기", "어디", "경험", "가본", "가보신", "해보신",
+            "아시는", "궁금", "부탁", "괜찮", "잘하는",
+        )
+        bridge_term_hits = [term for term in community_bridge_terms if term and term in text_lc]
+        query_variant = cls._pathfinder_query_variant(target)
+        bridge_variant = (
+            query_variant.startswith(f"{lens}_community:")
+            or (
+                lens in {"cost", "consultation", "availability", "safety"}
+                and (
+                    query_variant.startswith("axis_")
+                    or query_variant == "patient_voice_kin"
+                )
+            )
+        )
         signals: List[str] = []
         score = 45.0
 
@@ -2410,6 +2616,12 @@ class CommentableFilter:
             signals.append(f"pathfinder_lens_{lens}_match")
             if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
                 score += 8.0
+                signals.append("pathfinder_lens_surface_match")
+        elif bridge_variant and bridge_term_hits:
+            score += min(22.0, 10.0 + len(bridge_term_hits) * 3.0)
+            signals.append(f"pathfinder_lens_{lens}_community_bridge")
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                score += 6.0
                 signals.append("pathfinder_lens_surface_match")
         else:
             score -= 18.0
@@ -2420,7 +2632,7 @@ class CommentableFilter:
 
         if lens in {"review", "community"} and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
             score += 5.0
-        if lens in {"cost", "consultation", "availability"} and cls._contains_any(text_lc, cls.REGION_KEYWORDS):
+        if lens in {"cost", "consultation", "availability"} and cls._contains_region_terms(text_lc, cls.REGION_KEYWORDS):
             score += 4.0
 
         score = round(max(0.0, min(100.0, score)), 2)
@@ -2433,6 +2645,27 @@ class CommentableFilter:
         else:
             tier = "mismatch"
         return score, tier, list(dict.fromkeys(signals))
+
+    @classmethod
+    def _pathfinder_source_specific_terms(cls, target: ViralTarget, category: str) -> List[str]:
+        """Specific source-seed terms that should survive into the candidate post."""
+        breakdown = target.score_breakdown or {}
+        seed_terms: List[str] = []
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, list):
+            seed_terms.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            seed_terms.append(str(raw_sources))
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            seed_terms.append(str(raw_source))
+        seed_terms.extend(target.matched_keywords or [])
+        terms: List[str] = []
+        for seed_keyword in dict.fromkeys(seed_terms):
+            if not seed_keyword:
+                continue
+            terms.extend(_pathfinder_axis_specific_terms_for_keyword(seed_keyword, category, limit=3))
+        return list(dict.fromkeys(terms))
 
     @classmethod
     def _pathfinder_axis_post_fit(
@@ -2472,6 +2705,8 @@ class CommentableFilter:
         anchor_hits = matching_terms(profile.direct_service_anchors)
         low_value_hits = matching_terms(profile.low_business_value_terms)
         primary_hits = list(dict.fromkeys(category_hits + core_hits))
+        source_specific_terms = cls._pathfinder_source_specific_terms(target, category)
+        source_specific_hits = matching_terms(source_specific_terms)
 
         score = 35.0
         signals: List[str] = []
@@ -2490,6 +2725,13 @@ class CommentableFilter:
         if not primary_hits:
             score -= 20.0
             signals.append("pathfinder_axis_no_primary_terms")
+        if source_specific_terms:
+            if source_specific_hits:
+                score += min(14.0, 8.0 + len(source_specific_hits) * 3.0)
+                signals.append("pathfinder_axis_specific_context_match")
+            else:
+                score -= 28.0
+                signals.append("pathfinder_axis_specific_context_missing")
 
         region_score, region_signals = cls._region_fit_signal(
             text_lc, local_venue=cls._has_local_venue_anchor(target)
@@ -2570,7 +2812,7 @@ class CommentableFilter:
             adjustment -= min(12.0, (45.0 - actionability) * 0.32)
             signals.append("pathfinder_low_actionability")
 
-        if local_fit >= 75.0 and cls._contains_any(text_lc, cls.REGION_KEYWORDS):
+        if local_fit >= 75.0 and cls._contains_region_terms(text_lc, cls.REGION_KEYWORDS):
             adjustment += min(6.0, (local_fit - 60.0) * 0.18)
             signals.append("pathfinder_local_service_fit")
         elif 0.0 < local_fit < 40.0:
@@ -2747,7 +2989,7 @@ class CommentableFilter:
                 + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
             ):
                 token = (raw or "").strip()
-                if len(token) >= 2:
+                if len(token) >= 2 and token not in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS:
                     toks.add(token)
             cls._LOCAL_VENUE_TOKENS_CACHE = sorted(toks, key=len, reverse=True)
         return cls._LOCAL_VENUE_TOKENS_CACHE
@@ -2777,13 +3019,13 @@ class CommentableFilter:
         signals: List[str] = []
         area_signal = getattr(GYULIM_KEYWORD_PROFILE, "area_signal", "target_area")
         neighborhood_signal = getattr(GYULIM_KEYWORD_PROFILE, "neighborhood_signal", "target_neighborhood")
-        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.cheongju_regions)):
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.cheongju_regions)):
             score += 18
             signals.append(area_signal)
-        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.neighborhoods)):
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.neighborhoods)):
             score += 12
             signals.append(neighborhood_signal)
-        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.nearby_regions)):
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.nearby_regions)):
             score += 7
             signals.append("nearby_region")
 
@@ -2816,7 +3058,7 @@ class CommentableFilter:
             return False
 
         title_has_distant = cls._contains_any(title, distant_regions)
-        title_has_active = cls._contains_any(title, active_local_terms)
+        title_has_active = cls._contains_region_terms(title, active_local_terms)
         if title_has_distant and not title_has_active:
             # 제목이 명시적으로 타지역을 타겟 — 카페가 로컬이어도 그 글은 타지역 글.
             return True
@@ -2828,8 +3070,8 @@ class CommentableFilter:
             return False
 
         text_has_distant = cls._contains_any(text, distant_regions)
-        text_has_active = cls._contains_any(text, active_local_terms)
-        explicit_cheongju = cls._contains_any(text, ["청주", "충북", "충청북도"])
+        text_has_active = cls._contains_region_terms(text, active_local_terms)
+        explicit_cheongju = cls._contains_region_terms(text, ["청주", "충북", "충청북도"])
         if text_has_distant and not explicit_cheongju:
             return True
         return bool(text_has_distant and not text_has_active)
@@ -3059,6 +3301,9 @@ class CommentableFilter:
         if "anti_ad_request" in need_set or "anti_ad_request" in reply_set:
             score -= 6
             signals.append("transparency_sensitive")
+        if cls._is_response_restricted_surface(target):
+            score -= 45
+            signals.append("response_restricted_surface")
         if "posted_over_30d" in timing_set or "stale_language" in timing_set:
             score -= 14
             signals.append("stale_context")
@@ -3081,6 +3326,52 @@ class CommentableFilter:
     def _contains_any(text: str, patterns: List[str]) -> bool:
         return any(pattern in text for pattern in patterns)
 
+    @classmethod
+    def _region_term_matches(cls, text: str, term: str) -> bool:
+        """Match local tokens without treating common Korean words as Cheongju areas."""
+        text_lc = (text or "").lower()
+        term_lc = str(term or "").strip().lower()
+        if not term_lc:
+            return False
+        if term_lc in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS:
+            escaped = re.escape(term_lc)
+            return bool(
+                re.search(rf"(?:청주(?:시)?\s*)?{escaped}구", text_lc)
+                or re.search(rf"청주(?:시)?\s*{escaped}(?:\s|$|쪽|일대|근처|지역)", text_lc)
+            )
+        return term_lc in text_lc
+
+    @classmethod
+    def _contains_region_terms(cls, text: str, patterns: Iterable[str]) -> bool:
+        return any(cls._region_term_matches(text, pattern) for pattern in patterns if pattern)
+
+    @classmethod
+    def _has_ambiguous_region_false_positive(cls, text: str) -> bool:
+        text_lc = (text or "").lower()
+        return any(
+            stem in text_lc and not cls._region_term_matches(text_lc, stem)
+            for stem in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS
+        )
+
+    @classmethod
+    def _has_active_region_anchor(
+        cls,
+        target: Optional[ViralTarget],
+        text: str,
+        *,
+        local_venue: Optional[bool] = None,
+    ) -> bool:
+        active_terms = (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+        )
+        if cls._contains_region_terms(text, active_terms):
+            return True
+        if local_venue is None and target is not None:
+            local_venue = cls._has_local_venue_anchor(target)
+        return bool(local_venue)
+
     @staticmethod
     def _strip_internal_labels(text: str) -> str:
         """Remove scanner-added leading labels so old queued rows are judged by real post text."""
@@ -3093,6 +3384,9 @@ class CommentableFilter:
         platform = (target.platform or "").lower()
         if platform in {"kin", "naver_kin"}:
             split_markers = [
+                "[기존답변",
+                "[기존 답변",
+                "기존답변",
                 "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
                 "안녕하세요, 닥톡", "안녕하세요. 닥톡", "안녕하세요,",
                 "안녕하세요.", "답변드립니다", "답변 드립니다",
@@ -3102,6 +3396,13 @@ class CommentableFilter:
             if cut_points:
                 body = body[:min(cut_points)]
         return f"{target.title or ''} {body}".strip()
+
+    @classmethod
+    def _is_response_restricted_surface(cls, target: ViralTarget, text: str = "") -> bool:
+        """Reject posts where the author explicitly closes public/provider responses."""
+        user_text = cls._user_need_text(target).lower()
+        evidence = f"{text or ''} {user_text}".lower()
+        return cls._contains_any(evidence, cls.RESPONSE_HARD_REJECTION_PATTERNS)
 
     @classmethod
     def _axis_user_segment_text(cls, target: ViralTarget, *, max_body_chars: int = 150) -> str:
@@ -3215,7 +3516,7 @@ class CommentableFilter:
         if is_health:
             score += 6
             signals.append("domain_health")
-        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+        if cls._contains_region_terms(user_text, cls.REGION_KEYWORDS):
             score += 8
             signals.append("local_fit")
         if cls._has_domain_anchor(domain, user_text):
@@ -3301,7 +3602,7 @@ class CommentableFilter:
         if problem_signal:
             score += 12
             signals.append("situational_problem")
-        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+        if cls._contains_region_terms(user_text, cls.REGION_KEYWORDS):
             score += 10
             signals.append("local_actionable")
         if domain != "general" and cls._has_domain_anchor(domain, user_text):
@@ -3394,8 +3695,41 @@ class CommentableFilter:
         ]
         if raw in {"방금", "방금 전", "방금전", "지금"}:
             return now
+        relative_day_time = re.fullmatch(
+            r"(오늘|어제|그제)(?:\s*작성)?\s+(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})",
+            raw,
+        )
+        if relative_day_time:
+            day_word, ampm, hour_text, minute_text = relative_day_time.groups()
+            day_delta = {"오늘": 0, "어제": 1, "그제": 2}.get(day_word, 0)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if ampm == "오후" and hour < 12:
+                hour += 12
+            if ampm == "오전" and hour == 12:
+                hour = 0
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                base = now - timedelta(days=day_delta)
+                return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if raw in {"오늘", "오늘 작성"}:
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
         if raw in {"어제", "어제 작성"}:
             return now - timedelta(days=1)
+        if raw in {"그제", "그제 작성"}:
+            return now - timedelta(days=2)
+
+        time_only = re.fullmatch(r"(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})", raw)
+        if time_only:
+            ampm, hour_text, minute_text = time_only.groups()
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if ampm == "오후" and hour < 12:
+                hour += 12
+            if ampm == "오전" and hour == 12:
+                hour = 0
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
         for pattern, unit in relative_patterns:
             match = re.search(pattern, raw)
             if not match:
@@ -3420,6 +3754,29 @@ class CommentableFilter:
                 return datetime.strptime(compact, "%Y%m%d")
             except ValueError:
                 return None
+        naver_date = NAVER_POST_DATE_RE.search(compact)
+        if naver_date:
+            try:
+                year = int(naver_date.group(1))
+                month = int(naver_date.group(2))
+                day = int(naver_date.group(3))
+                date_base = datetime(year, month, day)
+            except ValueError:
+                return None
+            tail = compact[naver_date.end():].strip(" .")
+            tail_time = re.match(r"(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})(?::\s*(\d{2}))?", tail)
+            if tail_time:
+                ampm, hour_text, minute_text, second_text = tail_time.groups()
+                hour = int(hour_text)
+                minute = int(minute_text)
+                second = int(second_text or 0)
+                if ampm == "오후" and hour < 12:
+                    hour += 12
+                if ampm == "오전" and hour == 12:
+                    hour = 0
+                if 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59:
+                    return date_base.replace(hour=hour, minute=minute, second=second)
+            return date_base
         compact = compact.rstrip(".")
         for fmt in (
             "%Y-%m-%d %H:%M:%S.%f",
@@ -3718,7 +4075,7 @@ class CommentableFilter:
         def has(patterns: List[str]) -> bool:
             return any(pattern.lower() in user_text for pattern in patterns if pattern)
 
-        local_fit = cls._contains_any(user_text, cls.REGION_KEYWORDS)
+        local_fit = cls._contains_region_terms(user_text, cls.REGION_KEYWORDS)
         service_line_context = cls._contains_any(user_text, cls.QUALIFIED_SERVICE_LINE_PATTERNS)
         service_fit = (domain != "general" and cls._has_domain_anchor(domain, user_text)) or service_line_context
         actor_context = has(cls.DECISION_ACTOR_PATTERNS) or bool(
@@ -3834,6 +4191,47 @@ class CommentableFilter:
         return score, tier, signals
 
     @classmethod
+    def _provider_cta_body_signal(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str]]:
+        """Detect provider-authored blog/cafe bodies that wear question/review titles."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False, []
+
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        signal_text = body or text
+        if not signal_text:
+            return False, []
+
+        def hits(patterns: List[str]) -> List[str]:
+            return [pattern for pattern in patterns if pattern and pattern.lower() in signal_text]
+
+        provider_info = hits(cls.PROVIDER_INFO_POST_PATTERNS)
+        provider_author = hits(cls.PROVIDER_BODY_AUTHOR_PATTERNS)
+        cta = hits(cls.COMMERCIAL_CTA_PATTERNS)
+        medical_promo = hits(cls.PROMOTIONAL_MEDICAL_PATTERNS)
+        blog_structural = hits(cls.BLOG_AD_STRUCTURAL_PATTERNS)
+
+        groups = {
+            "provider_info": provider_info,
+            "provider_author": provider_author,
+            "commercial_cta": cta,
+            "medical_promo": medical_promo,
+            "blog_ad_structure": blog_structural,
+        }
+        present_groups = [name for name, values in groups.items() if values]
+        has_provider_voice = bool(provider_info or provider_author or (medical_promo and blog_structural))
+        has_action_or_footer = bool(cta or blog_structural)
+        if not (has_provider_voice and has_action_or_footer and len(present_groups) >= 2):
+            return False, []
+
+        user_text = cls._user_need_text(target).lower()
+        real_user_ask = cls._contains_any(user_text, cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+        if real_user_ask and not provider_author:
+            return False, []
+
+        return True, present_groups
+
+    @classmethod
     def _detect_advertorial(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str], int]:
         """Detect provider/SEO/brand ads that imitate question or review posts."""
         platform = (target.platform or "").lower()
@@ -3888,7 +4286,7 @@ class CommentableFilter:
                 score += 2 if strong_inquiry else 5
 
             local_provider_domain_title = (
-                cls._contains_any(title_text, cls.REGION_KEYWORDS)
+                cls._contains_region_terms(title_text, cls.REGION_KEYWORDS)
                 and cls._contains_any(title_text, cls.MEDICAL_PROVIDER_TERMS)
                 and cls._has_domain_anchor(domain, text)
             )
@@ -3952,6 +4350,13 @@ class CommentableFilter:
         if blog_structural:
             signals.append("blog_ad_structure")
             score += 2 + min(3, len(blog_structural))
+
+        provider_cta_body, provider_cta_groups = cls._provider_cta_body_signal(target, text)
+        if provider_cta_body:
+            signals.append("provider_cta_body")
+            score += 5
+            if provider_cta_groups:
+                signals.extend(f"provider_cta_body_{group}" for group in provider_cta_groups)
 
         diet_provider_context = domain == "diet" and cls._contains_any(
             text,
@@ -4291,12 +4696,12 @@ class CommentableFilter:
             return False
 
         user_opening = cls._axis_user_segment_text(target, max_body_chars=70)
-        if cls._contains_any(user_opening, cls.REGION_KEYWORDS):
+        if cls._contains_region_terms(user_opening, cls.REGION_KEYWORDS):
             return False
 
         footer_region_hits = sum(1 for region in cls.MULTI_REGION_ANSWER_FOOTER_REGIONS if region in text)
         footer_shape = footer_region_hits >= 6 or cls._contains_any(text, cls.KIN_PROVIDER_FOOTER_PATTERNS)
-        return bool(footer_shape and cls._contains_any(text, cls.REGION_KEYWORDS))
+        return bool(footer_shape and cls._contains_region_terms(text, cls.REGION_KEYWORDS))
 
     @classmethod
     def _is_provider_info_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
@@ -4307,6 +4712,10 @@ class CommentableFilter:
 
         title = (target.title or "").lower()
         user_text = cls._user_need_text(target).lower()
+        has_provider_cta_body, _ = cls._provider_cta_body_signal(target, text)
+        if has_provider_cta_body:
+            return True
+
         has_provider_info = cls._contains_any(text, cls.PROVIDER_INFO_POST_PATTERNS)
         has_info_title = cls._contains_any(title, cls.PROVIDER_INFO_TITLE_PATTERNS)
         if not (has_provider_info or has_info_title):
@@ -4486,6 +4895,8 @@ class CommentableFilter:
         text = f"{title} {body}"
         domain = cls._target_domain(target)
 
+        if cls._is_self_target(target):
+            return "self_target"
         if cls._is_off_domain(domain, text, title=title):
             return "off_domain"
         if cls._is_non_service_beauty_target(domain, text):
@@ -4496,6 +4907,10 @@ class CommentableFilter:
             return "region_mismatch"
         if cls._is_provider_info_without_user_ask(target, text):
             return "advertorial"
+        if cls._is_response_restricted_surface(target, text):
+            return "response_restricted"
+        if cls._has_ambiguous_region_false_positive(text) and not cls._has_active_region_anchor(target, text):
+            return "region_mismatch"
         pathfinder_reason = cls._pathfinder_fit_reject_reason(
             target,
             domain=domain,
@@ -4552,6 +4967,7 @@ class CommentableFilter:
         return reason
 
     @staticmethod
+    @staticmethod
     def _load_self_exclusion() -> Dict[str, List[str]]:
         """business_profile.json에서 자기 업체 제외 규칙 로드 (모듈 시작 시 1회)."""
         import json as _json
@@ -4573,11 +4989,16 @@ class CommentableFilter:
             logger.warning(f"[CommentableFilter] self_exclusion 로드 실패: {e}")
             return {"blog_authors": [], "url_patterns": [], "title_keywords": []}
 
-    def _is_self_target(self, target: 'ViralTarget') -> bool:
+    @classmethod
+    def _self_exclusion_rules(cls) -> Dict[str, List[str]]:
+        if not hasattr(cls, "_self_exclusion"):
+            cls._self_exclusion = cls._load_self_exclusion()
+        return cls._self_exclusion
+
+    @classmethod
+    def _is_self_target(cls, target: 'ViralTarget') -> bool:
         """자기 한의원 블로그/콘텐츠인지 검사 (어뷰징 방지)."""
-        if not hasattr(self, "_self_exclusion"):
-            self._self_exclusion = CommentableFilter._load_self_exclusion()
-        se = self._self_exclusion
+        se = cls._self_exclusion_rules()
         url = (target.url or "").lower()
         title = (target.title or "").lower()
         author = (target.author or "").lower() if hasattr(target, "author") else ""
@@ -4605,6 +5026,18 @@ class CommentableFilter:
             flags.append("sensitive_medical")
             penalty -= 22
 
+        medication_advice_matches = [kw for kw in cls.MEDICATION_ADVICE_PATTERNS if kw in text]
+        if sensitive_matches and medication_advice_matches:
+            flags.append("medication_advice_request")
+            penalty -= 45
+
+        acute_side_effect_matches = [kw for kw in cls.ACUTE_SIDE_EFFECT_PATTERNS if kw in text]
+        if acute_side_effect_matches and (
+            sensitive_matches or cls._contains_any(text, ["한약", "약", "복용", "먹고", "처방"])
+        ):
+            flags.append("acute_side_effect")
+            penalty -= 55
+
         testimonial_matches = [kw for kw in cls.TESTIMONIAL_SENSITIVE_KEYWORDS if kw in text]
         if testimonial_matches:
             flags.append("testimonial_sensitive")
@@ -4615,7 +5048,8 @@ class CommentableFilter:
             flags.append("generic_category")
             penalty += cls.GENERIC_CATEGORY_PENALTY
 
-        return penalty, flags, bool(urgent_matches)
+        human_only = bool(urgent_matches or (sensitive_matches and medication_advice_matches) or acute_side_effect_matches)
+        return penalty, flags, human_only
 
     @staticmethod
     def _fallback_exposure_score(target: ViralTarget) -> float:
@@ -4681,13 +5115,18 @@ class CommentableFilter:
                  'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
                  'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0,
                  'clinic_mismatch': 0, 'low_worksite_efficiency': 0,
-                 'pathfinder_mismatch': 0}
+                 'pathfinder_mismatch': 0, 'response_restricted': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
             if self._is_self_target(target):
                 stats['self_excluded'] += 1
                 target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("self_target", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "self_target",
+                }
                 continue
 
             title_lower = (target.title or '').lower()
@@ -4736,6 +5175,15 @@ class CommentableFilter:
             if self._is_provider_info_without_user_ask(target, text):
                 stats['advertorial'] += 1
                 continue
+            if self._is_response_restricted_surface(target, text):
+                stats['response_restricted'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "response_restricted",
+                }
+                continue
             if self._is_asymmetry_axis_noise(target, text):
                 stats['off_domain'] += 1
                 continue
@@ -4759,7 +5207,7 @@ class CommentableFilter:
                     float(pathfinder_ctx.get("community_signal") or 0.0) >= 60.0
                     or float(pathfinder_ctx.get("conversion_signal") or 0.0) >= 50.0
                 )
-                and any(rk in text for rk in self.REGION_KEYWORDS)
+                and self._has_active_region_anchor(target, text)
                 and (domain != "general" or target.matched_keyword_grade in {"S", "A"})
             )
             short_actionable = (
@@ -4776,7 +5224,7 @@ class CommentableFilter:
                 continue
 
             # 3. 지역 키워드 필수 (제목 OR 본문)
-            if not any(rk in text for rk in self.REGION_KEYWORDS):
+            if not self._has_active_region_anchor(target, text):
                 stats['no_region'] += 1
                 continue
 
@@ -5315,6 +5763,7 @@ class CommentableFilter:
             f"저의도 {stats['low_intent']}, 저응답적합 {stats['low_opportunity']}, "
             f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
             f"자격부족 {stats['unqualified']}, 진료불일치 {stats['clinic_mismatch']}, "
+            f"응답거부 {stats['response_restricted']}, "
             f"작업효율낮음 {stats['low_worksite_efficiency']}, "
             f"Pathfinder불일치 {stats['pathfinder_mismatch']}]"
         )
@@ -6832,7 +7281,7 @@ class ViralHunter:
                 "kin": expanded_limit,
             }
             include_blog = True
-        elif execution_lens in {"cost", "consultation", "safety"}:
+        elif execution_lens in {"cost", "consultation", "availability", "safety"}:
             limits = {
                 "cafe": expanded_limit,
                 "blog": max(20, min(expanded_limit, int(round(base_limit * 0.65)))),
@@ -6895,9 +7344,9 @@ class ViralHunter:
     def _load_variant_yield_history(self, max_runs: int = 12) -> Dict[str, Dict[str, int]]:
         """최근 viral_scan_audits 런들의 query-variant 수율을 합산해 캐시.
 
-        per_query_variant 수율은 매 런 기록만 되고 플래닝에서 소비되지 않아,
-        제로수율이 증명된 변형이 계속 SERP 예산을 태우는 갭이 있었다. 테이블이
-        아직 없으면(라이브 런 전) 빈 dict — 플래닝은 기존과 동일하게 동작한다.
+        전역 variant 수율과 category/lens/variant 수율을 함께 읽는다. 같은
+        `cost_community:추천`이라도 흉터 cost와 체형 cost의 수율은 다를 수
+        있으므로, 다음 런 게이트는 가능한 한 세분화된 증거를 먼저 쓴다.
         """
         cached = getattr(self, "_variant_yield_cache", None)
         if cached is not None:
@@ -6920,20 +7369,64 @@ class ViralHunter:
             except (TypeError, ValueError):
                 continue
             per_variant = audit.get("per_query_variant") if isinstance(audit, dict) else None
-            if not isinstance(per_variant, dict):
+            if isinstance(per_variant, dict):
+                for variant, entry in per_variant.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    bucket = history.setdefault(
+                        str(variant),
+                        {"discovered": 0, "pending": 0, "ad_filtered": 0, "runs": 0},
+                    )
+                    bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                    bucket["pending"] += int(entry.get("pending", 0) or 0)
+                    bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
+                    if int(entry.get("discovered", 0) or 0) > 0:
+                        bucket["runs"] += 1
+            per_lane_variant = audit.get("per_category_lens_query_variant") if isinstance(audit, dict) else None
+            if not isinstance(per_lane_variant, dict):
                 continue
-            for variant, entry in per_variant.items():
+            for lane_variant, entry in per_lane_variant.items():
                 if not isinstance(entry, dict):
                     continue
                 bucket = history.setdefault(
-                    str(variant),
-                    {"discovered": 0, "pending": 0, "ad_filtered": 0},
+                    f"category_lens_variant:{lane_variant}",
+                    {"discovered": 0, "pending": 0, "ad_filtered": 0, "runs": 0},
                 )
                 bucket["discovered"] += int(entry.get("discovered", 0) or 0)
                 bucket["pending"] += int(entry.get("pending", 0) or 0)
                 bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
+                if int(entry.get("discovered", 0) or 0) > 0:
+                    bucket["runs"] += 1
         self._variant_yield_cache = history
         return history
+
+    @staticmethod
+    def _category_lens_variant_history_key(category: str, lens: str, variant: str) -> str:
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        lens_key = str(lens or "service").strip().lower() or "service"
+        variant_key = str(variant or "").strip()
+        return f"category_lens_variant:{category_key}::{lens_key}::{variant_key}"
+
+    @classmethod
+    def _variant_yield_stats_for(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> Optional[Dict[str, int]]:
+        lane_key = cls._category_lens_variant_history_key(category, lens, variant)
+        if lane_key in history:
+            return history[lane_key]
+        if cls._variant_requires_lane_specific_yield(variant):
+            return None
+        return history.get(str(variant or ""))
+
+    @staticmethod
+    def _variant_requires_lane_specific_yield(variant: str) -> bool:
+        variant = str(variant or "").strip()
+        return variant == "patient_voice_kin" or ":specific_" in variant
 
     @staticmethod
     def _variant_proven_zero_yield(stats: Dict[str, int]) -> bool:
@@ -6948,6 +7441,13 @@ class ViralHunter:
         if discovered >= 150 and (pending / discovered) < 0.004:
             return True
         return False
+
+    @classmethod
+    def _variant_proven_zero_yield_for_gate(cls, variant: str, stats: Dict[str, int]) -> bool:
+        """Zero-yield gate with extra cold-start protection for exploratory variants."""
+        if cls._variant_requires_lane_specific_yield(variant) and int(stats.get("runs", 0) or 0) < 2:
+            return False
+        return cls._variant_proven_zero_yield(stats)
 
     # 플랫폼별 staff 수용률 → 발견 예산 가중치. 변형 수율 게이트의 철학을
     # 플랫폼 단위로 확장: 직원이 실제로 작업하는 비율(posted/generated vs skipped)에
@@ -7060,6 +7560,88 @@ class ViralHunter:
             "surface_override": {"cafe": 15, "blog": 0, "kin": 40},
         }
 
+    AXIS_COMPANION_GENERIC_TERMS = PATHFINDER_AXIS_COMPANION_GENERIC_TERMS
+    AXIS_COMPANION_VARIANT_PREFIX = PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX
+
+    @staticmethod
+    def _axis_specific_terms_for_keyword(keyword: str, category: str, limit: int = 2) -> List[str]:
+        """Return specific treatment/context terms from the active Pathfinder profile.
+
+        Fixed companion queries cover the canonical axis. This keeps newer Pathfinder
+        discoveries such as 수술흉터, 켈로이드, 아토피, 산후, 라운드숄더, 팔자주름 from
+        being collapsed back to a generic category companion.
+        """
+        return _pathfinder_axis_specific_terms_for_keyword(keyword, category, limit=limit)
+
+    @staticmethod
+    def _axis_specific_companion_query(keyword: str, category: str, term: str) -> str:
+        term = re.sub(r"\s+", " ", str(term or "").strip())
+        compact_keyword = ViralHunter._compact_query_text(keyword)
+        if not term:
+            return ""
+
+        if category == "흉터/여드름흉터":
+            service = term
+            if "새살침" in compact_keyword and "새살침" not in ViralHunter._compact_query_text(term):
+                service = f"{term} 새살침"
+            elif "한의원" not in ViralHunter._compact_query_text(term):
+                service = f"{term} 한의원"
+            return f"청주 {service} 후기"
+
+        if category == "피부/여드름":
+            service = term if "한의원" in ViralHunter._compact_query_text(term) else f"{term} 한의원"
+            return f"청주 {service} 후기"
+
+        if category == "다이어트":
+            if "식욕" in term:
+                service = f"{term} 한약"
+            elif "다이어트" in term:
+                service = term
+            else:
+                service = f"{term} 다이어트 한약"
+            return f"청주 {service} 후기"
+
+        if category == "안면비대칭":
+            if "턱관절" in term:
+                service = f"{term} 안면비대칭 한의원"
+            elif "교정" in term:
+                service = f"{term} 한의원"
+            else:
+                service = f"{term} 안면비대칭 한의원"
+            return f"청주 {service} 추천"
+
+        if category == "체형교정":
+            service = term if "한의원" in ViralHunter._compact_query_text(term) else f"{term} 추나 한의원"
+            return f"청주 {service} 추천"
+
+        if category == "리프팅/탄력":
+            if "리프팅" in term:
+                service = term
+            else:
+                service = f"{term} 한방리프팅"
+            return f"청주 {service} 후기"
+
+        return f"청주 {term} 한의원 추천"
+
+    @staticmethod
+    def _dynamic_axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
+        prefix = ViralHunter.AXIS_COMPANION_VARIANT_PREFIX.get(category)
+        if not prefix:
+            return []
+        variants: List[Dict[str, Any]] = []
+        for term in ViralHunter._axis_specific_terms_for_keyword(keyword, category):
+            query = ViralHunter._axis_specific_companion_query(keyword, category, term)
+            query_compact = ViralHunter._compact_query_text(query)
+            if not query_compact:
+                continue
+            term_key = re.sub(r"\s+", "", term)
+            variants.append({
+                "query": query,
+                "variant": f"{prefix}:specific_{term_key}",
+                "source_keyword": keyword,
+            })
+        return variants
+
     def _search_query_variants_for_keyword(self, keyword: str) -> List[Dict[str, Any]]:
         """Create a bounded set of lens-aware search queries for one Pathfinder seed."""
         ctx = self._planning_context_for_keyword(keyword)
@@ -7132,13 +7714,18 @@ class ViralHunter:
         if history and len(variants) > 1:
             kept = [variants[0]]
             for variant in variants[1:]:
-                stats = history.get(str(variant.get("variant") or ""))
-                if stats and self._variant_proven_zero_yield(stats):
+                name = str(variant.get("variant") or "")
+                stats = self._variant_yield_stats_for(
+                    history,
+                    category=category,
+                    lens=execution_lens,
+                    variant=name,
+                )
+                if stats and self._variant_proven_zero_yield_for_gate(name, stats):
                     drop_counts = getattr(self, "_variant_drop_counts", None)
                     if drop_counts is None:
                         drop_counts = {}
                         self._variant_drop_counts = drop_counts
-                    name = str(variant.get("variant") or "")
                     drop_counts[name] = drop_counts.get(name, 0) + 1
                     continue
                 kept.append(variant)
@@ -7188,6 +7775,10 @@ class ViralHunter:
             ]
 
         variants: List[Dict[str, Any]] = []
+        for dynamic_variant in ViralHunter._dynamic_axis_companion_query_variants(keyword, category):
+            query_compact = ViralHunter._compact_query_text(str(dynamic_variant.get("query") or ""))
+            if query_compact and query_compact != compact:
+                variants.append(dynamic_variant)
         for query, variant_name in candidates:
             query_compact = ViralHunter._compact_query_text(query)
             if query_compact and query_compact != compact:
@@ -7254,8 +7845,10 @@ class ViralHunter:
     @staticmethod
     def _pathfinder_variant_strength(variant: str) -> int:
         variant = str(variant or "").strip()
+        if ":specific_" in variant:
+            return 55
         if variant.startswith("axis_"):
-            return 40
+            return 45
         if variant and variant not in {"base", "community_base", "(none)"}:
             return 30
         if variant == "community_base":
@@ -7422,6 +8015,9 @@ class ViralHunter:
             "pathfinder_community_signal": float(ctx.get("community_signal") or 0),
             "pathfinder_conversion_signal": float(ctx.get("conversion_signal") or 0),
             "pathfinder_profile_action_signal": float(ctx.get("profile_action_signal") or 0),
+            "pathfinder_availability_intent_score": float(ctx.get("availability_intent_score") or 0),
+            "pathfinder_payment_coverage_score": float(ctx.get("payment_coverage_score") or 0),
+            "pathfinder_access_convenience_score": float(ctx.get("access_convenience_score") or 0),
             "pathfinder_preferred_search_surface": ctx.get("preferred_search_surface") or "",
             "pathfinder_recommended_content_type": ctx.get("recommended_content_type") or "",
             "pathfinder_brand_intent_type": ctx.get("brand_intent_type") or "generic",
@@ -8020,7 +8616,7 @@ class ViralHunter:
             ).fetchall()
 
             def _bucket_status(status: str) -> str:
-                if status == 'pending':
+                if status in {'pending', 'generated', 'posted', 'approved', 'ai_approved'}:
                     return 'pending'
                 if status == 'raw_backlog':
                     return 'raw_backlog'
@@ -8036,6 +8632,8 @@ class ViralHunter:
             }
             per_category: Dict[str, Dict[str, int]] = {}
             per_variant: Dict[str, Dict[str, int]] = {}
+            per_category_lens: Dict[str, Dict[str, int]] = {}
+            per_category_lens_variant: Dict[str, Dict[str, int]] = {}
             per_structure: Dict[str, Dict[str, int]] = {}
             per_seed: Dict[str, Dict[str, int]] = {}
             for row in rows:
@@ -8058,6 +8656,12 @@ class ViralHunter:
                 raw_category = str(row['matched_keyword_category'] or row['category'] or '기타')
                 category = canonical_category_for_keyword(source_keyword, raw_category)
                 variant = str(breakdown.get('pathfinder_query_variant') or '(none)')
+                lens = str(breakdown.get('pathfinder_execution_lens') or '').strip().lower()
+                if not lens:
+                    lens = self._inferred_execution_lens_for_keyword(source_keyword, {"category": category})
+                lens = lens or "service"
+                category_lens_key = f"{category}::{lens}"
+                category_lens_variant_key = f"{category_lens_key}::{variant}"
                 status_bucket = _bucket_status(str(row['comment_status'] or 'pending'))
                 discovered_current = (
                     str(row['discovered_at'] or '').replace('T', ' ') >= run_started_at
@@ -8072,6 +8676,8 @@ class ViralHunter:
                 for table, key in (
                     (per_category, category),
                     (per_variant, variant),
+                    (per_category_lens, category_lens_key),
+                    (per_category_lens_variant, category_lens_variant_key),
                     (per_structure, structure_key),
                     (per_seed, source_keyword),
                 ):
@@ -8107,6 +8713,8 @@ class ViralHunter:
                 },
                 'per_category': per_category,
                 'per_query_variant': per_variant,
+                'per_category_lens': per_category_lens,
+                'per_category_lens_query_variant': per_category_lens_variant,
                 'per_structure': per_structure,
                 'zero_yield_seeds': zero_yield_seeds,
                 'category_demand': {
@@ -8509,14 +9117,24 @@ class ViralHunter:
 
         if ai_targets:
             ai_category_counts: Dict[str, int] = {}
+            ai_category_lens_counts: Dict[str, int] = {}
             for target in ai_targets:
                 category = _ai_quota_category(target)
+                lens = _ai_target_execution_lens(target)
                 ai_category_counts[category] = ai_category_counts.get(category, 0) + 1
+                category_lens = f"{category}::{lens}"
+                ai_category_lens_counts[category_lens] = ai_category_lens_counts.get(category_lens, 0) + 1
             quota_summary = ", ".join(
                 f"{category} {count}"
                 for category, count in sorted(ai_category_counts.items())
             )
+            lens_summary = ", ".join(
+                f"{lane} {count}"
+                for lane, count in sorted(ai_category_lens_counts.items())
+            )
             print(f"   🎛️ AI 분석 카테고리 배분: {quota_summary}")
+            if lens_summary:
+                print(f"   🎚️ AI 분석 렌즈 배분: {lens_summary}")
 
         # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
         raw_saved = 0

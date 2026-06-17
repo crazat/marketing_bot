@@ -18,7 +18,7 @@ from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE
 from core_services.viral_seed_builder import canonical_category_for_keyword
 
 
-ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved"}
+ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved", "ai_approved"}
 SURVIVED_STATUSES = ACTIONABLE_STATUSES | {"raw_backlog"}
 FILTERED_PREFIXES = ("filtered_out",)
 
@@ -274,6 +274,8 @@ def _sample_for_lane(records: List[Dict[str, Any]], lane_type: str, lane: str, l
             record for record in records
             if record["category"] == category and record["lens"] == lens
         ]
+    elif lane_type == "query_variant":
+        matched = [record for record in records if record["query_variant"] == lane]
     else:
         matched = []
     matched.sort(
@@ -509,6 +511,7 @@ def _seed_target_coverage(
     *,
     category_summary: Dict[str, Dict[str, Any]],
     lens_summary: Dict[str, Dict[str, Any]],
+    category_lens_summary: Optional[Dict[str, Dict[str, Any]]] = None,
     min_targets_per_seed: float,
     min_strict_fit_per_seed: float,
 ) -> Dict[str, Any]:
@@ -526,15 +529,26 @@ def _seed_target_coverage(
         min_targets_per_seed=min_targets_per_seed,
         min_strict_fit_per_seed=min_strict_fit_per_seed,
     )
+    by_category_lens = _lane_seed_coverage(
+        baseline.get("seed_category_lens_counts") or {},
+        category_lens_summary or {},
+        min_targets_per_seed=min_targets_per_seed,
+        min_strict_fit_per_seed=min_strict_fit_per_seed,
+    )
     return {
         "by_category": by_category,
         "by_lens": by_lens,
+        "by_category_lens": by_category_lens,
         "undercovered_categories": [
             lane for lane, metrics in by_category.items()
             if metrics.get("gap_reasons")
         ],
         "undercovered_lenses": [
             lane for lane, metrics in by_lens.items()
+            if metrics.get("gap_reasons")
+        ],
+        "undercovered_category_lenses": [
+            lane for lane, metrics in by_category_lens.items()
             if metrics.get("gap_reasons")
         ],
     }
@@ -573,9 +587,18 @@ def _next_run_playbook(
         for lane, metrics in (seed_target_coverage.get("by_lens") or {}).items()
         if metrics.get("gap_reasons")
     ]
+    boost_category_lenses = [
+        {
+            "category_lens": lane,
+            **metrics,
+        }
+        for lane, metrics in (seed_target_coverage.get("by_category_lens") or {}).items()
+        if metrics.get("gap_reasons")
+    ]
     boost_categories.sort(key=lambda item: (item["target_per_seed"], item["strict_fit_per_seed"], -item["seed_count"]))
     boost_lenses.sort(key=lambda item: (item["target_per_seed"], item["strict_fit_per_seed"], -item["seed_count"]))
-    coverage_gap_required = bool(boost_categories or boost_lenses)
+    boost_category_lenses.sort(key=lambda item: (item["target_per_seed"], item["strict_fit_per_seed"], -item["seed_count"]))
+    coverage_gap_required = bool(boost_categories or boost_lenses or boost_category_lenses)
 
     review_before_scaling = [
         lane for lane in weak_lanes
@@ -589,15 +612,25 @@ def _next_run_playbook(
         text = str(value or "").replace('"', '\\"')
         return f'"{text}"'
 
-    boost_args: List[str] = []
+    boost_category_args: List[str] = []
+    boost_lens_args: List[str] = []
     for item in boost_categories[:5]:
         category = item.get("category")
-        if category:
-            boost_args.append(f"--boost-category {quote_cli(category)}")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
     for item in boost_lenses[:5]:
         lens = item.get("lens")
-        if lens:
-            boost_args.append(f"--boost-lens {quote_cli(lens)}")
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+    for item in boost_category_lenses[:5]:
+        category, _, lens = str(item.get("category_lens") or "").partition("::")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+
+    boost_args = [f"--boost-category {quote_cli(category)}" for category in boost_category_args[:5]]
+    boost_args.extend(f"--boost-lens {quote_cli(lens)}" for lens in boost_lens_args[:5])
 
     scan_command = "python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5"
     if source_scan_run_id:
@@ -615,6 +648,7 @@ def _next_run_playbook(
         "coverage_gap_required": coverage_gap_required,
         "boost_categories": boost_categories[:10],
         "boost_lenses": boost_lenses[:10],
+        "boost_category_lenses": boost_category_lenses[:10],
         "review_before_scaling": review_before_scaling,
         "top_recommendation_codes": [item.get("code") for item in recommendations[:5]],
         "suggested_commands": {
@@ -673,8 +707,19 @@ def _recommendations(
             [f"lens:{lens}" for lens in missing_lenses],
         )
 
+    missing_category_lenses = baseline.get("missing_seed_category_lenses_in_targets") or []
+    if missing_category_lenses:
+        add(
+            84,
+            "missing_seed_category_lenses_in_targets",
+            "Some Pathfinder treatment-axis/execution-lens combinations produced no Viral Hunter targets.",
+            "boost the affected category and lens together, then inspect whether query variants preserve the seed's specific patient vocabulary",
+            [f"category_lens:{lane}" for lane in missing_category_lenses[:8]],
+        )
+
     for lane_type, code, priority in (
         ("by_category", "undercovered_seed_categories", 86),
+        ("by_category_lens", "undercovered_seed_category_lenses", 84),
         ("by_lens", "undercovered_seed_lenses", 82),
     ):
         undercovered = [
@@ -757,6 +802,9 @@ def _seed_baseline(db_path: str, source_scan_run_id: Optional[int]) -> Dict[str,
         "seed_category_counts": dict(Counter(seed.category for seed in seeds)),
         "seed_grade_counts": dict(Counter(seed.grade for seed in seeds)),
         "seed_lens_counts": dict(Counter(seed.execution_lens or "service" for seed in seeds)),
+        "seed_category_lens_counts": dict(
+            Counter(f"{seed.category}::{seed.execution_lens or 'service'}" for seed in seeds)
+        ),
     }
 
 
@@ -794,6 +842,7 @@ def summarize_viral_handoff_quality(
     by_grade: Dict[str, LaneStats] = defaultdict(LaneStats)
     by_lens: Dict[str, LaneStats] = defaultdict(LaneStats)
     by_category_lens: Dict[str, LaneStats] = defaultdict(LaneStats)
+    by_query_variant: Dict[str, LaneStats] = defaultdict(LaneStats)
     records: List[Dict[str, Any]] = []
 
     with sqlite3.connect(path) as conn:
@@ -846,6 +895,7 @@ def summarize_viral_handoff_quality(
         by_grade[grade].add(**add_kwargs)
         by_lens[lens].add(**add_kwargs)
         by_category_lens[f"{category}::{lens}"].add(**add_kwargs)
+        by_query_variant[query_variant].add(**add_kwargs)
         records.append(
             _row_sample(
                 row,
@@ -870,6 +920,10 @@ def summarize_viral_handoff_quality(
         key: stats.to_dict()
         for key, stats in sorted(by_category_lens.items())
     }
+    query_variant_summary = {
+        key: stats.to_dict()
+        for key, stats in sorted(by_query_variant.items())
+    }
 
     weak_lanes = []
     for lane_type, summary in (
@@ -877,6 +931,7 @@ def summarize_viral_handoff_quality(
         ("grade", grade_summary),
         ("lens", lens_summary),
         ("category_lens", category_lens_summary),
+        ("query_variant", query_variant_summary),
     ):
         for lane, metrics in summary.items():
             reasons = _weak_lane_reasons(metrics, min_lane_total=min_lane_total)
@@ -903,12 +958,17 @@ def summarize_viral_handoff_quality(
         baseline["missing_seed_lenses_in_targets"] = sorted(
             set(baseline.get("seed_lens_counts", {})) - discovered_lenses
         )
+        discovered_category_lenses = set(category_lens_summary)
+        baseline["missing_seed_category_lenses_in_targets"] = sorted(
+            set(baseline.get("seed_category_lens_counts", {})) - discovered_category_lenses
+        )
 
     overall_summary = overall.to_dict()
     seed_target_coverage = _seed_target_coverage(
         baseline,
         category_summary=category_summary,
         lens_summary=lens_summary,
+        category_lens_summary=category_lens_summary,
         min_targets_per_seed=min_targets_per_seed,
         min_strict_fit_per_seed=min_strict_fit_per_seed,
     )
@@ -948,6 +1008,7 @@ def summarize_viral_handoff_quality(
         "by_grade": grade_summary,
         "by_lens": lens_summary,
         "by_category_lens": category_lens_summary,
+        "by_query_variant": query_variant_summary,
         "seed_target_coverage": seed_target_coverage,
         "weak_lanes": weak_lanes,
         "recommendations": recommendations,
