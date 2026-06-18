@@ -48,6 +48,9 @@ def test_gyulim_profile_keeps_scar_axis_separate_from_skin_axis():
     assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 상처흉터 한의원 치료기간", "피부/여드름")
     assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 피부과 추천", "흉터/여드름흉터")
     assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 수술흉터 피부과 추천", "피부/여드름")
+    assert GYULIM_KEYWORD_PROFILE.detect_category("청주 편평사마귀 한의원 상담") == "피부/여드름"
+    assert GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 편평사마귀 한의원 상담", "피부/여드름")
+    assert not GYULIM_KEYWORD_PROFILE.is_focus_candidate("청주 편평사마귀 한의원 상담", "흉터/여드름흉터")
 
 
 def test_legion_collector_focus_matches_gyulim_treatments():
@@ -57,7 +60,12 @@ def test_legion_collector_focus_matches_gyulim_treatments():
         "청주 여드름흉터 한의원 비용": "흉터/여드름흉터",
         "청주 수두흉터 새살침 상담": "흉터/여드름흉터",
         "청주 피부관리 한의원 상담": "피부/여드름",
+        "청주 편평사마귀 한의원 상담": "피부/여드름",
         "청주 안면비대칭 교정 후기": "안면비대칭",
+        "청주 광대 좌우 차이 한의원 상담": "안면비대칭",
+        "청주 좌우비대칭 한의원 상담": "안면비대칭",
+        "청주 두상비대칭 교정 상담": "안면비대칭",
+        "청주 머리비대칭 한의원 상담": "안면비대칭",
         "청주 다이어트 한약 비용": "다이어트",
         "청주 허리통증 한의원 비용": "통증/디스크",
         "청주 목디스크 추나요법": "통증/디스크",
@@ -104,6 +112,7 @@ def test_quality_filter_uses_profile_for_pain_and_skin_relevance():
     pain = quality_filter.validate("청주 허리통증 한의원 비용")
     scar = quality_filter.validate("청주 패인흉터 새살침 상담")
     surgery_scar = quality_filter.validate("청주 수술흉터 새살침 상담")
+    wart = quality_filter.validate("청주 편평사마귀 한의원 상담")
 
     assert pain.is_valid
     assert pain.relevance_score >= 0.8
@@ -111,6 +120,8 @@ def test_quality_filter_uses_profile_for_pain_and_skin_relevance():
     assert scar.relevance_score >= 0.8
     assert surgery_scar.is_valid
     assert surgery_scar.relevance_score >= 0.8
+    assert wart.is_valid
+    assert wart.relevance_score >= 0.8
 
 
 def test_legion_longtail_templates_include_pain_category():

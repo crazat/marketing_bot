@@ -496,6 +496,8 @@ class ViralSeed:
     recommended_content_type: str = ""
     brand_intent_type: str = "generic"
     review_intent_type: str = "none"
+    quality_flags_json: str = "[]"
+    source_signals_json: str = "[]"
     execution_lens: str = "service"
 
     def to_context(self) -> dict:
@@ -870,6 +872,8 @@ class ViralSeedBuilder:
                         recommended_content_type=row["recommended_content_type"] or "",
                         brand_intent_type=row["brand_intent_type"] or "generic",
                         review_intent_type=row["review_intent_type"] or "none",
+                        quality_flags_json=row["quality_flags_json"] or "[]",
+                        source_signals_json=row["source_signals_json"] or "[]",
                         execution_lens=self._keyword_execution_lens(row),
                     )
                 )
@@ -922,7 +926,8 @@ class ViralSeedBuilder:
 
         Pathfinder scan rows remain the source of truth.  This only prevents a
         real treatment axis from disappearing from Viral Hunter when a recent
-        scan has too few eligible rows for that axis.
+        scan has too few eligible rows, including zero surviving rows, for that
+        axis.
         """
         category_counts = Counter(seed.category for seed in selected)
         normalized_seen = {
@@ -933,8 +938,6 @@ class ViralSeedBuilder:
 
         for raw_category, quota in quotas.items():
             category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
-            if int(category_counts.get(category, 0) or 0) <= 0:
-                continue
             needed = int(quota or 0) - int(category_counts.get(category, 0) or 0)
             if needed <= 0:
                 continue
@@ -1112,6 +1115,8 @@ class ViralSeedBuilder:
             recommended_content_type=str(row.get("recommended_content_type") or ""),
             brand_intent_type=str(row.get("brand_intent_type") or "generic"),
             review_intent_type=str(row.get("review_intent_type") or "none"),
+            quality_flags_json=str(row.get("quality_flags_json") or "[]"),
+            source_signals_json=str(row.get("source_signals_json") or "[]"),
             execution_lens=ViralSeedBuilder._keyword_execution_lens(row),
         )
 
@@ -2130,6 +2135,8 @@ class ViralSeedBuilder:
                 recommended_content_type=row["recommended_content_type"] or "",
                 brand_intent_type=row["brand_intent_type"] or "generic",
                 review_intent_type=row["review_intent_type"] or "none",
+                quality_flags_json=row["quality_flags_json"] or "[]",
+                source_signals_json=row["source_signals_json"] or "[]",
                 execution_lens=self._keyword_execution_lens(dict(row)),
             ).to_context()
         return context
@@ -2252,6 +2259,8 @@ class ViralSeedBuilder:
         category = _canonical_category_for_keyword(str(row.get("keyword") or ""), str(row.get("category") or ""))
         lens = ViralSeedBuilder._keyword_execution_lens(row)
         weak_lenses = {
+            "흉터/여드름흉터": {"safety"},
+            "피부/여드름": {"safety"},
             "체형교정": {"cost", "safety", "availability", "service", "consultation", "community"},
             "리프팅/탄력": {"cost", "safety", "availability", "service", "consultation", "community"},
             "교통사고": {"safety", "availability"},

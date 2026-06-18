@@ -1,6 +1,29 @@
 # Claude Code 프로젝트 가이드라인
 
 
+## 2026-06-18 Memory: Gyulim Pathfinder -> Viral Hunter Source-Specific Context Hardening
+
+- New-angle audit focused on whether Pathfinder's broad Gyulim Cheongju discovery for scar/acne scar, asymmetry, skin/acne, diet, traffic, body correction, and related treatments is handed to Viral Hunter with enough source-specific context to find real viral work posts, not just generic category matches.
+- Main fixes in `viral_hunter.py`:
+  - Source-specific Pathfinder lineage is carried into Viral Hunter scoring and handoff prompts (`pathfinder_source_keyword`, source-fit signals, `PATHFINDER_SEARCH`/`PATHFINDER_FIT` lines) so downstream review can explain why a post was found.
+  - Source-specific alias matching now covers high-value patient expression shifts while staying axis-bound: `여드름자국` <-> `붉은자국`/`갈색자국`/`색소침착`, `자동차보험` <-> `자보`/`보험접수`, `편평사마귀` <-> `편평 사마귀`, and asymmetry forms such as `광대 좌우 차이`, `얼굴 좌우 차이`, `두상 비대칭`, `머리 비대칭`.
+  - Strict source-context gates now penalize posts that match only the broad axis while missing the specific Pathfinder seed concept, with negation handling (`수술흉터는 아니고...`) and KIN `[기존답변]` question/answer isolation so provider answers do not create false source fits.
+  - Final asymmetry gates now treat patient expressions like `광대 좌우 차이`, `얼굴 좌우 차이`, and `머리 비대칭` as valid 안면비대칭 anchors across axis-fit, strict-domain anchors, and final rejection.
+  - AI target selection and refill logic preserve category floors and source-lens diversity after enrichment so signature axes are not crowded out by one dominant lane.
+- Main fixes in `core_services/gyulim_keyword_profile.py` and `core_services/viral_seed_builder.py`:
+  - Gyulim profile now keeps `편평사마귀` in the skin axis and adds asymmetry patient expressions (`광대좌우차이`, `좌우비대칭`, `얼굴좌우차이`, `두상비대칭`, `머리비대칭`) as real discovery/core terms.
+  - Viral seed building preserves Pathfinder source signals and high-intent quality fields through the handoff, and suppresses weak lens expansion more conservatively for underperforming scar/skin safety lanes.
+- Guardrails to keep:
+  - Do not collapse source-specific matching back to broad category matching; source-context misses are intentional when a seed like `수술흉터`, `편평사마귀`, or `자동차보험` finds a broad but different post.
+  - Do not treat KIN answer text as user need text for source-fit gates; labeled `[기존답변]` sections are competitor/provider context for AI, not the user's search intent.
+  - Keep aliases axis-specific. Avoid generic aliases like bare `사마귀` or bare `좌우차이` unless they are bounded by an explicit treatment context.
+- Verification for this layer:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -q` -> 292 passed
+  - `python -m pytest tests/test_viral_handoff_audit.py tests/test_gyulim_keyword_profile.py tests/test_viral_pathfinder_backfill.py tests/test_viral_target_repo.py -q` -> 29 passed
+  - `python -m py_compile viral_hunter.py core_services\gyulim_keyword_profile.py`
+  - `git diff --check -- core_services/gyulim_keyword_profile.py core_services/viral_seed_builder.py viral_hunter.py tests/test_gyulim_keyword_profile.py tests/test_pathfinder_viral_stability.py`
+
+
 ## 2026-06-17 Memory: Pathfinder -> Viral Hunter Handoff Hardening for Gyulim Cheongju
 
 - New-angle audit focused on whether Pathfinder's broad Cheongju Gyulim treatment discovery (scar/acne scar, asymmetry, skin/acne, diet, body correction, lifting, traffic, etc.) survives into Viral Hunter as workable post discovery instead of collapsing into generic SEO/ad supply.

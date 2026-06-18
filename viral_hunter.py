@@ -73,6 +73,17 @@ AI_CATEGORY_MIN_QUOTAS: Dict[str, int] = {
     "리프팅/탄력": 10,
 }
 
+AI_CATEGORY_FLOOR_PRIORITY: Tuple[str, ...] = (
+    "흉터/여드름흉터",
+    "안면비대칭",
+    "피부/여드름",
+    "다이어트",
+    "교통사고",
+    "체형교정",
+    "리프팅/탄력",
+    "경쟁사_역공략",
+)
+
 AI_CATEGORY_ALIASES: Dict[str, str] = {
     "흉터": "흉터/여드름흉터",
     "여드름흉터": "흉터/여드름흉터",
@@ -124,6 +135,14 @@ PATHFINDER_AXIS_COMPANION_GENERIC_TERMS: Dict[str, set[str]] = {
     "리프팅/탄력": {
         "리프팅", "탄력", "한방리프팅", "매선리프팅",
     },
+    "교통사고": {
+        "교통사고", "자동차사고", "교통사고한의원", "자동차사고한의원",
+    },
+}
+
+PATHFINDER_AXIS_SHORT_SPECIFIC_TERMS: Dict[str, set[str]] = {
+    "다이어트": {"산후", "요요"},
+    "교통사고": {"입원", "자보"},
 }
 
 PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX: Dict[str, str] = {
@@ -133,6 +152,7 @@ PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX: Dict[str, str] = {
     "안면비대칭": "axis_asymmetry",
     "체형교정": "axis_body",
     "리프팅/탄력": "axis_lifting",
+    "교통사고": "axis_traffic",
 }
 
 
@@ -167,6 +187,10 @@ def _pathfinder_axis_specific_terms_for_keyword(keyword: str, category: str, lim
         _compact_query_text(term)
         for term in ("한의원", "한방", "한약", "치료", "상담", "예약", "추천", "후기")
     }
+    short_specific_terms = {
+        _compact_query_text(term)
+        for term in PATHFINDER_AXIS_SHORT_SPECIFIC_TERMS.get(category, set())
+    }
 
     ordered_terms: List[str] = []
     ordered_terms.extend(getattr(profile, "longtail_contexts", ()) or ())
@@ -182,7 +206,7 @@ def _pathfinder_axis_specific_terms_for_keyword(keyword: str, category: str, lim
             continue
         if compact not in compact_keyword:
             continue
-        if len(compact) < 3:
+        if len(compact) < 3 and compact not in short_specific_terms:
             continue
         if compact in generic_terms or compact in low_value_terms:
             continue
@@ -203,12 +227,78 @@ def _normalized_ai_category_quotas(quotas: Dict[str, int]) -> Dict[str, int]:
     return normalized
 
 
+def _ordered_ai_floor_categories(quotas: Dict[str, int]) -> List[str]:
+    priority_index = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+
+    def sort_key(category: str) -> Tuple[int, float, int, str]:
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        weight = float(getattr(profile, "strategic_weight", 1.0) or 1.0) if profile else 1.0
+        return (
+            priority_index.get(category, len(priority_index)),
+            -weight,
+            -int(quotas.get(category, 0) or 0),
+            category,
+        )
+
+    return sorted(
+        [category for category, quota in (quotas or {}).items() if int(quota or 0) > 0],
+        key=sort_key,
+    )
+
+
 def _ai_target_execution_lens(target: "ViralTarget") -> str:
     breakdown = getattr(target, "score_breakdown", None) or {}
     if not isinstance(breakdown, dict):
         breakdown = {}
     lens = str(breakdown.get("pathfinder_execution_lens") or "").strip().lower()
     return lens or "service"
+
+
+def _ai_target_breakdown_float(target: "ViralTarget", key: str) -> float:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+    try:
+        return float(breakdown.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ai_target_selection_score(target: "ViralTarget") -> float:
+    """AI budget ordering that favors Pathfinder-fit, clinic-fit candidates."""
+    priority = float(getattr(target, "priority_score", 0.0) or 0.0)
+    axis_fit = _ai_target_breakdown_float(target, "pathfinder_axis_fit_score")
+    lens_fit = _ai_target_breakdown_float(target, "pathfinder_lens_fit_score")
+    clinic_fit = _ai_target_breakdown_float(target, "clinic_treatment_fit_score")
+    worksite_fit = _ai_target_breakdown_float(target, "worksite_efficiency_score")
+    readiness = _ai_target_breakdown_float(target, "pathfinder_viral_readiness_score")
+    actionability = _ai_target_breakdown_float(target, "pathfinder_content_actionability_score")
+
+    fit_bonus = 0.0
+    if axis_fit:
+        fit_bonus += max(-18.0, min(18.0, (axis_fit - 55.0) * 0.16))
+    if lens_fit:
+        fit_bonus += max(-14.0, min(14.0, (lens_fit - 55.0) * 0.12))
+    if clinic_fit:
+        fit_bonus += max(-16.0, min(16.0, (clinic_fit - 55.0) * 0.12))
+    if worksite_fit:
+        fit_bonus += max(-12.0, min(12.0, (worksite_fit - 55.0) * 0.10))
+    if readiness:
+        fit_bonus += max(-6.0, min(8.0, (readiness - 60.0) * 0.08))
+    if actionability:
+        fit_bonus += max(-6.0, min(8.0, (actionability - 60.0) * 0.08))
+    return round(priority + fit_bonus, 4)
+
+
+def _ai_target_sort_key(target: "ViralTarget") -> Tuple[float, float, float, float, float, str]:
+    return (
+        _ai_target_selection_score(target),
+        float(getattr(target, "priority_score", 0.0) or 0.0),
+        _ai_target_breakdown_float(target, "pathfinder_axis_fit_score"),
+        _ai_target_breakdown_float(target, "pathfinder_lens_fit_score"),
+        _ai_target_breakdown_float(target, "clinic_treatment_fit_score"),
+        str(getattr(target, "url", "") or getattr(target, "id", "")),
+    )
 
 
 def _select_category_floor_targets(
@@ -230,6 +320,7 @@ def _select_category_floor_targets(
     ]
     if not candidates:
         return []
+    candidates = sorted(candidates, key=_ai_target_sort_key, reverse=True)
 
     picked: List[ViralTarget] = []
     local_urls: set[str] = set()
@@ -282,11 +373,40 @@ def split_ai_targets_with_category_floor(
     selected: List[ViralTarget] = []
     selected_urls: set[str] = set()
     per_category_floor_cap = max(1, math.ceil(top_n * 0.4)) if len(quotas) > 1 else top_n
+    selected_category_counts: Dict[str, int] = {}
+    ordered_categories = _ordered_ai_floor_categories(quotas)
 
-    for category, quota in quotas.items():
+    # First pass: when the AI budget is small, guarantee one candidate for each
+    # available strategic axis before any high-volume category consumes its full
+    # floor. This prevents scar/asymmetry/diet/skin handoffs from being crowded
+    # out by whichever category appears first in the quota map.
+    for category in ordered_categories:
         if len(selected) >= top_n:
             break
+        target = next(
+            iter(
+                _select_category_floor_targets(
+                    targets,
+                    category=category,
+                    quota=1,
+                    selected_urls=selected_urls,
+                )
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        selected.append(target)
+        selected_urls.add(target.url or target.id)
+        selected_category_counts[category] = selected_category_counts.get(category, 0) + 1
+
+    for category in ordered_categories:
+        if len(selected) >= top_n:
+            break
+        quota = int(quotas.get(category, 0) or 0)
+        already_selected = int(selected_category_counts.get(category, 0) or 0)
         remaining_quota = min(quota, per_category_floor_cap, top_n - len(selected))
+        remaining_quota = max(0, remaining_quota - already_selected)
         for target in _select_category_floor_targets(
             targets,
             category=category,
@@ -295,10 +415,11 @@ def split_ai_targets_with_category_floor(
         ):
             selected.append(target)
             selected_urls.add(target.url or target.id)
+            selected_category_counts[category] = selected_category_counts.get(category, 0) + 1
             if len(selected) >= top_n:
                 break
 
-    for target in targets:
+    for target in sorted(targets, key=_ai_target_sort_key, reverse=True):
         if len(selected) >= top_n:
             break
         url = target.url or target.id
@@ -307,7 +428,7 @@ def split_ai_targets_with_category_floor(
         selected.append(target)
         selected_urls.add(url)
 
-    selected.sort(key=lambda x: x.priority_score or 0, reverse=True)
+    selected.sort(key=_ai_target_sort_key, reverse=True)
     rest = [target for target in targets if (target.url or target.id) not in selected_urls]
     return selected, rest
 
@@ -1847,6 +1968,7 @@ class CommentableFilter:
         "route_navigation": "filtered_out",
         "region_mismatch": "filtered_out",
         "domain_mismatch": "filtered_out",
+        "source_context_mismatch": "filtered_out",
         "lens_mismatch": "filtered_out",
         "response_restricted": "filtered_out",
         "self_target": "filtered_out",
@@ -2012,6 +2134,8 @@ class CommentableFilter:
     ]
     ASYMMETRY_STRONG_AXIS_PATTERNS = [
         "안면비대칭", "얼굴비대칭", "턱비대칭", "좌우비대칭", "두상비대칭",
+        "광대비대칭", "광대 비대칭", "광대좌우차이", "광대 좌우 차이",
+        "얼굴좌우차이", "얼굴 좌우 차이", "머리비대칭", "머리 비대칭",
         "턱관절", "턱 교정", "턱교정", "안면교정", "얼굴교정",
         "비대칭교정", "비대칭 교정", "얼굴 틀어짐", "얼굴틀어짐",
         "턱 틀어짐", "턱틀어짐",
@@ -2315,7 +2439,10 @@ class CommentableFilter:
     STRICT_DOMAIN_ANCHORS = {
         "asymmetry": [
             "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
-            "턱 교정", "턱교정", "얼굴형", "두상비대칭",
+            "턱 교정", "턱교정", "얼굴형", "광대비대칭", "광대 비대칭",
+            "광대좌우차이", "광대 좌우 차이", "좌우비대칭", "좌우 비대칭",
+            "얼굴좌우차이", "얼굴 좌우 차이", "두상비대칭", "두상 비대칭",
+            "머리비대칭", "머리 비대칭",
             # 환자 어휘 — 키워드 용어(턱관절/비대칭) 없이 증상을 서술하는 질문 구제
             # (라이브: '아래턱이 오른쪽으로 움직이는' 턱 틀어짐 질문이 앵커 미스로
             # domain_mismatch). 치과 고착 글은 선행 dental off_domain 게이트가 거른다.
@@ -2668,6 +2795,193 @@ class CommentableFilter:
         return list(dict.fromkeys(terms))
 
     @classmethod
+    def _pathfinder_primary_source_specific_terms(cls, target: ViralTarget, category: str) -> List[str]:
+        """Specific terms from the primary Pathfinder seed, used for strict source-fit gates."""
+        breakdown = target.score_breakdown or {}
+        seed_keyword = str(breakdown.get("pathfinder_source_keyword") or "").strip()
+        if not seed_keyword:
+            raw_sources = breakdown.get("pathfinder_source_keywords")
+            if isinstance(raw_sources, list):
+                seed_keyword = str(next((item for item in raw_sources if str(item or "").strip()), "")).strip()
+            elif raw_sources:
+                seed_keyword = str(raw_sources or "").strip()
+        if not seed_keyword and target.matched_keywords:
+            seed_keyword = str(target.matched_keywords[0] or "").strip()
+        if not seed_keyword:
+            return []
+        return _pathfinder_axis_specific_terms_for_keyword(seed_keyword, category, limit=3)
+
+    PATHFINDER_SOURCE_TERM_ALIASES: Dict[str, Tuple[str, ...]] = {
+        "자동차보험": ("자동차 보험", "자보", "보험접수", "보험 접수", "자보처리", "자보 처리"),
+        "자보": ("자동차보험", "자동차 보험", "보험접수", "보험 접수", "자보처리", "자보 처리"),
+        "여드름자국": ("여드름 자국", "붉은자국", "붉은 자국", "갈색자국", "갈색 자국", "색소침착"),
+        "붉은자국": ("붉은 자국", "여드름자국", "여드름 자국", "색소침착", "갈색자국", "갈색 자국"),
+        "갈색자국": ("갈색 자국", "여드름자국", "여드름 자국", "색소침착", "붉은자국", "붉은 자국"),
+        "안면비대칭": ("얼굴비대칭", "얼굴 비대칭", "턱비대칭", "턱 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "얼굴비대칭": ("얼굴 비대칭", "안면비대칭", "턱비대칭", "턱 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "턱비대칭": ("턱 비대칭", "안면비대칭", "얼굴비대칭", "얼굴 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "광대비대칭": ("광대 비대칭", "광대좌우차이", "광대 좌우 차이"),
+        "광대좌우차이": ("광대 좌우 차이", "광대비대칭", "광대 비대칭"),
+        "좌우비대칭": ("좌우 비대칭", "얼굴좌우차이", "얼굴 좌우 차이"),
+        "얼굴좌우차이": ("얼굴 좌우 차이", "좌우비대칭", "좌우 비대칭"),
+        "두상비대칭": ("두상 비대칭", "머리비대칭", "머리 비대칭"),
+        "머리비대칭": ("머리 비대칭", "두상비대칭", "두상 비대칭"),
+        "턱관절": ("턱 관절", "턱관절통증", "턱관절 통증", "턱통증", "턱 통증"),
+        "다이어트한약": ("다이어트 한약", "한방다이어트", "한방 다이어트", "감량한약", "감량 한약"),
+        "한방다이어트": ("한방 다이어트", "다이어트한약", "다이어트 한약", "감량한약", "감량 한약"),
+        "편평사마귀": ("편평 사마귀",),
+    }
+    PATHFINDER_SOURCE_NEGATION_AFTER_RE = re.compile(
+        r"^(?:은|는|이|가|도|쪽|쪽은|관련|관련은|치료|치료는|상담|상담은)?"
+        r"(?:아니고|아니라|아님|아닌|아닙|아니에|아니었|말고|말구|제외|빼고|"
+        r"안하고|안하|안되|안돼|안됨|못하|불가)"
+    )
+    PATHFINDER_SOURCE_NEGATION_BEFORE_TERMS: Tuple[str, ...] = (
+        "말고",
+        "말구",
+        "제외",
+        "제외하고",
+        "빼고",
+    )
+    PATHFINDER_STRICT_SOURCE_CONTEXT_TERMS: Dict[str, Tuple[str, ...]] = {
+        "흉터/여드름흉터": (
+            "여드름자국", "여드름 자국", "붉은자국", "붉은 자국",
+            "갈색자국", "갈색 자국", "색소침착", "수술흉터", "수술 흉터",
+            "수두흉터", "수두 흉터", "켈로이드", "패인흉터", "패인 흉터",
+            "모공흉터", "모공 흉터", "상처흉터", "상처 흉터",
+        ),
+        "피부/여드름": (
+            "성인여드름", "성인 여드름", "아토피", "지루성피부염",
+            "지루성 피부염", "편평사마귀", "편평 사마귀", "색소침착",
+        ),
+        "교통사고": (
+            "입원", "자보", "자동차보험", "자동차 보험", "보험접수", "보험 접수",
+            "후유증", "목통증", "허리통증",
+        ),
+        "안면비대칭": (
+            "턱관절", "턱 관절", "턱비대칭", "턱 비대칭", "광대비대칭",
+            "광대 비대칭", "광대좌우차이", "광대 좌우 차이",
+            "좌우비대칭", "좌우 비대칭", "얼굴좌우차이", "얼굴 좌우 차이",
+            "두상비대칭", "두상 비대칭", "머리비대칭", "머리 비대칭",
+        ),
+        "다이어트": (
+            "산후", "요요", "감량한약", "감량 한약",
+        ),
+    }
+
+    @classmethod
+    def _pathfinder_source_context_is_negated(
+        cls,
+        candidate: str,
+        *,
+        compact_text: str,
+        start_idx: int,
+    ) -> bool:
+        compact = _compact_query_text(candidate)
+        if not compact or start_idx < 0:
+            return False
+        before = compact_text[max(0, start_idx - 12):start_idx]
+        after = compact_text[start_idx + len(compact): start_idx + len(compact) + 16]
+        if cls.PATHFINDER_SOURCE_NEGATION_AFTER_RE.match(after):
+            return True
+        return any(before.endswith(_compact_query_text(term)) for term in cls.PATHFINDER_SOURCE_NEGATION_BEFORE_TERMS)
+
+    @classmethod
+    def _pathfinder_source_fit_text(cls, target: ViralTarget, text: str = "") -> str:
+        """Use user-authored text for source-specific fit so KIN answers do not inflate it."""
+        platform = (getattr(target, "platform", "") or "").lower()
+        preview = getattr(target, "content_preview", "") or ""
+        if platform in {"kin", "naver_kin"} or "[기존답변" in preview or "[기존 답변" in preview:
+            user_text = cls._user_need_text(target).lower()
+            if user_text:
+                return user_text
+        return (text or "").lower()
+
+    @classmethod
+    def _pathfinder_source_specific_term_matches(
+        cls,
+        term: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+    ) -> bool:
+        """Match a source-specific concept, allowing clinic-domain synonyms."""
+        candidates = [str(term or "").strip()]
+        candidates.extend(cls.PATHFINDER_SOURCE_TERM_ALIASES.get(str(term or "").strip(), ()))
+        for candidate in candidates:
+            clean = str(candidate or "").strip().lower()
+            if not clean:
+                continue
+            compact = re.sub(r"\s+", "", clean)
+            if not compact:
+                continue
+            start = 0
+            while True:
+                idx = compact_text.find(compact, start)
+                if idx < 0:
+                    break
+                if not cls._pathfinder_source_context_is_negated(
+                    clean,
+                    compact_text=compact_text,
+                    start_idx=idx,
+                ):
+                    return True
+                start = idx + max(1, len(compact))
+        return False
+
+    @classmethod
+    def _pathfinder_source_specific_coverage(
+        cls,
+        target: ViralTarget,
+        category: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+        source_specific_terms: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[str]]:
+        terms = list(dict.fromkeys(source_specific_terms or cls._pathfinder_source_specific_terms(target, category)))
+        hits = [
+            term for term in terms
+            if cls._pathfinder_source_specific_term_matches(
+                term,
+                text_lc=text_lc,
+                compact_text=compact_text,
+            )
+        ]
+        return terms, list(dict.fromkeys(hits))
+
+    @classmethod
+    def _pathfinder_source_specific_strict_gap(
+        cls,
+        target: ViralTarget,
+        category: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+    ) -> bool:
+        strict_terms = cls.PATHFINDER_STRICT_SOURCE_CONTEXT_TERMS.get(category, ())
+        if not strict_terms:
+            return False
+        strict_compacts = {_compact_query_text(term) for term in strict_terms if str(term or "").strip()}
+        source_terms = cls._pathfinder_primary_source_specific_terms(target, category)
+        strict_source_terms = [
+            term for term in source_terms
+            if _compact_query_text(term) in strict_compacts
+        ]
+        if not strict_source_terms:
+            return False
+        _, strict_hits = cls._pathfinder_source_specific_coverage(
+            target,
+            category,
+            text_lc=text_lc,
+            compact_text=compact_text,
+            source_specific_terms=strict_source_terms,
+        )
+        if len(strict_source_terms) >= 2:
+            return len(strict_hits) < len(strict_source_terms)
+        return not strict_hits
+
+    @classmethod
     def _pathfinder_axis_post_fit(
         cls,
         target: ViralTarget,
@@ -2688,6 +3002,8 @@ class CommentableFilter:
 
         text_lc = (text or "").lower()
         compact_text = re.sub(r"\s+", "", text_lc)
+        source_text_lc = cls._pathfinder_source_fit_text(target, text_lc)
+        source_compact_text = re.sub(r"\s+", "", source_text_lc)
 
         def matching_terms(terms: Iterable[str]) -> List[str]:
             matches: List[str] = []
@@ -2705,8 +3021,18 @@ class CommentableFilter:
         anchor_hits = matching_terms(profile.direct_service_anchors)
         low_value_hits = matching_terms(profile.low_business_value_terms)
         primary_hits = list(dict.fromkeys(category_hits + core_hits))
-        source_specific_terms = cls._pathfinder_source_specific_terms(target, category)
-        source_specific_hits = matching_terms(source_specific_terms)
+        source_specific_terms, source_specific_hits = cls._pathfinder_source_specific_coverage(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+        )
+        strict_source_gap = cls._pathfinder_source_specific_strict_gap(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+        )
 
         score = 35.0
         signals: List[str] = []
@@ -2726,12 +3052,25 @@ class CommentableFilter:
             score -= 20.0
             signals.append("pathfinder_axis_no_primary_terms")
         if source_specific_terms:
-            if source_specific_hits:
-                score += min(14.0, 8.0 + len(source_specific_hits) * 3.0)
-                signals.append("pathfinder_axis_specific_context_match")
-            else:
+            if not source_specific_hits:
                 score -= 28.0
                 signals.append("pathfinder_axis_specific_context_missing")
+            else:
+                hit_count = len(source_specific_hits)
+                total_specific = max(1, len(source_specific_terms))
+                coverage = hit_count / total_specific
+                if hit_count == total_specific or coverage >= 0.8:
+                    score += min(14.0, 8.0 + hit_count * 3.0)
+                    signals.append("pathfinder_axis_specific_context_match")
+                    if total_specific > 1:
+                        signals.append("pathfinder_axis_specific_context_complete")
+                else:
+                    score += min(6.0, 2.0 + hit_count * 1.5)
+                    score -= min(14.0, (total_specific - hit_count) * 4.0)
+                    signals.append("pathfinder_axis_specific_context_partial")
+        if strict_source_gap:
+            score -= 18.0
+            signals.append("pathfinder_axis_specific_context_strict_gap")
 
         region_score, region_signals = cls._region_fit_signal(
             text_lc, local_venue=cls._has_local_venue_anchor(target)
@@ -2760,6 +3099,9 @@ class CommentableFilter:
         if domain != "general" and cls._has_domain_anchor(domain, text_lc):
             score += 4.0
             signals.append("pathfinder_axis_domain_anchor")
+
+        if strict_source_gap:
+            score = min(score, 54.0)
 
         score = round(max(0.0, min(100.0, score)), 2)
         if score >= 75.0:
@@ -3380,21 +3722,28 @@ class CommentableFilter:
     @classmethod
     def _user_need_text(cls, target: ViralTarget) -> str:
         """Return the part most likely written by the person asking for help."""
-        body = cls._strip_internal_labels(target.content_preview or "")
+        body = target.content_preview or ""
         platform = (target.platform or "").lower()
         if platform in {"kin", "naver_kin"}:
-            split_markers = [
+            hard_split_markers = [
                 "[기존답변",
                 "[기존 답변",
                 "기존답변",
                 "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
-                "안녕하세요, 닥톡", "안녕하세요. 닥톡", "안녕하세요,",
-                "안녕하세요.", "답변드립니다", "답변 드립니다",
+                "안녕하세요, 닥톡", "안녕하세요. 닥톡",
+                "답변드립니다", "답변 드립니다",
             ]
-            cut_points = [body.lower().find(marker.lower()) for marker in split_markers]
-            cut_points = [idx for idx in cut_points if idx > 20]
+            soft_split_markers = ["안녕하세요,", "안녕하세요."]
+            body_lc = body.lower()
+            cut_points = [body_lc.find(marker.lower()) for marker in hard_split_markers]
+            cut_points = [idx for idx in cut_points if idx >= 0]
+            cut_points.extend(
+                idx for idx in (body_lc.find(marker.lower()) for marker in soft_split_markers)
+                if idx > 20
+            )
             if cut_points:
                 body = body[:min(cut_points)]
+        body = cls._strip_internal_labels(body)
         return f"{target.title or ''} {body}".strip()
 
     @classmethod
@@ -4800,6 +5149,10 @@ class CommentableFilter:
         lens_score = float(lens_fit_score if lens_fit_score is not None else 0.0)
         axis_tier = str(axis_fit_tier or "")
         lens_tier = str(lens_fit_tier or "")
+        text_lc = (text or "").lower()
+        compact_text = re.sub(r"\s+", "", text_lc)
+        source_text_lc = cls._pathfinder_source_fit_text(target, text_lc)
+        source_compact_text = re.sub(r"\s+", "", source_text_lc)
 
         conversion_lens = lens in {"cost", "consultation", "availability"}
         guarded_lens = lens in {"cost", "consultation", "availability", "safety"}
@@ -4813,6 +5166,18 @@ class CommentableFilter:
         lens_mismatch = guarded_lens and (lens_tier == "mismatch" or (0.0 < lens_score < 50.0))
         if lens_mismatch and not community_rescue:
             return "lens_mismatch"
+        is_advertorial, _, _ = cls._detect_advertorial(target, text)
+        if (
+            not is_advertorial
+            and cls._has_domain_anchor(domain, text_lc)
+            and cls._pathfinder_source_specific_strict_gap(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+            )
+        ):
+            return "source_context_mismatch"
 
         if category == "안면비대칭" or domain == "asymmetry":
             has_strong_axis_text = cls._contains_any(text, cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
@@ -4886,10 +5251,9 @@ class CommentableFilter:
         preview = target.content_preview or ""
         if (target.platform or "").lower() in {"kin", "naver_kin"} and "[기존답변" in preview:
             question_segment = preview.split("[기존답변", 1)[0].strip()
-            if question_segment:
-                import copy as _copy
-                target = _copy.copy(target)
-                target.content_preview = question_segment
+            import copy as _copy
+            target = _copy.copy(target)
+            target.content_preview = question_segment
         title = (target.title or "").lower()
         body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
@@ -5934,6 +6298,30 @@ class AICommentGenerator:
             pathfinder_lines.append(
                 f"PATHFINDER_CATEGORY: {target.matched_keyword_category or target.category}"
             )
+        search_query = str(breakdown.get("pathfinder_search_query") or "").strip()
+        context_keyword = str(breakdown.get("pathfinder_context_keyword") or "").strip()
+        source_keyword = str(breakdown.get("pathfinder_source_keyword") or "").strip()
+        query_variant = str(breakdown.get("pathfinder_query_variant") or "").strip()
+        source_keywords = cls._score_breakdown_terms(breakdown.get("pathfinder_source_keywords"), limit=4)
+        query_variants = cls._score_breakdown_terms(breakdown.get("pathfinder_query_variants"), limit=4)
+        if any((search_query, context_keyword, source_keyword, query_variant, source_keywords, query_variants)):
+            search_parts = []
+            if source_keyword:
+                search_parts.append(f"source={source_keyword}")
+            if search_query:
+                search_parts.append(f"query={search_query}")
+            if query_variant:
+                search_parts.append(f"variant={query_variant}")
+            if context_keyword and context_keyword not in {source_keyword, search_query}:
+                search_parts.append(f"context={context_keyword}")
+            if source_keywords and len(source_keywords) > 1:
+                search_parts.append(f"sources={', '.join(source_keywords)}")
+            if query_variants and len(query_variants) > 1:
+                search_parts.append(f"variants={', '.join(query_variants)}")
+            collision_count = breakdown.get("pathfinder_context_collision_count")
+            if collision_count not in (None, "", 0, 0.0):
+                search_parts.append(f"collisions={collision_count}")
+            pathfinder_lines.append("PATHFINDER_SEARCH: " + "; ".join(search_parts[:7]))
         readiness = breakdown.get("pathfinder_viral_readiness_score")
         actionability = breakdown.get("pathfinder_content_actionability_score")
         medical_risk = breakdown.get("pathfinder_medical_ad_risk_score")
@@ -5947,12 +6335,67 @@ class AICommentGenerator:
                 f"type={breakdown.get('pathfinder_recommended_content_type') or ''}, "
                 f"lens={breakdown.get('pathfinder_execution_lens') or ''}"
             )
+        source_signals = cls._score_breakdown_list(breakdown.get("pathfinder_source_signals"))
+        quality_flags = cls._score_breakdown_list(breakdown.get("pathfinder_quality_flags"))
+        if source_signals or quality_flags:
+            pathfinder_lines.append(
+                "PATHFINDER_SIGNALS: "
+                f"sources={', '.join(source_signals[:4]) or 'none'}; "
+                f"flags={', '.join(quality_flags[:3]) or 'none'}"
+            )
+        insight_brief = str(breakdown.get("pathfinder_insight_brief") or "").strip()
+        if insight_brief:
+            pathfinder_lines.append(f"PATHFINDER_BRIEF: {insight_brief}")
+        axis_score = breakdown.get("pathfinder_axis_fit_score")
+        lens_score = breakdown.get("pathfinder_lens_fit_score")
+        if any(value not in (None, "", 0, 0.0) for value in (axis_score, lens_score)):
+            axis_tier = str(breakdown.get("pathfinder_axis_fit_tier") or "").strip()
+            lens_tier = str(breakdown.get("pathfinder_lens_fit_tier") or "").strip()
+            axis_signals = cls._score_breakdown_terms(breakdown.get("pathfinder_axis_fit_signals"), limit=3)
+            lens_signals = cls._score_breakdown_terms(breakdown.get("pathfinder_lens_fit_signals"), limit=3)
+            fit_parts = []
+            if axis_score not in (None, "", 0, 0.0):
+                fit_parts.append(f"axis={axis_score}/{axis_tier or 'unknown'}")
+            if lens_score not in (None, "", 0, 0.0):
+                fit_parts.append(f"lens={lens_score}/{lens_tier or 'unknown'}")
+            if axis_signals:
+                fit_parts.append(f"axis_signals={', '.join(axis_signals)}")
+            if lens_signals:
+                fit_parts.append(f"lens_signals={', '.join(lens_signals)}")
+            pathfinder_lines.append("PATHFINDER_FIT: " + "; ".join(fit_parts))
         pathfinder_context = ("\n" + "\n".join(pathfinder_lines)) if pathfinder_lines else ""
         return (
             f"\n---\nPOST_ID: {post_id}\n플랫폼: {target.platform}\n"
             f"제목: {target.title}\n"
             f"내용: {preview}{pathfinder_context}\n---\n"
         )
+
+    @staticmethod
+    def _score_breakdown_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item not in (None, "")]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return [value] if value.strip() else []
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item not in (None, "")]
+            if parsed:
+                return [str(parsed)]
+        return [str(value)] if value else []
+
+    @classmethod
+    def _score_breakdown_terms(cls, value: Any, limit: int = 6) -> List[str]:
+        terms: List[str] = []
+        for item in cls._score_breakdown_list(value):
+            for part in re.split(r"[,;]", str(item)):
+                clean = part.strip()
+                if clean:
+                    terms.append(clean)
+        return list(dict.fromkeys(terms))[: max(0, int(limit or 0))]
 
     @staticmethod
     def _compliance_guardrail(target: ViralTarget) -> str:
@@ -6854,6 +7297,15 @@ class ViralHunter:
         "체형교정",
         "리프팅/탄력",
     }
+    AXIS_COMPANION_EXPANDED_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "다이어트",
+        "안면비대칭",
+        "체형교정",
+        "리프팅/탄력",
+        "교통사고",
+    }
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -7194,6 +7646,36 @@ class ViralHunter:
             return default
 
     @staticmethod
+    def _context_list(ctx: Dict[str, Any], key: str, limit: int = 6) -> List[str]:
+        values = ViralSeedBuilder._json_list(ctx.get(key))
+        return list(dict.fromkeys(value for value in values if value))[:limit]
+
+    @staticmethod
+    def _pathfinder_candidate_insight_brief(
+        ctx: Dict[str, Any],
+        source_signals: List[str],
+        quality_flags: List[str],
+    ) -> str:
+        """Compact why-this-seed-matters brief for per-target AI and audits."""
+        category = str(ctx.get("category") or "").strip()
+        lens = str(ctx.get("execution_lens") or "").strip().lower() or "service"
+        parts = []
+        if category:
+            parts.append(f"axis={category}")
+        parts.append(f"lens={lens}")
+        if ViralHunter._context_float(ctx, "community_signal") >= 40.0:
+            parts.append("community_demand")
+        if ViralHunter._context_float(ctx, "conversion_signal") >= 35.0:
+            parts.append("conversion_intent")
+        if ViralHunter._context_float(ctx, "profile_action_signal") >= 45.0:
+            parts.append("profile_action")
+        if source_signals:
+            parts.append("sources=" + ",".join(source_signals[:3]))
+        if quality_flags:
+            parts.append("flags=" + ",".join(quality_flags[:2]))
+        return "; ".join(parts[:7])
+
+    @staticmethod
     def _inferred_execution_lens_for_keyword(keyword: str, ctx: Optional[Dict[str, Any]] = None) -> str:
         """Infer an execution lens from the keyword when Pathfinder context is partial."""
         ctx = ctx or {}
@@ -7375,10 +7857,23 @@ class ViralHunter:
                         continue
                     bucket = history.setdefault(
                         str(variant),
-                        {"discovered": 0, "pending": 0, "ad_filtered": 0, "runs": 0},
+                        {
+                            "discovered": 0,
+                            "fresh_discovered": 0,
+                            "pending": 0,
+                            "fresh_pending": 0,
+                            "rediscovered": 0,
+                            "rediscovered_pending": 0,
+                            "ad_filtered": 0,
+                            "runs": 0,
+                        },
                     )
                     bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                    bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
                     bucket["pending"] += int(entry.get("pending", 0) or 0)
+                    bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                    bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
+                    bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
                     bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
                     if int(entry.get("discovered", 0) or 0) > 0:
                         bucket["runs"] += 1
@@ -7390,10 +7885,23 @@ class ViralHunter:
                     continue
                 bucket = history.setdefault(
                     f"category_lens_variant:{lane_variant}",
-                    {"discovered": 0, "pending": 0, "ad_filtered": 0, "runs": 0},
+                    {
+                        "discovered": 0,
+                        "fresh_discovered": 0,
+                        "pending": 0,
+                        "fresh_pending": 0,
+                        "rediscovered": 0,
+                        "rediscovered_pending": 0,
+                        "ad_filtered": 0,
+                        "runs": 0,
+                    },
                 )
                 bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
                 bucket["pending"] += int(entry.get("pending", 0) or 0)
+                bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
+                bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
                 bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
                 if int(entry.get("discovered", 0) or 0) > 0:
                     bucket["runs"] += 1
@@ -7436,6 +7944,26 @@ class ViralHunter:
         """
         discovered = int(stats.get("discovered", 0) or 0)
         pending = int(stats.get("pending", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+        rediscovered = int(stats.get("rediscovered", 0) or 0)
+
+        # A query variant that mostly re-finds old URLs is not a fresh hunting
+        # surface, even if those old rows still sit in pending. Only apply this
+        # when the audit has enough fresh evidence; older audits without the
+        # fresh_* fields keep the legacy pending/discovered gate below.
+        if fresh_discovered >= 60 and fresh_pending == 0:
+            return True
+        if fresh_discovered >= 150 and (fresh_pending / fresh_discovered) < 0.004:
+            return True
+        if (
+            discovered >= 150
+            and fresh_discovered >= 40
+            and fresh_pending == 0
+            and (rediscovered / discovered) >= 0.75
+        ):
+            return True
+
         if discovered >= 60 and pending == 0:
             return True
         if discovered >= 150 and (pending / discovered) < 0.004:
@@ -7621,6 +8149,22 @@ class ViralHunter:
                 service = f"{term} 한방리프팅"
             return f"청주 {service} 후기"
 
+        if category == "교통사고":
+            compact_term = ViralHunter._compact_query_text(term)
+            if compact_term in {"입원", "입원가능한"}:
+                service = "교통사고 입원 한의원"
+            elif compact_term in {"자보", "자동차보험"}:
+                service = "교통사고 자동차보험 한의원"
+            elif "후유증" in compact_term:
+                service = "교통사고 후유증 한의원"
+            elif "합의" in compact_term:
+                service = "교통사고 합의전 한의원"
+            elif compact_term in {"목통증", "허리통증", "두통"}:
+                service = f"교통사고 {term} 한의원"
+            else:
+                service = f"교통사고 {term} 한의원"
+            return f"청주 {service} 추천"
+
         return f"청주 {term} 한의원 추천"
 
     @staticmethod
@@ -7692,7 +8236,7 @@ class ViralHunter:
                     })
                     break
 
-        max_variants = 3 if category in self.USER_SURFACE_HEAVY_CATEGORIES else 2
+        max_variants = 3 if category in self.AXIS_COMPANION_EXPANDED_CATEGORIES else 2
         for variant in self._axis_companion_query_variants(keyword, category):
             if len(variants) >= max_variants:
                 break
@@ -7734,6 +8278,77 @@ class ViralHunter:
         return variants
 
     @staticmethod
+    def _context_rank_value(ctx: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+        """Rank Pathfinder contexts when multiple seeds produce the same query variant."""
+        def num(key: str) -> float:
+            try:
+                return float((ctx or {}).get(key) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        return (
+            num("priority_v3"),
+            num("viral_readiness_score"),
+            num("content_actionability_score"),
+            num("local_service_fit_score"),
+            num("community_signal") + num("conversion_signal") + num("profile_action_signal"),
+        )
+
+    @staticmethod
+    def _context_lineage_values(ctx: Dict[str, Any], list_key: str, single_key: str) -> List[str]:
+        values: List[str] = []
+        raw_list = (ctx or {}).get(list_key)
+        if isinstance(raw_list, list):
+            values.extend(str(item) for item in raw_list if str(item or "").strip())
+        elif raw_list:
+            values.append(str(raw_list))
+        raw_single = (ctx or {}).get(single_key)
+        if raw_single:
+            values.append(str(raw_single))
+        return [value for value in dict.fromkeys(values) if value]
+
+    def _register_variant_keyword_context(
+        self,
+        *,
+        source_keyword: str,
+        query: str,
+        query_variant: str,
+    ) -> None:
+        """Store variant query context without losing stronger source-seed lineage."""
+        if not query or query == source_keyword or source_keyword not in self.keyword_context:
+            return
+
+        new_context = dict(self.keyword_context[source_keyword])
+        new_context["pathfinder_source_keyword"] = source_keyword
+        new_context["pathfinder_query_variant"] = query_variant
+        existing = self.keyword_context.get(query)
+
+        if not isinstance(existing, dict):
+            new_context["pathfinder_source_keywords"] = [source_keyword]
+            new_context["pathfinder_query_variants"] = [query_variant]
+            new_context["pathfinder_context_collision_count"] = 1
+            self.keyword_context[query] = new_context
+            return
+
+        sources = list(dict.fromkeys(
+            self._context_lineage_values(existing, "pathfinder_source_keywords", "pathfinder_source_keyword")
+            + [source_keyword]
+        ))
+        variants = list(dict.fromkeys(
+            self._context_lineage_values(existing, "pathfinder_query_variants", "pathfinder_query_variant")
+            + [query_variant]
+        ))
+        prefer_new = self._context_rank_value(new_context) > self._context_rank_value(existing)
+        merged = {**existing, **new_context} if prefer_new else dict(existing)
+        merged["pathfinder_source_keywords"] = sources
+        merged["pathfinder_query_variants"] = variants
+        merged["pathfinder_context_collision_count"] = len(sources)
+        if prefer_new:
+            merged["pathfinder_source_keyword"] = source_keyword
+            merged["pathfinder_query_variant"] = query_variant
+        self.keyword_context[query] = merged
+
+    @staticmethod
     def _axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
         """Add one axis-specific user-question query for categories with thin organic supply."""
         compact = ViralHunter._compact_query_text(keyword)
@@ -7773,6 +8388,12 @@ class ViralHunter:
                 ("청주 팔자주름 한방리프팅 후기", "axis_lifting:팔자주름후기"),
                 ("청주 피부탄력 매선 리프팅 후기", "axis_lifting:피부탄력매선후기"),
             ]
+        elif category == "교통사고":
+            candidates = [
+                ("청주 교통사고 후유증 한의원 추천", "axis_traffic:후유증추천"),
+                ("청주 교통사고 입원 한의원 추천", "axis_traffic:입원추천"),
+                ("청주 자동차보험 한의원 상담", "axis_traffic:자동차보험상담"),
+            ]
 
         variants: List[Dict[str, Any]] = []
         for dynamic_variant in ViralHunter._dynamic_axis_companion_query_variants(keyword, category):
@@ -7809,11 +8430,11 @@ class ViralHunter:
                         0.45,
                     )
                 plan["query_variant_of"] = keyword
-            if variant["query"] != keyword and keyword in self.keyword_context:
-                variant_context = dict(self.keyword_context[keyword])
-                variant_context["pathfinder_source_keyword"] = keyword
-                variant_context["pathfinder_query_variant"] = variant["variant"]
-                self.keyword_context[variant["query"]] = variant_context
+            self._register_variant_keyword_context(
+                source_keyword=keyword,
+                query=variant["query"],
+                query_variant=variant["variant"],
+            )
             plans.append(plan)
 
         return plans
@@ -7965,9 +8586,11 @@ class ViralHunter:
             return target
 
         ctx = None
+        source_keyword = ""
         for keyword in target.matched_keywords:
             ctx = self.keyword_context.get(keyword)
             if ctx:
+                source_keyword = keyword
                 break
         if not ctx:
             if hasattr(self, "seed_builder") and self.seed_builder:
@@ -7975,25 +8598,40 @@ class ViralHunter:
             for keyword in target.matched_keywords:
                 ctx = self.keyword_context.get(keyword)
                 if ctx:
+                    source_keyword = keyword
                     break
         if not ctx:
             for keyword in target.matched_keywords:
                 ctx = self._planning_context_for_keyword(keyword)
                 if ctx:
+                    source_keyword = keyword
                     break
         if not ctx:
             return target
+        context_keyword = source_keyword or (target.matched_keywords[0] if target.matched_keywords else "")
+        context_source_keyword = str(ctx.get("pathfinder_source_keyword") or "").strip()
+        source_keyword = context_source_keyword or context_keyword
+        if source_keyword and source_keyword not in (target.matched_keywords or []):
+            target.matched_keywords = [
+                keyword
+                for keyword in dict.fromkeys([source_keyword] + list(target.matched_keywords or []))
+                if keyword
+            ]
+        source_signals = self._context_list(ctx, "source_signals_json")
+        quality_flags = self._context_list(ctx, "quality_flags_json")
+        insight_brief = self._pathfinder_candidate_insight_brief(ctx, source_signals, quality_flags)
+        existing_breakdown = target.score_breakdown or {}
         target.source_scan_run_id = int(ctx.get("scan_run_id") or 0)
         target.matched_keyword_grade = ctx.get("grade") or ""
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
         target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
         target.matched_keyword_category = canonical_category_for_keyword(
-            target.matched_keywords[0] if target.matched_keywords else "",
+            source_keyword,
             ctx.get("category") or "",
         )
         current_category = GYULIM_KEYWORD_PROFILE.normalize_category(target.category or "")
         canonical_target_category = canonical_category_for_keyword(
-            target.matched_keywords[0] if target.matched_keywords else "",
+            source_keyword,
             current_category,
         )
         if (
@@ -8007,7 +8645,18 @@ class ViralHunter:
         ):
             target.category = target.matched_keyword_category
         target.score_breakdown = {
-            **(target.score_breakdown or {}),
+            **existing_breakdown,
+            "pathfinder_source_keyword": source_keyword,
+            "pathfinder_context_keyword": context_keyword,
+            "pathfinder_search_query": (
+                existing_breakdown.get("pathfinder_search_query")
+                or (context_keyword if context_keyword != source_keyword else "")
+            ),
+            "pathfinder_query_variant": (
+                existing_breakdown.get("pathfinder_query_variant")
+                or ctx.get("pathfinder_query_variant")
+                or ""
+            ),
             "pathfinder_viral_readiness_score": float(ctx.get("viral_readiness_score") or 0),
             "pathfinder_local_service_fit_score": float(ctx.get("local_service_fit_score") or 0),
             "pathfinder_content_actionability_score": float(ctx.get("content_actionability_score") or 0),
@@ -8023,6 +8672,9 @@ class ViralHunter:
             "pathfinder_brand_intent_type": ctx.get("brand_intent_type") or "generic",
             "pathfinder_review_intent_type": ctx.get("review_intent_type") or "none",
             "pathfinder_execution_lens": ctx.get("execution_lens") or "",
+            "pathfinder_source_signals": source_signals,
+            "pathfinder_quality_flags": quality_flags,
+            "pathfinder_insight_brief": insight_brief,
             "pathfinder_staff_reviewed_count": int(ctx.get("historical_staff_reviewed_count") or 0),
             "pathfinder_staff_accept_rate": float(ctx.get("historical_staff_accept_rate") or 0.0),
             "pathfinder_staff_outcome_adjustment": float(ctx.get("staff_outcome_adjustment") or 0.0),
@@ -8414,6 +9066,73 @@ class ViralHunter:
             kept.append(target)
         return kept, stats
 
+    def _refill_ai_targets_after_enrichment(
+        self,
+        ai_targets: List[ViralTarget],
+        rest_targets: List[ViralTarget],
+        *,
+        target_count: int,
+        max_fetch: int = 0,
+        fetcher=None,
+    ) -> Tuple[List[ViralTarget], List[ViralTarget], Dict[str, int]]:
+        """Backfill AI budget after enrichment/regate removes selected candidates."""
+        stats = {
+            "attempted": 0, "kept": 0, "rejected": 0,
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
+        if target_count <= 0 or len(ai_targets) >= target_count or not rest_targets:
+            return ai_targets, rest_targets, stats
+
+        selected_keys = {
+            canonicalize_viral_url(target.url) or target.url or target.id
+            for target in ai_targets
+        }
+        pool = [
+            target for target in sorted(rest_targets, key=_ai_target_sort_key, reverse=True)
+            if (canonicalize_viral_url(target.url) or target.url or target.id) not in selected_keys
+        ]
+        attempted_keys: set[str] = set()
+        fetch_budget = max(0, int(max_fetch or 0))
+
+        while len(ai_targets) < target_count and pool:
+            candidate = pool.pop(0)
+            key = canonicalize_viral_url(candidate.url) or candidate.url or candidate.id
+            if not key or key in attempted_keys or key in selected_keys:
+                continue
+            attempted_keys.add(key)
+            stats["attempted"] += 1
+
+            batch = [candidate]
+            if fetch_budget > 0:
+                kept_batch, enrich_stats = self._enrich_and_regate_ai_targets(
+                    batch,
+                    max_fetch=fetch_budget,
+                    fetcher=fetcher,
+                    sleep_sec=0.0 if fetcher is not None else 0.35,
+                )
+                for stat_key in ("fetched", "enriched", "dated", "regate_rejected", "stale_rejected"):
+                    value = int(enrich_stats.get(stat_key, 0) or 0)
+                    stats[stat_key] += value
+                fetch_budget = max(0, fetch_budget - int(enrich_stats.get("fetched", 0) or 0))
+            else:
+                kept_batch = batch
+
+            if kept_batch:
+                kept = kept_batch[0]
+                ai_targets.append(kept)
+                selected_keys.add(key)
+                stats["kept"] += 1
+            else:
+                stats["rejected"] += 1
+
+        remaining_rest = [
+            target for target in rest_targets
+            if (canonicalize_viral_url(target.url) or target.url or target.id) not in attempted_keys
+        ]
+        ai_targets.sort(key=_ai_target_sort_key, reverse=True)
+        return ai_targets, remaining_rest, stats
+
     @staticmethod
     def _timing_regate_keep(target: ViralTarget) -> bool:
         """게시일 enrichment 후 타이밍 윈도우 재판정. 미달이면 타겟을 만료 상태로 바꾼다.
@@ -8604,15 +9323,20 @@ class ViralHunter:
                     timestamp_selects.append(column)
                 else:
                     timestamp_selects.append(f"'' AS {column}")
+            where_sql = f"({' OR '.join(time_filters)})"
+            query_params: List[Any] = list(time_params)
+            if source_scan_run_id is not None and "source_scan_run_id" in target_columns:
+                where_sql += " AND COALESCE(source_scan_run_id, 0) = ?"
+                query_params.append(int(source_scan_run_id or 0))
             rows = conn.execute(
                 f"""
                 SELECT category, comment_status, matched_keyword, matched_keywords,
                        matched_keyword_category, score_breakdown,
                        {", ".join(timestamp_selects)}
                 FROM viral_targets
-                WHERE {" OR ".join(time_filters)}
+                WHERE {where_sql}
                 """,
-                tuple(time_params),
+                tuple(query_params),
             ).fetchall()
 
             def _bucket_status(status: str) -> str:
@@ -8627,8 +9351,11 @@ class ViralHunter:
                 return 'other'
 
             empty_entry = {
-                'discovered': 0, 'pending': 0, 'raw_backlog': 0,
-                'ad_filtered': 0, 'rejected': 0, 'other': 0, 'rediscovered': 0,
+                'discovered': 0, 'fresh_discovered': 0,
+                'pending': 0, 'fresh_pending': 0, 'rediscovered_pending': 0,
+                'open_pending': 0, 'ai_filtered': 0,
+                'raw_backlog': 0, 'ad_filtered': 0, 'rejected': 0,
+                'other': 0, 'rediscovered': 0,
             }
             per_category: Dict[str, Dict[str, int]] = {}
             per_variant: Dict[str, Dict[str, int]] = {}
@@ -8662,7 +9389,8 @@ class ViralHunter:
                 lens = lens or "service"
                 category_lens_key = f"{category}::{lens}"
                 category_lens_variant_key = f"{category_lens_key}::{variant}"
-                status_bucket = _bucket_status(str(row['comment_status'] or 'pending'))
+                status_text = str(row['comment_status'] or 'pending')
+                status_bucket = _bucket_status(status_text)
                 discovered_current = (
                     str(row['discovered_at'] or '').replace('T', ' ') >= run_started_at
                 )
@@ -8683,14 +9411,33 @@ class ViralHunter:
                 ):
                     entry = table.setdefault(key, dict(empty_entry))
                     entry['discovered'] += 1
+                    if discovered_current:
+                        entry['fresh_discovered'] += 1
                     entry[status_bucket] += 1
+                    if status_text == 'pending':
+                        entry['open_pending'] += 1
+                    if status_text == 'filtered_out_ai':
+                        entry['ai_filtered'] += 1
+                    if status_bucket == 'pending':
+                        if discovered_current:
+                            entry['fresh_pending'] += 1
+                        elif rediscovered_current:
+                            entry['rediscovered_pending'] += 1
                     if rediscovered_current:
                         entry['rediscovered'] += 1
 
             discovered_total = sum(e['discovered'] for e in per_category.values())
+            fresh_total = sum(e['fresh_discovered'] for e in per_category.values())
             pending_total = sum(e['pending'] for e in per_category.values())
+            fresh_pending_total = sum(e['fresh_pending'] for e in per_category.values())
+            open_pending_total = sum(e['open_pending'] for e in per_category.values())
+            ai_filtered_total = sum(e['ai_filtered'] for e in per_category.values())
+            raw_backlog_total = sum(e['raw_backlog'] for e in per_category.values())
+            rejected_total = sum(e['rejected'] for e in per_category.values())
             ad_total = sum(e['ad_filtered'] for e in per_category.values())
             rediscovered_total = sum(e.get('rediscovered', 0) for e in per_category.values())
+            rediscovered_pending_total = sum(e.get('rediscovered_pending', 0) for e in per_category.values())
+            post_ai_total = pending_total + ai_filtered_total
             zero_yield_seeds = sorted(
                 (
                     {'seed': seed, 'discovered': entry['discovered'], 'ad_filtered': entry['ad_filtered']}
@@ -8699,15 +9446,82 @@ class ViralHunter:
                 ),
                 key=lambda item: -item['discovered'],
             )[:20]
+            focus_categories = [
+                GYULIM_KEYWORD_PROFILE.normalize_category(category)
+                for category in getattr(GYULIM_KEYWORD_PROFILE, "focus_categories", ())
+            ]
+            focus_categories = list(dict.fromkeys(category for category in focus_categories if category))
+            focus_axis_rows: Dict[str, Dict[str, Any]] = {}
+            for category in focus_categories:
+                entry = dict(per_category.get(category) or empty_entry)
+                discovered = int(entry.get('discovered') or 0)
+                pending = int(entry.get('pending') or 0)
+                open_pending = int(entry.get('open_pending') or 0)
+                ai_filtered = int(entry.get('ai_filtered') or 0)
+                focus_axis_rows[category] = {
+                    **entry,
+                    'actionable_rate': (pending / discovered) if discovered else 0.0,
+                    'open_pending_rate': (open_pending / discovered) if discovered else 0.0,
+                    'ai_filtered_rate': (ai_filtered / discovered) if discovered else 0.0,
+                }
+            covered_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('discovered') or 0) > 0
+            ]
+            actionable_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('pending') or 0) > 0
+            ]
+            open_pending_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('open_pending') or 0) > 0
+            ]
+            focus_axis_coverage = {
+                'total_focus_categories': len(focus_categories),
+                'covered_focus_categories': len(covered_focus),
+                'actionable_focus_categories': len(actionable_focus),
+                'open_pending_focus_categories': len(open_pending_focus),
+                'discovery_coverage_rate': (len(covered_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'actionable_coverage_rate': (len(actionable_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'open_pending_coverage_rate': (len(open_pending_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'missing_discovery_categories': [
+                    category for category in focus_categories
+                    if category not in covered_focus
+                ],
+                'missing_actionable_categories': [
+                    category for category in focus_categories
+                    if category not in actionable_focus
+                ],
+                'missing_open_pending_categories': [
+                    category for category in focus_categories
+                    if category not in open_pending_focus
+                ],
+                'priority_focus_categories': [
+                    category for category in AI_CATEGORY_FLOOR_PRIORITY
+                    if category in focus_categories
+                ],
+                'by_category': focus_axis_rows,
+            }
 
             audit: Dict[str, Any] = {
                 'summary': {
                     'discovered': discovered_total,
+                    'fresh_discovered': fresh_total,
                     'pending': pending_total,
+                    'fresh_pending': fresh_pending_total,
+                    'open_pending': open_pending_total,
                     'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
+                    'fresh_pending_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
+                    'open_pending_rate': (open_pending_total / discovered_total) if discovered_total else 0.0,
+                    'ai_filtered': ai_filtered_total,
+                    'ai_filtered_rate': (ai_filtered_total / discovered_total) if discovered_total else 0.0,
+                    'post_ai_survival_rate': (pending_total / post_ai_total) if post_ai_total else 0.0,
+                    'raw_backlog': raw_backlog_total,
+                    'rejected': rejected_total,
                     'ad_filtered': ad_total,
                     'ad_rate': (ad_total / discovered_total) if discovered_total else 0.0,
                     'rediscovered': rediscovered_total,
+                    'rediscovered_pending': rediscovered_pending_total,
                     'rediscovered_rate': (rediscovered_total / discovered_total) if discovered_total else 0.0,
                     'keyword_count': int(keyword_count or 0),
                 },
@@ -8717,6 +9531,7 @@ class ViralHunter:
                 'per_category_lens_query_variant': per_category_lens_variant,
                 'per_structure': per_structure,
                 'zero_yield_seeds': zero_yield_seeds,
+                'focus_axis_coverage': focus_axis_coverage,
                 'category_demand': {
                     'adjustments': getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {},
                     'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
@@ -9112,6 +9927,23 @@ class ViralHunter:
                         f"타이밍 만료 {enrich_stats['stale_rejected']}건 "
                         f"(AI 후보 {before_enrich} → {len(ai_targets)})"
                     )
+                if len(ai_targets) < before_enrich and rest_targets:
+                    refill_fetch_budget = max(
+                        0,
+                        int(enrich_bodies) - int(enrich_stats.get("fetched", 0) or 0),
+                    )
+                    ai_targets, rest_targets, refill_stats = self._refill_ai_targets_after_enrichment(
+                        ai_targets,
+                        rest_targets,
+                        target_count=before_enrich,
+                        max_fetch=refill_fetch_budget,
+                    )
+                    if refill_stats["attempted"]:
+                        print(
+                            f"   🔁 AI 후보 보충: 후보 {refill_stats['attempted']}개 검토 → "
+                            f"{refill_stats['kept']}개 보충, 재탈락 {refill_stats['rejected']}개 "
+                            f"(fetch {refill_stats['fetched']}건, 보강 {refill_stats['enriched']}건)"
+                        )
             except Exception as e:
                 logger.warning(f"본문 enrichment 실패 (계속 진행): {e}")
 
@@ -9390,10 +10222,28 @@ class ViralHunter:
             audit_totals = audit_summary['summary']
             print(
                 f"   🧭 디스커버리 감사 #{audit_summary.get('audit_id')}: "
-                f"발견 {audit_totals['discovered']}개 → pending {audit_totals['pending']}개 "
-                f"({audit_totals['pending_rate']:.1%}), 광고필터 {audit_totals['ad_rate']:.0%}, "
+                f"발견 {audit_totals['discovered']}개(신규 {audit_totals.get('fresh_discovered', 0)}개) "
+                f"→ actionable {audit_totals['pending']}개(실대기 {audit_totals.get('open_pending', 0)}개, "
+                f"신규 {audit_totals.get('fresh_pending', 0)}개) "
+                f"({audit_totals['pending_rate']:.1%}, 신규 {audit_totals.get('fresh_pending_rate', 0.0):.1%}), "
+                f"AI탈락 {audit_totals.get('ai_filtered', 0)}개, 광고필터 {audit_totals['ad_rate']:.0%}, "
                 f"제로수율 시드 {len(audit_summary['zero_yield_seeds'])}개"
             )
+            focus_coverage = audit_summary.get('focus_axis_coverage') or {}
+            if focus_coverage:
+                total_focus = int(focus_coverage.get('total_focus_categories') or 0)
+                print(
+                    f"   🧩 핵심축 커버리지: 발견 "
+                    f"{focus_coverage.get('covered_focus_categories', 0)}/{total_focus}, "
+                    f"actionable {focus_coverage.get('actionable_focus_categories', 0)}/{total_focus}, "
+                    f"실대기 {focus_coverage.get('open_pending_focus_categories', 0)}/{total_focus}"
+                )
+                priority_missing = [
+                    category for category in (focus_coverage.get('missing_actionable_categories') or [])
+                    if category in set(focus_coverage.get('priority_focus_categories') or [])
+                ]
+                if priority_missing:
+                    print(f"   ⚠️ actionable 누락 핵심축: {', '.join(priority_missing[:8])}")
         if csv_path:
             print(f"   📁 CSV: {csv_path}")
         print(f"\n📊 API 통계:")
