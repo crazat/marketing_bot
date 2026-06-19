@@ -2350,6 +2350,25 @@ class CommentableFilter:
         "아시는 분", "아시는분", "추천 부탁", "추천부탁",
         "후기 부탁", "정보 부탁",
     ]
+    # 카페 글은 author=카페명, 블로그는 author=블로거명 → 이 필드가 곧 '글이 올라온
+    # 곳의 정체성'이다. 카페명/블로거가 경쟁 의료기관(한의원/의원/클리닉 등)이거나
+    # 병원 디렉터리/홍보 카페면 환자 질문이 아니라 공급자 마케팅 표면이다. 본문 CTA가
+    # 미리보기(≈230자) 밖에 있어 _provider_cta_body_signal 을 빠져나가는 soft-SEO 글이
+    # 키워드가 풍부해 골든큐 최상위(점수 130~150)에 올라오던 문제를 막는다
+    # (2026-06-13 local-venue-anchor 의 공급자 측 대칭 — 그쪽은 커뮤니티 카페를 '가점',
+    # 이쪽은 공급자 카페를 '광고 처리').
+    PROVIDER_VENUE_AUTHOR_PATTERNS = [
+        "한의원", "한방병원", "의원", "클리닉", "피부과", "성형외과", "치과",
+        "길라잡이", "전국병원", "병원정보", "병원 정보", "병원추천", "병원 추천",
+        "의료정보", "병원안내", "병원 안내", "병원홍보", "닥터스",
+    ]
+    # 환자/지역 커뮤니티 카페는 공급자 토큰이 들어 있어도 보존(거짓양성 차단).
+    # 예: 척추질환 환우모임, 두통환우카페, 알고가자 동네병원, 메디컬정보 커뮤니티,
+    # 피부인 대표 피부카페. 가드를 먼저 검사해 과차단을 방지한다.
+    PROVIDER_VENUE_AUTHOR_COMMUNITY_GUARD = [
+        "환우", "환자회", "환자 모임", "동호회", "맘", "카페", "스터디",
+        "주민", "모여", "동네", "지역", "클럽", "모임", "커뮤니티", "회원", "육아",
+    ]
     TRAFFIC_USER_CARE_ANCHOR_PATTERNS = [
         "교통사고", "자동차사고", "차사고", "사고 후", "사고후",
         "입원", "통원", "치료", "진료", "후유증", "염좌", "통증",
@@ -4599,6 +4618,27 @@ class CommentableFilter:
         return True, present_groups
 
     @classmethod
+    def _provider_venue_author_signal(cls, target: ViralTarget) -> Tuple[bool, str]:
+        """카페명/블로거 정체성이 공급자(경쟁 의료기관·병원 디렉터리)면 광고 신호로 본다.
+
+        지식인은 author=질문자 닉네임이라 제외(환자가 어떤 닉네임이든 가능). 카페/블로그만
+        author 가 '글이 올라온 곳의 정체성'이므로 적용한다. 커뮤니티 가드를 먼저 검사해
+        환우모임·맘카페·동네 정보 커뮤니티 같은 진짜 환자 공간은 보존한다.
+        """
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False, ""
+        author = (getattr(target, "author", "") or "").lower()
+        if not author:
+            return False, ""
+        if any(guard.lower() in author for guard in cls.PROVIDER_VENUE_AUTHOR_COMMUNITY_GUARD):
+            return False, ""
+        for token in cls.PROVIDER_VENUE_AUTHOR_PATTERNS:
+            if token and token.lower() in author:
+                return True, token
+        return False, ""
+
+    @classmethod
     def _detect_advertorial(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str], int]:
         """Detect provider/SEO/brand ads that imitate question or review posts."""
         platform = (target.platform or "").lower()
@@ -4724,6 +4764,15 @@ class CommentableFilter:
             score += 5
             if provider_cta_groups:
                 signals.extend(f"provider_cta_body_{group}" for group in provider_cta_groups)
+
+        # 카페명/블로거 정체성이 공급자면 본문 CTA가 미리보기 밖에 있어도 광고로 본다.
+        # 클리닉 브랜드 카페는 질문을 흉내 낸 SEO 글이어도 환자 글이 아니므로 strong_inquiry
+        # 감점(-2)을 넘어 무조건 임계값을 넘기도록 강한 점수(+7)를 준다.
+        provider_venue_author, provider_venue_token = cls._provider_venue_author_signal(target)
+        if provider_venue_author:
+            signals.append("provider_venue_author")
+            signals.append(f"provider_venue_author_{provider_venue_token}")
+            score += 7
 
         diet_provider_context = domain == "diet" and cls._contains_any(
             text,

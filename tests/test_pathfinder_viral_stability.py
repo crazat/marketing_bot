@@ -6101,6 +6101,69 @@ def test_local_venue_anchor_detection():
     ) is False
 
 
+def test_provider_venue_author_signal_blocks_clinic_and_directory_only():
+    """카페명/블로거가 경쟁 의료기관·병원 디렉터리면 광고 신호, 환자/지역 커뮤니티는 보존."""
+    F = viral_hunter.CommentableFilter
+
+    def cafe(name):
+        return ViralTarget(platform="cafe", url="x/" + name, title="t", author=name)
+
+    # 공급자(클리닉 브랜드 / 디렉터리) → 차단
+    assert F._provider_venue_author_signal(cafe("후한의원 피부, 비만치료"))[0] is True
+    assert F._provider_venue_author_signal(cafe("전국병원 길라잡이"))[0] is True
+    assert F._provider_venue_author_signal(cafe("제이클리닉"))[0] is True
+    assert F._provider_venue_author_signal(cafe("::밴스의원:: Vline and Skin"))[0] is True
+    assert F._provider_venue_author_signal(cafe("철도청[치아턱교정치과보험양악수술]"))[0] is True
+    # 블로거명이 클리닉이면 블로그도 적용
+    assert F._provider_venue_author_signal(
+        ViralTarget(platform="blog", url="x", title="t", author="화접몽한의원 흉터여드름")
+    )[0] is True
+
+    # 환자/지역 커뮤니티(공급자 토큰 포함해도 가드로 보존) → 비차단
+    assert F._provider_venue_author_signal(cafe("척추질환 환우모임 [국내 최대]"))[0] is False
+    assert F._provider_venue_author_signal(cafe("두통환우카페"))[0] is False
+    assert F._provider_venue_author_signal(cafe("알고가자 동네병원"))[0] is False
+    assert F._provider_venue_author_signal(cafe("메디컬정보 커뮤니티"))[0] is False
+    assert F._provider_venue_author_signal(cafe("피부인 대표 피부카페"))[0] is False
+    assert F._provider_venue_author_signal(cafe("청주맘스캠프"))[0] is False
+    assert F._provider_venue_author_signal(cafe(""))[0] is False
+    # 지식인은 author=질문자 닉네임 → 적용 제외
+    assert F._provider_venue_author_signal(
+        ViralTarget(platform="kin", url="x", title="t", author="후한의원")
+    )[0] is False
+
+
+def test_detect_advertorial_flags_provider_venue_cafe_even_if_question_mimicking():
+    """공급자 카페의 질문 흉내 SEO 글은 strong_inquiry 감점을 넘어 광고로 분류, 커뮤니티는 통과."""
+    F = viral_hunter.CommentableFilter
+
+    def run(author, title, preview):
+        t = ViralTarget(
+            platform="cafe", url="x/" + author, title=title, author=author,
+            content_preview=preview,
+        )
+        return F._detect_advertorial(t, (title + " " + preview).lower())
+
+    # 클리닉 브랜드 카페가 질문을 흉내 내도 광고
+    is_ad, signals, _ = run(
+        "후한의원 피부, 비만치료", "청주여드름한의원 비용은? 효과 있나요",
+        "여드름 흉터 치료 비용 안내 본 한의원에서는",
+    )
+    assert is_ad is True and "provider_venue_author" in signals
+    # 병원 디렉터리 카페 soft-SEO(본문 CTA 없음)도 광고
+    is_ad2, _, _ = run(
+        "전국병원 길라잡이", "청주 허리 치료 한의원, 반복되는 허리 불편감 원인은?",
+        "특히 청주 허리 치료 한의원 을 알아보는 분들 중에는 경우가 많습니다 수 있습니다",
+    )
+    assert is_ad2 is True
+    # 진짜 환자 커뮤니티 질문은 통과(회귀 방지)
+    is_ad3, signals3, _ = run(
+        "청주맘스캠프", "산후 허리통증 한의원 추천",
+        "둘째때 허리통증 너무 아파요 추천해주세요",
+    )
+    assert is_ad3 is False and "provider_venue_author" not in signals3
+
+
 def test_distant_local_target_respects_local_venue():
     """로컬 카페 글은 본문의 우연한 타지역 언급으로 false-kill 되지 않는다.
     단, 제목이 명시적으로 타지역을 타겟하면 카페가 로컬이어도 킬 유지."""
