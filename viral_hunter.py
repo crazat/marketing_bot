@@ -1616,6 +1616,17 @@ PENDING_TTL_DEFAULT_DAYS = 45
 # 남기되 1년+ 묵은 글은 확실히 차단).
 PENDING_POST_AGE_TTL_DAYS = 270
 
+# 디스커버리 감사의 "제로수율 시드" 판정 최소 신규 발견 수.
+# 한 런의 발견은 ~88%가 REdiscovery(이미 판정된 안정 상태 URL의 재발견)이므로
+# 전체 discovered 로 제로수율을 판정하면 신규 SERP 영역을 전혀 탐색하지 않고
+# 옛 URL만 재발견한 시드(예: 라이브 scan80에서 `청주 자동차사고 한의원` 발견 241/
+# 신규 0)나, 재발견된 posted 로 이미 가치를 실현한 성숙 시드(`청주 체형교정 추천`
+# 전체기간 23%·16건 posted)까지 "제로수율"로 잘못 표시된다(라이브: 25건 중 21건
+# 오탐). 신규 발견(fresh_discovered)이 이 임계 이상이고 작업 가능 산출(pending
+# 버킷=posted 포함)이 0인 시드만 — 즉 "실제 신규 영역을 탐색했는데 전환 0" 시드만 —
+# 제로수율로 본다. pending==0 조건이 재발견-posted 로 성숙한 시드를 그대로 보호한다.
+ZERO_YIELD_MIN_FRESH_DISCOVERED = 20
+
 
 def expire_stale_pending_targets(
     db_path: str,
@@ -4174,6 +4185,13 @@ class CommentableFilter:
 
         posted_source = target.date_str or getattr(target, "posted_at", "") or ""
         posted_hours = cls._hours_since(posted_source, now)
+        # 게시물 자체가 post-age TTL(PENDING_POST_AGE_TTL_DAYS=270d)을 넘으면 댓글 적시성이
+        # 없다 — 미답변/노출 같은 참여 신호로 되살리지 않고 즉시 하드페일한다. (>30d 페널티가
+        # -34로 평탄해, 17년 전 글도 unanswered_gap+qa_window_fit 등으로 MIN(28)을 넘겨
+        # pending에 진입하던 갭. 이제 enrichment 단계에서 차단해 post-age TTL의 270d
+        # 하드컷과 정합.) posted_hours가 None(날짜 미상)이면 영향 없음 — dwell TTL이 별도 보호.
+        if posted_hours is not None and posted_hours > PENDING_POST_AGE_TTL_DAYS * 24:
+            return 0, "stale", ["post_age_exceeds_ttl"]
         discovered_hours = cls._hours_since(target.discovered_at or target.first_seen_at, now)
         last_scanned_hours = cls._hours_since(target.last_scanned_at, now)
         comment_count = max(0, int(getattr(target, "comment_count", 0) or 0))
@@ -6134,6 +6152,43 @@ class CommentableFilter:
         return filtered
 
 
+# ── 바이럴 댓글 표현 변주 (댓글 간 중복/스팸지문 방지) ─────────────────────
+# 동일 업체의 댓글들이 같은 상투구·지역어를 반복하면 (1) 네이버 스팸/조작후기 탐지에
+# 지문이 잡혀 삭제·페널티 위험, (2) '실제 다녀온 후기' 신뢰도 저하. 댓글 톤(1인칭 경험담)
+# 은 건드리지 않고 표현·지역어·구조만 타겟마다 결정적으로 변주해 중복을 줄인다.
+# 라이브 근거(2026-06-19): "성안길" 49.9% / "꼼꼼하게 봐주" 9.9% / "체질에 맞춰" 6.1%
+# / "상담받아" 18.3% / "만족" 12.2% 의 상투구 반복.
+VIRAL_COMMENT_OVERUSED_PHRASES = [
+    "원장님이 꼼꼼", "꼼꼼하게 봐주", "꼼꼼하게 잘", "체질에 맞춰",
+    "상담 한번 받아보", "만족도가 높", "도움 되실", "입소문", "세심하게 봐",
+]
+# 규림한의원 실제 위치(청주 성안길/중앙동, 상당구 시내)를 사실 범위 안에서 다르게 표현.
+VIRAL_COMMENT_LOCATION_VARIANTS = [
+    "성안길 쪽", "청주 시내", "시내 중심가", "청주 상당구 쪽", "성안길 근처", "청주 성안길",
+]
+VIRAL_COMMENT_PHRASING_ANGLES = [
+    "문장 구조와 어휘를 흔한 한의원 댓글과 다르게 잡아 변주하세요.",
+    "상투적 추천 문구 대신, 작성자 글의 구체적 단서 한 가지에 반응하세요.",
+    "1~2문장으로 짧고 담백하게, 군더더기 수식어를 빼세요.",
+    "지역·접근성 언급보다 상담 때 확인할 포인트를 먼저 자연스럽게 녹이세요.",
+    "뻔한 공감 표현(예: 'ㅠㅠ 고민되시죠')은 피하고, 공감은 한 번만 자연스럽게 쓰세요.",
+]
+
+# AI 생성 실패/차단 sentinel 문자열. 이것이 댓글로 저장되면 (1) 직원이 "[AI] generation
+# blocked…" 같은 오류문을 댓글로 보게 되고 (2) comment_status가 'generated'로 바뀌며
+# 골든큐(pending)에서 사라져 실제 바이럴 타겟이 조용히 유실된다. generate()는 이런
+# 결과를 빈 문자열로 반환해, 모든 호출부(if comment 가드)가 저장·상태전환을 건너뛰고
+# 타겟을 pending으로 보존하도록 한다.
+VIRAL_COMMENT_FAILED_SENTINELS = (
+    "[ai error]",
+    "[생성 실패]",
+    "generation blocked",
+    "blocked by medical advertising",
+    "codex cli is unavailable",
+    "생성 차단됨",
+)
+
+
 # ============================================
 # AI 댓글 생성 클래스
 # ============================================
@@ -6250,6 +6305,27 @@ class AICommentGenerator:
         if _matches(data["others"]):
             return "known"
         return "unknown"
+
+    @staticmethod
+    def _competitor_name_is_identifiable(name: str) -> bool:
+        """역공략(경쟁사 카운터)은 '어느 경쟁사를 카운터할지' 아는 것이 핵심이다.
+
+        AI가 COMPETITOR=true 를 보고해도 식별 가능한 경쟁사명이 없으면(N/A·빈값·미상)
+        카운터할 대상 자체가 없으므로 역공략이 성립하지 않는다 — 이때 프리미엄
+        경쟁사_역공략 레인 승격과 우선순위 가산(최대 +25)을 적용하면 안 된다.
+        라이브 근거: 전체 ai_competitor=true 706건 중 30%(211건)가 무명(N/A) competitor
+        였고 그중 164건이 직원에게 skip 되었다(레인 오염 + 미획득 부스트).
+        단, 큐레이트 목록에 없는 실제 한의원/병원명(_classify_competitor_name='unknown')은
+        유효한 역공략 대상이므로 통과시킨다 — placeholder 토큰만 거른다.
+        """
+        raw = (name or "").strip().lower()
+        if len(raw) < 2:
+            return False
+        placeholders = {
+            "n/a", "na", "none", "null", "unknown", "없음", "미상", "해당없음",
+            "불명", "알수없음", "확인불가", "확인안됨", "기타", "etc", "-", "--",
+        }
+        return raw not in placeholders
 
     @classmethod
     def _competitor_reference_note(cls) -> str:
@@ -6471,6 +6547,53 @@ class AICommentGenerator:
         normalized = re.sub(r"(규림한의원|리커버의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
         return normalized
 
+    @staticmethod
+    def _is_failed_comment_text(text: str) -> bool:
+        """AI 생성 실패/차단 sentinel(또는 빈 결과)인지 판별. 댓글로 저장되어선 안 되며
+        (오류문 노출 + 'generated' 상태전환으로 타겟 유실), generate()에서 ''로 치환된다."""
+        if not text or not text.strip():
+            return True
+        low = text.strip().lower()
+        return any(s in low for s in VIRAL_COMMENT_FAILED_SENTINELS)
+
+    @staticmethod
+    def _phrasing_variation_directive(target: "ViralTarget") -> str:
+        """타겟마다 결정적으로 회전하는 표현-변주 지시.
+
+        댓글 톤/페르소나(1인칭 경험담)는 건드리지 않고 상투구·지역어·구조만 다양화해
+        댓글 간 중복 지문을 줄인다. target id/url 기반 안정 해시로 회전 → 같은 글은 항상
+        같은 변주, 다른 글끼리는 고르게 분산.
+        """
+        seed_src = str(
+            getattr(target, "id", "") or getattr(target, "url", "") or getattr(target, "title", "")
+        )
+        seed = int(hashlib.md5(seed_src.encode("utf-8")).hexdigest(), 16) if seed_src else 0
+        loc = VIRAL_COMMENT_LOCATION_VARIANTS[seed % len(VIRAL_COMMENT_LOCATION_VARIANTS)]
+        angle = VIRAL_COMMENT_PHRASING_ANGLES[(seed // 7) % len(VIRAL_COMMENT_PHRASING_ANGLES)]
+        banned = ", ".join(f'"{p}"' for p in VIRAL_COMMENT_OVERUSED_PHRASES)
+        return (
+            "\n[표현 변주 — 댓글 간 중복/스팸지문 방지]\n"
+            f"- 다음 상투구는 그대로 반복하지 말고 매번 다른 말로 표현하세요: {banned}.\n"
+            f"- 규림한의원 위치를 언급한다면 이번엔 '{loc}' 식으로 표현하세요(매번 같은 지역어 반복 금지).\n"
+            f"- {angle}\n"
+        )
+
+    @staticmethod
+    def _comment_input_text(target: "ViralTarget", max_chars: int = 500) -> str:
+        """댓글 프롬프트에 넣을 사용자 질문 본문.
+
+        KIN `[기존답변N]` 이후의 경쟁사/타인 답변을 잘라낸다 — 댓글은 '사용자 질문'에
+        응답해야 하는데, raw content_preview[:300]는 (1) 짧은 질문일 때 창이 경쟁사 답변으로
+        채워져 댓글이 답변에 휩쓸리거나 경쟁사 정보를 끌어오고, (2) 긴 질문(>300자)은 잘려
+        맥락이 누락됐다. 게이트의 질문-세그먼트 분리(2026-06-12)와 동일 철학을 댓글 생성에도
+        적용해, 질문 세그먼트를 더 넉넉히(max_chars) 전달한다. `[기존답변]`이 없으면 전체
+        preview를 사용하고, 세그먼트가 비정상적으로 짧으면 원본으로 폴백(fail-soft)."""
+        preview = (getattr(target, "content_preview", "") or "")
+        question = preview.split("[기존답변", 1)[0].strip()
+        if len(question) < 10:
+            question = preview.strip()
+        return question[:max_chars]
+
     def generate(self, target: ViralTarget, style: str = "default") -> str:
         """
         단일 타겟에 대한 맞춤 댓글 생성
@@ -6514,7 +6637,8 @@ class AICommentGenerator:
             prompt = prompt_template.format(
                 platform=target.platform,
                 title=target.title,
-                content_preview=target.content_preview[:300],
+                # 사용자 질문 세그먼트만 전달([기존답변] 경쟁사 답변 제거, 질문은 더 넉넉히).
+                content_preview=self._comment_input_text(target),
                 keywords=', '.join(target.matched_keywords)
             )
 
@@ -6534,14 +6658,17 @@ class AICommentGenerator:
                 )
             except Exception as e:
                 pathfinder_context = f"[Pathfinder Insight Handoff unavailable: {e}]"
+            variation = self._phrasing_variation_directive(target)
             prompt = (
                 f"{guardrail}\n{prompt}\n"
+                f"{variation}"
                 f"\n[Pathfinder Insight Handoff]\n{pathfinder_context}\n"
                 "[최종 확인] 위 필수 운영 원칙을 우선 적용하고, 허위 경험담/사칭/은폐성 광고는 절대 작성하지 마세요."
             )
             comment = ai_generate_korean(
                 prompt,
-                temperature=0.6,
+                # 표현 다양성을 위해 약간 높임(0.6→0.72). 컴플라이언스 스크린/재시도가 계속 가드.
+                temperature=0.72,
                 max_tokens=800,
                 task="viral_comment",
                 call_site="viral_hunter.generate",
@@ -6553,11 +6680,18 @@ class AICommentGenerator:
             comment = comment.replace("```", "").strip()
             comment = self._normalize_transparency_terms(comment)
 
+            # AI 에러/컴플라이언스 차단 sentinel을 댓글로 저장하지 않는다 — 빈 문자열을
+            # 반환하면 호출부(if comment 가드)가 저장·'generated' 전환을 건너뛰고 타겟을
+            # pending으로 보존(재시도 가능). web UI 단건은 500 "댓글 생성 실패"로 응답.
+            if self._is_failed_comment_text(comment):
+                logger.warning("댓글 생성 실패/차단 sentinel 감지 — 빈 결과 반환(타겟 pending 보존)")
+                return ""
+
             return comment
 
         except Exception as e:
             logger.error(f"댓글 생성 실패: {e}")
-            return "[생성 실패] 수동 작성 필요"
+            return ""
 
     def batch_generate(self, targets: List[ViralTarget], limit: int = 10) -> List[ViralTarget]:
         """
@@ -6695,6 +6829,13 @@ POST_ID: {i}
                 # COMPETITOR_NAME 추출
                 name_match = re.search(r'COMPETITOR_NAME:\s*(.+?)(?:\n|$)', post_result)
                 comp_name = name_match.group(1).strip() if name_match else "N/A"
+
+                # 식별 가능한 경쟁사명이 없거나(N/A·빈값) 자기 업체(규림/리커버)면
+                # 역공략이 성립하지 않으므로 프리미엄 레인 승격·우선순위 가산을 생략한다
+                # (글은 본래 진료축 카테고리를 유지).
+                if (not self._competitor_name_is_identifiable(comp_name)
+                        or self._classify_competitor_name(comp_name) == "self"):
+                    continue
 
                 # 타겟 업데이트
                 target.category = "경쟁사_역공략"
@@ -7104,6 +7245,11 @@ POST_ID: {i}
             name_match = re.search(r'COMPETITOR_NAME:\s*(.+?)(?:\n|$)', post_result)
             comp_name = name_match.group(1).strip() if name_match else "N/A"
 
+            # 식별 가능한 경쟁사명이 없으면(N/A·빈값) 역공략이 성립하지 않는다 —
+            # 카운터할 대상이 없는데 프리미엄 레인 승격·우선순위 가산이 붙던 결함 방지.
+            # 글 자체는 SUITABLE이면 본래 진료축에서 정상 노출된다(공급 손실 없음).
+            if has_competitor and not self._competitor_name_is_identifiable(comp_name):
+                has_competitor = False
             # 자기 업체(규림/리커버) 추천은 역공략 대상이 아니다 — competitor 플래그 해제.
             # critical(로랑/데이릴 등)은 우선순위 부스트 대상으로 분류.
             comp_class = self._classify_competitor_name(comp_name) if has_competitor else "unknown"
@@ -7916,20 +8062,49 @@ class ViralHunter:
         return f"category_lens_variant:{category_key}::{lens_key}::{variant_key}"
 
     @classmethod
-    def _variant_yield_stats_for(
+    def _variant_gate_should_drop(
         cls,
         history: Dict[str, Dict[str, int]],
         *,
         category: str,
         lens: str,
         variant: str,
-    ) -> Optional[Dict[str, int]]:
+    ) -> bool:
+        """동반 변형을 다음 런에서 보낼지(차단할지) 결정.
+
+        granular한 per-(category,lens,variant) lane 증거를 우선하되, lane 버킷이
+        아직 cold-start(pending==0 & 제로수율 미증명)일 때 누적 글로벌 증거를
+        *버리지 않는다*. 그렇지 않으면 최근 도입된 lane 버킷이, 글로벌이 이미
+        제로수율로 증명한 변형을 조용히 재활성화(un-gate)한다 — variant 수율
+        게이트 전체를 무력화하는 회귀. base/community_base 기준 변형은 호출
+        자체가 안 되므로(첫 슬롯 항상 유지) 여기서 다루지 않는다.
+        """
+        variant = str(variant or "")
+
+        # patient_voice_kin은 진료축이 아니라 '질문 표면(지역어 제거 + KIN)' 자체가
+        # 수율을 좌우하는 CATEGORY-AGNOSTIC 변형이다. per-(category,lens) lane으로
+        # 쪼개면 증거가 사실상 누적되지 않으므로(여러 lens로 분산) 글로벌 누적으로
+        # 판정한다. 2-run cold-start는 _variant_proven_zero_yield_for_gate가 유지.
+        if variant == "patient_voice_kin":
+            glob = history.get(variant)
+            return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
+
         lane_key = cls._category_lens_variant_history_key(category, lens, variant)
-        if lane_key in history:
-            return history[lane_key]
-        if cls._variant_requires_lane_specific_yield(variant):
-            return None
-        return history.get(str(variant or ""))
+        lane = history.get(lane_key)
+
+        # 진짜 진료축-특정 질의 모양(axis ':specific_*')은 lane 증거로만 판정.
+        if ":specific_" in variant:
+            return bool(lane) and cls._variant_proven_zero_yield_for_gate(variant, lane)
+
+        # 동반/렌즈 변형: granular lane 우선, 단 lane cold-start면 글로벌로 폴백.
+        if lane:
+            if cls._variant_proven_zero_yield_for_gate(variant, lane):
+                return True  # lane이 제로수율 증명 → 차단
+            if int(lane.get("pending", 0) or 0) > 0:
+                return False  # lane이 실수율 보유 → 죽은 글로벌보다 우선 보존(심슨 역설 방어)
+            # lane은 있으나 pending==0 & 제로수율 미증명(cold start) → 글로벌 폴백.
+        glob = history.get(variant)
+        return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
 
     @staticmethod
     def _variant_requires_lane_specific_yield(variant: str) -> bool:
@@ -8259,13 +8434,12 @@ class ViralHunter:
             kept = [variants[0]]
             for variant in variants[1:]:
                 name = str(variant.get("variant") or "")
-                stats = self._variant_yield_stats_for(
+                if self._variant_gate_should_drop(
                     history,
                     category=category,
                     lens=execution_lens,
                     variant=name,
-                )
-                if stats and self._variant_proven_zero_yield_for_gate(name, stats):
+                ):
                     drop_counts = getattr(self, "_variant_drop_counts", None)
                     if drop_counts is None:
                         drop_counts = {}
@@ -9438,13 +9612,26 @@ class ViralHunter:
             rediscovered_total = sum(e.get('rediscovered', 0) for e in per_category.values())
             rediscovered_pending_total = sum(e.get('rediscovered_pending', 0) for e in per_category.values())
             post_ai_total = pending_total + ai_filtered_total
+            # 제로수율 시드: 이번 런에 실제 신규 SERP 영역을 탐색하고(fresh_discovered)
+            # 작업 가능 타겟을 0건 산출한(pending 버킷=posted 포함, 0) 시드만.
+            # 전체 discovered 가 아니라 신규 발견으로 게이트해, 옛 URL만 재발견한
+            # rediscovery 잡음(런의 ~88%)과 재발견-posted 로 이미 가치를 실현한 성숙
+            # 시드를 제로수율로 오분류하지 않는다. 이 목록은 자문/가시성 신호다
+            # (구조/카테고리 수요 게이트가 실제 예산 차단을 담당).
             zero_yield_seeds = sorted(
                 (
-                    {'seed': seed, 'discovered': entry['discovered'], 'ad_filtered': entry['ad_filtered']}
+                    {
+                        'seed': seed,
+                        'discovered': entry['discovered'],
+                        'fresh_discovered': entry['fresh_discovered'],
+                        'rediscovered': entry['rediscovered'],
+                        'ad_filtered': entry['ad_filtered'],
+                    }
                     for seed, entry in per_seed.items()
-                    if entry['discovered'] >= 25 and entry['pending'] == 0
+                    if entry['fresh_discovered'] >= ZERO_YIELD_MIN_FRESH_DISCOVERED
+                    and entry['pending'] == 0
                 ),
-                key=lambda item: -item['discovered'],
+                key=lambda item: -item['fresh_discovered'],
             )[:20]
             focus_categories = [
                 GYULIM_KEYWORD_PROFILE.normalize_category(category)

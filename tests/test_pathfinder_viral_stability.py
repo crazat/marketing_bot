@@ -8253,6 +8253,192 @@ def test_parse_unified_critical_competitor_gets_priority_boost():
     assert critical.priority_score > generic.priority_score   # critical 부스트로 더 높음
 
 
+def test_competitor_name_is_identifiable_filters_placeholders_only():
+    f = AICommentGenerator._competitor_name_is_identifiable
+    # 실제 경쟁사명(큐레이트/미큐레이트 모두) → 유효
+    assert f("로랑한의원") is True
+    assert f("이름없는동네한의원") is True          # 목록에 없어도 실제명이면 유효
+    # placeholder/무명 → 무효
+    for bad in ["N/A", "n/a", "", "  ", "없음", "미상", "해당없음", "unknown", "-", "ㄱ"]:
+        assert f(bad) is False, bad
+
+
+def test_parse_unified_competitor_true_without_name_not_promoted():
+    """COMPETITOR=true 이지만 식별 가능한 경쟁사명이 없으면(N/A) 역공략 승격·부스트
+    금지 — 카운터할 대상이 없기 때문. 단 SUITABLE 글은 본래 진료축에서 정상 노출."""
+    generator = AICommentGenerator()
+    target = ViralTarget(
+        platform="kin", url="https://example.com/noname-comp",
+        title="청주 교통사고 입원 한의원 어디",
+        content_preview="접촉사고 후 목이 아픈데 입원 치료 되는 청주 한의원 추천해주세요",
+        matched_keywords=["청주 교통사고 한의원"], category="교통사고", priority_score=90,
+    )
+    base_priority = target.priority_score
+    suitable, _unsuit, competitor_count = generator._parse_unified_results(
+        [target],
+        """
+        ---
+        POST_ID: 1
+        SUITABLE: true
+        SCORE: 85
+        TYPE: consultation
+        COMPETITOR: true
+        COMPETITOR_NAME: N/A
+        COUNTER_SCORE: 60
+        REASON: 경쟁사 언급 추정되나 업체명 불명
+        ---
+        """,
+    )
+    assert competitor_count == 0                          # 무명 → 역공략 카운트 안 함
+    assert len(suitable) == 1                              # 글 자체는 여전히 적합
+    assert suitable[0].ai_competitor is False
+    assert suitable[0].category == "교통사고"               # 본래 진료축 유지(역공략 아님)
+    sb = suitable[0].score_breakdown or {}
+    assert "ai_counter_bonus" not in sb                   # 미획득 역공략 부스트 없음
+    assert "ai_counter_score" not in sb
+    noname_priority = suitable[0].priority_score
+
+    # 대조군: 동일 글 + 유효 경쟁사명 → 역공략 승격 + 카운터 부스트로 더 높은 점수.
+    named = ViralTarget(
+        platform="kin", url="https://example.com/named-comp",
+        title="청주 교통사고 입원 한의원 어디",
+        content_preview="접촉사고 후 목이 아픈데 입원 치료 되는 청주 한의원 추천해주세요",
+        matched_keywords=["청주 교통사고 한의원"], category="교통사고", priority_score=base_priority,
+    )
+    generator._parse_unified_results(
+        [named],
+        """
+        ---
+        POST_ID: 1
+        SUITABLE: true
+        SCORE: 85
+        TYPE: consultation
+        COMPETITOR: true
+        COMPETITOR_NAME: 청주한방병원
+        COUNTER_SCORE: 60
+        REASON: 경쟁사 청주한방병원 추천됨
+        ---
+        """,
+    )
+    assert named.category == "경쟁사_역공략"                 # 유효 경쟁사명 → 정상 승격
+    assert named.priority_score > noname_priority          # 무명 글보다 역공략 부스트만큼 높음
+
+
+def test_phrasing_variation_directive_deterministic_and_varied():
+    """댓글 표현-변주 지시: 타겟별 결정적 + 지역어/구조 분산 + 상투구 차단."""
+    f = AICommentGenerator._phrasing_variation_directive
+
+    class _T:
+        def __init__(self, i):
+            self.id = i; self.url = ""; self.title = ""
+
+    # 같은 타겟 → 항상 같은 지시(재생성 일관성)
+    assert f(_T("kin:docA")) == f(_T("kin:docA"))
+    d = f(_T("kin:docA"))
+    # 과사용 상투구 차단 + 의도 명시
+    assert "꼼꼼하게 봐주" in d and "체질에 맞춰" in d
+    assert "중복" in d or "스팸지문" in d
+    # 지역어가 여러 표현으로 분산(단일 '성안길' 지문 방지)
+    locs = set()
+    for i in range(40):
+        m = re.search(r"'([^']+)' 식으로", f(_T(f"kin:doc{i}")))
+        if m:
+            locs.add(m.group(1))
+    assert len(locs) >= 3
+    assert locs <= set(viral_hunter.VIRAL_COMMENT_LOCATION_VARIANTS)
+
+
+def test_generate_injects_variation_directive(monkeypatch):
+    """generate()가 표현-변주 지시를 프롬프트에 주입하고 다양성 온도를 사용한다."""
+    gen = AICommentGenerator()
+    captured = {}
+
+    def fake_korean(prompt, **kw):
+        captured["prompt"] = prompt
+        captured["temperature"] = kw.get("temperature")
+        return "댓글: 테스트 댓글입니다"
+
+    monkeypatch.setattr(viral_hunter, "ai_generate_korean", fake_korean)
+    target = ViralTarget(
+        platform="kin", url="https://kin.naver.com/x?docId=1",
+        title="청주 다이어트 한약 효과", content_preview="청주 다이어트 한약 효과 있나요?",
+        matched_keywords=["청주 다이어트 한약"], category="다이어트", priority_score=80,
+    )
+    gen.generate(target)
+    assert "표현 변주" in captured["prompt"]
+    assert captured["temperature"] == 0.72
+
+
+def test_is_failed_comment_text_detects_sentinels_only():
+    f = AICommentGenerator._is_failed_comment_text
+    for bad in [
+        "[AI] generation blocked by medical advertising compliance",
+        "[AI Error] Codex CLI is unavailable: timeout",
+        "[AI] 의료광고법 위반 가능성으로 생성 차단됨",
+        "[생성 실패] 수동 작성 필요",
+        "", "   ",
+    ]:
+        assert f(bad) is True, bad
+    for good in [
+        "저도 청주 성안길 쪽 한의원 다녀왔는데 상담이 꼼꼼했어요",
+        "교통사고 후 통증은 초반 확인이 중요해요. 보험 적용도 같이 보세요",
+    ]:
+        assert f(good) is False, good
+
+
+def test_generate_returns_empty_on_blocked_generation(monkeypatch):
+    """AI가 차단/오류 sentinel을 돌려주면 generate()는 ''를 반환해야 한다 —
+    호출부(if comment 가드)가 저장·'generated' 전환을 건너뛰어 타겟을 pending으로 보존."""
+    gen = AICommentGenerator()
+    monkeypatch.setattr(
+        viral_hunter, "ai_generate_korean",
+        lambda *a, **k: "[AI] generation blocked by medical advertising compliance",
+    )
+    target = ViralTarget(
+        platform="kin", url="https://kin.naver.com/x?docId=7",
+        title="청주 교통사고 한의원", content_preview="접촉사고 후 목 통증 청주 한의원",
+        matched_keywords=["청주 교통사고 한의원"], category="교통사고", priority_score=90,
+    )
+    assert gen.generate(target) == ""
+
+
+def test_comment_input_strips_kin_answer_segment():
+    """댓글 입력은 사용자 질문 세그먼트만 — [기존답변] 경쟁사/타인 답변은 제거, 질문은 보존."""
+    f = AICommentGenerator._comment_input_text
+
+    def mk(p):
+        return ViralTarget(platform="kin", url="u", title="t", content_preview=p,
+                           matched_keywords=["k"], category="교통사고")
+
+    short = "일본에 다이어트 한약 반입 될까요? [기존답변1] 안녕하세요 여행 전문가입니다 일본 통관은..."
+    out = f(mk(short))
+    assert out == "일본에 다이어트 한약 반입 될까요?"          # 답변(여행 전문가) 제거
+    assert "기존답변" not in out and "여행 전문가" not in out
+    # 답변 없는 글 → 그대로
+    assert f(mk("청주 교통사고 후 목 통증 한의원 추천")) == "청주 교통사고 후 목 통증 한의원 추천"
+    # 답변만 있는 비정상 입력 → 원본 폴백(fail-soft, 빈 질문 방지)
+    assert f(mk("[기존답변1] 답변만")) == "[기존답변1] 답변만"
+
+
+def test_generate_feeds_question_only_to_prompt(monkeypatch):
+    """generate()는 경쟁사 답변이 아니라 사용자 질문을 댓글 프롬프트에 전달한다."""
+    gen = AICommentGenerator()
+    captured = {}
+    monkeypatch.setattr(
+        viral_hunter, "ai_generate_korean",
+        lambda prompt, **k: captured.setdefault("prompt", prompt) or "댓글: ok",
+    )
+    target = ViralTarget(
+        platform="kin", url="https://kin.naver.com/x?docId=9",
+        title="청주 교통사고 한의원",
+        content_preview="청주 교통사고 후 목 통증 입원되나요? [기존답변1] 닥톡 상담한의사입니다 병원 위치 문의 전화...",
+        matched_keywords=["청주 교통사고 한의원"], category="교통사고", priority_score=90,
+    )
+    gen.generate(target)
+    assert "목 통증 입원되나요" in captured["prompt"]       # 질문은 들어감
+    assert "닥톡 상담한의사" not in captured["prompt"]        # 경쟁사 답변은 빠짐
+
+
 def test_raw_backlog_can_be_promoted_to_pending_on_later_ai_success(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral_promote.db"))
     raw = {
@@ -9181,6 +9367,80 @@ def test_viral_hunter_discovery_audit_counts_current_run_rediscoveries(tmp_path)
     assert "피부/여드름" not in audit["per_category"]
 
 
+def test_viral_hunter_discovery_audit_zero_yield_seeds_use_fresh_discovery(tmp_path):
+    """제로수율 시드는 전체 발견이 아니라 신규 발견(fresh_discovered)으로 판정해야 한다.
+
+    한 런 발견의 ~88%는 재발견이라, 전체 discovered 로 판정하면 (a) 신규 영역을 전혀
+    탐색하지 않고 옛 URL만 재발견한 시드와 (b) 재발견-posted 로 이미 가치를 실현한
+    성숙 시드까지 '제로수율'로 오분류한다(라이브 scan80: 25건 중 21건 오탐).
+    """
+    run_start = "2026-06-12 00:00:00"
+    fresh_ts = "2026-06-12T10:06:00"   # discovered_at >= run_start → 신규
+    old_ts = "2026-06-01 09:00:00"     # discovered_at < run_start → 재발견
+    scanned_ts = "2026-06-12 10:05:00"
+
+    def make_rows(seed, category, status, count, discovered_at):
+        out = []
+        for i in range(count):
+            out.append(
+                (
+                    f"{seed}-{status}-{i}",
+                    category,
+                    status,
+                    seed,
+                    json.dumps([seed], ensure_ascii=False),
+                    category,
+                    json.dumps({"pathfinder_source_keyword": seed}, ensure_ascii=False),
+                    discovered_at,
+                    scanned_ts,
+                )
+            )
+        return out
+
+    rows = []
+    # A) 제네릭 제로수율: 신규 22건 탐색, 작업가능 0 → 반드시 flag
+    rows += make_rows("분평동 새살침 한의원 어디", "흉터/여드름흉터", "filtered_out", 22, fresh_ts)
+    # B) 재발견 잡음: 전체 30건이지만 신규 0(옛 URL 재발견) → flag 금지
+    rows += make_rows("청주 자동차사고 한의원", "교통사고", "filtered_out", 30, old_ts)
+    # C) 재발견-posted 로 성숙한 시드: 신규 25건 비전환 + 재발견 posted 3건 →
+    #    pending 버킷(posted 포함)>0 이므로 flag 금지(성숙 시드 보호)
+    rows += make_rows("청주 체형교정 추천", "체형교정", "filtered_out", 25, fresh_ts)
+    rows += make_rows("청주 체형교정 추천", "체형교정", "posted", 3, old_ts)
+
+    db_path = tmp_path / "zero_yield_fresh.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                comment_status TEXT,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                matched_keyword_category TEXT,
+                score_breakdown TEXT,
+                discovered_at TEXT,
+                last_scanned_at TEXT
+            )
+            """
+        )
+        conn.executemany("INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    audit = hunter._persist_viral_discovery_audit(
+        run_start, source_scan_run_id=None, keyword_count=3, db_path=str(db_path)
+    )
+    assert audit is not None
+    flagged = {item["seed"] for item in audit["zero_yield_seeds"]}
+
+    # A: 신규 영역을 실제로 탐색했는데 전환 0 → flag
+    assert "분평동 새살침 한의원 어디" in flagged
+    a_entry = next(i for i in audit["zero_yield_seeds"] if i["seed"] == "분평동 새살침 한의원 어디")
+    assert a_entry["fresh_discovered"] >= viral_hunter.ZERO_YIELD_MIN_FRESH_DISCOVERED
+    # 옛 동작(전체 discovered>=25 & pending==0)이 B/C도 잡던 것을 fresh 게이트가 제거
+    assert "청주 자동차사고 한의원" not in flagged       # 재발견 잡음(신규 0)
+    assert "청주 체형교정 추천" not in flagged          # 재발견 posted 로 pending>0
+
 
 def test_staff_outcome_adjustment_thresholds():
     adjust = ViralSeedBuilder._staff_outcome_adjustment
@@ -9189,13 +9449,51 @@ def test_staff_outcome_adjustment_thresholds():
     assert adjust({"staff_reviewed_count": 7, "staff_accept_rate": 0.0}) == 0.0
     assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.04}) == -14.0
     assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.08}) == -8.0
-    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.15}) == 0.0
+    # accept 10~12%는 경계(중립), 12% 이상은 '정상 수요' 밴드로 budget 크레딧.
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.11}) == 0.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.12}) == 4.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.15}) == 4.0
+    assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.18}) == 4.0
     assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.22}) == 5.0
     assert adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.40}) > 5.0
 
-    # 증거가 얇으면 같은 승인율이라도 감점 폭이 줄어든다.
+    # 보상은 단조 증가(데드존 밴드 < 강수요 < 최강수요).
+    band = adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.16})
+    strong = adjust({"staff_reviewed_count": 40, "staff_accept_rate": 0.25})
+    assert 0.0 < band < strong
+
+    # 증거가 얇으면 같은 승인율이라도 감점/가점 폭이 줄어든다.
     thin = adjust({"staff_reviewed_count": 8, "staff_accept_rate": 0.0})
     assert -14.0 < thin < 0.0
+    thin_reward = adjust({"staff_reviewed_count": 8, "staff_accept_rate": 0.15})
+    assert 0.0 < thin_reward < 4.0  # 4.0 * (8/40)
+
+
+def test_staff_validated_axis_lens_adjustment_dampens_proxy_when_demand_contradicts():
+    damp = ViralSeedBuilder._staff_validated_axis_lens_adjustment
+
+    # 양(+) 프록시 조정은 절대 건드리지 않는다.
+    assert damp(4.0, {"staff_reviewed_count": 300, "staff_accept_rate": 0.20}) == 4.0
+    assert damp(0.0, {"staff_reviewed_count": 300, "staff_accept_rate": 0.20}) == 0.0
+
+    # 강한 실수요(accept>=15%, robust 증거) → 패널티 대부분 상쇄(×0.30).
+    # 안면비대칭::consultation 라이브 사례.
+    assert damp(-6.6, {"staff_reviewed_count": 42, "staff_accept_rate": 0.214}) == round(-6.6 * 0.30, 2)
+    # 교통사고::community 라이브 사례.
+    assert damp(-8.2, {"staff_reviewed_count": 189, "staff_accept_rate": 0.185}) == round(-8.2 * 0.30, 2)
+
+    # 정상 실수요(12%<=accept<15%) → 절반 감쇠(×0.55).
+    assert damp(-8.1, {"staff_reviewed_count": 290, "staff_accept_rate": 0.124}) == round(-8.1 * 0.55, 2)
+
+    # 직원이 외면하는 lane(accept<12%)은 프록시 패널티 그대로 — 감쇠 없음.
+    assert damp(-28.0, {"staff_reviewed_count": 113, "staff_accept_rate": 0.071}) == -28.0
+
+    # 증거가 얇으면(reviewed<25) 같은 수용률이라도 프록시를 못 덮는다.
+    assert damp(-33.3, {"staff_reviewed_count": 12, "staff_accept_rate": 0.167}) == -33.3
+
+    # 감쇠는 패널티 부호를 뒤집지 않는다(여전히 음수, 잔여분 보존).
+    damped = damp(-16.6, {"staff_reviewed_count": 300, "staff_accept_rate": 0.173})
+    assert -16.6 < damped < 0.0
 
 
 def test_viral_seed_builder_uses_staff_outcomes_to_reorder_lanes(tmp_path):
@@ -9794,6 +10092,135 @@ def test_viral_hunter_variant_yield_gate_does_not_drop_patient_voice_from_global
     assert getattr(hunter, "_variant_drop_counts", {}) == {}
 
 
+def test_viral_hunter_variant_yield_gate_drops_patient_voice_kin_on_global_evidence_despite_thin_lane(tmp_path):
+    """회귀 가드: per_category_lens_query_variant lane 버킷 도입 후에도, 글로벌
+    누적이 2런으로 제로수율을 증명한 patient_voice_kin을 thin lane 버킷이
+    재활성화(un-gate)하면 안 된다. patient_voice_kin은 진료축이 아닌 '질문
+    표면' 자체가 수율을 좌우하는 category-agnostic 변형이라 글로벌로 판정한다."""
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "pv_lane_shadow.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        # 두 런: 글로벌 patient_voice_kin 누적 disc=300/pending=0(runs=2) → 제로수율 증명.
+        # 동시에 thin per-(category,lens) lane 버킷 존재 — 과거 회귀의 트리거.
+        for day in ("12", "13"):
+            audit_json = json.dumps(
+                {
+                    "per_query_variant": {
+                        "patient_voice_kin": {"discovered": 150, "pending": 0, "ad_filtered": 80},
+                    },
+                    "per_category_lens_query_variant": {
+                        "흉터/여드름흉터::cost::patient_voice_kin": {
+                            "discovered": 150,
+                            "pending": 0,
+                            "ad_filtered": 80,
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
+            conn.execute(
+                "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+                (f"2026-06-{day} 09:00:00", f"2026-06-{day} 10:00:00", audit_json),
+            )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름흉터 비용": {
+            "category": "흉터/여드름흉터",
+            "viral_readiness_score": 72,
+            "community_signal": 35,
+            "conversion_signal": 55,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "cost",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름흉터 비용", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    assert "patient_voice_kin" not in variants
+    assert hunter._variant_drop_counts.get("patient_voice_kin") == 1
+
+
+def test_viral_hunter_variant_yield_gate_falls_back_to_global_when_lane_is_cold_start(tmp_path):
+    """회귀 가드: 동반 변형의 thin lane 버킷(pending==0 & 증거 부족)이 글로벌이
+    이미 제로수율로 증명한 변형을 재활성화하면 안 된다. lane이 단독 판정 불가일
+    때는 누적 글로벌 증거로 폴백해 차단한다."""
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "companion_lane_cold_start.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT,
+                created_at TEXT,
+                audit_json TEXT
+            )
+            """
+        )
+        audit_json = json.dumps(
+            {
+                "per_query_variant": {
+                    # 글로벌 누적: 제로수율 증명 (disc>=150, 0.25% < 0.4%)
+                    "axis_skin:아토피후기": {"discovered": 400, "pending": 1, "ad_filtered": 200},
+                },
+                "per_category_lens_query_variant": {
+                    # 갓 도입된 thin lane: pending==0, disc<60 → 단독 판정 불가(cold start)
+                    "피부/여드름::review::axis_skin:아토피후기": {
+                        "discovered": 20,
+                        "pending": 0,
+                        "ad_filtered": 12,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-17 09:00:00", "2026-06-17 10:00:00", audit_json),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+    hunter.keyword_context = {
+        "청주 여드름 한의원 추천": {
+            "category": "피부/여드름",
+            "viral_readiness_score": 72,
+            "community_signal": 64,
+            "conversion_signal": 20,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "execution_lens": "review",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("청주 여드름 한의원 추천", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    # thin lane이 글로벌 제로수율 증거를 가리지 않고 차단된다.
+    assert "axis_skin:아토피후기" not in variants
+    assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
+
+
 def test_viral_hunter_specific_axis_variant_needs_two_bad_runs_before_drop(tmp_path):
     from types import SimpleNamespace
 
@@ -10349,6 +10776,40 @@ def test_timing_window_uses_spaced_naver_date_as_real_post_age_penalty():
     assert "no_post_date" in no_date_signals
     assert score <= no_date_score - 25
     assert tier in {"aging", "stale"}
+
+
+def test_timing_window_hard_fails_posts_older_than_post_age_ttl():
+    """post-age TTL(270d)을 넘은 게시물은 미답변/노출 같은 참여 신호로도 되살아나지 않고
+    즉시 stale 하드페일한다(enrichment 단계 골든큐 진입 차단). 날짜 미상/신선글은 무관."""
+    from datetime import datetime
+    now = datetime(2026, 6, 19)
+
+    def mk(posted, disc="2026-06-18T10:00:00"):
+        t = ViralTarget(
+            platform="kin", url=f"https://kin.naver.com/x?docId={hash(posted)%99}",
+            title="청주 교통사고 한의원 추천", content_preview="청주 교통사고 후 통증 한의원 추천해주세요",
+            matched_keywords=["청주 교통사고 한의원"], category="교통사고",
+        )
+        t.posted_at = posted; t.discovered_at = disc
+        t.comment_count = 0; t.view_count = 300; t.scan_count = 1  # 강한 참여 보너스(미답변+노출)
+        return t
+
+    f = viral_hunter.CommentableFilter._assess_timing_window
+    MIN = viral_hunter.CommentableFilter.MIN_TIMING_WINDOW_SCORE
+    # 17년 전(2009) — 참여 보너스가 있어도 하드페일
+    s_old, tier_old, sig_old = f(mk("20090410"), [], [], now)
+    assert tier_old == "stale" and s_old < MIN
+    assert "post_age_exceeds_ttl" in sig_old
+    # >270d (약 1.5년 전) — 하드페일
+    s_270, tier_270, _ = f(mk("20240101"), [], [], now)
+    assert tier_270 == "stale" and s_270 < MIN
+    # 신선글(어제) — 영향 없음(통과)
+    s_fresh, tier_fresh, sig_fresh = f(mk("2026-06-18T09:00:00"), [], [], now)
+    assert s_fresh >= MIN and "post_age_exceeds_ttl" not in sig_fresh
+    # 날짜 미상 — 영향 없음(dwell TTL이 별도 보호)
+    _, _, sig_nodate = f(mk(""), [], [], now)
+    assert "post_age_exceeds_ttl" not in sig_nodate
+    assert "no_post_date" in sig_nodate
 
 
 def _create_pending_ttl_table(conn):

@@ -530,6 +530,50 @@ def test_todays_queue_merges_gyulim_legacy_and_matched_categories(tmp_db_path, m
     assert "diet-fill" in selected_ids
 
 
+def test_todays_queue_routes_cross_axis_by_content_not_seed(tmp_db_path, monkeypatch):
+    """cross-axis 글(콘텐츠=SCAR, 시드=스킨)은 콘텐츠 축(흉터/여드름흉터)으로 라우팅돼야
+    한다 — 시드 축(피부/여드름)으로 라우팅하면 시그니처 SCAR 글이 스킨 버킷에 숨는다.
+    콘텐츠가 '기타'면 시드 lineage로 폴백."""
+    from routers import viral as viral_router
+    monkeypatch.setattr(viral_router, "get_db_path", lambda: tmp_db_path)
+
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword TEXT")
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN matched_keyword_category TEXT")
+        conn.execute("ALTER TABLE viral_targets ADD COLUMN score_breakdown TEXT DEFAULT '{}'")
+        sb = '{"clinic_treatment_fit_score": 95, "worksite_efficiency_score": 95}'
+        rows = [
+            # 콘텐츠=흉터/여드름흉터(SCAR), 시드=피부/여드름(스킨) → 콘텐츠로 라우팅(SCAR)
+            ("xaxis-scar", "kin", "http://x/xaxis-scar", "여드름흉터 새살침 후기",
+             '["청주 여드름 한의원"]', "흉터/여드름흉터", "피부/여드름", 1, "pending", 95, 1, "청주 여드름 한의원", sb),
+            # 콘텐츠='기타'(미분류), 시드=다이어트 → 시드로 폴백(다이어트)
+            ("xaxis-fallback", "cafe", "http://x/xaxis-fallback", "문의",
+             '["청주 다이어트 한약"]', "기타", "다이어트", 1, "pending", 90, 1, "청주 다이어트 한약", sb),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO viral_targets(
+                id, platform, url, title, matched_keywords, category,
+                matched_keyword_category, is_commentable, comment_status,
+                priority_score, discovered_at, scan_count, matched_keyword, score_breakdown
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    result = asyncio.run(
+        viral_router.get_todays_queue(
+            total_limit=5, per_category=3, today_only=False,
+            work_scope="core", exclude_revisited=None,
+        )
+    )
+    cat_of = {item["id"]: item["category"]
+              for group in result["groups"] for item in group["items"]}
+    assert cat_of.get("xaxis-scar") == "흉터/여드름흉터"   # 시드(스킨)가 아니라 콘텐츠(SCAR)로
+    assert cat_of.get("xaxis-fallback") == "다이어트"      # 콘텐츠='기타' → 시드 폴백
+
+
 def test_all_backlog_staff_queries_hide_revisited_by_default(tmp_db_path, monkeypatch):
     from routers import viral as viral_router
 

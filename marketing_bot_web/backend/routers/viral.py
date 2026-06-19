@@ -125,6 +125,11 @@ VIRAL_CORE_CANONICAL_CATEGORIES = _unique_categories(
     + [_canonical_viral_category(category) for category in GYULIM_KEYWORD_PROFILE.business_core_categories]
 )
 
+# 골든큐 라우팅에서 콘텐츠 축을 신뢰할 시그니처 진료축(새살침 흉터, 로랑·데이릴 경쟁 안면비대칭).
+# cross-axis 발견 시 시드 축으로 라우팅하면 이 글들이 엉뚱한 버킷에 숨으므로, 이 축이
+# 콘텐츠/시드 어느 쪽에라도 걸리면 콘텐츠(detected post axis) 기준으로 그룹핑한다.
+SIGNATURE_ROUTING_AXES = frozenset({"흉터/여드름흉터", "안면비대칭"})
+
 VIRAL_CORE_CATEGORIES = _unique_categories(
     VIRAL_CORE_CANONICAL_CATEGORIES
     + [
@@ -1801,15 +1806,29 @@ async def get_todays_queue(
                     r["matched_keywords"] = []
 
         # 카테고리별 그룹핑 (per_category 상한 적용)
+        # 시그니처 축(흉터/여드름흉터·안면비대칭)이 콘텐츠 또는 시드 어느 쪽에라도 걸리면
+        # 포스트의 콘텐츠 축(category, re-canonicalization 이후 신뢰 가능)으로 라우팅한다 —
+        # 시드 축(matched_keyword_category)으로만 라우팅하면 cross-axis 발견(예: 스킨 시드가
+        # 찾은 SCAR 글)에서 시그니처 글이 엉뚱한 버킷에 숨는다(라이브: 78건 숨음, 흉터 60·
+        # 안면비대칭 17). 그 외 비시그니처 글은 기존 시드 우선 라우팅을 유지해 인접 축
+        # (체형교정↔통증) 경계 탐지 노이즈로 인한 대규모 재배치를 피한다. 콘텐츠가
+        # '기타'(미분류)면 시드 lineage로 폴백.
         groups_map: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
             raw_category = r.get("category") or "기타"
-            routing_category = r.get("matched_keyword_category") or raw_category
-            cat = _canonical_viral_category(routing_category)
+            content_cat = _canonical_viral_category(raw_category)
+            seed_cat = (
+                _canonical_viral_category(r.get("matched_keyword_category"))
+                if r.get("matched_keyword_category") else ""
+            )
+            if content_cat in SIGNATURE_ROUTING_AXES or seed_cat in SIGNATURE_ROUTING_AXES:
+                cat = content_cat if content_cat and content_cat != "기타" else (seed_cat or "기타")
+            else:
+                cat = seed_cat or content_cat or "기타"
             if raw_category != cat:
                 r["raw_category"] = raw_category
             if r.get("matched_keyword_category"):
-                r["matched_keyword_category"] = _canonical_viral_category(r.get("matched_keyword_category"))
+                r["matched_keyword_category"] = seed_cat
             r["category"] = cat
             groups_map.setdefault(cat, []).append(r)
 

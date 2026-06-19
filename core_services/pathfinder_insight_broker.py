@@ -3325,10 +3325,18 @@ class PathfinderInsightBroker:
             discovered = int(entry.get("discovered", 0) or 0)
             pending = int(entry.get("pending", 0) or 0)
             ad_filtered = int(entry.get("ad_filtered", 0) or 0)
+            # 신규 발견(fresh_discovered)이 있으면 그것으로 제로수율을 판정한다.
+            # 한 런 발견의 ~88%는 이미 판정된 안정 URL의 재발견이라, 전체 discovered
+            # 로는 "신규 영역을 탐색했는데 전환 0"인 축과 "옛 URL만 재발견"한 축을
+            # 구분할 수 없다. fresh_discovered 키가 없는 구버전 감사는 판정에서 제외
+            # (오해 소지가 있는 신호로 blind spot/쿼리 재설계를 유발하지 않도록 fail-safe).
+            has_fresh = "fresh_discovered" in entry
+            fresh_discovered = int(entry.get("fresh_discovered", 0) or 0)
             pending_rate = round((pending / discovered), 4) if discovered else 0.0
             category_yield.append({
                 "category": category,
                 "discovered": discovered,
+                "fresh_discovered": fresh_discovered,
                 "pending": pending,
                 "pending_rate": pending_rate,
                 "ad_filtered": ad_filtered,
@@ -3336,10 +3344,12 @@ class PathfinderInsightBroker:
             surface = surface_by_category.get(category)
             if surface is not None:
                 surface["viral_discovered"] = discovered
+                surface["viral_fresh_discovered"] = fresh_discovered
                 surface["viral_pending"] = pending
                 surface["viral_pending_rate"] = pending_rate
             if (
-                discovered >= 25
+                has_fresh
+                and fresh_discovered >= 25
                 and pending == 0
                 and surface is not None
                 and int(surface.get("keyword_count") or 0) > 0
@@ -3348,6 +3358,7 @@ class PathfinderInsightBroker:
                 zero_yield_categories.append({
                     "category": category,
                     "viral_discovered": discovered,
+                    "viral_fresh_discovered": fresh_discovered,
                     "viral_ad_filtered": ad_filtered,
                     "keyword_surface_status": surface.get("status"),
                 })

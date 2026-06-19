@@ -678,6 +678,10 @@ class ViralSeedBuilder:
                 fb = self._feedback_for_keyword(feedback, raw_keyword)
             axis_lens_fb = self._feedback_for_axis_lens(feedback, row_data)
             axis_lens_feedback_adjustment = self._axis_lens_feedback_adjustment(axis_lens_fb)
+            # 프록시 패널티가 robust한 직원 실수요와 충돌하면 감쇠 (revealed demand 우선).
+            axis_lens_feedback_adjustment = self._staff_validated_axis_lens_adjustment(
+                axis_lens_feedback_adjustment, axis_lens_fb
+            )
             structure = keyword_structure_features(keyword, row_data["category"])
             structure_fb = feedback.get(str(structure["structure_key"])) or {}
             # 제로수율이 증명된 파생 구조(동네/거래형 접미사)는 하드블록. 기본 plain:city
@@ -1246,6 +1250,38 @@ class ViralSeedBuilder:
         return round(max(-48.0, min(22.0, adjustment)) * evidence_weight, 2)
 
     @staticmethod
+    def _staff_validated_axis_lens_adjustment(proxy_adjustment: float, axis_lens_fb: dict) -> float:
+        """robust한 직원 실수요가 모순할 때 NEGATIVE 프록시 패널티를 감쇠한다.
+
+        `_axis_lens_feedback_adjustment`는 모델/게이트 프록시(quality_rate,
+        lens_match, final_gate_rate, lens_mismatch, skip_rate)로 구동된다 — 이는
+        게이트-통과/렌즈-적합 아티팩트를 측정할 뿐, 직원이 실제로 그 lane을
+        작업하는지는 못 본다. 어떤 렌즈가 robust한 인적 증거(staff_reviewed_count)를
+        갖고 직원이 실제로 수용(posted/approved vs skipped)한다면, 프록시의
+        비관이 그 lane을 계속 강등해서는 안 된다 — revealed demand가 입증된
+        예측자다(BRIDGE 감사). 단 패널티의 잔여분은 남긴다(프록시는 high
+        final-gate-rate 같은 실제 발견 비효율도 반영하므로). 양(+) 프록시
+        조정과 증거가 얇은 렌즈는 건드리지 않는다.
+
+        라이브 근거(all-time): 안면비대칭::consultation 프록시 -6.6인데 staff
+        수용 21.4%(reviewed=42); 교통사고::community -8.2인데 18.5%(reviewed=189);
+        체형교정::service -16.6인데 17.3%(reviewed=300) — 직원이 실제로 작업하는데
+        프록시가 강등하던 lane들. 임계는 카테고리-수요 게이트(accept>=12% 정상
+        수요)와 정렬, 증거 요건(reviewed>=25)은 그 게이트의 MIN_DECIDED와 동일.
+        """
+        if proxy_adjustment >= 0.0:
+            return proxy_adjustment
+        reviewed = int(axis_lens_fb.get("staff_reviewed_count", 0) or 0)
+        if reviewed < CATEGORY_DEMAND_MIN_DECIDED:
+            return proxy_adjustment
+        accept = ViralSeedBuilder._as_float(axis_lens_fb.get("staff_accept_rate"))
+        if accept >= 0.15:
+            return round(proxy_adjustment * 0.30, 2)  # 강한 실수요 → 패널티 대부분 상쇄
+        if accept >= 0.12:
+            return round(proxy_adjustment * 0.55, 2)  # 정상 실수요 → 패널티 절반↓
+        return proxy_adjustment
+
+    @staticmethod
     def _structure_proven_zero_yield(structure: dict, feedback: dict) -> bool:
         """Hard-block a seed whose query STRUCTURE bucket has overwhelming zero-yield
         evidence — but only DERIVATIVE structures (neighborhood token or transactional
@@ -1317,11 +1353,20 @@ class ViralSeedBuilder:
             return round(-14.0 * evidence_weight, 2)
         if accept_rate < 0.10:
             return round(-8.0 * evidence_weight, 2)
-        if accept_rate >= 0.30:
-            return round(min(12.0, 6.0 + accept_rate * 12.0) * evidence_weight, 2)
-        if accept_rate >= 0.20:
+        if accept_rate < 0.12:
+            return 0.0
+        if accept_rate < 0.20:
+            # 직원이 실제로 작업하는 '정상 수요' 밴드(accept>=12%)는 budget 크레딧을
+            # 받는다 — 카테고리-수요 게이트가 accept>=12%를 factor 1.0(정상 수요)으로
+            # 보는 것과 동일 기준. 기존엔 20%까지 0점이라, 시그니처 축의 최량 렌즈
+            # (안면비대칭::review 16.4%, 교통사고::community 18.5%, 다이어트::review
+            # 15.3% 등 10~20% 밴드)가 선택 가중을 전혀 못 받았다(데드존). 같은 진료축
+            # 안에서 staff가 외면하는 렌즈(safety/availability 0~4%) 대비 실제로
+            # 작업하는 렌즈로 시드 선택 예산을 재배분하는 효과.
+            return round(4.0 * evidence_weight, 2)
+        if accept_rate < 0.30:
             return round(5.0 * evidence_weight, 2)
-        return 0.0
+        return round(min(12.0, 6.0 + accept_rate * 12.0) * evidence_weight, 2)
 
     @staticmethod
     def _category_demand_factor(stats: dict) -> Tuple[float, str]:

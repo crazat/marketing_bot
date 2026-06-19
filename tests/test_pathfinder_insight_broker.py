@@ -1052,11 +1052,12 @@ def test_pathfinder_discovery_audit_consumes_viral_scan_yield(tmp_path):
             "ad_rate": 0.3,
         },
         "per_category": {
-            profile.category: {"discovered": 30, "pending": 0, "ad_filtered": 12},
-            "기타": {"discovered": 10, "pending": 1, "ad_filtered": 0},
+            # 신규 발견(fresh_discovered)이 충분하고 작업가능 0 → 제로수율 축
+            profile.category: {"discovered": 30, "fresh_discovered": 28, "pending": 0, "ad_filtered": 12},
+            "기타": {"discovered": 10, "fresh_discovered": 8, "pending": 1, "ad_filtered": 0},
         },
         "zero_yield_seeds": [
-            {"seed": "청주 제로수율 시드", "discovered": 28, "ad_filtered": 11}
+            {"seed": "청주 제로수율 시드", "discovered": 28, "fresh_discovered": 26, "ad_filtered": 11}
         ],
     }
     with sqlite3.connect(db_path) as conn:
@@ -1102,6 +1103,7 @@ def test_pathfinder_discovery_audit_consumes_viral_scan_yield(tmp_path):
         item for item in audit["category_surface_map"] if item["category"] == profile.category
     )
     assert surface["viral_discovered"] == 30
+    assert surface["viral_fresh_discovered"] == 28
     assert surface["viral_pending"] == 0
     assert surface["viral_pending_rate"] == 0.0
 
@@ -1110,6 +1112,54 @@ def test_pathfinder_discovery_audit_consumes_viral_scan_yield(tmp_path):
         item.get("status") == "viral_zero_yield" and item.get("category") == profile.category
         for item in audit["blind_spots"]
     )
+
+
+def test_pathfinder_discovery_audit_zero_yield_requires_fresh_discovery(tmp_path):
+    """재발견 지배적인 축(전체 발견은 많아도 신규 발견이 적은)은 제로수율로 승격하면
+    안 된다. 또한 fresh_discovered 키가 없는 구버전 감사는 판정에서 제외(fail-safe)."""
+    import json
+
+    db_path = tmp_path / "discovery_viral_fresh.db"
+    profile = GYULIM_KEYWORD_PROFILE.profiles[0]
+    market = GYULIM_KEYWORD_PROFILE.neighborhoods[0]
+    audit_json = {
+        "summary": {"discovered": 60, "pending": 0, "pending_rate": 0.0, "ad_filtered": 10, "ad_rate": 0.16},
+        "per_category": {
+            # 전체 30건이지만 신규는 3건뿐(옛 URL 재발견) → 제로수율 승격 금지
+            profile.category: {"discovered": 30, "fresh_discovered": 3, "pending": 0, "ad_filtered": 10},
+            # fresh_discovered 키 자체가 없는 구버전 감사 항목 → fail-safe(승격 금지)
+            "기타": {"discovered": 30, "pending": 0, "ad_filtered": 0},
+        },
+        "zero_yield_seeds": [],
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_started_at TEXT, created_at TEXT, source_scan_run_id INTEGER,
+                keyword_count INTEGER, discovered_count INTEGER, pending_count INTEGER,
+                pending_rate REAL, ad_filtered_count INTEGER, audit_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+            ("2026-06-17 09:00:00", "2026-06-17 10:00:00", json.dumps(audit_json, ensure_ascii=False)),
+        )
+        conn.commit()
+
+    broker = PathfinderInsightBroker(str(db_path))
+    cards = [_discovery_audit_card(profile, market)]
+    audit = broker._discovery_audit(cards, selected_cards=cards)
+
+    # 재발견 지배적 축은 제로수율로 승격되지 않는다(신규 3건 < 25).
+    zero_categories = {item["category"] for item in audit["viral_yield"]["zero_yield_categories"]}
+    assert profile.category not in zero_categories
+    assert all(item.get("status") != "viral_zero_yield" for item in audit["blind_spots"])
+    # 신규 발견 수는 표면 맵에 노출되어 가시성을 제공한다.
+    surface = next(item for item in audit["category_surface_map"] if item["category"] == profile.category)
+    assert surface["viral_fresh_discovered"] == 3
 
 
 def test_pathfinder_discovery_audit_without_viral_audit_table_has_no_viral_yield(tmp_path):
