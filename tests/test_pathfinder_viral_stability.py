@@ -4963,6 +4963,273 @@ def test_ai_target_split_guarantees_available_signature_axes_before_large_floors
     assert selected_urls.isdisjoint(rest_urls)
 
 
+def test_ai_target_split_spreads_venue_in_leftover_fill():
+    """잔여 AI 채움에서 한 메가카페가 예산을 독점하지 못하고 다른 venue 로 분산된다."""
+    targets = []
+    # 비-쿼터 카테고리(기타)로 플로어 우회 → 전량 잔여 채움에서 선택 → venue 캡만 작동.
+    for i in range(20):
+        targets.append(
+            ViralTarget(
+                platform="cafe",
+                url=f"https://cafe.naver.com/mega/{i}",
+                title=f"post {i}",
+                category="기타",
+                matched_keyword_category="기타",
+                priority_score=1000 - i,
+                author="청주맘카페",
+            )
+        )
+    for i in range(8):
+        targets.append(
+            ViralTarget(
+                platform="cafe",
+                url=f"https://cafe.naver.com/other/{i}",
+                title=f"post o{i}",
+                category="기타",
+                matched_keyword_category="기타",
+                priority_score=500 - i,
+                author=f"동네카페{i}",
+            )
+        )
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(targets, top_n=10)
+    mega = sum(1 for t in selected if t.author == "청주맘카페")
+    others = sum(1 for t in selected if t.author.startswith("동네카페"))
+    # 예산은 채우되(10), cap=max(3, ceil(10*0.15)=2)=3 으로 메가카페가 독점하지 못한다.
+    assert len(selected) == 10
+    assert mega <= 4
+    assert others >= 6
+
+
+def test_ai_target_split_venue_cap_falls_back_to_fill_budget():
+    """venue 가 하나뿐이면 캡을 넘겨서라도 AI 예산을 채운다 (발견 풀 활용 우선 — 읽기 큐와 다른 점)."""
+    targets = [
+        ViralTarget(
+            platform="cafe",
+            url=f"https://cafe.naver.com/only/{i}",
+            title=f"p{i}",
+            category="기타",
+            matched_keyword_category="기타",
+            priority_score=1000 - i,
+            author="유일카페",
+        )
+        for i in range(20)
+    ]
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(targets, top_n=10)
+    # venue 하나뿐이어도 AI 예산은 채운다 (읽기 큐 하드 캡과 달리 pass2 폴백).
+    assert len(selected) == 10
+
+
+def _worksite_target(comment_count, view_count, *, old_wk=60.0, old_adj=1.75, priority=100.0):
+    return viral_hunter.ViralTarget(
+        platform="kin",
+        url=f"https://example.com/wk/{comment_count}-{view_count}",
+        title="흉터 상담",
+        content_preview="여드름흉터 상담 받고 싶어요",
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        comment_count=comment_count,
+        view_count=view_count,
+        priority_score=priority,
+        score_breakdown={
+            "worksite_efficiency_score": old_wk,
+            "worksite_efficiency_adjustment": old_adj,
+            "clinic_treatment_fit_score": 60,
+            "viral_need_score": 60,
+            "reply_opportunity_score": 60,
+            "timing_window_score": 60,
+        },
+    )
+
+
+def test_worksite_resaturation_demotes_saturated_thread_after_enrichment():
+    """enrichment 으로 답변 12개가 밝혀진 포화 스레드는 worksite·priority 가 하향된다."""
+    H = viral_hunter.ViralHunter
+    t = _worksite_target(comment_count=12, view_count=0)
+    changed = H._resaturate_worksite_after_enrichment(t)
+    assert changed is True
+    # cc=12(saturated -16) vs cc=0(unanswered +16) → delta -32.
+    assert t.score_breakdown["worksite_efficiency_score"] == 60.0 - 32.0
+    assert t.priority_score < 100.0  # priority 컷 탈락 가능
+    assert t.score_breakdown["worksite_saturation_regated_after_enrichment"] is True
+    # 멱등: 재호출은 중복 적용하지 않는다 (refill 경로 안전).
+    assert H._resaturate_worksite_after_enrichment(t) is False
+    assert t.score_breakdown["worksite_efficiency_score"] == 28.0
+
+
+def test_worksite_resaturation_boosts_visible_unanswered_thread():
+    """조회 많고 미답변(visible_gap)인 스레드는 보정 후 worksite 가 상향된다."""
+    H = viral_hunter.ViralHunter
+    t = _worksite_target(comment_count=0, view_count=300)
+    changed = H._resaturate_worksite_after_enrichment(t)
+    assert changed is True
+    # cc=0,vc=300(unanswered +16 + visible_gap +8) vs cc=0,vc=0(+16) → delta +8.
+    assert t.score_breakdown["worksite_efficiency_score"] == 60.0 + 8.0
+    assert t.priority_score > 100.0
+
+
+def test_worksite_resaturation_noop_without_engagement_data():
+    """참여 지표가 없으면(선택 시점과 동일) 보정하지 않는다."""
+    H = viral_hunter.ViralHunter
+    t = _worksite_target(comment_count=0, view_count=0)
+    assert H._resaturate_worksite_after_enrichment(t) is False
+    assert t.score_breakdown["worksite_efficiency_score"] == 60.0
+    assert t.priority_score == 100.0
+
+
+def _fake_axis_embed(text):
+    """결정적 fake 임베더(4차원 개념공간: 안면비대칭/흉터/다이어트/기타) — 모델 없이 의미 검증."""
+    t = str(text or "")
+    asym = any(k in t for k in ["비대칭", "짝짝이", "비뚤", "틀어", "턱"])
+    scar = any(k in t for k in ["흉터", "팬자국", "구덩이", "여드름자국", "새살침"])
+    diet = any(k in t for k in ["다이어트", "비만", "체중", "감량"])
+    return [1.0 if asym else 0.0, 1.0 if scar else 0.0, 1.0 if diet else 0.0, 0.25]
+
+
+def test_semantic_axis_matcher_noop_without_model_or_env():
+    """모델/opt-in 없으면 매처는 완전 비활성(no-op) — 기존 어휘 동작 보존."""
+    from core_services.semantic_axis_matcher import SemanticAxisMatcher
+    m = SemanticAxisMatcher()
+    assert m.available() is False
+    assert m.similarity("얼굴 짝짝이", ["안면비대칭"], ref_key="a") is None
+    assert m.is_on_axis("얼굴 짝짝이", ["안면비대칭"], ref_key="a") is False
+
+
+def test_semantic_axis_matcher_similarity_with_injected_embedder():
+    """주입 임베더로 on-concept 높음 / off-concept 낮음."""
+    from core_services.semantic_axis_matcher import SemanticAxisMatcher
+    m = SemanticAxisMatcher(embed_fn=_fake_axis_embed, threshold=0.62)
+    assert m.available() is True
+    on = m.similarity("얼굴이 짝짝이라 고민이에요", ["안면비대칭", "턱비대칭"], ref_key="asym")
+    off = m.similarity("다이어트 한약 효과 궁금", ["안면비대칭", "턱비대칭"], ref_key="asym")
+    assert on is not None and on >= 0.9
+    assert off is not None and off < 0.62
+    assert m.is_on_axis("얼굴이 짝짝이", ["안면비대칭"], ref_key="asym2") is True
+
+
+def test_semantic_axis_rescue_recovers_colloquial_post(monkeypatch):
+    """구어 안면비대칭 글('얼굴 짝짝이')은 의미 구제되고, 다른 축 글은 구제되지 않는다."""
+    F = viral_hunter.CommentableFilter
+    from core_services.semantic_axis_matcher import SemanticAxisMatcher
+    monkeypatch.setattr(
+        viral_hunter, "_SEMANTIC_AXIS_MATCHER",
+        SemanticAxisMatcher(embed_fn=_fake_axis_embed, threshold=0.62),
+    )
+    asym = viral_hunter.ViralTarget(
+        platform="cafe", url="https://cafe.naver.com/x/1",
+        title="얼굴 짝짝이 고민", content_preview="얼굴이 짝짝이라 한쪽으로 틀어진 느낌이라 신경쓰여요",
+        category="안면비대칭", matched_keyword_category="안면비대칭",
+    )
+    assert F._semantic_axis_rescue(asym, text="얼굴이 짝짝이라 틀어진 느낌", category="안면비대칭", domain="asymmetry") is True
+    assert asym.score_breakdown.get("semantic_axis_rescue") is True
+    assert asym.score_breakdown.get("semantic_axis_score", 0) >= 0.9
+
+    diet = viral_hunter.ViralTarget(
+        platform="cafe", url="https://cafe.naver.com/x/2",
+        title="다이어트 후기", content_preview="다이어트 한약 먹고 체중 감량했어요",
+        category="안면비대칭", matched_keyword_category="안면비대칭",
+    )
+    assert F._semantic_axis_rescue(diet, text="다이어트 한약 체중 감량", category="안면비대칭", domain="asymmetry") is False
+
+
+def test_semantic_axis_rescue_noop_when_matcher_disabled():
+    """기본 싱글톤(비활성)에서는 구제하지 않는다 (회귀 0 보장의 핵심)."""
+    F = viral_hunter.CommentableFilter
+    t = viral_hunter.ViralTarget(
+        platform="cafe", url="https://cafe.naver.com/x/3",
+        title="얼굴 짝짝이", content_preview="얼굴이 짝짝이라 틀어진 느낌",
+        category="안면비대칭", matched_keyword_category="안면비대칭",
+    )
+    assert F._semantic_axis_rescue(t, text="얼굴이 짝짝이", category="안면비대칭", domain="asymmetry") is False
+
+
+def test_pathfinder_fit_reject_semantic_rescue_flips_domain_mismatch(monkeypatch):
+    """어휘 mismatch 로 domain_mismatch 될 구어 환자글이 의미 매처로 구제된다."""
+    F = viral_hunter.CommentableFilter
+    from core_services.semantic_axis_matcher import SemanticAxisMatcher
+    target = viral_hunter.ViralTarget(
+        platform="cafe", url="https://cafe.naver.com/x/4",
+        title="얼굴 짝짝이 고민이에요",
+        content_preview="얼굴이 짝짝이라 한쪽으로 틀어진 느낌이라 신경쓰여요. 청주에서 봐주실 만한 곳 추천 부탁드려요.",
+        category="안면비대칭", matched_keyword_category="안면비대칭",
+        score_breakdown={"pathfinder_execution_lens": "review"},
+    )
+    text = f"{target.title} {target.content_preview}".lower()
+    kwargs = dict(
+        domain="asymmetry", text=text,
+        axis_fit_score=20.0, axis_fit_tier="mismatch",
+        lens_fit_score=70.0, lens_fit_tier="acceptable",
+    )
+    # 기본(비활성): 어휘 mismatch → domain_mismatch
+    assert F._pathfinder_fit_reject_reason(target, **kwargs) == "domain_mismatch"
+    # 의미 매처 주입: 구어 환자글 구제 → None
+    monkeypatch.setattr(
+        viral_hunter, "_SEMANTIC_AXIS_MATCHER",
+        SemanticAxisMatcher(embed_fn=_fake_axis_embed, threshold=0.62),
+    )
+    assert F._pathfinder_fit_reject_reason(target, **kwargs) is None
+
+
+def test_colloquial_variants_generates_region_anchored_query():
+    """진료축 구어 표현으로 지역 앵커 쿼리 1개를 colloquial: 변형으로 생성한다."""
+    H = viral_hunter.ViralHunter
+    out = H._colloquial_query_variants("청주 안면비대칭 추천", "안면비대칭", "청주 안면비대칭 추천")
+    assert len(out) == 1
+    v = out[0]
+    assert v["variant"].startswith("colloquial:")
+    assert v["query"].startswith("청주 ")
+    assert v["source_keyword"] == "청주 안면비대칭 추천"
+    # 구어 어휘가 없는 축은 빈 리스트.
+    assert H._colloquial_query_variants("청주 두통 한의원", "두통/어지럼", "청주 두통 한의원") == []
+
+
+def test_colloquial_variants_rotate_across_seeds_deterministically():
+    """서로 다른 시드는 (포트폴리오 커버리지 위해) 결정적으로 회전 선택된다."""
+    H = viral_hunter.ViralHunter
+    a = H._colloquial_query_variants("청주 안면비대칭 추천", "안면비대칭", "청주 안면비대칭 추천")[0]["query"]
+    b = H._colloquial_query_variants("청주 안면비대칭 추천", "안면비대칭", "청주 안면비대칭 추천")[0]["query"]
+    assert a == b  # 동일 시드 → 결정적
+    # 적어도 두 시드 중 하나는 다른 구어 표현을 골라 커버리지가 분산된다.
+    variants = {
+        H._colloquial_query_variants(kw, "안면비대칭", kw)[0]["query"]
+        for kw in ["청주 안면비대칭 추천", "청주 안면비대칭 비용", "청주 턱 교정 후기 추천 어디"]
+    }
+    assert len(variants) >= 2
+
+
+def test_semantic_discovery_enabled_env_gate(monkeypatch):
+    from core_services.semantic_axis_matcher import semantic_discovery_enabled
+    monkeypatch.delenv("MARKETING_BOT_SEMANTIC_DISCOVERY", raising=False)
+    assert semantic_discovery_enabled() is False
+    monkeypatch.setenv("MARKETING_BOT_SEMANTIC_DISCOVERY", "1")
+    assert semantic_discovery_enabled() is True
+    monkeypatch.setenv("MARKETING_BOT_SEMANTIC_DISCOVERY", "off")
+    assert semantic_discovery_enabled() is False
+
+
+def test_search_query_variants_colloquial_respects_env(monkeypatch):
+    """구어 변형은 opt-in env 일 때만 쿼리 세트에 들어간다 (기본 회귀 0)."""
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {}
+    monkeypatch.setattr(
+        hunter, "_planning_context_for_keyword",
+        lambda kw: {"execution_lens": "review", "category": "안면비대칭"},
+    )
+    monkeypatch.setattr(hunter, "_load_variant_yield_history", lambda *a, **k: {})
+    monkeypatch.setattr(hunter, "_patient_voice_kin_variant", lambda *a, **k: None)
+
+    monkeypatch.delenv("MARKETING_BOT_SEMANTIC_DISCOVERY", raising=False)
+    off = hunter._search_query_variants_for_keyword("청주 안면비대칭 추천")
+    assert not any(str(v.get("variant", "")).startswith("colloquial:") for v in off)
+
+    monkeypatch.setenv("MARKETING_BOT_SEMANTIC_DISCOVERY", "1")
+    on = hunter._search_query_variants_for_keyword("청주 안면비대칭 추천")
+    assert any(str(v.get("variant", "")).startswith("colloquial:") for v in on)
+
+
 def test_ai_target_split_preserves_pathfinder_lens_diversity_inside_category_floor():
     targets = [
         ViralTarget(
@@ -9090,6 +9357,272 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
     assert persisted["summary"]["fresh_pending"] == 2
     assert persisted["summary"]["open_pending"] == 2
     assert persisted["per_category_lens_query_variant"]["피부/여드름::review::community:추천"]["pending"] == 2
+
+
+def test_commentable_filter_accumulates_funnel_reject_stats():
+    """Track2: 퍼널 거절(조용한 continue 포함)은 인스턴스에 누적되어 영속 감사에 노출된다."""
+    f = viral_hunter.CommentableFilter()
+    junk = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/junk-1",
+        title="안녕",
+        content_preview="짧은 글",
+        matched_keywords=["청주 흉터"],
+        category="흉터/여드름흉터",
+    )
+    f.filter([junk])
+    assert f.filter_input_count == 1
+    assert isinstance(f.cumulative_reject_stats, dict)
+    # 명백한 잡음 타겟은 어떤 사유로든 거절되어 카운터가 올라간다.
+    assert sum(f.cumulative_reject_stats.values()) >= 1
+    # 누적: 두 번째 호출은 카운트를 합산한다 (배치 호출에도 안전).
+    junk2 = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/junk-2",
+        title="안녕",
+        content_preview="짧은 글",
+        matched_keywords=["청주 흉터"],
+        category="흉터/여드름흉터",
+    )
+    f.filter([junk2])
+    assert f.filter_input_count == 2
+
+
+def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
+    """Track2: 지금까지 stdout 으로만 흘러가던 '조용한 경계'를 audit JSON 으로 영속화."""
+    db_path = tmp_path / "audit_bounds.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                comment_status TEXT,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                matched_keyword_category TEXT,
+                score_breakdown TEXT,
+                discovered_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "a",
+                "흉터/여드름흉터",
+                "pending",
+                "청주 흉터 한의원",
+                json.dumps(["청주 흉터 한의원"], ensure_ascii=False),
+                "흉터/여드름흉터",
+                json.dumps(
+                    {
+                        "pathfinder_source_keyword": "청주 흉터 한의원",
+                        "pathfinder_query_variant": "base",
+                        "pathfinder_execution_lens": "review",
+                    },
+                    ensure_ascii=False,
+                ),
+                "2026-06-12 10:00:00",
+            ),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+
+    class _F:
+        pass
+
+    fobj = _F()
+    fobj.cumulative_reject_stats = {"advertorial": 12, "no_region": 5, "title_only": 0}
+    fobj.filter_input_count = 100
+    fobj.filter_survivor_count = 30
+    hunter.filter = fobj
+    hunter._variant_drop_counts = {"community:추천": 3}
+    hunter._platform_drop_counts = {"blog": 7}
+    hunter._keyword_limit_dropped = 8
+
+    class _SB:
+        pass
+
+    sb = _SB()
+    sb._structure_blocked_buckets = {"structure:흉터/여드름흉터:suffix:neigh": 4}
+    hunter.seed_builder = sb
+
+    audit = hunter._persist_viral_discovery_audit(
+        "2026-06-12 00:00:00",
+        db_path=str(db_path),
+    )
+
+    cb = audit["coverage_bounds"]
+    # 0 인 사유는 노출하지 않는다 (title_only 제외 확인).
+    assert cb["funnel_rejections"] == {"advertorial": 12, "no_region": 5}
+    assert cb["funnel_rejected_total"] == 17
+    assert cb["filter_input_count"] == 100
+    assert cb["filter_survivor_count"] == 30
+    assert cb["filter_survival_rate"] == 30 / 100
+    assert cb["variant_yield_drops"] == {"community:추천": 3}
+    assert cb["platform_yield_drops"] == {"blog": 7}
+    assert cb["structure_blocked"] == {"structure:흉터/여드름흉터:suffix:neigh": 4}
+    assert cb["keyword_limit_dropped"] == 8
+
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute(
+            "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    persisted = json.loads(stored)
+    assert persisted["coverage_bounds"]["funnel_rejected_total"] == 17
+    assert persisted["coverage_bounds"]["platform_yield_drops"]["blog"] == 7
+
+
+def test_viral_hunter_discovery_audit_breaks_down_reject_reason_by_axis(tmp_path):
+    """축별×거절사유 퍼널 분해 — 어느 축이 어느 사유로 발견을 잃는지 상시 측정."""
+    db_path = tmp_path / "audit_reasons.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY, category TEXT, comment_status TEXT,
+                matched_keyword TEXT, matched_keywords TEXT,
+                matched_keyword_category TEXT, score_breakdown TEXT, discovered_at TEXT
+            )
+            """
+        )
+
+        def mk(i, status, reason):
+            sb = {
+                "pathfinder_source_keyword": "청주 여드름흉터 후기",
+                "pathfinder_query_variant": "base",
+                "pathfinder_execution_lens": "review",
+            }
+            if reason:
+                sb["final_reject_reason"] = reason
+            return (
+                f"s{i}", "흉터/여드름흉터", status, "청주 여드름흉터 후기",
+                json.dumps(["청주 여드름흉터 후기"], ensure_ascii=False),
+                "흉터/여드름흉터", json.dumps(sb, ensure_ascii=False),
+                "2026-06-12 10:00:00",
+            )
+
+        rows = [mk(i, "filtered_out", "region_mismatch") for i in range(3)]
+        rows += [mk(i, "filtered_out", "off_domain") for i in range(3, 5)]
+        rows.append(mk(98, "filtered_out_ad", None))   # 명시 사유 없음 → status 에서 'ad' 유도
+        rows.append(mk(99, "pending", None))            # 거절 아님 → 미집계
+        conn.executemany("INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    audit = hunter._persist_viral_discovery_audit("2026-06-12 00:00:00", db_path=str(db_path))
+
+    rr = audit["per_category_reject_reason"]["흉터/여드름흉터"]
+    assert rr["region_mismatch"] == 3
+    assert rr["off_domain"] == 2
+    assert rr.get("ad") == 1
+    assert "pending" not in rr
+    # JSON 영속화도 확인.
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute(
+            "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    persisted = json.loads(stored)
+    assert persisted["per_category_reject_reason"]["흉터/여드름흉터"]["region_mismatch"] == 3
+
+
+def test_viral_need_rewards_first_person_experience_on_axis():
+    """Track3: 진료축 1인칭 경험담은 질문/결정 의도가 없어도 댓글 대상으로 구제된다."""
+    F = viral_hunter.CommentableFilter
+    exp = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/exp",
+        title="여드름흉터 새살침 후기 공유해요",
+        content_preview=(
+            "저도 여드름흉터 때문에 오래 고생했는데 새살침 받아봤어요. "
+            "몇 달 받고나서 효과 봤어요. 비슷한 분들께 경험담 남겨요."
+        ),
+        matched_keywords=["청주 여드름흉터"],
+        category="흉터/여드름흉터",
+    )
+    score, _tier, signals = F._assess_viral_need(exp, "scar_skin", False, True)
+    assert "peer_experience_opportunity" in signals
+    assert "no_clear_need" not in signals
+    assert score >= F.MIN_VIRAL_NEED_SCORE
+
+
+def test_viral_need_first_person_signal_requires_axis_anchor():
+    """Track3: 진료축 앵커 없는 잡담은 경험담 신호를 받지 않는다 (flat prior 방지)."""
+    F = viral_hunter.CommentableFilter
+    offaxis = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/offaxis",
+        title="동네 맛집 다녀왔어요",
+        content_preview="저도 거기 다녀왔는데 효과 봤어요 정말 좋네요 또 갈래요 분위기도 최고였어요",
+        matched_keywords=["청주 맛집"],
+        category="기타",
+    )
+    _score, _tier, signals = F._assess_viral_need(offaxis, "general", False, False)
+    assert "peer_experience_opportunity" not in signals
+
+
+def test_diet_first_person_testimonial_not_flagged_as_advertorial():
+    """Track3: 광고 보강신호(공급자 카페/본문 CTA) 없는 1인칭 다이어트 후기는 광고가 아니다."""
+    F = viral_hunter.CommentableFilter
+    genuine = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/diet-genuine",
+        title="다이어트한약 내돈내산 다이어트 후기",
+        content_preview=(
+            "제가 직접 다이어트한약 먹어봤는데 두 달 동안 5kg 감량 성공했어요. "
+            "요요 없이 식욕이 줄어서 좋았어요. 비슷하게 고민하는 분들께 후기 남겨요."
+        ),
+        matched_keywords=["청주 다이어트한약"],
+        category="다이어트",
+    )
+    text = f"{(genuine.title or '').lower()} {(genuine.content_preview or '').lower()}"
+    is_ad, signals, _score = F._detect_advertorial(genuine, text)
+    assert "diet_testimonial_promo" not in signals
+    assert not is_ad
+
+
+def test_phrasing_variation_rotates_first_person_frame():
+    """1인칭 프레임 시작 방식이 회전돼 댓글 간 지문 중복을 줄인다(정식 명칭 유지)."""
+    AG = viral_hunter.AICommentGenerator
+
+    def mk(i):
+        return viral_hunter.ViralTarget(
+            platform="cafe", url=f"https://cafe.naver.com/x/{i}",
+            title=f"t{i}", category="흉터/여드름흉터",
+        )
+
+    directives = [AG._phrasing_variation_directive(mk(i)) for i in range(12)]
+    assert all("1인칭 경험담 시작 방식 변주" in d for d in directives)
+    assert all("규림한의원" in d for d in directives)  # 정식 명칭 유지
+    # 같은 타겟은 결정적으로 같은 변주.
+    t = mk(5)
+    assert AG._phrasing_variation_directive(t) == AG._phrasing_variation_directive(t)
+    # 타겟마다 회전 → 1인칭 프레임이 ≥2종으로 분산.
+    frames = set()
+    for d in directives:
+        for line in d.splitlines():
+            if "1인칭 경험담 시작 방식 변주" in line:
+                frames.add(line.strip())
+    assert len(frames) >= 2
+
+
+def test_diet_testimonial_with_provider_cta_still_flagged():
+    """Track3: 본문 CTA를 동반한 다이어트 후기형 어드버토리얼은 여전히 광고로 차단된다."""
+    F = viral_hunter.CommentableFilter
+    promo = viral_hunter.ViralTarget(
+        platform="cafe",
+        url="https://example.com/diet-promo",
+        title="다이어트한약 성공후기 이벤트",
+        content_preview=(
+            "다이어트한약 성공후기! 5kg 감량 성공. 지금 상담문의 주시면 할인 이벤트 진행중이에요. "
+            "예약 문의는 카카오톡 채널로 연락주세요. 전화 010-1234-5678 지금 바로 예약하세요."
+        ),
+        matched_keywords=["청주 다이어트한약"],
+        category="다이어트",
+    )
+    text = f"{(promo.title or '').lower()} {(promo.content_preview or '').lower()}"
+    is_ad, _signals, _score = F._detect_advertorial(promo, text)
+    assert is_ad
 
 
 def test_viral_hunter_discovery_audit_counts_actionable_statuses_as_yield(tmp_path):

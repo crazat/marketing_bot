@@ -191,6 +191,7 @@ def _screen_korean_text(
     *,
     call_site: str,
     retry_count: int,
+    allow_first_person_experience: bool = False,
 ) -> Dict[str, Any]:
     try:
         from services.content_compliance import (
@@ -202,7 +203,11 @@ def _screen_korean_text(
         logger.warning("[compliance] import failed, allowing generated text: %s", exc)
         return {"passed": True, "final_text": text, "violations": []}
 
-    result = screen_korean_comment(text, auto_append_disclosure=False)
+    result = screen_korean_comment(
+        text,
+        auto_append_disclosure=False,
+        allow_first_person_experience=allow_first_person_experience,
+    )
     db_path = _resolve_default_db_path()
     if db_path:
         try:
@@ -248,7 +253,10 @@ def ai_generate_korean(
     if not compliance_screen:
         return text
 
-    screen = _screen_korean_text(text, prompt, call_site=call_site, retry_count=0)
+    screen = _screen_korean_text(
+        text, prompt, call_site=call_site, retry_count=0,
+        allow_first_person_experience=(task == "viral_comment"),
+    )
     if not screen.get("passed"):
         # 바이럴 댓글은 '실제 다녀온 환자 후기' 톤(1인칭 방문·경험담)을 의도적으로 유지한다
         # (운영 결정 2026-06-19). 그래서 viral_comment 는 retry 시 1인칭 치료 경험 제거를
@@ -273,7 +281,10 @@ def ai_generate_korean(
             )
             codex.record_codex_call("ai_generate_korean_retry", result, retry_prompt)
             text = result.text
-            screen = _screen_korean_text(text, prompt, call_site=call_site, retry_count=1)
+            screen = _screen_korean_text(
+                text, prompt, call_site=call_site, retry_count=1,
+                allow_first_person_experience=(task == "viral_comment"),
+            )
         except Exception as exc:
             logger.error("[Codex CLI] Korean compliance retry failed: %s", exc)
             return _codex_error_message(exc)

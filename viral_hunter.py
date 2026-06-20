@@ -56,6 +56,11 @@ from core_services.viral_seed_builder import (
 )
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
+from core_services.semantic_axis_matcher import SemanticAxisMatcher, semantic_discovery_enabled
+
+# 의미기반 진료축 매처 싱글톤 — 기본은 비활성(opt-in env + 모델 필요)이라 no-op.
+# 테스트는 이 전역을 주입형 fake 매처로 교체해 모델 없이 의미 구제를 검증한다.
+_SEMANTIC_AXIS_MATCHER = SemanticAxisMatcher()
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -301,6 +306,16 @@ def _ai_target_sort_key(target: "ViralTarget") -> Tuple[float, float, float, flo
     )
 
 
+def _ai_target_venue_key(target: "ViralTarget") -> str:
+    """카페/블로거 venue 식별자(author). KIN(author='')·미상은 캡 제외 — 읽기 큐의
+    `_venue_diversity_key` 와 동일 규칙(공급자-venue 게이트 의도적 제외와 일관)."""
+    author = str(getattr(target, "author", "") or "").strip().lower()
+    platform = str(getattr(target, "platform", "") or "").lower()
+    if not author or platform in {"kin", "naver_kin"}:
+        return ""
+    return author
+
+
 def _select_category_floor_targets(
     targets: List["ViralTarget"],
     *,
@@ -419,14 +434,41 @@ def split_ai_targets_with_category_floor(
             if len(selected) >= top_n:
                 break
 
-    for target in sorted(targets, key=_ai_target_sort_key, reverse=True):
+    # 잔여 AI 예산 채우기 — venue(카페/블로거) 다양성 선호. 카테고리 플로어(축 보장)는
+    # 위에서 이미 확정됐고, 잔여 채움이 순수 점수순이면 한 메가카페가 AI 예산을 독점해
+    # pending 풀 자체가 한 venue 로 쏠린다(라이브: cafe pending ~50%가 상위 2개 카페).
+    # pass1 은 venue 캡을 선호하되, pass2 로 예산을 굶기지 않게 보충한다 — 읽기 큐의
+    # 하드 캡과 달리 발견 풀 활용/AI 예산 소진이 우선이다(과도한 한-venue 작업은 읽기
+    # 큐의 venue 캡이 막는다). KIN(author='')은 캡 제외.
+    ranked_rest = sorted(targets, key=_ai_target_sort_key, reverse=True)
+    venue_counts: Dict[str, int] = {}
+    for target in selected:
+        vk = _ai_target_venue_key(target)
+        if vk:
+            venue_counts[vk] = venue_counts.get(vk, 0) + 1
+    ai_venue_cap = max(3, math.ceil(top_n * 0.15))
+    for target in ranked_rest:
         if len(selected) >= top_n:
             break
         url = target.url or target.id
         if url in selected_urls:
             continue
+        vk = _ai_target_venue_key(target)
+        if vk and venue_counts.get(vk, 0) >= ai_venue_cap:
+            continue
         selected.append(target)
         selected_urls.add(url)
+        if vk:
+            venue_counts[vk] = venue_counts.get(vk, 0) + 1
+    if len(selected) < top_n:
+        for target in ranked_rest:
+            if len(selected) >= top_n:
+                break
+            url = target.url or target.id
+            if url in selected_urls:
+                continue
+            selected.append(target)
+            selected_urls.add(url)
 
     selected.sort(key=_ai_target_sort_key, reverse=True)
     rest = [target for target in targets if (target.url or target.id) not in selected_urls]
@@ -1952,6 +1994,19 @@ class CommentableFilter:
 
     CONDITION_TERMS = [
         "여드름", "흉터", "후유증", "비만", "체중", "통증", "불면", "두통", "아토피",
+    ]
+
+    # 1인칭 환자 경험담(직접 받아본 후기) 표지. 규림 바이럴 댓글은 '저도 다녀왔는데 좋았어요'
+    # 톤의 또래 경험 공유이므로, 질문/결정 의도가 없더라도 진짜 경험 공유 글은 댓글을 달
+    # 좋은 대상이다. 단독으로 의도 점수를 주지 않고 반드시 진료축 앵커와 함께만 가산한다
+    # (flat global prior 금지 — per-axis 증거).
+    FIRST_PERSON_EXPERIENCE_PATTERNS = [
+        "내돈내산",
+        "다녀왔", "다녀온", "다녔는데", "다녔어",
+        "받아봤", "받았는데", "받았어요", "받고나서", "받은 후", "받은후",
+        "치료받았", "치료했어", "맞아봤", "맞았어", "먹어봤", "해봤어", "해봤는데",
+        "효과 봤", "효과봤", "효과 좋았", "효과좋았", "후기 남겨", "후기남겨",
+        "후기 올려", "경험담", "성공후기", "성공 후기",
     ]
 
     COMPARISON_EVALUATION_PATTERNS = [
@@ -3872,6 +3927,17 @@ class CommentableFilter:
         )
         high_intent = service_intent or problem_intent
 
+        # 또래 경험담 기회: 1인칭 경험 공유 글(다녀왔/받아봤/효과 봤 + 진료축 앵커)은
+        # 질문/결정 의도가 없어도 '저도 다녀왔는데...' 댓글이 자연스럽게 붙는 좋은 대상이다.
+        # 진료축 앵커(증상어 OR 도메인)와 함께만 인정해 flat prior 가 되지 않게 한다.
+        first_person_experience = (
+            cls._contains_any(user_text, cls.FIRST_PERSON_EXPERIENCE_PATTERNS)
+            and (
+                cls._contains_any(user_text, cls.CONDITION_TERMS)
+                or (domain != "general" and cls._has_domain_anchor(domain, user_text))
+            )
+        )
+
         if recommendation_request:
             score += 32
             signals.append("recommendation_request")
@@ -3889,6 +3955,9 @@ class CommentableFilter:
         if comparison_eval:
             score += 12
             signals.append("comparison_or_evaluation")
+        if first_person_experience:
+            score += 12
+            signals.append("peer_experience_opportunity")
         if is_inquiry:
             score += 10
             signals.append("explicit_question")
@@ -3926,7 +3995,11 @@ class CommentableFilter:
         if (target.category or "").strip() in cls.GENERIC_CATEGORY_NAMES:
             score -= 8
             signals.append("generic_category")
-        if not high_intent and not (is_inquiry and cls._has_domain_anchor(domain, user_text)):
+        if (
+            not high_intent
+            and not (is_inquiry and cls._has_domain_anchor(domain, user_text))
+            and not first_person_experience
+        ):
             score -= 12
             signals.append("no_clear_need")
 
@@ -4783,8 +4856,18 @@ class CommentableFilter:
             ["내돈내산", "성공후기", "성공 후기", "다이어트후기", "다이어트 후기", "감량 후기"],
         ) or bool(re.search(r"\d+\s*(?:kg|키로|킬로).{0,20}(?:성공|후기|감량|빠졌)", text))
         if diet_provider_context and diet_testimonial_marker and not strong_inquiry:
-            signals.append("diet_testimonial_promo")
-            score += 5
+            # 1인칭 환자 본인 후기('제가/저는 ... 받았어요')이면서 광고 보강신호(공급자
+            # 브랜드 카페·본문 CTA)가 없으면 광고가 아니라 또래 경험 공유 글일 확률이 높다 —
+            # 규림이 댓글을 달 대상이므로 광고 가산을 보류한다. 진짜 어드버토리얼은
+            # provider_venue_author(+7)/provider_cta_body(+5)가 이미 임계값을 넘긴다.
+            genuine_first_person = (
+                cls._contains_any(text, ["제가", "저는", "저도", "제 경험", "직접"])
+                and not provider_venue_author
+                and not provider_cta_body
+            )
+            if not genuine_first_person:
+                signals.append("diet_testimonial_promo")
+                score += 5
 
         medical_price_event_context = cls._contains_any(
             text,
@@ -5182,6 +5265,45 @@ class CommentableFilter:
         return False
 
     @classmethod
+    def _semantic_axis_rescue(cls, target: ViralTarget, *, text: str, category: str, domain: str) -> bool:
+        """어휘로는 진료축 mismatch 인 글을 의미 유사도(BGE-M3)로 구제할지 판정.
+
+        구어/패러프레이즈 환자글('얼굴 짝짝이'=안면비대칭, '팬자국/구덩이'=흉터)을 회수한다.
+        매처가 비활성(모델 부재/opt-in off)이면 즉시 False → 완전 no-op (어휘 동작 그대로).
+        진료축 어휘 불일치만 덮으며 region/광고/self/noise 게이트는 호출부에서 그대로 적용.
+        """
+        matcher = _SEMANTIC_AXIS_MATCHER
+        if matcher is None or not matcher.available():
+            return False
+        axis = (category or "").strip()
+        if not axis:
+            return False
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(axis)
+        if not profile:
+            return False
+        ref_terms = tuple(
+            dict.fromkeys(
+                tuple(getattr(profile, "core_tokens", ()) or ())
+                + tuple(getattr(profile, "category_terms", ()) or ())
+            )
+        )[:12]
+        if not ref_terms:
+            return False
+        user_text = (text or cls._user_need_text(target) or "").strip()
+        if not user_text:
+            return False
+        sim = matcher.similarity(user_text, ref_terms, ref_key=f"axis::{axis}")
+        if sim is None:
+            return False
+        rescued = bool(sim >= matcher.threshold)
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "semantic_axis_score": round(float(sim), 4),
+            "semantic_axis_rescue": rescued,
+        }
+        return rescued
+
+    @classmethod
     def _pathfinder_fit_reject_reason(
         cls,
         target: ViralTarget,
@@ -5246,11 +5368,28 @@ class CommentableFilter:
         ):
             return "source_context_mismatch"
 
+        # 의미기반 진료축 구제(BGE-M3): 어휘로는 mismatch 여도 글이 해당 축과 의미적으로
+        # 가까우면 구어/패러프레이즈 환자글('얼굴 짝짝이'=안면비대칭, '팬자국'=흉터)을 회수.
+        # mismatch 가 실제 발생할 때만 1회 계산(지연 평가·캐시) → 비활성 시 비용 0,
+        # 정상 통과글은 임베딩하지 않는다. axis 어휘 불일치만 덮고 noise/region/ad 는 위에서
+        # 이미 적용됨(정밀도 보존).
+        _sem_cache: Dict[str, bool] = {}
+
+        def _semantic_rescue() -> bool:
+            if "v" not in _sem_cache:
+                _sem_cache["v"] = cls._semantic_axis_rescue(
+                    target,
+                    text=cls._user_need_text(target),
+                    category=category,
+                    domain=domain,
+                )
+            return _sem_cache["v"]
+
         if category == "안면비대칭" or domain == "asymmetry":
             has_strong_axis_text = cls._contains_any(text, cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
-            if axis_tier == "mismatch" or (0.0 < axis_score < 55.0 and not has_strong_axis_text):
+            if (axis_tier == "mismatch" or (0.0 < axis_score < 55.0 and not has_strong_axis_text)) and not _semantic_rescue():
                 return "domain_mismatch"
-            if conversion_lens and axis_score and axis_score < 60.0:
+            if conversion_lens and axis_score and axis_score < 60.0 and not _semantic_rescue():
                 return "domain_mismatch"
 
         if category in {"체형교정", "리프팅/탄력", "교통사고"} or domain in {"body", "lifting", "traffic"}:
@@ -5262,18 +5401,18 @@ class CommentableFilter:
                 and community_rescue
                 and lens in {"review", "community", "consultation"}
             )
-            if axis_tier == "mismatch" and not axis_rescue:
+            if axis_tier == "mismatch" and not axis_rescue and not _semantic_rescue():
                 return "domain_mismatch"
-            if 0.0 < axis_score < 55.0 and not has_axis_anchor:
+            if 0.0 < axis_score < 55.0 and not has_axis_anchor and not _semantic_rescue():
                 return "domain_mismatch"
-            if guarded_lens and axis_score and axis_score < 60.0 and not axis_rescue:
+            if guarded_lens and axis_score and axis_score < 60.0 and not axis_rescue and not _semantic_rescue():
                 return "domain_mismatch"
 
         if category in {"흉터/여드름흉터", "피부/여드름"} or domain == "scar_skin":
             has_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
-            if axis_tier == "mismatch" and not has_axis_anchor:
+            if axis_tier == "mismatch" and not has_axis_anchor and not _semantic_rescue():
                 return "domain_mismatch"
-            if guarded_lens and axis_score and axis_score < 55.0 and not has_axis_anchor:
+            if guarded_lens and axis_score and axis_score < 55.0 and not has_axis_anchor and not _semantic_rescue():
                 return "domain_mismatch"
 
         return None
@@ -6198,6 +6337,16 @@ class CommentableFilter:
             f"작업효율낮음 {stats['low_worksite_efficiency']}, "
             f"Pathfinder불일치 {stats['pathfinder_mismatch']}]"
         )
+        # 디스커버리 정직성: 퍼널 거절 사유를 인스턴스에 누적해 영속 감사에서 가시화한다.
+        # (조용한 continue 거절도 stats 에 집계되지만 지금까지 로그로만 흘러가 사라졌다.)
+        cum = getattr(self, "cumulative_reject_stats", None)
+        if cum is None:
+            cum = {}
+            self.cumulative_reject_stats = cum
+        for _reason, _count in stats.items():
+            cum[_reason] = cum.get(_reason, 0) + int(_count)
+        self.filter_input_count = int(getattr(self, "filter_input_count", 0) or 0) + len(targets)
+        self.filter_survivor_count = int(getattr(self, "filter_survivor_count", 0) or 0) + len(filtered)
         return filtered
 
 
@@ -6221,6 +6370,18 @@ VIRAL_COMMENT_PHRASING_ANGLES = [
     "1~2문장으로 짧고 담백하게, 군더더기 수식어를 빼세요.",
     "지역·접근성 언급보다 상담 때 확인할 포인트를 먼저 자연스럽게 녹이세요.",
     "뻔한 공감 표현(예: 'ㅠㅠ 고민되시죠')은 피하고, 공감은 한 번만 자연스럽게 쓰세요.",
+]
+# 1인칭 경험담 프레임 자체가 매번 같은 구조('저도 ... 다녀왔는데 좋았어요')로 수렴하면
+# 네이버 조작후기 탐지 지문이 된다(1인칭을 켠 2026-06-21 이후 신규 리스크). 페르소나
+# (1인칭 환자 경험담·정식 명칭 규림한의원)는 유지하되, '시작 방식·전개 순서'만 회전해
+# 프레임 중복 지문을 줄인다.
+VIRAL_COMMENT_PERSONA_FRAMES = [
+    "1인칭 경험을 '저도 비슷한 고민으로 다녀왔던' 맥락으로 시작하세요.",
+    "1인칭 경험을 '저 갔을 때는 ~했어요' 식 담담한 회상 톤으로 쓰세요.",
+    "결론('좋았어요')부터 말하지 말고 '고민 → 방문 → 느낀 점' 순서로 풀어내세요.",
+    "1인칭 경험을 '저는 ~한 편이었는데' 식으로 단정 없이 표현하세요.",
+    "방문 경험은 길게 늘어놓지 말고 한 가지 인상만 짧게 언급하세요.",
+    "작성자 글의 구체적 단서에 먼저 반응한 뒤 1인칭 경험을 자연스럽게 녹이세요.",
 ]
 
 # AI 생성 실패/차단 sentinel 문자열. 이것이 댓글로 저장되면 (1) 직원이 "[AI] generation
@@ -6530,8 +6691,8 @@ class AICommentGenerator:
         clinic_name = "리커버의원" if GYULIM_KEYWORD_PROFILE.profile_key == "recover_gangnam" else "규림한의원"
         return f"""
 [필수 운영 원칙]
-- 댓글은 도움이 되는 정보성 답변이어야 하며 광고, 후기 가장, 잠입, 사칭처럼 보이면 안 됩니다.
-- 본인 또는 지인의 치료 경험, 방문 경험, 효과 경험을 지어내지 마세요.
+- 댓글은 도움이 되는 정보성·경험 공유 답변이어야 하며, 광고처럼 보이거나 업체 소속을 숨긴 잠입·사칭(이름을 가린 제3자 추천)처럼 보이면 안 됩니다.
+- '저도 {clinic_name} 다녀왔는데...' 같은 1인칭 방문·경험담 톤은 사용해도 되지만(정식 명칭 노출), 구체적 수치(몇 kg·며칠)·전후 결과·단정적 효과는 지어내지 마세요.
 - 병원/의원/한의원 이름을 숨기기 위해 초성, 은어, 모호한 표현을 쓰지 마세요.
 - {clinic_name}을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
 - 의료 효능 보장, 완치, 전후 비교, 최상급/비교 우위, 가격 유인, 이벤트성 문구를 쓰지 마세요.
@@ -6619,12 +6780,14 @@ class AICommentGenerator:
         seed = int(hashlib.md5(seed_src.encode("utf-8")).hexdigest(), 16) if seed_src else 0
         loc = VIRAL_COMMENT_LOCATION_VARIANTS[seed % len(VIRAL_COMMENT_LOCATION_VARIANTS)]
         angle = VIRAL_COMMENT_PHRASING_ANGLES[(seed // 7) % len(VIRAL_COMMENT_PHRASING_ANGLES)]
+        frame = VIRAL_COMMENT_PERSONA_FRAMES[(seed // 13) % len(VIRAL_COMMENT_PERSONA_FRAMES)]
         banned = ", ".join(f'"{p}"' for p in VIRAL_COMMENT_OVERUSED_PHRASES)
         return (
             "\n[표현 변주 — 댓글 간 중복/스팸지문 방지]\n"
             f"- 다음 상투구는 그대로 반복하지 말고 매번 다른 말로 표현하세요: {banned}.\n"
             f"- 규림한의원 위치를 언급한다면 이번엔 '{loc}' 식으로 표현하세요(매번 같은 지역어 반복 금지).\n"
             f"- {angle}\n"
+            f"- 1인칭 경험담 시작 방식 변주: {frame} (단, 정식 명칭 '규림한의원'은 유지)\n"
         )
 
     @staticmethod
@@ -6677,7 +6840,7 @@ class AICommentGenerator:
 [댓글 작성 가이드]
 1. 작성자 고민에 먼저 공감하고, 확인하면 좋은 기준을 한 가지만 알려주세요.
 2. 규림한의원을 언급할 때는 정식 명칭을 쓰고 소속을 숨긴 추천처럼 쓰지 마세요.
-3. 본인·가족·지인의 경험담이나 치료 효과를 꾸며내지 마세요.
+3. '저도 규림한의원 다녀왔는데...' 같은 1인칭 방문 경험담 톤은 괜찮지만, 구체 수치·전후 결과·단정 효과는 꾸며내지 마세요.
 4. 효과를 단정하지 말고 가능성 표현으로 1~2문장만 작성하세요.
 
 댓글:"""
@@ -7500,6 +7663,20 @@ class ViralHunter:
         "체형교정",
         "리프팅/탄력",
         "교통사고",
+    }
+
+    # 의미기반 발견 2단계(구어 쿼리 확장): 환자가 임상어 없이 쓰는 구어/패러프레이즈로
+    # Naver 가 구어 환자글을 애초에 반환하도록 쿼리를 넓힌다('얼굴 짝짝이'=안면비대칭).
+    # 시드당 +1 슬롯으로 순환 추가되고 변형 yield 게이트가 자기조절(무수율 시 폐기)하므로
+    # 노이즈는 자동 가지치기된다. opt-in(MARKETING_BOT_SEMANTIC_DISCOVERY) — 사용자가
+    # 진료축 구어 어휘를 직접 확장/검수할 수 있도록 여기 단일 지점에 둔다.
+    COLLOQUIAL_AXIS_TERMS: Dict[str, Tuple[str, ...]] = {
+        "안면비대칭": ("얼굴 짝짝이", "얼굴 비뚤어짐", "턱 틀어짐", "얼굴 좌우 비대칭"),
+        "흉터/여드름흉터": ("여드름 자국", "얼굴 팬자국", "피부 구덩이", "여드름 흉터 자국"),
+        "피부/여드름": ("얼굴 트러블", "성인 여드름 고민", "피부 뒤집어짐"),
+        "다이어트": ("살이 안빠져요", "뱃살 빼는 법", "체중 안줄어"),
+        "체형교정": ("자세 틀어짐", "골반 틀어짐", "어깨 비대칭"),
+        "리프팅/탄력": ("얼굴 처짐", "피부 탄력 저하", "팔자주름 고민"),
     }
 
     def __init__(self):
@@ -8476,6 +8653,16 @@ class ViralHunter:
             if pv_compact and all(pv_compact != self._compact_query_text(item["query"]) for item in variants):
                 variants.append(patient_voice)
 
+        # 의미기반 발견 2단계: 구어/패러프레이즈 쿼리 +1 슬롯(opt-in). Naver 가 임상어 없는
+        # 구어 환자글을 반환하도록 넓힌다. 변형 yield 게이트가 자기조절하므로 무수율 표현은
+        # 다음 런부터 자동 폐기된다(매칭측 의미 구제와 시너지 — 끌어온 구어글이 어휘 게이트에
+        # 다시 안 잘린다).
+        if semantic_discovery_enabled():
+            for colloquial in self._colloquial_query_variants(keyword, category, core_query):
+                cq_compact = self._compact_query_text(colloquial["query"])
+                if cq_compact and all(cq_compact != self._compact_query_text(item["query"]) for item in variants):
+                    variants.append(colloquial)
+
         # 변형 수율 게이트 — 누적 증거로 제로수율이 증명된 동반 변형은 보내지 않는다.
         # 기준(base/community_base) 변형은 절대 끄지 않는다.
         history = self._load_variant_yield_history()
@@ -8570,6 +8757,35 @@ class ViralHunter:
             merged["pathfinder_source_keyword"] = source_keyword
             merged["pathfinder_query_variant"] = query_variant
         self.keyword_context[query] = merged
+
+    @staticmethod
+    def _colloquial_query_variants(keyword: str, category: str, core_query: str) -> List[Dict[str, Any]]:
+        """구어/패러프레이즈 환자 표현으로 1개 지역 앵커 쿼리 생성(의미기반 발견 2단계).
+
+        시드별로 구어 표현을 순환 선택 → 시드 포트폴리오 전체에서 모든 구어 변형을 커버하되
+        시드당 +1 쿼리로 비용을 묶는다. 반환 변형은 `colloquial:` 로 명명돼 변형 yield
+        게이트가 추적/자기조절한다(무수율 시 폐기). 진료축에 구어 어휘가 없으면 빈 리스트.
+        """
+        terms = ViralHunter.COLLOQUIAL_AXIS_TERMS.get(category)
+        if not terms:
+            return []
+        region = str(getattr(GYULIM_KEYWORD_PROFILE, "primary_region", "청주") or "청주").strip()
+        core_compact = ViralHunter._compact_query_text(core_query)
+        # 결정적 시드 회전(파이썬 hash 는 런마다 솔트되므로 안정적 합 사용).
+        rotate = sum(ord(ch) for ch in (keyword or ""))
+        n = len(terms)
+        for i in range(n):
+            term = terms[(rotate + i) % n]
+            term_compact = ViralHunter._compact_query_text(term)
+            if not term_compact or term_compact in core_compact:
+                continue
+            query = f"{region} {term}".strip() if region else term
+            return [{
+                "query": query,
+                "variant": f"colloquial:{term.replace(' ', '')}",
+                "source_keyword": keyword,
+            }]
+        return []
 
     @staticmethod
     def _axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
@@ -9259,6 +9475,12 @@ class ViralHunter:
             }
             stats["enriched"] += 1
 
+        # enrichment 으로 실제 참여 지표(comment/view)가 밝혀진 타겟은 worksite 포화/미답변
+        # 신호를 실제 수치로 보정한다 — 선택 시점엔 0이라 死코드였다(no-op when counts=0).
+        for target in ai_targets:
+            if self._resaturate_worksite_after_enrichment(target):
+                stats["worksite_resaturated"] = stats.get("worksite_resaturated", 0) + 1
+
         # 보강된 타겟만 게이트 재검사 — 미보강 타겟은 같은 증거로 이미 통과했다.
         # KIN [기존답변] 분리는 final_reject_reason 본체가 모든 호출 경로에서
         # 일관되게 수행한다 (여기서 별도 분리하지 않는다).
@@ -9355,6 +9577,76 @@ class ViralHunter:
         ]
         ai_targets.sort(key=_ai_target_sort_key, reverse=True)
         return ai_targets, remaining_rest, stats
+
+    @staticmethod
+    def _resaturate_worksite_after_enrichment(target: ViralTarget) -> bool:
+        """enrichment 으로 실제 comment_count/view_count 가 밝혀진 뒤, 선택 시점엔 0으로
+        계산돼 死코드였던 worksite '미답변/포화' 신호를 실제 수치로 보정한다.
+
+        선택 게이트에서는 모든 글이 comment_count=0 → unanswered_thread(+16)을 받아
+        포화(답변 多)·미답변 스레드가 동일 점수였다(라이브: 골든큐 노후/포화 오염, 0건
+        최근발견). worksite_efficiency_score 는 골든큐 1차 정렬키이므로 보정 가치가 크다.
+        같은 인자로 (실수치) vs (0) 두 번 호출해 count 기여분 델타만 정확히 떼어
+        점수·priority 에 반영한다 — count 분기가 standalone 이라 다른 항은 상쇄돼 인자
+        복원 불완전성과 무관하게 정확하다. 포화 스레드는 정렬 하향 + priority 컷(>=80)
+        탈락이 가능해진다. 반환값=보정 적용 여부(테스트/감사용).
+        """
+        breakdown = target.score_breakdown or {}
+        if "worksite_efficiency_score" not in breakdown:
+            return False
+        if breakdown.get("worksite_saturation_regated_after_enrichment"):
+            return False  # 재실행(refill 경로) 중복 적용 방지
+        real_cc = max(0, int(getattr(target, "comment_count", 0) or 0))
+        real_vc = max(0, int(getattr(target, "view_count", 0) or 0))
+        if real_cc == 0 and real_vc == 0:
+            return False  # 밝혀진 참여 지표 없음 → 선택 시점과 동일, 보정 불필요
+
+        def _csv(key: str) -> List[str]:
+            return [s for s in str(breakdown.get(key, "") or "").split(",") if s]
+
+        def _ival(key: str) -> int:
+            try:
+                return int(float(breakdown.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        args = (
+            _ival("clinic_treatment_fit_score"),
+            _ival("viral_need_score"),
+            _csv("viral_need_signals"),
+            _ival("reply_opportunity_score"),
+            _csv("reply_opportunity_signals"),
+            _ival("timing_window_score"),
+            _csv("timing_window_signals"),
+            _ival("journey_fit_score"),
+            str(breakdown.get("journey_stage", "") or ""),
+            _ival("qualification_fit_score"),
+            _csv("reply_risk_flags"),
+        )
+        real_score = CommentableFilter._assess_worksite_efficiency(target, *args)[0]
+        orig_cc, orig_vc = getattr(target, "comment_count", 0), getattr(target, "view_count", 0)
+        target.comment_count, target.view_count = 0, 0
+        try:
+            zero_score = CommentableFilter._assess_worksite_efficiency(target, *args)[0]
+        finally:
+            target.comment_count, target.view_count = orig_cc, orig_vc
+
+        delta = float(real_score) - float(zero_score)
+        old_wk = float(breakdown.get("worksite_efficiency_score", 0) or 0)
+        old_adj = float(breakdown.get("worksite_efficiency_adjustment", 0) or 0)
+        new_wk = old_wk + delta
+        # priority 합성과 동일한 공식(filter): clamp((wk-55)*0.35, -20, 20)
+        new_adj = max(-20.0, min(20.0, (new_wk - 55.0) * 0.35))
+        target.priority_score = max(
+            0.0, float(getattr(target, "priority_score", 0) or 0) + (new_adj - old_adj)
+        )
+        target.score_breakdown = {
+            **breakdown,
+            "worksite_efficiency_score": new_wk,
+            "worksite_efficiency_adjustment": new_adj,
+            "worksite_saturation_regated_after_enrichment": True,
+        }
+        return True
 
     @staticmethod
     def _timing_regate_keep(target: ViralTarget) -> bool:
@@ -9586,6 +9878,11 @@ class ViralHunter:
             per_category_lens_variant: Dict[str, Dict[str, int]] = {}
             per_structure: Dict[str, Dict[str, int]] = {}
             per_seed: Dict[str, Dict[str, int]] = {}
+            # 축별×거절사유 퍼널 분해 — '어느 진료축이 어느 사유로 발견을 잃는가'를 상시
+            # 측정해 수동 SQL 포렌식을 시스템 역량으로 만든다(예: 흉터가 region_mismatch
+            # 31%·off_domain 29% 로 잃음 → 게이트 버그가 아니라 로컬 키워드 검색의 본질,
+            # 또는 안면비대칭이 domain_mismatch 로 잃으면 의미 구제 enable 신호).
+            per_category_reject_reason: Dict[str, Dict[str, int]] = {}
             for row in rows:
                 try:
                     breakdown = json.loads(row['score_breakdown'] or '{}')
@@ -9648,6 +9945,13 @@ class ViralHunter:
                             entry['rediscovered_pending'] += 1
                     if rediscovered_current:
                         entry['rediscovered'] += 1
+
+                if status_text.startswith('filtered_out'):
+                    reason = str(breakdown.get('final_reject_reason') or '').strip()
+                    if not reason:
+                        reason = status_text[len('filtered_out'):].lstrip('_') or '(unspecified)'
+                    cat_reasons = per_category_reject_reason.setdefault(category, {})
+                    cat_reasons[reason] = cat_reasons.get(reason, 0) + 1
 
             discovered_total = sum(e['discovered'] for e in per_category.values())
             fresh_total = sum(e['fresh_discovered'] for e in per_category.values())
@@ -9739,6 +10043,33 @@ class ViralHunter:
                 'by_category': focus_axis_rows,
             }
 
+            # 디스커버리 정직성: 지금까지 stdout 으로만 흘러가 사라지던 "조용한 경계"
+            # (퍼널 거절 사유·변형/플랫폼/구조 수율 차단·키워드 한도 절단)을 영속화해
+            # 다음 탐색 패스가 "무엇을 발견조차 못 했는지"를 질의할 수 있게 한다.
+            filter_obj = getattr(self, "filter", None)
+            funnel_rejections = {
+                reason: int(count)
+                for reason, count in (getattr(filter_obj, "cumulative_reject_stats", {}) or {}).items()
+                if int(count or 0) > 0
+            }
+            filter_input_count = int(getattr(filter_obj, "filter_input_count", 0) or 0)
+            filter_survivor_count = int(getattr(filter_obj, "filter_survivor_count", 0) or 0)
+            funnel_rejected_total = sum(funnel_rejections.values())
+            coverage_bounds = {
+                'funnel_rejections': funnel_rejections,
+                'funnel_rejected_total': funnel_rejected_total,
+                'filter_input_count': filter_input_count,
+                'filter_survivor_count': filter_survivor_count,
+                'filter_survival_rate': (filter_survivor_count / filter_input_count) if filter_input_count else 0.0,
+                'variant_yield_drops': {k: int(v) for k, v in (getattr(self, "_variant_drop_counts", {}) or {}).items()},
+                'platform_yield_drops': {k: int(v) for k, v in (getattr(self, "_platform_drop_counts", {}) or {}).items()},
+                'structure_blocked': {
+                    k: int(v)
+                    for k, v in (getattr(getattr(self, "seed_builder", None), "_structure_blocked_buckets", {}) or {}).items()
+                },
+                'keyword_limit_dropped': int(getattr(self, "_keyword_limit_dropped", 0) or 0),
+            }
+
             audit: Dict[str, Any] = {
                 'summary': {
                     'discovered': discovered_total,
@@ -9766,12 +10097,14 @@ class ViralHunter:
                 'per_category_lens': per_category_lens,
                 'per_category_lens_query_variant': per_category_lens_variant,
                 'per_structure': per_structure,
+                'per_category_reject_reason': per_category_reject_reason,
                 'zero_yield_seeds': zero_yield_seeds,
                 'focus_axis_coverage': focus_axis_coverage,
                 'category_demand': {
                     'adjustments': getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {},
                     'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
                 },
+                'coverage_bounds': coverage_bounds,
             }
 
             conn.execute(
@@ -9880,8 +10213,10 @@ class ViralHunter:
             boost_lenses=boost_lenses,
         )
 
+        keyword_total_before_limit = len(keywords)
         if limit_keywords:
             keywords = keywords[:limit_keywords]
+        self._keyword_limit_dropped = max(0, keyword_total_before_limit - len(keywords))
 
         self._load_keyword_context(keywords)
 
@@ -9896,6 +10231,11 @@ class ViralHunter:
         # 해시 계산이 플랜을 한 번 더 생성하므로 차단 집계는 검색 패스 기준으로 리셋
         self._variant_drop_counts = {}
         self._platform_drop_counts = {}
+        # 퍼널 거절 누적도 런 단위로 리셋 (같은 헌터 객체 재사용 시 직전 런 누수 방지).
+        if getattr(self, "filter", None) is not None:
+            self.filter.cumulative_reject_stats = {}
+            self.filter.filter_input_count = 0
+            self.filter.filter_survivor_count = 0
 
         # 체크포인트 복원
         all_targets: List[ViralTarget] = []

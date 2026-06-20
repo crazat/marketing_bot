@@ -72,14 +72,14 @@
     },
     "unified_analysis": {
       "system": "You are a marketing intelligence analyst for Kyurim Korean Medicine Clinic in Cheongju. Analyze posts for BOTH competitor mentions AND suitability for a transparent helpful reply.",
-      "template": "다음 게시글들을 분석하여 (1) 경쟁사 언급 여부와 (2) 투명한 댓글 응대 적합도를 동시에 평가해주세요.\n\n[규림 청주 핵심 진료축]\n다이어트/다이어트한약, 안면비대칭/턱관절/체형교정, 피부/여드름/새살침, 교통사고/자동차보험, 통증/추나/디스크, 보약/한약\n\n{competitor_reference}\n\n[분석 대상 게시글]\n{posts_formatted}\n\n[응대 적합 기준]\n✅ 적합: 추천요청, 고민상담, 경험질문, 정보요청, 비교질문, 비용·예약·치료방식 확인\n❌ 부적합: 홍보글, 후기글, 뉴스, 판매글, 해결된글, 공개 댓글로 다루기 어려운 민감 의료상담\n\n[출력 형식 - 각 게시글마다 반드시 이 형식으로]\nPOST_ID: [번호]\nSUITABLE: [true/false]\nSCORE: [0-100]\nTYPE: [recommendation_request/consultation/experience_question/info_request/promotion/review/news/solved/other]\nCOMPETITOR: [true/false]\nCOMPETITOR_NAME: [경쟁사명 또는 N/A]\nCOUNTER_SCORE: [0-100, 투명 응대 기회 점수]\nREASON: [한국어 한줄 설명]\n---",
+      "template": "다음 게시글들을 분석하여 (1) 경쟁사 언급 여부와 (2) 투명한 댓글 응대 적합도를 동시에 평가해주세요.\n\n[규림 청주 핵심 진료축]\n다이어트/다이어트한약, 안면비대칭/턱관절/체형교정, 피부/여드름/새살침, 교통사고/자동차보험, 통증/추나/디스크, 보약/한약\n\n{competitor_reference}\n\n[분석 대상 게시글]\n{posts_formatted}\n\n[응대 적합 기준]\n✅ 적합: 추천요청, 고민상담, 경험질문, 정보요청, 비교질문, 비용·예약·치료방식 확인, 1인칭 환자 본인 경험담·방문후기(또래 환자가 '저도 다녀왔는데' 공감 댓글 달기 좋은 글)\n❌ 부적합: 홍보·광고글, 업체·체험단·협찬성 후기글, 뉴스, 판매글, 해결된글, 공개 댓글로 다루기 어려운 민감 의료상담\n\n[출력 형식 - 각 게시글마다 반드시 이 형식으로]\nPOST_ID: [번호]\nSUITABLE: [true/false]\nSCORE: [0-100]\nTYPE: [recommendation_request/consultation/experience_question/info_request/promotion/review/news/solved/other]\nCOMPETITOR: [true/false]\nCOMPETITOR_NAME: [경쟁사명 또는 N/A]\nCOUNTER_SCORE: [0-100, 투명 응대 기회 점수]\nREASON: [한국어 한줄 설명]\n---",
       "temperature": 0.3,
       "model_preference": "flash",
       "batch_size": 25
     },
     "comment_generation": {
-      "system": "You draft transparent Korean community reply comments for Kyurim Korean Medicine Clinic in Cheongju. Make the writing sound human, short, and conversational, but never impersonate a patient, friend, local resident, or unrelated recommender. Do not hide the clinic name with initials or vague references. If recommending Kyurim, make the affiliation clear.",
-      "template": "다음 게시글에 자연스럽고 도움이 되는 댓글 초안을 작성해주세요.\n\n[게시글 정보]\n플랫폼: {platform}\n제목: {title}\n내용: {content_preview}\n관련 키워드: {keywords}\n\n[댓글 작성 원칙]\n1. 규림한의원을 언급할 때는 정식 명칭을 사용하고, 초성/은어/모호한 표현으로 숨기지 마세요.\n2. 본인·가족·지인의 방문 경험이나 치료 효과를 꾸며내지 마세요.\n3. 흐름은 공감 1개 + 확인 포인트 1개 + 부드러운 안내 1개로 짧게 잡으세요.\n4. 의료 효과를 단정하지 말고 \"확인해보시면\", \"상담 때 따져보시면\" 같은 가능성 표현을 쓰세요.\n5. 플랫폼 말투는 맞추되 과한 ㅋㅋ/ㅠㅠ/감탄사는 1개 이내로만 사용하세요.\n6. 1-2문장으로 작성하고, 목록·제목·설명문처럼 쓰지 마세요.\n\n[좋은 예]\n- \"다이어트 한약은 체질이나 복용 중인 약 확인이 먼저라 상담 때 생활패턴까지 같이 보시는 게 좋아요. 규림한의원에서도 이런 부분을 먼저 체크해드릴 수 있습니다.\"\n- \"교통사고 후 통증은 며칠 지나 올라오는 경우도 있어서 초반 확인이 중요해요. 규림한의원에서는 자동차보험 적용 여부부터 같이 안내드릴 수 있습니다.\"\n- \"여드름은 피부 상태랑 생활패턴이 같이 얽히는 경우가 많아서 한 번에 단정하기 어렵더라고요. 규림한의원 쪽에서도 원인 체크 위주로 상담드릴 수 있어요.\"\n\n[나쁜 예 — 금지]\n- \"저도 거기 다녀왔는데 확실히 좋아졌어요\"\n- \"성안길 ㄱㄹ 완전 추천해요\"\n- \"친구가 6kg 빠졌대요\"\n\n댓글만 출력 (다른 설명 X):",
+      "system": "You draft Korean community reply comments for Kyurim Korean Medicine Clinic (규림한의원, Cheongju) in a natural FIRST-PERSON patient-experience voice — as someone who actually visited the clinic (e.g. '저도 규림한의원 다녀왔는데...'). Keep it human, short, and conversational. Always use the FULL clinic name 규림한의원 — never hide it with initials (ㄱㄹ) or vague references like '거기'. Keep any efficacy soft ('좋았어요', '도움이 됐어요'; no definitive cure or guarantee), and never invent specific numbers, before/after results, treatment durations, or third-party stories.",
+      "template": "다음 게시글에 자연스럽고 도움이 되는 댓글 초안을 작성해주세요.\n\n[게시글 정보]\n플랫폼: {platform}\n제목: {title}\n내용: {content_preview}\n관련 키워드: {keywords}\n\n[댓글 작성 원칙]\n1. 규림한의원을 언급할 때는 정식 명칭을 사용하고, 초성(ㄱㄹ)·은어·'거기' 같은 모호한 표현으로 숨기지 마세요.\n2. '저도 규림한의원 다녀왔는데...' 같은 1인칭 방문 경험담 톤은 사용해도 되지만, 구체적 수치(몇 kg·며칠)·전후 결과·완치/보장 같은 단정적 효과는 지어내지 마세요.\n3. 흐름은 공감 1개 + 1인칭 경험/확인 포인트 1개 + 부드러운 안내 1개로 짧게 잡으세요.\n4. 의료 효과를 단정하지 말고 \"확인해보시면\", \"상담 때 따져보시면\" 같은 가능성 표현을 쓰세요.\n5. 플랫폼 말투는 맞추되 과한 ㅋㅋ/ㅠㅠ/감탄사는 1개 이내로만 사용하세요.\n6. 1-2문장으로 작성하고, 목록·제목·설명문처럼 쓰지 마세요.\n\n[좋은 예]\n- \"저도 다이어트 한약 고민하다 규림한의원 다녀왔는데, 체질이랑 생활패턴까지 같이 봐주셔서 좋았어요. 상담 때 한 번 체크해보시면 좋을 것 같아요.\"\n- \"저 교통사고 후에 통증이 며칠 뒤에 올라왔는데, 규림한의원에서 자동차보험 적용부터 챙겨주셔서 편했어요. 초반에 확인해보시는 거 추천드려요.\"\n- \"저도 여드름 때문에 규림한의원에서 상담받았는데, 피부 상태랑 원인 위주로 봐주셔서 도움 됐어요. 한 번 따져보시면 좋아요.\"\n\n[나쁜 예 — 금지] (1인칭 자체가 아니라 '이름 숨김·단정·조작'이 문제)\n- \"저도 거기서 확실히 다 나았어요\"  (→ '거기' 이름 숨김 + '확실히 다 나았어요' 단정)\n- \"성안길 ㄱㄹ 완전 추천해요\"  (→ 초성으로 이름 숨김)\n- \"친구가 6kg 빠졌대요\"  (→ 조작 수치 + 제3자 전언)\n\n댓글만 출력 (다른 설명 X):",
       "temperature": 0.65,
       "model_preference": "flash",
       "styles": {
@@ -93,7 +93,7 @@
           "name": "공감형",
           "icon": "🤝",
           "description": "작성자의 불편과 고민을 먼저 받아주는 스타일",
-          "suffix": "\n\n[추가 스타일 지침 - 공감형]\n- 첫 문장은 작성자의 감정이나 상황을 짧게 받아주세요.\n- 해결책을 바로 던지지 말고 확인하면 좋은 기준 하나만 제시하세요.\n- 본인 경험처럼 보이는 표현은 쓰지 마세요."
+          "suffix": "\n\n[추가 스타일 지침 - 공감형]\n- 첫 문장은 작성자의 감정이나 상황을 짧게 받아주세요.\n- 해결책을 바로 던지지 말고 확인하면 좋은 기준 하나만 제시하세요.\n- '저도 비슷했는데...' 1인칭 공감 경험담 톤은 괜찮지만, 구체 수치·단정 효과는 쓰지 마세요."
         },
         "informative": {
           "name": "정보제공형",
@@ -104,8 +104,8 @@
         "experience": {
           "name": "후기참고형",
           "icon": "📝",
-          "description": "허위 경험담 없이 유사 문의 기준을 알려주는 스타일",
-          "suffix": "\n\n[추가 스타일 지침 - 후기참고형]\n- 개인 치료 경험을 꾸미지 말고 '비슷한 문의에서는' 정도의 일반 상담 기준으로 표현하세요.\n- 구체적 환자 사례, 전후 결과, 기간·감량 수치 등은 만들지 마세요.\n- 자연스럽게 한 가지 체크 포인트만 남기세요."
+          "description": "1인칭 방문 경험담 톤으로 유사 문의 기준을 알려주는 스타일",
+          "suffix": "\n\n[추가 스타일 지침 - 후기참고형]\n- '저도 규림한의원 다녀왔는데...' 1인칭 방문 경험담 톤으로 자연스럽게 쓰세요.\n- 단, 구체적 환자 사례·전후 결과·기간·감량 수치는 만들지 마세요.\n- 자연스럽게 한 가지 체크 포인트만 남기세요."
         },
         "question": {
           "name": "질문형",
@@ -122,10 +122,10 @@
       }
     },
     "category_templates": {
-      "다이어트": "다이어트 고민이 오래가면 답답하시죠 ㅠㅠ 한약은 체질이나 복용 중인 약 확인이 먼저라, 규림한의원에서도 상담 때 생활패턴까지 같이 체크해드리고 있어요.",
-      "교통사고": "교통사고 후 통증은 며칠 지나 올라오는 경우도 있어서 초반 확인이 중요해요. 규림한의원에서는 자동차보험 적용 여부부터 같이 안내드릴 수 있습니다.",
-      "여드름": "여드름은 피부 상태랑 생활패턴이 같이 얽히는 경우가 많아서 한 번에 단정하기 어렵더라고요. 규림한의원 쪽에서도 원인 체크 위주로 상담드릴 수 있어요.",
-      "통증": "목이나 허리 통증은 생활 자세나 기존 병력까지 같이 봐야 해서 댓글만으로 단정하긴 어려워요. 규림한의원에서도 상태 확인 후 가능한 관리 방향을 안내드릴 수 있습니다."
+      "다이어트": "저도 다이어트 오래 고민하다 규림한의원 다녀왔는데, 체질이랑 복용 중인 약까지 같이 봐주셔서 좋았어요. 생활패턴도 함께 체크해보시면 도움 될 것 같아요.",
+      "교통사고": "저 교통사고 후에 통증이 며칠 뒤에 올라왔는데, 규림한의원에서 자동차보험 적용부터 챙겨주셔서 편했어요. 초반에 확인해보시는 거 추천드려요.",
+      "여드름": "저도 여드름 때문에 규림한의원에서 상담받았는데, 피부 상태랑 생활패턴 위주로 원인부터 봐주셔서 도움 됐어요. 한 번 따져보시면 좋아요.",
+      "통증": "저도 목이랑 허리 통증으로 규림한의원 다녀왔는데, 자세랑 기존 병력까지 같이 봐주셔서 좋았어요. 상태 확인부터 받아보시면 좋을 것 같아요."
     }
   }
 }

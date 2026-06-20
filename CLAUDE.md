@@ -153,7 +153,7 @@ C:\Projects\marketing_bot\
 ├── repositories/
 │   └── viral_target_repo.py    # viral_targets 레포지토리
 ├── tests/
-│   ├── test_pathfinder_viral_stability.py  # 현재 523 passed, 1 skipped
+│   ├── test_pathfinder_viral_stability.py  # 현재 552 passed, 1 skipped
 │   └── test_router_smoke.py
 └── scripts/
     ├── recanonicalize_viral_categories.py  # 카테고리 재정규화 (1회성 마이그레이션)
@@ -238,10 +238,27 @@ from openai import OpenAI             # X - 사용 안 함
 
 ---
 
-## 현재 시스템 상태 요약 (2026-06-19 기준)
+## 현재 시스템 상태 요약 (2026-06-21 기준)
 
 **브랜치**: `codex/pathfinder-discovery-audit`
-**테스트**: `pytest tests` → 523 passed, 1 skipped
+**테스트**: `pytest tests` → 552 passed, 1 skipped
+
+### 2026-06-20~21: 바이럴 발견 시스템 심층검토 + 13개 개선 (discovery review + 1인칭 정책 end-to-end 완성)
+
+> 상세: memory `project_viral_discovery_review_2026_06_20.md`. 발견 퍼널 핵심 메커니즘은 견고함을 확인(실데이터 포렌식); 개선은 관측성·정밀도·1인칭 정책 일관성에 집중.
+
+| 영역 | 변경 내용 |
+|------|----------|
+| 관측성 | `_persist_viral_discovery_audit` → `coverage_bounds`(funnel 거절·변형/플랫폼/구조 차단·키워드 한도 영속화) + `per_category_reject_reason`(축×사유 포렌식) |
+| 1인칭 경험담 스코어링 | `_assess_viral_need` `peer_experience_opportunity`(per-axis 증거) + diet 후기 광고오탐(`diet_testimonial_promo`) 완화 |
+| venue 다양성 | 골든큐 `_select_targets_with_venue_diversity`(하드캡) + AI배치 `_ai_target_venue_key`(소프트+예산폴백) — 한 카페 독점·스팸지문 방지 |
+| 랭킹 정렬 | `routers/viral.py` 플랫폼 수용도(`_platform_acceptance_factors`, KIN>cafe>blog) + lens_fit(`_staff_signal_rank_adjustment`) — 직원 실수요 정렬(읽기경로만, worksite frozen 불변) |
+| liveness | enrichment 후 `_resaturate_worksite_after_enrichment` — 선택 시점 死코드(comment_count=0 미답변)였던 포화 신호를 실수치로 보정 |
+| 의미기반 발견 | `core_services/semantic_axis_matcher.py`(BGE-M3, fail-soft·**opt-in** `MARKETING_BOT_SEMANTIC_DISCOVERY`) 매칭측 axis 구제 + `COLLOQUIAL_AXIS_TERMS` 구어 쿼리 확장. 기본 off → 회귀 0 |
+| ⚠️ 1인칭 정책 완성 (USER DIRECTIVE) | `prompts.json`(unified_analysis 후기 수용·comment_generation·category_templates 1인칭) + `content_compliance.py`(viral `allow_first_person_experience` → "환자 치료경험담" 면제, **경성 위반은 유지**) + `ai_client.py`(task=viral_comment 면제 전달) + `_compliance_guardrail` → 발견→생성→게이트→fallback 일관화 |
+| 스팸 지문 방지 | `VIRAL_COMMENT_PERSONA_FRAMES` — 1인칭 프레임 시작 방식 결정적 회전(정식명칭 유지) |
+
+**신규 가드레일(변경 시 주의)**: ① 의미기능은 opt-in(`MARKETING_BOT_SEMANTIC_DISCOVERY=1`+BGE-M3 설치 시 가동) ② `content_compliance` viral 1인칭 면제는 "환자 치료경험담" 카테고리만 — 단정효과·할인·이벤트·AI의료진추천·비교·전후비교는 viral여도 계속 차단 ③ 랭킹/venue 변경은 읽기경로(`routers/viral.py`)만, frozen worksite/스코어링 불변.
 
 ### 최근 주요 변경 (2026-06-19)
 
@@ -386,5 +403,5 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 1. 이 파일(CLAUDE.md) 읽기
 2. 현재 브랜치 확인 (`git branch`)
 3. DB 상태 확인 (위 명령)
-4. 테스트 회귀 확인: `python -m pytest tests -q` (목표: 523+ passed)
+4. 테스트 회귀 확인: `python -m pytest tests -q` (목표: 552+ passed)
 5. 서버 상태: `build_and_run.bat` 후 `http://localhost:8000/health`

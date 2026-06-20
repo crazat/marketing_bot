@@ -826,3 +826,145 @@ def test_lead_service_extract_tokens_import():
     from services.lead_service import extract_tokens
     tokens = extract_tokens("청주 다이어트 한약")
     assert "다이어트" in tokens
+
+
+def _vt(idx, cat, author, platform="cafe", score=100.0):
+    return {
+        "id": f"t{idx}",
+        "category": cat,
+        "author": author,
+        "platform": platform,
+        "worksite_efficiency_score": score,
+        "clinic_treatment_fit_score": score,
+        "priority_score": score,
+    }
+
+
+def test_venue_diversity_caps_single_cafe_domination():
+    """한 카페가 작업 큐를 독점하지 못하고 다른 venue 로 분산된다."""
+    from routers import viral as viral_router
+
+    # 한 카테고리에 청주맘카페 10개 + 다른 카페 3개
+    items = [_vt(i, "흉터/여드름흉터", "청주맘카페", score=100 - i) for i in range(10)]
+    items += [_vt(100 + i, "흉터/여드름흉터", f"동네카페{i}", score=50 - i) for i in range(3)]
+    groups_map = {"흉터/여드름흉터": items}
+
+    selected = viral_router._select_targets_with_venue_diversity(
+        groups_map,
+        ["흉터/여드름흉터"],
+        total_limit=12,
+        per_category=12,
+        venue_cap=2,
+    )
+    chosen = selected["흉터/여드름흉터"]
+    momcafe = [c for c in chosen if c["author"] == "청주맘카페"]
+    # 하드 캡=2 이므로 청주맘카페는 2개로 제한된다.
+    assert len(momcafe) == 2
+    # 다른 카페 3곳이 모두 포함되어 도달이 분산된다.
+    assert sum(1 for c in chosen if c["author"].startswith("동네카페")) == 3
+    # 풀이 한 venue 에 쏠려 있으면 큐가 total_limit(12)보다 짧아진다 (분산 우선).
+    assert len(chosen) == 5
+
+
+def test_venue_diversity_hard_cap_limits_concentrated_pool():
+    """한 venue 만 있으면 캡을 넘기지 않는다 — 같은 카페 댓글 몰빵 방지(분산 > 큐 길이)."""
+    from routers import viral as viral_router
+
+    items = [_vt(i, "다이어트", "유일한카페", score=100 - i) for i in range(6)]
+    groups_map = {"다이어트": items}
+
+    selected = viral_router._select_targets_with_venue_diversity(
+        groups_map,
+        ["다이어트"],
+        total_limit=5,
+        per_category=5,
+        venue_cap=2,
+    )
+    # venue 가 하나뿐이어도 하드 캡(2)을 넘기지 않는다 (스팸 지문 방지).
+    assert len(selected["다이어트"]) == 2
+
+
+def test_venue_diversity_excludes_kin_from_cap():
+    """KIN(author='')은 venue 식별 불가라 캡에서 제외된다."""
+    from routers import viral as viral_router
+
+    items = [_vt(i, "안면비대칭", "", platform="kin", score=100 - i) for i in range(5)]
+    groups_map = {"안면비대칭": items}
+
+    selected = viral_router._select_targets_with_venue_diversity(
+        groups_map,
+        ["안면비대칭"],
+        total_limit=5,
+        per_category=5,
+        venue_cap=2,
+    )
+    # KIN 은 venue 캡 대상이 아니므로 5개 모두 선택된다.
+    assert len(selected["안면비대칭"]) == 5
+    assert viral_router._venue_diversity_key(items[0]) == ""
+
+
+def test_norm_platform_key_normalizes_variants():
+    from routers import viral as viral_router
+    assert viral_router._norm_platform_key("naver_kin") == "kin"
+    assert viral_router._norm_platform_key("kin") == "kin"
+    assert viral_router._norm_platform_key("naver_cafe") == "cafe"
+    assert viral_router._norm_platform_key("blog") == "blog"
+    assert viral_router._norm_platform_key(None) == "unknown"
+
+
+def test_platform_acceptance_factors_reflects_staff_preference():
+    """직원 posted vs skipped 로 플랫폼 수용도 학습 — KIN 높음, blog 낮음, 저표본 중립."""
+    from routers import viral as viral_router
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE viral_targets (platform TEXT, comment_status TEXT)")
+    rows = (
+        [("kin", "posted")] * 40 + [("kin", "skipped")] * 10      # 50 decided, 0.8
+        + [("blog", "posted")] * 2 + [("blog", "skipped")] * 48   # 50 decided, 0.04
+        + [("cafe", "posted")] * 5                                # 5 decided < 30 → 중립
+    )
+    conn.executemany("INSERT INTO viral_targets VALUES (?, ?)", rows)
+    factors = viral_router._platform_acceptance_factors(conn.cursor(), min_decided=30)
+    assert factors["kin"] == 0.8
+    assert factors["blog"] == 0.04
+    assert factors["cafe"] == 0.5  # 저표본 → 중립(랭킹 영향 0)
+    # 수용도 → 랭킹 조정: kin 가산, blog 감산.
+    scale = viral_router.PLATFORM_ACCEPTANCE_RANK_SCALE
+    assert (factors["kin"] - 0.5) * scale > 0
+    assert (factors["blog"] - 0.5) * scale < 0
+    assert (factors["cafe"] - 0.5) * scale == 0
+
+
+def test_viral_first_person_experience_exempted_from_compliance_block():
+    """task=viral_comment: 1인칭 환자 경험담은 면제 통과, 경성 위반은 계속 차단."""
+    from services.content_compliance import screen_korean_comment, check_content_compliance
+    fp = "저도 한약 먹고 좋아졌어요. 규림한의원 상담 받아보세요."
+    # 면제 없으면 치료경험담(HIGH)으로 차단.
+    assert screen_korean_comment(fp)["passed"] is False
+    # viral 면제 시 통과.
+    assert screen_korean_comment(fp, allow_first_person_experience=True)["passed"] is True
+    # 경성 위반(단정적 효과)은 면제 있어도 계속 차단 (외과적 면제).
+    hard = "저도 한약 먹고 100% 완치됐어요"
+    assert screen_korean_comment(hard, allow_first_person_experience=True)["passed"] is False
+    # check_content_compliance exempt_categories 파라미터 동작.
+    base = check_content_compliance(fp, content_type="comment")
+    assert "환자 치료경험담 (인플루언서)" in [i["category"] for i in base["issues"]]
+    exempt = check_content_compliance(
+        fp, content_type="comment",
+        exempt_categories={"환자 치료경험담 (인플루언서)"},
+    )
+    assert "환자 치료경험담 (인플루언서)" not in [i["category"] for i in exempt["issues"]]
+
+
+def test_staff_signal_rank_adjustment_uses_lens_fit_neutral_on_missing():
+    """lens_fit(직원 강판별자 Δ+8.1)을 랭킹에 반영, 결측은 중립(미산출 행 미벌)."""
+    from routers import viral as viral_router
+    f = viral_router._staff_signal_rank_adjustment
+    # 높은 lens_fit → 가산, 낮으면 감산.
+    assert f({"pathfinder_lens_fit_score": 80}) > 0
+    assert f({"pathfinder_lens_fit_score": 50}) < 0
+    # 결측/0 → 중립(0) — 점수 미산출 행을 벌하지 않는다.
+    assert f({"pathfinder_lens_fit_score": 0}) == 0.0
+    assert f({}) == 0.0
+    # 상한 적용.
+    assert f({"pathfinder_lens_fit_score": 100}) == viral_router.STAFF_SIGNAL_RANK_CAP

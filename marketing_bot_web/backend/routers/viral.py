@@ -1720,6 +1720,140 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
             conn.close()
 
 
+def _venue_diversity_key(item: Dict[str, Any]) -> str:
+    """카페/블로거의 venue 식별자(author). KIN(author='')·미상은 캡 제외.
+
+    cafe author=카페명, blog author=블로거명 → venue 동일성. KIN author는 질문자
+    닉네임이고 venue 식별이 불가하므로(공급자-venue 게이트 의도적 제외와 일관) 캡에서 뺀다.
+    """
+    author = str(item.get("author") or "").strip().lower()
+    platform = str(item.get("platform") or "").lower()
+    if not author or platform in {"kin", "naver_kin"}:
+        return ""
+    return author
+
+
+def _select_targets_with_venue_diversity(
+    groups_map: Dict[str, List[Dict[str, Any]]],
+    category_order: List[str],
+    *,
+    total_limit: int,
+    per_category: int,
+    venue_cap: int,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """카테고리 균형 라운드로빈에 venue(카페/블로거) 다양성 하드 캡을 더한다.
+
+    한 카페/블로거가 작업 큐를 독점하면 (1) 실제 댓글 도달 폭이 좁아지고 (2) 동일
+    venue 반복 댓글이 네이버 스팸/조작 탐지 지문이 된다. 카테고리 균형과 per_category
+    상한은 그대로 두되, 한 venue 의 누적 선택은 venue_cap 을 절대 넘지 않는다(하드 캡).
+    같은 카페에 댓글을 몰아 다는 것 자체가 리스크이므로, 분산이 큐 길이보다 우선한다 —
+    풀이 한 venue 에 쏠려 있으면 큐가 total_limit 보다 짧아지고, 그 짧아짐이 곧
+    '발견을 넓혀라'는 신호다(coverage_bounds 감사와 candidate_total 로 가시화). KIN
+    (author='')은 venue 식별 불가라 캡 제외. 입력 groups_map 의 각 버킷은 호출 전
+    이미 점수순 정렬되어 있어야 한다.
+    """
+    selected_by_category: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in category_order}
+    selected_ids: set = set()
+    venue_counts: Dict[str, int] = {}
+    selected_total = 0
+
+    while selected_total < total_limit:
+        progressed = False
+        for cat in category_order:
+            if selected_total >= total_limit:
+                break
+            if len(selected_by_category[cat]) >= per_category:
+                continue
+            next_item = None
+            for item in groups_map.get(cat, []):
+                item_id = str(item.get("id") or "")
+                if not item_id or item_id in selected_ids:
+                    continue
+                vkey = _venue_diversity_key(item)
+                if vkey and venue_counts.get(vkey, 0) >= venue_cap:
+                    continue
+                next_item = item
+                break
+            if next_item is None:
+                continue
+            vkey = _venue_diversity_key(next_item)
+            if vkey:
+                venue_counts[vkey] = venue_counts.get(vkey, 0) + 1
+            selected_ids.add(str(next_item.get("id") or ""))
+            selected_by_category[cat].append(next_item)
+            selected_total += 1
+            progressed = True
+        if not progressed:
+            break
+
+    return selected_by_category
+
+
+def _norm_platform_key(platform: Any) -> str:
+    p = str(platform or "").strip().lower()
+    if p in {"kin", "naver_kin"}:
+        return "kin"
+    if p in {"cafe", "naver_cafe"}:
+        return "cafe"
+    return p or "unknown"
+
+
+def _platform_acceptance_factors(cursor, *, min_decided: int = 30) -> Dict[str, float]:
+    """플랫폼별 직원 수용도 = (posted+approved+generated)/(+skipped). 표본 부족 시 중립(0.5).
+
+    라이브 근거(2026-06-20): 직원은 KIN 을 cafe 대비 2.6배 작업하고 blog 는 거의 버린다
+    (스킵의 39%·posted 의 1.4%). 그러나 골든큐 정렬키(worksite)의 플랫폼 가중치는 cafe>kin
+    이라 실수요와 어긋나 80% 스킵을 유발했다. 학습된 수용도를 랭킹에 반영해 자기조정한다
+    (하드코딩 스냅샷 아님 — 직원 결정이 바뀌면 따라간다). 표본<min_decided 면 중립.
+    """
+    factors: Dict[str, float] = {}
+    try:
+        rows = cursor.execute(
+            """
+            SELECT platform,
+                   SUM(CASE WHEN comment_status IN ('posted','approved','ai_approved','generated') THEN 1 ELSE 0 END) AS used,
+                   SUM(CASE WHEN comment_status='skipped' THEN 1 ELSE 0 END) AS skipped
+            FROM viral_targets
+            GROUP BY platform
+            """
+        ).fetchall()
+    except Exception:
+        return factors
+    agg: Dict[str, List[int]] = {}
+    for r in rows:
+        try:
+            plat, used, skipped = r["platform"], r["used"], r["skipped"]
+        except (TypeError, KeyError, IndexError):
+            plat, used, skipped = r[0], r[1], r[2]
+        a = agg.setdefault(_norm_platform_key(plat), [0, 0])
+        a[0] += int(used or 0)
+        a[1] += int(skipped or 0)
+    for p, (used, skipped) in agg.items():
+        decided = used + skipped
+        factors[p] = (used / decided) if decided >= min_decided else 0.5
+    return factors
+
+
+# worksite 점수(보통 30~100)에 대한 플랫폼 수용도 조정 폭. factor 0~1 → 조정 [-SCALE/2, +SCALE/2].
+PLATFORM_ACCEPTANCE_RANK_SCALE = 24.0
+# 직원 실수요 강판별자(lens_fit)의 랭킹 조정 스케일·상한.
+STAFF_SIGNAL_RANK_SCALE = 0.3
+STAFF_SIGNAL_RANK_CAP = 10.0
+
+
+def _staff_signal_rank_adjustment(item: Dict[str, Any]) -> float:
+    """직원 실수요 강판별자를 랭킹에 반영(라이브: lens_fit posted 65.6 vs skipped 57.4, Δ+8.1).
+
+    골든큐 1차 정렬키 worksite 는 약한 판별자(Δ+1.2)인데 가장 강한 수치 판별자 lens_fit 은
+    랭킹에 없었다. lens_fit 을 bounded 가산한다. 결측(0)은 중립(점수 미산출 행을 벌하지 않음).
+    """
+    adj = 0.0
+    lens_fit = float(item.get("pathfinder_lens_fit_score") or 0)
+    if lens_fit > 0:
+        adj += max(-STAFF_SIGNAL_RANK_CAP, min(STAFF_SIGNAL_RANK_CAP, (lens_fit - 55.0) * STAFF_SIGNAL_RANK_SCALE))
+    return adj
+
+
 @router.get("/todays-queue")
 async def get_todays_queue(
     total_limit: int = Query(default=30, ge=5, le=100),
@@ -1758,6 +1892,7 @@ async def get_todays_queue(
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
         clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
         worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
+        lens_fit_expr = _viral_score_breakdown_expr(cursor, "pathfinder_lens_fit_score")
         target_columns = _viral_target_columns(cursor)
         scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
         last_scanned_select = "last_scanned_at" if "last_scanned_at" in target_columns else "NULL AS last_scanned_at"
@@ -1777,7 +1912,8 @@ async def get_todays_queue(
             SELECT id, platform, url, title, content_preview, matched_keywords,
                    category, {matched_category_select}, priority_score, discovered_at, {last_scanned_select}, author, {matched_keyword_select},
                    {clinic_fit_expr} AS clinic_treatment_fit_score,
-                   {worksite_efficiency_expr} AS worksite_efficiency_score
+                   {worksite_efficiency_expr} AS worksite_efficiency_score,
+                   {lens_fit_expr} AS pathfinder_lens_fit_score
             FROM viral_targets
             WHERE comment_status = 'pending'
               AND priority_score >= 80
@@ -1832,9 +1968,18 @@ async def get_todays_queue(
             r["category"] = cat
             groups_map.setdefault(cat, []).append(r)
 
+        # 학습된 플랫폼 수용도(직원 posted vs skipped)를 골든큐 랭킹에 반영 — worksite 의
+        # 플랫폼 가중치(cafe>kin)가 실수요(kin>cafe)와 어긋나 blog/저수용 글이 큐 상단을
+        # 차지하던 문제를 자기조정으로 교정한다. 표본 부족 플랫폼은 중립(영향 0).
+        platform_factors = _platform_acceptance_factors(cursor)
+
         def target_rank_key(item: Dict[str, Any]) -> Tuple[float, float, float]:
+            factor = platform_factors.get(_norm_platform_key(item.get("platform")), 0.5)
+            platform_adj = (factor - 0.5) * PLATFORM_ACCEPTANCE_RANK_SCALE
             return (
-                float(item.get("worksite_efficiency_score") or 0),
+                float(item.get("worksite_efficiency_score") or 0)
+                + platform_adj
+                + _staff_signal_rank_adjustment(item),
                 float(item.get("clinic_treatment_fit_score") or 0),
                 float(item.get("priority_score") or 0),
             )
@@ -1847,31 +1992,18 @@ async def get_todays_queue(
             key=lambda cat: target_rank_key(groups_map[cat][0]) if groups_map[cat] else (0.0, 0.0, 0.0),
             reverse=True,
         )
-        selected_by_category: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in category_order}
-        selected_ids: set[str] = set()
-        selected_total = 0
-
-        while selected_total < total_limit:
-            progressed = False
-            for cat in category_order:
-                if selected_total >= total_limit:
-                    break
-                if len(selected_by_category[cat]) >= per_category:
-                    continue
-                next_item = None
-                for item in groups_map[cat]:
-                    item_id = str(item.get("id") or "")
-                    if item_id and item_id not in selected_ids:
-                        next_item = item
-                        break
-                if next_item is None:
-                    continue
-                selected_ids.add(str(next_item.get("id") or ""))
-                selected_by_category[cat].append(next_item)
-                selected_total += 1
-                progressed = True
-            if not progressed:
-                break
+        # venue 다양성 캡: 카테고리 균형은 유지하되 한 카페/블로거(author=venue)가 작업
+        # 큐를 독점하지 못하게 한다 — 실제 댓글 도달 폭 확대 + 동일 venue 반복 댓글로 인한
+        # 네이버 스팸/조작 탐지 지문 위험 완화. 카테고리가 굶지 않도록 폴백 보존(헬퍼 참조).
+        venue_cap = max(3, total_limit // 4)
+        selected_by_category = _select_targets_with_venue_diversity(
+            groups_map,
+            category_order,
+            total_limit=total_limit,
+            per_category=per_category,
+            venue_cap=venue_cap,
+        )
+        selected_total = sum(len(items) for items in selected_by_category.values())
 
         groups = []
         for cat in category_order:
