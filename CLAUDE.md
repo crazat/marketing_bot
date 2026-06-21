@@ -268,12 +268,12 @@ from openai import OpenAI             # X - 사용 안 함
 | 레인 | 변경 내용 |
 |------|----------|
 | 의미기반 실가동 | `.env MARKETING_BOT_SEMANTIC_DISCOVERY=1` ON(BGE-M3 로컬 캐시·실측 net-positive). `tests/conftest.py` autouse fixture로 테스트 격리(기본-off 계약 유지·회귀 0) |
-| Lane A 백로그 레인 | `viral_hunter.py` `SIGNATURE_BACKLOG_AXES`+`_load_backlog_rescue_targets(categories=,days=180)`+`--rescue-signature`(기본40). 일반 레스큐(21일·category-blind)가 굶기던 안면비대칭 raw_backlog 912 해금(실측 21일창 0→180일창 912) |
+| Lane A 백로그 레인 | `viral_hunter.py` `SIGNATURE_BACKLOG_AXES`+`_load_backlog_rescue_targets(categories=,days=180)`+`--rescue-signature`(기본40). 일반 레스큐(21일·category-blind)가 굶기던 안면비대칭 raw_backlog 912 해금(실측 21일창 0→180일창 912). **프로덕션 가동 실측**: 레인 17개 투입(3 pending 진입)→흉터 pending 0→2(첫 골든큐 진입)·raw_backlog 흉터18→4/안면885·실대기축 10→12/19 |
 | Lane B Q&A 시딩 | `scripts/generate_signature_qa_drafts.py`→9개 드래프트(0 compliance flag·1인칭) + `scripts/seed_signature_qa.py`(DML·백업·멱등·dry-run). **적재 완료**: qa_repository 10→19행 + `QASearchEngine.index_all()` RAG 재인덱스·검색 검증(패인자국 0.912) |
-| Lane C 콘텐츠 브리프 | `scripts/generate_signature_content_briefs.py`→블로그/플레이스 pillar 브리프 2개(reports/, HITL 발행) + keywords.json blog_seo 시그니처 콘텐츠 타겟 추가 |
+| Lane C 콘텐츠 브리프+본문 | `scripts/generate_signature_content_briefs.py`→pillar 브리프 2개 + `scripts/generate_signature_post_drafts.py`→발행 초안 본문 2개(★자체 콘텐츠=교육 톤, 1인칭 환자후기 사칭 금지=owned content 가짜후기는 의료광고법 위반·viral_comment 면제와 구분, `check_content_compliance(content_type='blog')` 2/2 통과) + keywords.json blog_seo 시그니처 타겟 추가. HITL 수동 발행 |
 | Lane E 측정 SLA | `scripts/signature_axis_sla.py`(read-only) — 골든큐·백로그 윈도우 갭·Q&A 커버리지·자체 랭크·발견 퍼널 트렌드(viral_scan_audits) |
 
-**보류**: Lane D(전국 정보성 — 지역 가드레일 완화 필요, 사용자 결정 대기). **잔여 운영**: Lane A 가동(스캔)·Lane C 수동 발행.
+**보류**: Lane D(전국 정보성 — 지역 가드레일 완화 필요, 사용자 결정 대기). **잔여 운영**: Lane C 수동 발행(초안 본문 준비 완료, 사람이 검수→게시)·매 스캔 Lane A가 912 점진 배수.
 
 **신규 가드레일**: 위 "핵심 가드레일" 섹션의 semantic ON/conftest 격리·SIGNATURE_BACKLOG_AXES 동기화·Q&A DML+RAG재인덱스 4건 참조.
 
