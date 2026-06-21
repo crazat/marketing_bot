@@ -6384,6 +6384,16 @@ VIRAL_COMMENT_PERSONA_FRAMES = [
     "작성자 글의 구체적 단서에 먼저 반응한 뒤 1인칭 경험을 자연스럽게 녹이세요.",
 ]
 
+# 시그니처(차별화) 진료축 — routers/viral.py SIGNATURE_ROUTING_AXES 와 동일 집합(레이어
+# 분리상 의도적 중복; 수정 시 양쪽 동기화). 로컬 환자 글이 구조적으로 희소해 일반 백로그
+# 레스큐(category-blind + 21일 윈도우)에서 굶는 축이다. raw_backlog는 이미 commentable
+# 게이트를 통과한 '예산-기아' 공급이므로, 확장 윈도우 + 카테고리 우선 별도 레인으로 끌어오면
+# 전환 효율이 높다. _load_backlog_rescue_targets(categories=, days=) 로 공급한다.
+SIGNATURE_BACKLOG_AXES = ("흉터/여드름흉터", "안면비대칭")
+# 시그니처 레인 최근성 윈도우(일) — 일반 레스큐(21일)보다 길게. 시그니처 글은 드물어
+# 오래된 raw_backlog도 직원 작업가치가 유지된다(빈도<신선도 우선).
+SIGNATURE_BACKLOG_RESCUE_DAYS = 180
+
 # AI 생성 실패/차단 sentinel 문자열. 이것이 댓글로 저장되면 (1) 직원이 "[AI] generation
 # blocked…" 같은 오류문을 댓글로 보게 되고 (2) comment_status가 'generated'로 바뀌며
 # 골든큐(pending)에서 사라져 실제 바이럴 타겟이 조용히 유실된다. generate()는 이런
@@ -9345,6 +9355,7 @@ class ViralHunter:
         limit: int,
         exclude_urls: Optional[set] = None,
         days: int = 21,
+        categories: Optional[Iterable[str]] = None,
     ) -> List[ViralTarget]:
         """최근 raw_backlog/needs_ai_retry 타겟을 AI 재심사 후보로 로드.
 
@@ -9353,26 +9364,41 @@ class ViralHunter:
         피부/교통사고 물량이 레스큐 예산까지 독식하지 못하게 한다. 재심사 결과는
         AI 적합 → pending 승격, 부적합 → filtered_out_ai 영속화로 끝나므로 같은
         행이 매 런 재레스큐되는 루프는 생기지 않는다.
+
+        ``categories`` 를 주면 해당 진료축으로 한정해 로드한다(시그니처 백로그 레인).
+        category-blind 정렬에서는 피부/다이어트 물량에 밀려 굶는 희소 축을, 확장
+        ``days`` 윈도우와 함께 별도 공급하는 용도. 카테고리명은 바인딩 파라미터로만
+        전달(상수이지만 인젝션 방지).
         """
         if limit <= 0:
             return []
         import sqlite3 as _sql
+
+        cats = [str(c).strip() for c in (categories or ()) if str(c).strip()]
+        cat_clause = ""
+        params: list = [f"-{int(days)} days"]
+        if cats:
+            cat_clause = " AND COALESCE(matched_keyword_category, '') IN (%s)" % (
+                ",".join("?" * len(cats))
+            )
+            params.extend(cats)
+        params.append(max(int(limit) * 6, 200))
 
         rows = []
         try:
             conn = _sql.connect(self.db.db_path)
             conn.row_factory = _sql.Row
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM viral_targets
                 WHERE COALESCE(comment_status, 'pending') IN ('raw_backlog', 'needs_ai_retry')
                   AND COALESCE(is_commentable, 1) = 1
-                  AND REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= datetime('now', ?)
+                  AND REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= datetime('now', ?){cat_clause}
                 ORDER BY COALESCE(priority_score, 0) DESC
                 LIMIT ?
                 """,
-                (f"-{int(days)} days", max(int(limit) * 6, 200)),
+                params,
             ).fetchall()
             conn.close()
         except Exception as e:
@@ -10157,6 +10183,7 @@ class ViralHunter:
              boost_categories: Optional[Iterable[str]] = None,
              boost_lenses: Optional[Iterable[str]] = None,
              rescue_backlog: int = 60,
+             rescue_signature: int = 40,
              enrich_bodies: int = 120,
              expire_pending: bool = True) -> List[ViralTarget]:
         """
@@ -10485,6 +10512,58 @@ class ViralHunter:
                     print(f"   ♻️ 백로그 레스큐: 최신 게이트 재탈락 {rescue_gate_rejected}개, 투입 0개")
             except Exception as e:
                 logger.warning(f"백로그 레스큐 실패 (계속 진행): {e}")
+
+        # 시그니처 백로그 레인 — 로컬 환자글이 구조적으로 희소한 흉터/안면비대칭은 일반
+        # 레스큐(category-blind·21일)에서 피부/다이어트 물량에 밀려 굶는다. 확장 윈도우
+        # (180일)+카테고리 우선으로 raw_backlog(이미 commentable 통과·예산 기아)를 별도
+        # 공급한다. 일반 레스큐와 동일한 최종 게이트를 통과시켜 자동 승격은 없다.
+        sig_rescued_count = 0
+        if rescue_signature and top_n_for_ai > 0:
+            try:
+                exclude = {
+                    canonicalize_viral_url(t.url) or t.url
+                    for t in ai_targets
+                    if t.url
+                }
+                sig_quota = min(int(rescue_signature), int(top_n_for_ai))
+                sig_candidates = self._load_backlog_rescue_targets(
+                    sig_quota,
+                    exclude,
+                    days=SIGNATURE_BACKLOG_RESCUE_DAYS,
+                    categories=SIGNATURE_BACKLOG_AXES,
+                )
+                sig_gate_rejected = 0
+                sig_kept: List[ViralTarget] = []
+                for t in sig_candidates:
+                    prior_status = t.comment_status or "raw_backlog"
+                    reject_reason = CommentableFilter.apply_final_reject(t)
+                    if reject_reason:
+                        sig_gate_rejected += 1
+                        try:
+                            self.db.insert_viral_target(t.to_dict())
+                        except Exception as e:
+                            logger.warning(f"시그니처 레스큐 게이트 제외 상태 저장 실패: {e}")
+                        continue
+                    t.score_breakdown = {
+                        **(t.score_breakdown or {}),
+                        "rescued_from": prior_status,
+                        "signature_backlog_lane": True,
+                    }
+                    t.comment_status = "pending"
+                    sig_kept.append(t)
+                if sig_kept:
+                    sig_rescued_count = len(sig_kept)
+                    ai_targets = ai_targets + sig_kept
+                    print(
+                        f"   🎯 시그니처 백로그 레인: {sig_rescued_count}개 AI 재심사 투입 "
+                        f"(흉터/안면비대칭, 최신 게이트 재탈락 {sig_gate_rejected}개)"
+                    )
+                elif sig_gate_rejected:
+                    print(
+                        f"   🎯 시그니처 백로그 레인: 최신 게이트 재탈락 {sig_gate_rejected}개, 투입 0개"
+                    )
+            except Exception as e:
+                logger.warning(f"시그니처 백로그 레인 실패 (계속 진행): {e}")
 
         # 본문 enrichment — AI가 snippet(~150자)이 아닌 실제 본문/답변을 보고
         # 판정하도록 KIN/blog 공개 표면을 보강하고, 드러난 광고는 즉시 재탈락.
@@ -10936,6 +11015,8 @@ def main():
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
     parser.add_argument('--rescue-backlog', type=int, default=60,
                         help='최근 raw_backlog/needs_ai_retry 타겟을 추가로 AI 재심사할 최대 수 (0=비활성, 기본 60)')
+    parser.add_argument('--rescue-signature', type=int, default=40,
+                        help='시그니처 축(흉터/안면비대칭) raw_backlog를 확장 윈도우(180일)+카테고리 우선으로 재심사할 최대 수 (0=비활성, 기본 40)')
     parser.add_argument('--enrich-bodies', type=int, default=120,
                         help='AI 분석 전 KIN/blog 본문을 HTTP로 보강할 최대 fetch 수 (0=비활성, 기본 120)')
     parser.add_argument('--skip-pending-expiry', action='store_true',
@@ -11117,6 +11198,7 @@ def main():
                     boost_categories=args.boost_category,
                     boost_lenses=args.boost_lens,
                     rescue_backlog=args.rescue_backlog,
+                    rescue_signature=args.rescue_signature,
                     enrich_bodies=args.enrich_bodies,
                     expire_pending=not args.skip_pending_expiry)
         return

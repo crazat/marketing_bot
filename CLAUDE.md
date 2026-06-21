@@ -22,6 +22,9 @@
 - 지역 매칭은 substring-only 금지 — `_has_active_region_anchor()` 유지
 - `_normalize_transparency_terms` in viral_hunter 변경 금지 (naming normalization 의도)
 - `competitors.json` 단일 소스 — 로랑/데이릴 포함 (직접 수정 시 prompts.json과 동기화 필요)
+- 의미기반 발견은 `.env MARKETING_BOT_SEMANTIC_DISCOVERY=1`로 **프로덕션 ON**(2026-06-21, 실측 net-positive). 테스트는 `tests/conftest.py` autouse fixture로 격리(기본-off 계약 검증) — 이 격리 제거 금지. 끄려면 `.env` line만 삭제
+- `SIGNATURE_BACKLOG_AXES`(viral_hunter)는 `routers/viral.py SIGNATURE_ROUTING_AXES`와 **동일 집합 유지**(수정 시 양쪽 동기화). 시그니처 백로그 레인(`--rescue-signature`)은 raw_backlog만 대상(이미 게이트 통과분) — 자동 승격 없음
+- Q&A 적재(`scripts/seed_signature_qa.py`)는 DML이므로 **반드시 마이그레이션 스크립트로만**(백업+멱등). 적재 후 `QASearchEngine.index_all()` RAG 재인덱스 필수(안 하면 드래프터가 못 찾음)
 
 ---
 
@@ -153,7 +156,7 @@ C:\Projects\marketing_bot\
 ├── repositories/
 │   └── viral_target_repo.py    # viral_targets 레포지토리
 ├── tests/
-│   ├── test_pathfinder_viral_stability.py  # 현재 552 passed, 1 skipped
+│   ├── test_pathfinder_viral_stability.py  # 현재 553 passed, 1 skipped
 │   └── test_router_smoke.py
 └── scripts/
     ├── recanonicalize_viral_categories.py  # 카테고리 재정규화 (1회성 마이그레이션)
@@ -241,7 +244,7 @@ from openai import OpenAI             # X - 사용 안 함
 ## 현재 시스템 상태 요약 (2026-06-21 기준)
 
 **브랜치**: `codex/pathfinder-discovery-audit`
-**테스트**: `pytest tests` → 552 passed, 1 skipped
+**테스트**: `pytest tests` → 553 passed, 1 skipped
 
 ### 2026-06-20~21: 바이럴 발견 시스템 심층검토 + 13개 개선 (discovery review + 1인칭 정책 end-to-end 완성)
 
@@ -257,6 +260,22 @@ from openai import OpenAI             # X - 사용 안 함
 | 의미기반 발견 | `core_services/semantic_axis_matcher.py`(BGE-M3, fail-soft·**opt-in** `MARKETING_BOT_SEMANTIC_DISCOVERY`) 매칭측 axis 구제 + `COLLOQUIAL_AXIS_TERMS` 구어 쿼리 확장. 기본 off → 회귀 0 |
 | ⚠️ 1인칭 정책 완성 (USER DIRECTIVE) | `prompts.json`(unified_analysis 후기 수용·comment_generation·category_templates 1인칭) + `content_compliance.py`(viral `allow_first_person_experience` → "환자 치료경험담" 면제, **경성 위반은 유지**) + `ai_client.py`(task=viral_comment 면제 전달) + `_compliance_guardrail` → 발견→생성→게이트→fallback 일관화 |
 | 스팸 지문 방지 | `VIRAL_COMMENT_PERSONA_FRAMES` — 1인칭 프레임 시작 방식 결정적 회전(정식명칭 유지) |
+
+### 2026-06-21: 의미기반 발견 실가동 + 시그니처 축(흉터/안면비대칭) 강화 5레인
+
+> 상세: memory `project_viral_discovery_review_2026_06_20.md`. semantic 켜니 recall은 breadth로 net-positive(fresh +155%·AI적합 +73%·실대기축 7→10/19)지만 시그니처 갭은 구조적(Naver 로컬 콘텐츠 희소)이라 발견 레버로 못 메움 → 공급/채널 재라우팅 5레인.
+
+| 레인 | 변경 내용 |
+|------|----------|
+| 의미기반 실가동 | `.env MARKETING_BOT_SEMANTIC_DISCOVERY=1` ON(BGE-M3 로컬 캐시·실측 net-positive). `tests/conftest.py` autouse fixture로 테스트 격리(기본-off 계약 유지·회귀 0) |
+| Lane A 백로그 레인 | `viral_hunter.py` `SIGNATURE_BACKLOG_AXES`+`_load_backlog_rescue_targets(categories=,days=180)`+`--rescue-signature`(기본40). 일반 레스큐(21일·category-blind)가 굶기던 안면비대칭 raw_backlog 912 해금(실측 21일창 0→180일창 912) |
+| Lane B Q&A 시딩 | `scripts/generate_signature_qa_drafts.py`→9개 드래프트(0 compliance flag·1인칭) + `scripts/seed_signature_qa.py`(DML·백업·멱등·dry-run). **적재 완료**: qa_repository 10→19행 + `QASearchEngine.index_all()` RAG 재인덱스·검색 검증(패인자국 0.912) |
+| Lane C 콘텐츠 브리프 | `scripts/generate_signature_content_briefs.py`→블로그/플레이스 pillar 브리프 2개(reports/, HITL 발행) + keywords.json blog_seo 시그니처 콘텐츠 타겟 추가 |
+| Lane E 측정 SLA | `scripts/signature_axis_sla.py`(read-only) — 골든큐·백로그 윈도우 갭·Q&A 커버리지·자체 랭크·발견 퍼널 트렌드(viral_scan_audits) |
+
+**보류**: Lane D(전국 정보성 — 지역 가드레일 완화 필요, 사용자 결정 대기). **잔여 운영**: Lane A 가동(스캔)·Lane C 수동 발행.
+
+**신규 가드레일**: 위 "핵심 가드레일" 섹션의 semantic ON/conftest 격리·SIGNATURE_BACKLOG_AXES 동기화·Q&A DML+RAG재인덱스 4건 참조.
 
 **신규 가드레일(변경 시 주의)**: ① 의미기능은 opt-in(`MARKETING_BOT_SEMANTIC_DISCOVERY=1`+BGE-M3 설치 시 가동) ② `content_compliance` viral 1인칭 면제는 "환자 치료경험담" 카테고리만 — 단정효과·할인·이벤트·AI의료진추천·비교·전후비교는 viral여도 계속 차단 ③ 랭킹/venue 변경은 읽기경로(`routers/viral.py`)만, frozen worksite/스코어링 불변.
 

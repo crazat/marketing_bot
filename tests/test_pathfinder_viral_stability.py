@@ -11700,3 +11700,58 @@ def test_asymmetry_patient_vocab_passes_anchor_gate():
         "안면비대칭", "안면비대칭", "jaw-vocab",
     )
     assert viral_hunter.CommentableFilter.apply_final_reject(jaw) is None
+
+
+def test_signature_backlog_rescue_lane_reaches_old_starved_axis(tmp_path):
+    """Lane A: 일반 레스큐(21일·category-blind)가 못 보는 오래된 흉터/안면비대칭
+    raw_backlog를, 시그니처 레인이 확장 윈도우(180일)+카테고리 우선으로 끌어온다.
+    로컬 환자글 희소로 굶던 안면비대칭 backlog 저수지를 별도 공급하는 게 핵심."""
+    db = DatabaseManager(str(tmp_path / "sig_rescue.db"))
+
+    # (id, category, status, 나이)
+    rows = [
+        ("old-asym", "안면비대칭", "raw_backlog", "-45 days"),       # 오래됨: 21일엔 안 보임
+        ("old-skin", "피부/여드름", "raw_backlog", "-45 days"),       # 비시그니처: 카테고리 필터 제외
+        ("recent-asym", "안면비대칭", "raw_backlog", "-5 days"),      # 최근: 양쪽 다 보임
+        ("old-asym-pending", "안면비대칭", "pending", "-45 days"),    # raw_backlog 아님 → 제외
+    ]
+    for rid, cat, status, age in rows:
+        assert db.insert_viral_target({
+            "id": rid,
+            "platform": "cafe",
+            "url": f"https://cafe.naver.com/{rid}",
+            "title": rid,
+            "matched_keywords": ["청주 " + cat],
+            "matched_keyword_category": cat,
+            "comment_status": status,
+            "priority_score": 50,
+        })
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute(
+                "UPDATE viral_targets SET discovered_at = datetime('now', ?), "
+                "matched_keyword_category = ?, is_commentable = 1 WHERE id = ?",
+                (age, cat, rid),
+            )
+            conn.commit()
+
+    hunter = object.__new__(viral_hunter.ViralHunter)
+    hunter.db = db
+
+    # 시그니처 레인(180일·카테고리 한정)
+    sig_urls = {
+        t.url for t in hunter._load_backlog_rescue_targets(
+            50, set(), days=viral_hunter.SIGNATURE_BACKLOG_RESCUE_DAYS,
+            categories=viral_hunter.SIGNATURE_BACKLOG_AXES,
+        )
+    }
+    assert "https://cafe.naver.com/old-asym" in sig_urls          # 오래된 시그니처 회수됨
+    assert "https://cafe.naver.com/recent-asym" in sig_urls
+    assert "https://cafe.naver.com/old-skin" not in sig_urls       # 비시그니처 제외
+    assert "https://cafe.naver.com/old-asym-pending" not in sig_urls  # raw_backlog 아님 제외
+
+    # 일반 레스큐(21일·category-blind): 오래된 시그니처는 starve (Lane A가 메우는 갭)
+    regular_urls = {
+        t.url for t in hunter._load_backlog_rescue_targets(50, set(), days=21)
+    }
+    assert "https://cafe.naver.com/old-asym" not in regular_urls   # ← 굶던 갭 재현
+    assert "https://cafe.naver.com/recent-asym" in regular_urls
