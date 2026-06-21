@@ -273,7 +273,7 @@ from openai import OpenAI             # X - 사용 안 함
 | Lane C 콘텐츠 브리프+본문 | `scripts/generate_signature_content_briefs.py`→pillar 브리프 2개 + `scripts/generate_signature_post_drafts.py`→발행 초안 본문 2개(★자체 콘텐츠=교육 톤, 1인칭 환자후기 사칭 금지=owned content 가짜후기는 의료광고법 위반·viral_comment 면제와 구분, `check_content_compliance(content_type='blog')` 2/2 통과) + keywords.json blog_seo 시그니처 타겟 추가. HITL 수동 발행 |
 | Lane E 측정 SLA | `scripts/signature_axis_sla.py`(read-only) — 골든큐·백로그 윈도우 갭·Q&A 커버리지·자체 랭크·발견 퍼널 트렌드(viral_scan_audits) |
 
-**보류**: Lane D(전국 정보성 — 지역 가드레일 완화 필요, 사용자 결정 대기). **잔여 운영**: Lane C 수동 발행(초안 본문 준비 완료, 사람이 검수→게시)·매 스캔 Lane A가 912 점진 배수.
+**Lane D(전국 정보성) — 설계 후 D1 엄밀검증 기각(코드변경 0)**: 거절풀 3버킷 재정의 + 3-tier 설계(D1 충북회수·D2 새살침전국·D3 전국일반). 사용자 D1 선택했으나 `final_reject_reason='region_mismatch'`+충북생활권+NOT타지역=**0건**(앵커 어휘가 이미 오송/오창/청원/진천/증평/괴산/음성/보은 커버)·세종 region_mismatch 11건은 전부 대전 경쟁사 광고(추가 시 HARM)·초기 "215"는 substring 오버카운트 → **허울 기능 금지로 미구현**, region 게이트 정밀도 검증됨. **교훈**: 거절 사이징은 `final_reject_reason`로 검증, 지명 substring 카운트 금지. **잔여 운영**: Lane C 수동 발행(초안 본문 준비 완료, 사람이 검수→게시)·매 스캔 Lane A가 912 점진 배수·D2(새살침 전국·informational·opt-in) 원하면 별도 구현.
 
 **신규 가드레일**: 위 "핵심 가드레일" 섹션의 semantic ON/conftest 격리·SIGNATURE_BACKLOG_AXES 동기화·Q&A DML+RAG재인덱스 4건 참조.
 
