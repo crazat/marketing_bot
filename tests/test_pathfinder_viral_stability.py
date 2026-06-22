@@ -7696,6 +7696,28 @@ def test_viral_final_gate_keeps_diet_medical_treatment_question():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
 
 
+def test_viral_final_gate_rejects_marketplace_sale_post():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/marketplace-sale-noise",
+        title="청주) 보몬 e54 LV60 팔아요",
+        content_preview="직거래 가능하고 가격 네고 가능합니다.",
+        matched_keywords=["청주 보약"],
+        category="면역/보약",
+        matched_keyword_category="면역/보약",
+        matched_keyword_grade="A",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "marketplace_sale"
+
+    filtered = viral_hunter.CommentableFilter().filter([target])
+
+    assert filtered == []
+    assert target.is_commentable is False
+    assert target.comment_status == "filtered_out"
+    assert target.score_breakdown["final_reject_reason"] == "marketplace_sale"
+
+
 def test_viral_final_gate_rejects_diet_testimonial_promo():
     target = ViralTarget(
         platform="cafe",

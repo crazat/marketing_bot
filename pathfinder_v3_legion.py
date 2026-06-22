@@ -7218,23 +7218,31 @@ class PathfinderLegion:
 
         round6_keywords = set()
         related_count = 0
+        kw_with_results = 0  # HTML에서 1개 이상 반환한 키워드 수
 
         for kw in target_keywords:
             related = self.collector.get_related_keywords(kw)
             if related is not None:
+                if related:
+                    kw_with_results += 1
                 related_count += len(related)
                 for r in related:
                     if self.collector._is_valid_keyword(r):
                         round6_keywords.add(r)
 
-        print(f"   연관검색어 조회: {len(target_keywords)}개 키워드 → {related_count}개 연관검색어")
+        print(f"   연관검색어 조회: {len(target_keywords)}개 키워드 → {related_count}개 연관검색어 (응답 있는 키워드: {kw_with_results}개)")
 
         if round6_keywords:
             new_sa = self._analyze_and_add(list(round6_keywords), "round6_related")
             total_sa += new_sa
             print(f"   수집: {len(round6_keywords)}개, 신규 S/A급: {new_sa}개, 누적: {total_sa}개")
         else:
-            print("   유효한 연관검색어 없음 (중복 또는 검증 탈락)")
+            if related_count == 0 and kw_with_results == 0:
+                print(f"   ⚠️ Naver 연관검색어 HTML 선택자 전부 미매칭 ({len(target_keywords)}개 키워드 모두 0건) — Naver SERP 구조 변경 가능성")
+            elif related_count > 0:
+                print(f"   유효한 연관검색어 없음 ({related_count}개 조회 → 전부 중복/검증 탈락)")
+            else:
+                print("   유효한 연관검색어 없음 (중복 또는 검증 탈락)")
 
         if total_sa >= target_sa:
             return self._finalize()
@@ -7326,8 +7334,17 @@ class PathfinderLegion:
                     if len(category_seeds[cat]) < 5:  # 카테고리당 5개 시드
                         category_seeds[cat].append(kw)
 
-            # 카테고리별 AI 확장 (개선: max_results 15→50)
-            for category, seeds in list(category_seeds.items())[:5]:  # 상위 5개 카테고리만
+            # 시그니처 축 우선순위로 정렬 후 상위 5개 카테고리 선택
+            # (dict 삽입 순서 의존 제거 — 흉터/안면비대칭이 먼저 확장되도록)
+            _SEMANTIC_PRIORITY = [
+                '흉터/여드름흉터', '안면비대칭', '다이어트', '피부/여드름',
+                '교통사고', '체형교정', '리프팅/탄력',
+            ]
+            sorted_category_seeds = sorted(
+                category_seeds.items(),
+                key=lambda x: _SEMANTIC_PRIORITY.index(x[0]) if x[0] in _SEMANTIC_PRIORITY else 99,
+            )
+            for category, seeds in sorted_category_seeds[:5]:  # 상위 5개 카테고리만
                 try:
                     expanded = self.ai_expander.expand_semantic(seeds, category, max_results=50)
                     if expanded:
@@ -7665,6 +7682,12 @@ class PathfinderLegion:
                 result.novelty_score = 100.0
             return results
 
+        precise_limit = 1500
+        tail_results: List[KeywordResult] = []
+        if len(results) > precise_limit:
+            tail_results = results[precise_limit:]
+            results = results[:precise_limit]
+
         grade_bonus = {"S": 35.0, "A": 22.0, "B": 7.0, "C": 0.0}
         quality_values = [
             max(0.0, float(r.priority_score or 0.0))
@@ -7753,6 +7776,12 @@ class PathfinderLegion:
 
         for idx, result in enumerate(selected, 1):
             result.diversity_rank = idx
+        if tail_results:
+            for offset, result in enumerate(tail_results, len(selected) + 1):
+                result.diversity_rank = offset
+                if not result.novelty_score:
+                    result.novelty_score = 0.0
+            selected.extend(tail_results)
         return selected
 
     def _finalize(self) -> List[KeywordResult]:
@@ -7871,7 +7900,10 @@ class PathfinderLegion:
                 rising = sum(1 for r in sa_keywords if r.trend_status == "rising")
                 falling = sum(1 for r in sa_keywords if r.trend_status == "falling")
                 stable = sum(1 for r in sa_keywords if r.trend_status == "stable")
-                print(f"   📈 상승: {rising}개 | 📉 하락: {falling}개 | ➡️ 안정: {stable}개")
+                unknown = sum(1 for r in sa_keywords if r.trend_status == "unknown")
+                print(f"   📈 상승: {rising}개 | 📉 하락: {falling}개 | ➡️ 안정: {stable}개 | ❓ 데이터부족: {unknown}개")
+                if unknown > len(sa_keywords) * 0.7 and len(sa_keywords) > 10:
+                    print(f"   ⚠️ 트렌드 데이터 품질 주의: {unknown}/{len(sa_keywords)}개 DataLab 포인트 부족 — 롱테일 소량 키워드 특성")
 
         for result in results:
             self._sync_result_quality_fields(result)

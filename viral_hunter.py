@@ -2036,6 +2036,7 @@ class CommentableFilter:
         "domain_mismatch": "filtered_out",
         "source_context_mismatch": "filtered_out",
         "lens_mismatch": "filtered_out",
+        "marketplace_sale": "filtered_out",
         "response_restricted": "filtered_out",
         "self_target": "filtered_out",
     }
@@ -2072,6 +2073,22 @@ class CommentableFilter:
     LOW_COMMUNITY_FIT_PATTERNS = [
         "잡담", "썰", "웃긴", "투표", "설문", "공유해요", "홍보합니다",
         "정보 공유", "정보공유", "기사", "보도자료",
+    ]
+
+    MARKETPLACE_SALE_PATTERNS = [
+        "팔아요", "팔아봅니다", "팝니다", "판매합니다", "판매해요",
+        "판매중", "판매 중", "판매완료", "판매 완료",
+        "양도합니다", "양도해요", "양도완료", "양도 완료",
+        "무료나눔", "무료 나눔", "나눔합니다",
+        "직거래", "택배거래", "택배 거래", "반값택배",
+        "당근거래", "당근 거래", "중고나라", "번개장터",
+        "가격네고", "가격 네고", "네고가능", "네고 가능",
+        "쿨거래", "급처",
+    ]
+    MARKETPLACE_SALE_REGEXES = [
+        r"(?:^|[\s\)\]\}.,!?])(?:판매|양도)\s*(?:완료|중|합니다|해요)",
+        r"(?:직|택배)\s*거래\s*(?:가능|원해요|합니다)?",
+        r"(?:가격\s*)?네고\s*(?:가능|불가)?",
     ]
 
     ROUTE_NAVIGATION_PATTERNS = [
@@ -3752,6 +3769,15 @@ class CommentableFilter:
     @staticmethod
     def _contains_any(text: str, patterns: List[str]) -> bool:
         return any(pattern in text for pattern in patterns)
+
+    @classmethod
+    def _is_marketplace_sale(cls, text: str) -> bool:
+        if cls._contains_any(text, cls.MARKETPLACE_SALE_PATTERNS):
+            return True
+        compact = re.sub(r"\s+", "", text)
+        if cls._contains_any(compact, ["판매중", "판매완료", "양도완료", "무료나눔", "가격네고", "네고가능"]):
+            return True
+        return any(re.search(pattern, text) for pattern in cls.MARKETPLACE_SALE_REGEXES)
 
     @classmethod
     def _region_term_matches(cls, text: str, term: str) -> bool:
@@ -5467,6 +5493,8 @@ class CommentableFilter:
 
         if cls._is_self_target(target):
             return "self_target"
+        if cls._is_marketplace_sale(text):
+            return "marketplace_sale"
         if cls._is_off_domain(domain, text, title=title):
             return "off_domain"
         if cls._is_non_service_beauty_target(domain, text):
@@ -5685,7 +5713,8 @@ class CommentableFilter:
                  'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
                  'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0,
                  'clinic_mismatch': 0, 'low_worksite_efficiency': 0,
-                 'pathfinder_mismatch': 0, 'response_restricted': 0}
+                 'pathfinder_mismatch': 0, 'response_restricted': 0,
+                 'marketplace_sale': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
@@ -5705,6 +5734,16 @@ class CommentableFilter:
             text = f"{title_lower} {body_lower}"
             domain = self._target_domain(target)
             early_is_inquiry = any(pat in text for pat in self.REAL_INQUIRY_PATTERNS)
+
+            if self._is_marketplace_sale(text):
+                stats['marketplace_sale'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("marketplace_sale", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "marketplace_sale",
+                }
+                continue
 
             # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
             if any(ad in text for ad in self.STRICT_AD_PATTERNS):
@@ -6334,6 +6373,7 @@ class CommentableFilter:
             f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
             f"자격부족 {stats['unqualified']}, 진료불일치 {stats['clinic_mismatch']}, "
             f"응답거부 {stats['response_restricted']}, "
+            f"거래글 {stats['marketplace_sale']}, "
             f"작업효율낮음 {stats['low_worksite_efficiency']}, "
             f"Pathfinder불일치 {stats['pathfinder_mismatch']}]"
         )
@@ -10101,11 +10141,15 @@ class ViralHunter:
                     'discovered': discovered_total,
                     'fresh_discovered': fresh_total,
                     'pending': pending_total,
+                    'actionable': pending_total,
                     'fresh_pending': fresh_pending_total,
                     'open_pending': open_pending_total,
                     'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
+                    'actionable_rate': (pending_total / discovered_total) if discovered_total else 0.0,
                     'fresh_pending_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
+                    'fresh_actionable_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
                     'open_pending_rate': (open_pending_total / discovered_total) if discovered_total else 0.0,
+                    'fresh_discovery_rate': (fresh_total / discovered_total) if discovered_total else 0.0,
                     'ai_filtered': ai_filtered_total,
                     'ai_filtered_rate': (ai_filtered_total / discovered_total) if discovered_total else 0.0,
                     'post_ai_survival_rate': (pending_total / post_ai_total) if post_ai_total else 0.0,

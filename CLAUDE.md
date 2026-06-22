@@ -25,6 +25,8 @@
 - 의미기반 발견은 `.env MARKETING_BOT_SEMANTIC_DISCOVERY=1`로 **프로덕션 ON**(2026-06-21, 실측 net-positive). 테스트는 `tests/conftest.py` autouse fixture로 격리(기본-off 계약 검증) — 이 격리 제거 금지. 끄려면 `.env` line만 삭제
 - `SIGNATURE_BACKLOG_AXES`(viral_hunter)는 `routers/viral.py SIGNATURE_ROUTING_AXES`와 **동일 집합 유지**(수정 시 양쪽 동기화). 시그니처 백로그 레인(`--rescue-signature`)은 raw_backlog만 대상(이미 게이트 통과분) — 자동 승격 없음
 - Q&A 적재(`scripts/seed_signature_qa.py`)는 DML이므로 **반드시 마이그레이션 스크립트로만**(백업+멱등). 적재 후 `QASearchEngine.index_all()` RAG 재인덱스 필수(안 하면 드래프터가 못 찾음)
+- `viral_scan_audits.pending_count`/`summary.pending`은 과거 posted/generated/manual_review 포함 **actionable 누계**임 — 실제 열린 대기열은 `open_pending`, 신규 수율은 `fresh_pending`으로 판단. Pathfinder zero-yield/blind-spot 판정은 `fresh_discovered >= 25 && fresh_pending == 0` 기준 유지
+- 중고거래/판매/양도 글은 의료 리드가 아님. `marketplace_sale` final reject reason(`팔아요/팝니다/직거래/네고/중고나라/번개장터`) 유지하고 generic `non_relevant`로 묻지 말 것
 
 ---
 
@@ -245,6 +247,20 @@ from openai import OpenAI             # X - 사용 안 함
 
 **브랜치**: `codex/pathfinder-discovery-audit`
 **테스트**: `pytest tests` → 553 passed, 1 skipped
+
+### 2026-06-22: Pathfinder #85 + Viral Hunter #13 퍼널 정밀화
+
+> 상세: memory `project_pathfinder_viral_scan_2026_06_22.md`. 500+ Legion 완수 후 Viral Hunter 순차 스캔 완료. 결론: Pathfinder 공급은 충분하고, Viral 신규 전환/중복 재발견이 병목.
+
+| 영역 | 결과 / 변경 |
+|------|-------------|
+| Pathfinder #85 | `7,535` keywords, 신규 `401`, 갱신 `7,134`, `S=78`, `A=1,560`, `S+A=1,638`, 완료 `9,044s`. scan #84 실패 원인인 final diversity rerank O(n^2) 병목은 precise top `1,500`만 정밀 rerank + tail append로 완화 |
+| Viral audit #13 | source_scan_run_id=85, `12,055` discovered, `507` fresh, `403` actionable, `60` open_pending, `10` fresh_pending, `3,104` ad_filtered, rediscovered `95.8%` |
+| 병목 해석 | `pending_count=403`은 열린 큐가 아니라 과거 actionable 누계. 신규 성과는 `fresh_pending=10` / `fresh_pending_rate=1.97%`로 봐야 함 |
+| 카테고리 | 다이어트 fresh `95` → fresh_pending `6` 최상. 피부/여드름 fresh `198` → fresh_pending `0`, 교통사고 fresh `27` → `0`이라 쿼리/필터 정밀도 개선 대상 |
+| 코드 개선 | `viral_hunter.py` audit alias(`actionable`, `fresh_actionable_rate`, `fresh_discovery_rate`) + `marketplace_sale` 게이트. `pathfinder_insight_broker.py` zero-yield를 `pending==0`에서 `fresh_pending==0` 기준으로 교정. `signature_axis_sla.py` fresh/open/actionable 분리 표시 |
+| 데이터 정리 | CSV에 섞인 `청주) 보몬 e54 LV60 팔아요` legacy pending 행을 `filtered_out`, `final_reject_reason=marketplace_sale`로 정리 |
+| 검증 | `py_compile` 통과 + 브로커 fresh_pending 회귀 + marketplace_sale 회귀 테스트 통과 |
 
 ### 2026-06-20~21: 바이럴 발견 시스템 심층검토 + 13개 개선 (discovery review + 1인칭 정책 end-to-end 완성)
 

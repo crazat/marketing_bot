@@ -98,7 +98,9 @@ def _funnel_trend(c, n_audits):
             d = pc.get(ax, {}) or {}
             entry[ax] = {
                 "fresh": d.get("fresh_discovered", 0),
+                "fresh_pending": d.get("fresh_pending", 0),
                 "pending": d.get("pending", 0),
+                "open_pending": d.get("open_pending", 0),
                 "raw_backlog": d.get("raw_backlog", 0),
                 "ad": d.get("ad_filtered", 0),
                 "rejected": d.get("rejected", 0),
@@ -148,11 +150,11 @@ def build_report(n_audits: int) -> str:
 
     L.append("\n## 5. 발견 퍼널 트렌드 (최근 스캔)")
     for ax in SIGNATURE_AXES:
-        L.append(f"\n**{ax}**  (fresh / pending / ad_filtered / rejected)")
+        L.append(f"\n**{ax}**  (fresh / fresh_pending / open_pending / actionable / ad_filtered / rejected)")
         for e in trend:
             d = e[ax]
-            L.append(f"- #{e['audit_id']} {e['started']}: fresh {d['fresh']} · pending {d['pending']} · "
-                     f"ad {d['ad']} · reject {d['rejected']}")
+            L.append(f"- #{e['audit_id']} {e['started']}: fresh {d['fresh']} · fresh_pending {d['fresh_pending']} · "
+                     f"open {d['open_pending']} · actionable {d['pending']} · ad {d['ad']} · reject {d['rejected']}")
 
     # SLA 판정
     L.append("\n## 6. SLA 판정")

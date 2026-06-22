@@ -3332,13 +3332,25 @@ class PathfinderInsightBroker:
             # (오해 소지가 있는 신호로 blind spot/쿼리 재설계를 유발하지 않도록 fail-safe).
             has_fresh = "fresh_discovered" in entry
             fresh_discovered = int(entry.get("fresh_discovered", 0) or 0)
+            fresh_pending = int(entry.get("fresh_pending", pending if not has_fresh else 0) or 0)
+            open_pending = int(entry.get("open_pending", 0) or 0)
             pending_rate = round((pending / discovered), 4) if discovered else 0.0
+            fresh_pending_rate = (
+                round((fresh_pending / fresh_discovered), 4)
+                if has_fresh and fresh_discovered
+                else pending_rate
+            )
+            open_pending_rate = round((open_pending / discovered), 4) if discovered else 0.0
             category_yield.append({
                 "category": category,
                 "discovered": discovered,
                 "fresh_discovered": fresh_discovered,
                 "pending": pending,
+                "fresh_pending": fresh_pending,
+                "open_pending": open_pending,
                 "pending_rate": pending_rate,
+                "fresh_pending_rate": fresh_pending_rate,
+                "open_pending_rate": open_pending_rate,
                 "ad_filtered": ad_filtered,
             })
             surface = surface_by_category.get(category)
@@ -3346,11 +3358,15 @@ class PathfinderInsightBroker:
                 surface["viral_discovered"] = discovered
                 surface["viral_fresh_discovered"] = fresh_discovered
                 surface["viral_pending"] = pending
+                surface["viral_fresh_pending"] = fresh_pending
+                surface["viral_open_pending"] = open_pending
                 surface["viral_pending_rate"] = pending_rate
+                surface["viral_fresh_pending_rate"] = fresh_pending_rate
+                surface["viral_open_pending_rate"] = open_pending_rate
             if (
                 has_fresh
                 and fresh_discovered >= 25
-                and pending == 0
+                and fresh_pending == 0
                 and surface is not None
                 and int(surface.get("keyword_count") or 0) > 0
                 and surface.get("status") in {"healthy", "partial", "thin"}
@@ -3359,6 +3375,8 @@ class PathfinderInsightBroker:
                     "category": category,
                     "viral_discovered": discovered,
                     "viral_fresh_discovered": fresh_discovered,
+                    "viral_fresh_pending": fresh_pending,
+                    "viral_open_pending": open_pending,
                     "viral_ad_filtered": ad_filtered,
                     "keyword_surface_status": surface.get("status"),
                 })
@@ -3369,8 +3387,14 @@ class PathfinderInsightBroker:
             "run_started_at": audit.get("run_started_at"),
             "created_at": audit.get("created_at"),
             "discovered": int(summary.get("discovered", 0) or 0),
+            "fresh_discovered": int(summary.get("fresh_discovered", 0) or 0),
             "pending": int(summary.get("pending", 0) or 0),
+            "fresh_pending": int(summary.get("fresh_pending", 0) or 0),
+            "open_pending": int(summary.get("open_pending", 0) or 0),
             "pending_rate": float(summary.get("pending_rate", 0.0) or 0.0),
+            "fresh_pending_rate": float(summary.get("fresh_pending_rate", 0.0) or 0.0),
+            "open_pending_rate": float(summary.get("open_pending_rate", 0.0) or 0.0),
+            "rediscovered_rate": float(summary.get("rediscovered_rate", 0.0) or 0.0),
             "ad_rate": float(summary.get("ad_rate", 0.0) or 0.0),
             "category_yield": category_yield[:12],
             "zero_yield_categories": zero_yield_categories,
@@ -5209,7 +5233,9 @@ Keyword cards:
                     )
                     if key in {
                         "status", "run_started_at", "discovered", "pending",
-                        "pending_rate", "ad_rate", "zero_yield_categories",
+                        "fresh_discovered", "fresh_pending", "open_pending",
+                        "pending_rate", "fresh_pending_rate", "open_pending_rate",
+                        "rediscovered_rate", "ad_rate", "zero_yield_categories",
                     }
                 },
             },
