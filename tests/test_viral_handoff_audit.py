@@ -1,8 +1,12 @@
 import json
 import sqlite3
 
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE
 from core_services.viral_handoff_audit import (
+    ENGAGEMENT_HOOK_LENS_TERMS,
+    VIRAL_ACTION_ROUTE_DEFINITIONS,
     _next_run_playbook,
+    _priority_focus_categories,
     _seed_target_coverage,
     latest_viral_source_scan_id,
     summarize_viral_handoff_quality,
@@ -18,6 +22,7 @@ def _make_db(tmp_path):
             id TEXT PRIMARY KEY,
             url TEXT,
             title TEXT,
+            content_preview TEXT,
             platform TEXT,
             category TEXT,
             matched_keyword TEXT,
@@ -35,19 +40,35 @@ def _make_db(tmp_path):
     return db_path, conn
 
 
-def _insert_target(conn, *, target_id, scan_id, category, grade, status, priority, breakdown):
+def _insert_target(
+    conn,
+    *,
+    target_id,
+    scan_id,
+    category,
+    grade,
+    status,
+    priority,
+    breakdown,
+    title=None,
+    content_preview="",
+    platform="kin",
+    discovered_at=None,
+):
     conn.execute(
         """
         INSERT INTO viral_targets (
-            id, url, title, platform, category, matched_keyword, matched_keywords,
+            id, url, title, content_preview, platform, category, matched_keyword, matched_keywords,
             matched_keyword_grade, matched_keyword_category, comment_status,
             priority_score, score_breakdown, source_scan_run_id, discovered_at
-        ) VALUES (?, ?, ?, 'kin', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
         """,
         (
             target_id,
             f"https://example.com/{target_id}",
-            f"{category} target",
+            title or f"{category} target",
+            content_preview,
+            platform,
             category,
             f"{category} keyword",
             json.dumps([f"{category} keyword"], ensure_ascii=False),
@@ -57,8 +78,28 @@ def _insert_target(conn, *, target_id, scan_id, category, grade, status, priorit
             priority,
             json.dumps(breakdown, ensure_ascii=False),
             scan_id,
+            discovered_at,
         ),
     )
+
+
+def _signature_terms_for(category, *, count=4):
+    profile = ACTIVE_KEYWORD_PROFILE.profile_for(category)
+    if not profile:
+        return []
+    terms = []
+    for source in (
+        tuple(getattr(profile, "core_tokens", ()) or ()),
+        tuple(getattr(profile, "category_terms", ()) or ()),
+        tuple(getattr(profile, "seed_terms", ()) or ()),
+    ):
+        for term in source:
+            clean = str(term or "").strip()
+            if clean and clean not in terms:
+                terms.append(clean)
+            if len(terms) >= count:
+                return terms
+    return terms
 
 
 def test_viral_handoff_audit_summarizes_grade_axis_lens_and_fit_rates(tmp_path):
@@ -253,6 +294,366 @@ def test_viral_handoff_audit_counts_ai_approved_as_actionable_and_survived(tmp_p
     assert report["by_query_variant"]["axis_scar:specific_수술흉터"]["actionable"] == 1
 
 
+def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    categories_and_variants = [
+        ("흉터/여드름흉터", "axis_scar:specific_수술흉터"),
+        ("안면비대칭", "axis_asymmetry:턱관절비대칭추천"),
+        ("피부/여드름", "patient_voice_question_kin"),
+        ("다이어트", "cost_community:추천"),
+        ("체형교정", "community_base"),
+        ("리프팅/탄력", "review:추천"),
+        ("교통사고", "base"),
+    ]
+    for idx, (category, variant) in enumerate(categories_and_variants, start=1):
+        _insert_target(
+            conn,
+            target_id=f"strict-{idx}",
+            scan_id=44,
+            category=category,
+            grade="A",
+            status="pending",
+            priority=140,
+            title=f"청주 {category} 후기 추천",
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": variant,
+                "pathfinder_axis_fit_score": 90,
+                "pathfinder_lens_fit_score": 88,
+                "clinic_treatment_fit_score": 91,
+                "worksite_efficiency_score": 87,
+                "reply_opportunity_score": 82,
+                "reply_opportunity_tier": "assist_now",
+                "reply_opportunity_signals": (
+                    "public_reply_surface,help_request_language,decision_or_service_task,"
+                    "local_actionable,unanswered_or_low_response"
+                ),
+                "reply_risk_penalty": 0,
+                "reply_risk_flags": "",
+                "manual_review": 0,
+            },
+        )
+    journey_terms = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    journey_idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = " ".join(_signature_terms_for(category, count=4))
+        for lens, terms in journey_terms.items():
+            for copy_idx in range(2):
+                variant = f"{lens}:{terms}" if copy_idx == 0 else "patient_voice_question_kin"
+                _insert_target(
+                    conn,
+                    target_id=f"journey-strict-{journey_idx}-{copy_idx}",
+                    scan_id=44,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=135,
+                    platform=("kin" if copy_idx == 0 else "cafe"),
+                    content_preview=f"journey strict distinct copy {journey_idx}-{copy_idx} {signature_terms}",
+                    title=f"청주 {category} {terms}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"청주 {category} {terms} 독립시드 {copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            journey_idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=44,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    quality_bar = report["quality_bar"]
+    assert quality_bar["tier"] == "world_class"
+    assert quality_bar["required_gates_passed"] is True
+    assert quality_bar["focus_categories"]["strict_fit_coverage_rate"] == 1.0
+    assert quality_bar["patient_journey"]["strict_coverage_rate"] == 1.0
+    assert quality_bar["work_queue"]["category_lens_ready_rate"] == 1.0
+    assert quality_bar["opportunity_diversity"]["category_lens_diversity_ready_rate"] == 1.0
+    assert quality_bar["engagement_hook"]["category_lens_hook_ready_rate"] == 1.0
+    assert quality_bar["treatment_signature"]["category_lens_signature_ready_rate"] == 1.0
+    assert quality_bar["treatment_signal_diversity"]["category_lens_treatment_signal_diverse_ready_rate"] == 1.0
+    assert quality_bar["seed_candidate_alignment"]["category_lens_seed_alignment_ready_rate"] == 1.0
+    assert quality_bar["local_intent"]["category_lens_local_ready_rate"] == 1.0
+    assert quality_bar["patient_surface_authenticity"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert quality_bar["viral_action_route"]["category_lens_route_ready_rate"] == 1.0
+    assert quality_bar["reply_workability"]["category_lens_reply_workable_ready_rate"] == 1.0
+    assert quality_bar["execution_readiness"]["category_lens_execution_ready_rate"] == 1.0
+    assert quality_bar["execution_priority_alignment"]["category_lens_priority_alignment_rate"] == 1.0
+    assert quality_bar["patient_surface"]["strict_fit_rate"] == 1.0
+    assert report["by_variant_family"]["axis_specific"]["total"] == 1
+    assert report["by_variant_family"]["axis_companion"]["total"] == 1
+    assert report["by_variant_family"]["patient_voice"]["total"] >= 1
+    assert report["by_variant_family"]["lens_community"]["total"] == 1
+    assert not any(
+        item["code"] == "handoff_quality_bar_not_world_class"
+        for item in report["recommendations"]
+    )
+
+
+def test_viral_handoff_audit_since_filter_includes_rescanned_existing_targets(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    conn.execute("ALTER TABLE viral_targets ADD COLUMN last_scanned_at TEXT")
+    for target_id, discovered_at, last_scanned_at in (
+        ("rediscovered-current", "2026-06-01 09:00:00", "2026-06-03 10:00:00"),
+        ("old-only", "2026-06-01 09:00:00", "2026-06-01 10:00:00"),
+    ):
+        _insert_target(
+            conn,
+            target_id=target_id,
+            scan_id=55,
+            category="흉터/여드름흉터",
+            grade="A",
+            status="pending",
+            priority=120,
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "base",
+                "pathfinder_axis_fit_score": 90,
+                "pathfinder_lens_fit_score": 88,
+                "clinic_treatment_fit_score": 91,
+                "worksite_efficiency_score": 87,
+            },
+        )
+        conn.execute(
+            "UPDATE viral_targets SET discovered_at = ?, last_scanned_at = ? WHERE id = ?",
+            (discovered_at, last_scanned_at, target_id),
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=55,
+        since="2026-06-02 00:00:00",
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    assert report["row_count"] == 1
+    assert report["filters"]["since"] == "2026-06-02 00:00:00"
+    assert report["by_category"]["흉터/여드름흉터"]["total"] == 1
+
+
+def test_viral_handoff_audit_reports_source_seed_level_quality(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    source_seed = "청주 수술흉터 새살침 상담"
+    companion_seed = "청주 켈로이드 흉터 한의원 후기"
+    for idx, status in enumerate(("filtered_out_ai", "filtered_out_ad", "pending"), start=1):
+        _insert_target(
+            conn,
+            target_id=f"scar-seed-{idx}",
+            scan_id=56,
+            category="흉터/여드름흉터",
+            grade="A",
+            status=status,
+            priority=130 - idx,
+            breakdown={
+                "pathfinder_source_keyword": source_seed,
+                "pathfinder_source_keywords": [source_seed, companion_seed],
+                "pathfinder_execution_lens": "consultation",
+                "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+                "pathfinder_axis_fit_score": 90,
+                "pathfinder_lens_fit_score": 50 if status != "pending" else 84,
+                "clinic_treatment_fit_score": 85,
+                "worksite_efficiency_score": 42 if status != "pending" else 86,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=56,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    seed_metrics = report["by_source_seed"][source_seed]
+    assert seed_metrics["category"] == "흉터/여드름흉터"
+    assert seed_metrics["total"] == 3
+    assert seed_metrics["credit_total"] == 3
+    assert seed_metrics["primary_total"] == 3
+    assert seed_metrics["assist_total"] == 0
+    assert seed_metrics["strict_fit"] == 1
+    assert seed_metrics["query_variant_counts"] == {"axis_scar:specific_수술흉터": 3}
+    companion_metrics = report["by_source_seed"][companion_seed]
+    assert companion_metrics["category"] == "흉터/여드름흉터"
+    assert companion_metrics["total"] == 3
+    assert companion_metrics["credit_total"] == 3
+    assert companion_metrics["primary_total"] == 0
+    assert companion_metrics["assist_total"] == 3
+    assert companion_metrics["credit_note"] == "total is source-seed credit count; row_count is not duplicated"
+    assert companion_metrics["strict_fit"] == 1
+    assert report["review_samples"]["priority_focus_weak_lane_samples"][0]["samples"][0]["source_seeds"] == [
+        source_seed,
+        companion_seed,
+    ]
+
+    weak_seed = report["weak_source_seeds"][0]
+    assert weak_seed["seed"] == source_seed
+    assert weak_seed["category"] == "흉터/여드름흉터"
+    assert weak_seed["credit_total"] == 3
+    assert weak_seed["primary_total"] == 3
+    assert "low_survival_rate" in weak_seed["reasons"]
+
+    weak_names = [item["seed"] for item in report["weak_source_seeds"][:2]]
+    assert weak_names == [source_seed, companion_seed]
+
+    feedback = report["source_seed_feedback"]
+    assert feedback["counts"]["scale_candidates"] == 1
+    assert feedback["counts"]["assist_only_candidates"] == 1
+    scale_seed = feedback["scale_candidates"][0]
+    assert scale_seed["seed"] == source_seed
+    assert scale_seed["action"] == "scale_or_keep"
+    assert scale_seed["strict_fit"] == 1
+    assist_seed = feedback["assist_only_candidates"][0]
+    assert assist_seed["seed"] == companion_seed
+    assert assist_seed["action"] == "merge_or_keep_as_companion"
+
+
+def test_review_samples_prioritize_gyulim_focus_lanes_over_peripheral_weak_lanes(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    for idx in range(4):
+        _insert_target(
+            conn,
+            target_id=f"immune-filtered-{idx}",
+            scan_id=45,
+            category="면역/보약",
+            grade="B",
+            status="filtered_out_ai",
+            priority=150,
+            breakdown={
+                "pathfinder_execution_lens": "availability",
+                "pathfinder_query_variant": "base",
+                "pathfinder_axis_fit_score": 72,
+                "pathfinder_lens_fit_score": 28,
+                "clinic_treatment_fit_score": 40,
+                "worksite_efficiency_score": 30,
+            },
+        )
+    for idx, category in enumerate(("흉터/여드름흉터", "안면비대칭"), start=1):
+        _insert_target(
+            conn,
+            target_id=f"focus-filtered-{idx}",
+            scan_id=45,
+            category=category,
+            grade="A",
+            status="filtered_out_ai",
+            priority=130,
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 88,
+                "pathfinder_lens_fit_score": 52,
+                "clinic_treatment_fit_score": 84,
+                "worksite_efficiency_score": 44,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=45,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    weak_samples = report["review_samples"]["weak_lane_samples"]
+    assert weak_samples[0]["lane"] == "면역/보약"
+
+    focus_samples = report["review_samples"]["priority_focus_weak_lane_samples"]
+    assert focus_samples[0]["type"] == "category"
+    assert focus_samples[0]["lane"] == "흉터/여드름흉터"
+    assert focus_samples[0]["focus_category"] == "흉터/여드름흉터"
+    assert "면역/보약" not in {sample["focus_category"] for sample in focus_samples}
+    assert report["quality_bar"]["priority_focus_weak_lanes"][0]["lane"] == "흉터/여드름흉터"
+
+
+def test_weak_lane_diagnostic_samples_prefer_problem_cases_over_successes(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    for idx, priority in enumerate((140, 135, 130), start=1):
+        _insert_target(
+            conn,
+            target_id=f"scar-filtered-{idx}",
+            scan_id=46,
+            category="흉터/여드름흉터",
+            grade="A",
+            status="filtered_out_ai",
+            priority=priority,
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 88,
+                "pathfinder_lens_fit_score": 52,
+                "clinic_treatment_fit_score": 84,
+                "worksite_efficiency_score": 44,
+            },
+        )
+    _insert_target(
+        conn,
+        target_id="scar-strict-success",
+        scan_id=46,
+        category="흉터/여드름흉터",
+        grade="S",
+        status="pending",
+        priority=200,
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 90,
+            "worksite_efficiency_score": 88,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=46,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_samples = report["review_samples"]["priority_focus_weak_lane_samples"]
+    scar_category = next(
+        sample for sample in focus_samples
+        if sample["type"] == "category" and sample["lane"] == "흉터/여드름흉터"
+    )
+    assert scar_category["samples"][0]["status"] == "filtered_out_ai"
+    assert scar_category["samples"][0]["priority"] == 140
+
+
 def test_viral_handoff_audit_recategorizes_legacy_skin_scar_targets(tmp_path):
     db_path, conn = _make_db(tmp_path)
     conn.execute(
@@ -300,6 +701,1787 @@ def test_viral_handoff_audit_recategorizes_legacy_skin_scar_targets(tmp_path):
     assert set(report["by_category"]) == {"흉터/여드름흉터"}
     assert report["by_category"]["흉터/여드름흉터"]["total"] == 1
     assert report["review_samples"]["weak_lane_samples"] == []
+
+
+def test_viral_handoff_audit_flags_source_seed_category_drift(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    source_seed = "가경동 만성비염 한의원 치료기간"
+    _insert_target(
+        conn,
+        target_id="skin-rhinitis-drift",
+        scan_id=78,
+        category="피부/여드름",
+        grade="A",
+        status="filtered_out_ai",
+        priority=118,
+        breakdown={
+            "pathfinder_source_keyword": source_seed,
+            "pathfinder_execution_lens": "consultation",
+            "pathfinder_query_variant": "base",
+            "pathfinder_axis_fit_score": 28,
+            "pathfinder_lens_fit_score": 74,
+            "clinic_treatment_fit_score": 40,
+            "worksite_efficiency_score": 35,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=78,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    seed_metrics = report["by_source_seed"][source_seed]
+    assert seed_metrics["category"] == "피부/여드름"
+    assert seed_metrics["detected_category"] == "호흡기/알레르기"
+    assert seed_metrics["category_drift"] is True
+    assert seed_metrics["category_drift_count"] == 1
+    assert seed_metrics["category_drift_rate"] == 1.0
+
+    feedback = report["source_seed_feedback"]
+    assert feedback["counts"]["recategorize_candidates"] == 1
+    recategorize = feedback["recategorize_candidates"][0]
+    assert recategorize["seed"] == source_seed
+    assert recategorize["category"] == "피부/여드름"
+    assert recategorize["detected_category"] == "호흡기/알레르기"
+    assert recategorize["action"] == "recategorize_or_quarantine"
+    assert "source_seed_category_drift" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["source_seed_feedback_required"] is True
+    assert report["next_run_playbook"]["source_seed_actions"]["recategorize_or_quarantine"][0]["seed"] == source_seed
+    assert any(
+        item["code"] == "source_seed_category_drift"
+        for item in report["recommendations"]
+    )
+
+
+def test_viral_handoff_audit_flags_content_category_mismatch(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="skin-target-diet-content",
+        scan_id=79,
+        category="피부/여드름",
+        grade="A",
+        status="pending",
+        priority=125,
+        title="청주 다이어트 한약 후기 궁금해요",
+        content_preview="비만 때문에 감량 한약을 알아보고 있습니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름 한의원 후기",
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "base",
+            "pathfinder_axis_fit_score": 82,
+            "pathfinder_lens_fit_score": 81,
+            "clinic_treatment_fit_score": 86,
+            "worksite_efficiency_score": 84,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=79,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    overall = report["overall"]
+    assert overall["content_category_observed"] == 1
+    assert overall["content_category_mismatch"] == 1
+    assert overall["content_category_mismatch_rate"] == 1.0
+    assert report["by_category"]["피부/여드름"]["content_category_mismatch"] == 1
+    assert report["quality_bar"]["content_coherence"]["mismatch_rate"] == 1.0
+    assert "content_category_mismatch" in report["quality_bar"]["failed_advisory_gates"]
+    assert any(
+        item["code"] == "content_category_mismatch"
+        for item in report["recommendations"]
+    )
+    assert report["next_run_playbook"]["content_coherence_required"] is True
+    sample = report["review_samples"]["top_strict_fit"][0]
+    assert sample["content_detected_category"] == "다이어트"
+    assert sample["content_category_mismatch"] is True
+
+
+def test_viral_handoff_audit_flags_lens_surface_mismatch_and_bridge_match(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="cost-lens-no-cost-surface",
+        scan_id=80,
+        category="피부/여드름",
+        grade="A",
+        status="pending",
+        priority=126,
+        title="청주 여드름 치료 궁금해요",
+        content_preview="성인여드름 때문에 한의원 알아보고 있습니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름 비용",
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost:비용",
+            "pathfinder_axis_fit_score": 86,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 86,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="cost-lens-no-cost-surface-2",
+        scan_id=80,
+        category="피부/여드름",
+        grade="A",
+        status="pending",
+        priority=124,
+        title="청주 여드름 치료 알아보고 있어요",
+        content_preview="성인여드름 때문에 한의원 치료를 고민하고 있습니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름 비용",
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost:비용",
+            "pathfinder_axis_fit_score": 86,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 86,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="cost-lens-community-bridge",
+        scan_id=80,
+        category="피부/여드름",
+        grade="A",
+        status="pending",
+        priority=125,
+        title="청주 여드름 한의원 추천 부탁드려요",
+        content_preview="여드름 치료 괜찮은 곳 가보신 분 있나요?",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름 비용",
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost_community:추천",
+            "pathfinder_axis_fit_score": 86,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 86,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=80,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    overall = report["overall"]
+    assert overall["lens_surface_checked"] == 3
+    assert overall["lens_surface_matched"] == 1
+    assert overall["lens_surface_mismatch"] == 2
+    assert overall["lens_surface_mismatch_rate"] == 0.6667
+    assert "lens_surface_mismatch" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["lens_surface_required"] is True
+    assert any(
+        item["code"] == "lens_surface_mismatch"
+        for item in report["recommendations"]
+    )
+    samples = report["review_samples"]["top_strict_fit"]
+    mismatch_sample = next(sample for sample in samples if sample["id"] == "cost-lens-no-cost-surface")
+    bridge_sample = next(sample for sample in samples if sample["id"] == "cost-lens-community-bridge")
+    assert mismatch_sample["lens_surface_matched"] is False
+    assert bridge_sample["lens_surface_matched"] is True
+    assert bridge_sample["lens_surface_bridge_terms"]
+    lens_samples = report["review_samples"]["lens_surface_mismatch_samples"]
+    assert lens_samples[0]["samples"][0]["id"] == "cost-lens-no-cost-surface"
+    assert lens_samples[0]["mismatch_rate"] == 0.6667
+
+
+def test_mismatch_playbook_prioritizes_gyulim_focus_axes(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    for idx in range(3):
+        _insert_target(
+            conn,
+            target_id=f"immune-content-mismatch-{idx}",
+            scan_id=81,
+            category="면역/보약",
+            grade="B",
+            status="filtered_out_ai",
+            priority=150,
+            title="청주 다이어트 한약 후기 궁금해요",
+            content_preview="비만 때문에 감량 한약을 알아보고 있습니다.",
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 40,
+                "pathfinder_lens_fit_score": 50,
+                "clinic_treatment_fit_score": 40,
+                "worksite_efficiency_score": 35,
+            },
+        )
+    for idx in range(3):
+        _insert_target(
+            conn,
+            target_id=f"scar-content-mismatch-{idx}",
+            scan_id=81,
+            category="흉터/여드름흉터",
+            grade="B",
+            status="filtered_out_ai",
+            priority=120,
+            title="청주 다이어트 한약 후기 궁금해요",
+            content_preview="비만 때문에 감량 한약을 알아보고 있습니다.",
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 40,
+                "pathfinder_lens_fit_score": 50,
+                "clinic_treatment_fit_score": 40,
+                "worksite_efficiency_score": 35,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=81,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    assert report["next_run_playbook"]["content_mismatch_lanes"][0]["lane"] == "흉터/여드름흉터"
+    assert report["review_samples"]["content_mismatch_samples"][0]["lane"] == "흉터/여드름흉터"
+    assert report["review_samples"]["content_mismatch_samples"][0]["mismatch_rate"] == 1.0
+
+
+def test_loss_analysis_prioritizes_gyulim_focus_filter_hotspots(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    for idx in range(3):
+        _insert_target(
+            conn,
+            target_id=f"immune-loss-{idx}",
+            scan_id=82,
+            category="면역/보약",
+            grade="B",
+            status="filtered_out_ai",
+            priority=150,
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 44,
+                "pathfinder_lens_fit_score": 50,
+                "clinic_treatment_fit_score": 40,
+                "worksite_efficiency_score": 35,
+            },
+        )
+    for idx in range(2):
+        _insert_target(
+            conn,
+            target_id=f"scar-loss-{idx}",
+            scan_id=82,
+            category="흉터/여드름흉터",
+            grade="A",
+            status="filtered_out_clinic_mismatch",
+            priority=120,
+            breakdown={
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": "community_base",
+                "pathfinder_axis_fit_score": 78,
+                "pathfinder_lens_fit_score": 64,
+                "clinic_treatment_fit_score": 38,
+                "worksite_efficiency_score": 35,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=82,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    loss = report["loss_analysis"]
+    assert loss["overall"]["lost"] == 5
+    assert loss["overall"]["loss_reason_counts"]["ai"] == 3
+    assert loss["overall"]["loss_reason_counts"]["clinic_mismatch"] == 2
+    focus_hotspot = loss["priority_focus_hotspots"][0]
+    assert focus_hotspot["lane"] == "흉터/여드름흉터"
+    assert focus_hotspot["dominant_loss_reason"] == "clinic_mismatch"
+    assert report["next_run_playbook"]["filter_loss_required"] is True
+    assert report["next_run_playbook"]["filter_loss_hotspots"][0]["lane"] == "흉터/여드름흉터"
+    assert any(
+        item["code"] == "priority_focus_filter_loss_hotspots"
+        for item in report["recommendations"]
+    )
+
+
+def test_platform_surface_quality_prioritizes_gyulim_focus_axes(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    focus_category = _priority_focus_categories()[0]
+    peripheral_category = "peripheral"
+
+    for idx in range(4):
+        _insert_target(
+            conn,
+            target_id=f"peripheral-blog-loss-{idx}",
+            scan_id=83,
+            category=peripheral_category,
+            grade="B",
+            status="filtered_out_ai",
+            priority=170,
+            platform="blog",
+            breakdown={
+                "pathfinder_execution_lens": "service",
+                "pathfinder_query_variant": "base",
+                "pathfinder_axis_fit_score": 35,
+                "pathfinder_lens_fit_score": 35,
+                "clinic_treatment_fit_score": 35,
+                "worksite_efficiency_score": 35,
+            },
+        )
+    for idx in range(2):
+        _insert_target(
+            conn,
+            target_id=f"focus-blog-loss-{idx}",
+            scan_id=83,
+            category=focus_category,
+            grade="A",
+            status="filtered_out_clinic_mismatch",
+            priority=130,
+            platform="blog",
+            breakdown={
+                "pathfinder_execution_lens": "service",
+                "pathfinder_query_variant": "base",
+                "pathfinder_axis_fit_score": 82,
+                "pathfinder_lens_fit_score": 80,
+                "clinic_treatment_fit_score": 30,
+                "worksite_efficiency_score": 45,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=83,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    lane = f"blog::{focus_category}"
+    assert report["by_platform"]["blog"]["total"] == 6
+    assert report["by_platform_category"][lane]["lost"] == 2
+
+    quality = report["platform_surface_quality"]
+    focus_hotspot = quality["priority_focus_hotspots"][0]
+    assert focus_hotspot["lane"] == lane
+    assert focus_hotspot["focus_category"] == focus_category
+    assert "high_platform_loss" in focus_hotspot["reasons"]
+    assert report["quality_bar"]["platform_surface"]["priority_focus_hotspots"] == 1
+    assert "platform_surface_hotspots" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["platform_surface_required"] is True
+    assert report["next_run_playbook"]["platform_surface_hotspots"][0]["lane"] == lane
+    assert report["review_samples"]["platform_surface_samples"][0]["lane"] == lane
+    assert any(
+        item["code"] == "priority_focus_platform_surface_hotspots"
+        for item in report["recommendations"]
+    )
+
+
+def test_patient_journey_coverage_boosts_missing_focus_lens(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    focus_category = _priority_focus_categories()[0]
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    for idx, (lens, terms) in enumerate(terms_by_lens.items(), start=1):
+        _insert_target(
+            conn,
+            target_id=f"journey-present-{idx}",
+            scan_id=84,
+            category=focus_category,
+            grade="A",
+            status="pending",
+            priority=140,
+            title=f"청주 {focus_category} {terms}",
+            breakdown={
+                "pathfinder_execution_lens": lens,
+                "pathfinder_query_variant": f"{lens}:{terms}",
+                "pathfinder_axis_fit_score": 90,
+                "pathfinder_lens_fit_score": 88,
+                "clinic_treatment_fit_score": 91,
+                "worksite_efficiency_score": 87,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=84,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    expected_lane = f"{focus_category}::cost"
+    journey = report["patient_journey_coverage"]
+    assert journey["by_category"][focus_category]["strict_lens_coverage_rate"] == 0.8333
+    assert journey["priority_focus_gaps"][0]["lane"] == expected_lane
+    assert journey["priority_focus_gaps"][0]["reasons"] == ["no_targets"]
+    assert "patient_journey_strict_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["patient_journey_required"] is True
+    assert report["next_run_playbook"]["patient_journey_gaps"][0]["lane"] == expected_lane
+    assert f'--boost-category "{focus_category}"' in report["next_run_playbook"]["suggested_commands"]["live_scan"]
+    assert '--boost-lens "cost"' in report["next_run_playbook"]["suggested_commands"]["live_scan"]
+    assert any(
+        item["code"] == "patient_journey_coverage_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_patient_journey_coverage_flags_backlog_only_strict_candidates(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in terms_by_lens.items():
+            _insert_target(
+                conn,
+                target_id=f"journey-backlog-{idx}",
+                scan_id=85,
+                category=category,
+                grade="A",
+                status="raw_backlog",
+                priority=140,
+                title=f"청주 {category} {terms}",
+                breakdown={
+                    "pathfinder_execution_lens": lens,
+                    "pathfinder_query_variant": f"{lens}:{terms}",
+                    "pathfinder_axis_fit_score": 90,
+                    "pathfinder_lens_fit_score": 88,
+                    "clinic_treatment_fit_score": 91,
+                    "worksite_efficiency_score": 87,
+                },
+            )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=85,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    journey = report["patient_journey_coverage"]
+    assert journey["overall"]["strict_coverage_rate"] == 1.0
+    assert journey["overall"]["actionable_strict_coverage_rate"] == 0.0
+    assert report["overall"]["strict_fit_rate"] == 1.0
+    assert report["overall"]["actionable_strict_rate"] == 0.0
+    assert "patient_journey_strict_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "patient_journey_actionable_strict_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    first_gap = journey["priority_focus_gaps"][0]
+    assert first_gap["category"] == _priority_focus_categories()[0]
+    assert "no_actionable_strict" in first_gap["reasons"]
+    assert report["next_run_playbook"]["patient_journey_required"] is True
+    assert "no_actionable_strict" in report["next_run_playbook"]["patient_journey_gaps"][0]["reasons"]
+
+
+def test_work_queue_readiness_requires_repeatable_actionable_depth(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in terms_by_lens.items():
+            _insert_target(
+                conn,
+                target_id=f"queue-thin-{idx}",
+                scan_id=86,
+                category=category,
+                grade="A",
+                status="pending",
+                priority=140,
+                title=f"청주 {category} {terms}",
+                breakdown={
+                    "pathfinder_execution_lens": lens,
+                    "pathfinder_query_variant": f"{lens}:{terms}",
+                    "pathfinder_axis_fit_score": 90,
+                    "pathfinder_lens_fit_score": 88,
+                    "clinic_treatment_fit_score": 91,
+                    "worksite_efficiency_score": 87,
+                },
+            )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=86,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    assert queue["overall"]["category_ready_rate"] == 1.0
+    assert queue["overall"]["category_lens_ready_rate"] == 0.0
+    assert queue["priority_gaps"][0]["lane"] == expected_lane
+    assert queue["priority_gaps"][0]["actionable_strict"] == 1
+    assert queue["priority_gaps"][0]["target"] == 2
+    assert queue["priority_gaps"][0]["reasons"] == ["thin_lens_queue"]
+    assert "work_queue_lens_depth" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["work_queue_required"] is True
+    assert report["next_run_playbook"]["work_queue_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["work_queue_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "work_queue_depth_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_fresh_work_queue_readiness_flags_stale_actionable_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in terms_by_lens.items():
+            for copy_idx in range(2):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-stale-{idx}-{copy_idx}",
+                    scan_id=87,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    title=f"청주 {category} {terms}",
+                    discovered_at="2000-01-01 00:00:00",
+                    breakdown={
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": f"{lens}:{terms}",
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=87,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    assert queue["overall"]["category_lens_ready_rate"] == 1.0
+    assert queue["overall"]["fresh_category_lens_ready_rate"] == 0.0
+    assert queue["fresh_priority_gaps"][0]["lane"] == expected_lane
+    assert queue["fresh_priority_gaps"][0]["fresh_actionable_strict"] == 0
+    assert "stale_lens_inventory" in queue["fresh_priority_gaps"][0]["reasons"]
+    assert "work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_work_queue_lens_depth" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["fresh_work_queue_required"] is True
+    assert report["next_run_playbook"]["fresh_work_queue_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_work_queue_gap_samples"][0]["samples"][0]["fresh_activity"] is False
+    assert any(
+        item["code"] == "fresh_work_queue_depth_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_unique_work_queue_readiness_flags_duplicate_actionable_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            for copy_idx in range(2):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-duplicate-{idx}-{copy_idx}",
+                    scan_id=88,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    title=f"duplicate queue {category} {lens}",
+                    breakdown={
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": f"{lens}:duplicate",
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=88,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    assert queue["overall"]["category_lens_ready_rate"] == 1.0
+    assert queue["overall"]["fresh_category_lens_ready_rate"] == 1.0
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 0.0
+    assert queue["overall"]["fresh_unique_category_lens_ready_rate"] == 0.0
+    assert queue["unique_priority_gaps"][0]["lane"] == expected_lane
+    assert queue["unique_priority_gaps"][0]["actionable_strict"] == 2
+    assert queue["unique_priority_gaps"][0]["unique_actionable_strict"] == 1
+    assert queue["unique_priority_gaps"][0]["actionable_strict_duplicate_count"] == 1
+    assert "duplicate_lens_inventory" in queue["unique_priority_gaps"][0]["reasons"]
+    assert "work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "unique_work_queue_lens_depth" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_unique_work_queue_lens_depth" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["unique_work_queue_required"] is True
+    assert report["next_run_playbook"]["fresh_unique_work_queue_required"] is True
+    assert report["next_run_playbook"]["unique_work_queue_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["unique_work_queue_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_unique_work_queue_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "unique_work_queue_depth_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_opportunity_diversity_flags_single_surface_seed_and_query_family(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in terms_by_lens.items():
+            for copy_idx in range(2):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-concentrated-{idx}-{copy_idx}",
+                    scan_id=89,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform="kin",
+                    content_preview=f"distinct opportunity {idx}-{copy_idx}",
+                    title=f"청주 {category} {terms}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"청주 {category} {lens} 단일시드",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": f"{lens}:same-family",
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=89,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 0.0
+    assert diversity["overall"]["fresh_category_lens_diversity_ready_rate"] == 0.0
+    first_gap = diversity["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["platform_count"] == 1
+    assert first_gap["source_seed_count"] == 1
+    assert first_gap["variant_family_count"] == 1
+    assert "single_platform_dependency" in first_gap["reasons"]
+    assert "single_source_seed_dependency" in first_gap["reasons"]
+    assert "single_query_family_dependency" in first_gap["reasons"]
+    assert "unique_work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "opportunity_diversity_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_opportunity_diversity_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["opportunity_diversity_required"] is True
+    assert report["next_run_playbook"]["fresh_opportunity_diversity_required"] is True
+    assert report["next_run_playbook"]["opportunity_diversity_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["opportunity_diversity_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_opportunity_diversity_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "opportunity_diversity_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_engagement_hook_quality_flags_generic_actionable_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-no-hook-{idx}-{copy_idx}",
+                    scan_id=90,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"general treatment summary {idx}-{copy_idx}",
+                    title=f"{category} information packet {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=90,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 0.0
+    assert hook_quality["overall"]["fresh_category_lens_hook_ready_rate"] == 0.0
+    first_gap = hook_quality["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["hooked_actionable_strict"] == 0
+    assert first_gap["engagement_hook_missing"] == 2
+    assert "no_hooked_actionable_strict" in first_gap["reasons"]
+    assert "missing_engagement_hook" in first_gap["reasons"]
+    assert "unique_work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "opportunity_diversity_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "engagement_hook_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_engagement_hook_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["engagement_hook_required"] is True
+    assert report["next_run_playbook"]["fresh_engagement_hook_required"] is True
+    assert report["next_run_playbook"]["engagement_hook_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["engagement_hook_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_engagement_hook_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "engagement_hook_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_treatment_signature_quality_flags_generic_patient_intent_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    terms_by_lens = {
+        "review": "후기 추천",
+        "community": "추천 궁금",
+        "cost": "비용 가격",
+        "consultation": "상담 문의",
+        "availability": "예약 주차",
+        "safety": "부작용 회복",
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in terms_by_lens.items():
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-no-signature-{idx}-{copy_idx}",
+                    scan_id=91,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"general local clinic question {idx}-{copy_idx}",
+                    title=f"청주 {terms} 어디가 괜찮나요 {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=91,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 0.0
+    assert signature_quality["overall"]["fresh_category_lens_signature_ready_rate"] == 0.0
+    first_gap = signature_quality["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["signature_actionable_strict"] == 0
+    assert first_gap["treatment_signature_missing"] == 2
+    assert "no_treatment_signature" in first_gap["reasons"]
+    assert "missing_treatment_signature" in first_gap["reasons"]
+    assert "unique_work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "opportunity_diversity_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "engagement_hook_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "treatment_signature_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_treatment_signature_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["treatment_signature_required"] is True
+    assert report["next_run_playbook"]["fresh_treatment_signature_required"] is True
+    assert report["next_run_playbook"]["treatment_signature_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["treatment_signature_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_treatment_signature_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "treatment_signature_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_local_intent_quality_flags_nonlocal_patient_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            terms = " ".join(ENGAGEMENT_HOOK_LENS_TERMS[lens][:2])
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-no-local-{idx}-{copy_idx}",
+                    scan_id=92,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"general nonlocal clinic question {idx}-{copy_idx}",
+                    title=f"{category} {terms} patient question {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=92,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    local_quality = report["local_intent_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 0.0
+    assert local_quality["overall"]["fresh_category_lens_local_ready_rate"] == 0.0
+    first_gap = local_quality["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["local_actionable_strict"] == 0
+    assert first_gap["local_intent_missing"] == 2
+    assert "no_local_intent" in first_gap["reasons"]
+    assert "missing_local_intent" in first_gap["reasons"]
+    assert "unique_work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "opportunity_diversity_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "engagement_hook_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "treatment_signature_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "local_intent_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_local_intent_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["local_intent_required"] is True
+    assert report["next_run_playbook"]["fresh_local_intent_required"] is True
+    assert report["next_run_playbook"]["local_intent_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["local_intent_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_local_intent_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "local_intent_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_patient_surface_quality_flags_provider_promo_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "청주")
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            terms = " ".join(ENGAGEMENT_HOOK_LENS_TERMS[lens][:2])
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-provider-surface-{idx}-{copy_idx}",
+                    scan_id=93,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"provider promo surface {idx}-{copy_idx}",
+                    title=(
+                        f"{primary_region} {category} {terms} "
+                        f"의료진소개 진료시간 오시는길 {idx}-{copy_idx}"
+                    ),
+                    breakdown={
+                        "pathfinder_source_keyword": f"seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=93,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    local_quality = report["local_intent_quality"]
+    patient_surface = report["patient_surface_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert patient_surface["overall"]["category_lens_patient_surface_ready_rate"] == 0.0
+    assert patient_surface["overall"]["fresh_category_lens_patient_surface_ready_rate"] == 0.0
+    first_gap = patient_surface["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["patient_surface_actionable_strict"] == 0
+    assert first_gap["provider_surface_noise"] == 2
+    assert first_gap["patient_surface_missing"] == 2
+    assert "no_patient_surface" in first_gap["reasons"]
+    assert "provider_surface_noise" in first_gap["reasons"]
+    assert "unique_work_queue_lens_depth" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "opportunity_diversity_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "engagement_hook_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "treatment_signature_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "local_intent_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "patient_surface_authenticity_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_patient_surface_authenticity_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["patient_surface_required"] is True
+    assert report["next_run_playbook"]["fresh_patient_surface_required"] is True
+    assert report["next_run_playbook"]["patient_surface_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["patient_surface_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_patient_surface_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "patient_surface_authenticity_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_viral_action_route_quality_flags_generic_patient_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "청주")
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-no-route-{idx}-{copy_idx}",
+                    scan_id=94,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"generic patient surface without route {idx}-{copy_idx}",
+                    title=f"{primary_region} {category} 궁금해요 알려주세요? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=94,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    local_quality = report["local_intent_quality"]
+    patient_surface = report["patient_surface_quality"]
+    action_route = report["viral_action_route_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert patient_surface["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert action_route["overall"]["category_lens_route_ready_rate"] == 0.0
+    assert action_route["overall"]["fresh_category_lens_route_ready_rate"] == 0.0
+    first_gap = action_route["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["routed_actionable_strict"] == 0
+    assert first_gap["viral_action_route_missing"] == 2
+    assert "no_viral_action_route" in first_gap["reasons"]
+    assert "missing_viral_action_route" in first_gap["reasons"]
+    assert "patient_surface_authenticity_lens_coverage" not in report["quality_bar"]["failed_advisory_gates"]
+    assert "viral_action_route_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "fresh_viral_action_route_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["viral_action_route_required"] is True
+    assert report["next_run_playbook"]["fresh_viral_action_route_required"] is True
+    assert report["next_run_playbook"]["viral_action_route_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["viral_action_route_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_viral_action_route_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "viral_action_route_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_treatment_signal_diversity_flags_single_term_collapse(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    route_terms = {}
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        terms = tuple(definition.get("terms") or ())
+        if not terms:
+            continue
+        for lens_name in tuple(definition.get("lenses") or ()):
+            route_terms.setdefault(lens_name, terms[0])
+    journey_terms = {
+        lens_name: route_terms[lens_name]
+        for lens_name in ("review", "community", "cost", "consultation", "availability", "safety")
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_term = _signature_terms_for(category, count=1)[0]
+        for lens, route_term in journey_terms.items():
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-narrow-signal-{idx}-{copy_idx}",
+                    scan_id=96,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"single signal copy {idx}-{copy_idx}",
+                    title=f"{primary_region} {signature_term} {route_term} question recommend ? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"narrow-signal-seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_signal:specific_{idx}"
+                            if copy_idx == 0
+                            else f"colloquial:narrow_signal_{idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=96,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    signal_diversity = report["treatment_signal_diversity_quality"]
+    local_quality = report["local_intent_quality"]
+    patient_surface = report["patient_surface_quality"]
+    action_route = report["viral_action_route_quality"]
+    reply_workability = report["reply_workability_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert patient_surface["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert action_route["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert reply_workability["overall"]["category_lens_reply_workable_ready_rate"] == 1.0
+    assert signal_diversity["overall"]["category_lens_treatment_signal_diverse_ready_rate"] < 0.35
+    assert signal_diversity["overall"]["fresh_category_lens_treatment_signal_diverse_ready_rate"] < 0.30
+    first_gap = signal_diversity["priority_gaps"][0]
+    assert first_gap["lane"] == focus_category
+    first_lens_gap = signal_diversity["category_lens_gaps"][0]
+    assert first_lens_gap["category"] in _priority_focus_categories()
+    assert first_lens_gap["lens"] in journey_terms
+    assert first_gap["unique_actionable_strict"] == len(journey_terms) * 2
+    assert first_gap["treatment_signal_actionable_strict"] == len(journey_terms) * 2
+    assert first_lens_gap["unique_actionable_strict"] == 2
+    assert first_lens_gap["treatment_signal_actionable_strict"] == 2
+    assert first_gap["min_distinct_treatment_signal_terms"] == 4
+    assert (
+        first_gap["distinct_treatment_signal_terms"]
+        < first_gap["min_distinct_treatment_signal_terms"]
+    )
+    assert first_lens_gap["distinct_treatment_signal_terms"] == 1
+    assert first_lens_gap["min_distinct_treatment_signal_terms"] == 2
+    assert "narrow_treatment_signal_diversity" in first_gap["reasons"]
+    assert "narrow_treatment_signal_diversity" in first_lens_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "treatment_signature_lens_coverage" not in failed
+    assert "treatment_signal_diversity_lens_coverage" in failed
+    assert "fresh_treatment_signal_diversity_lens_coverage" in failed
+    assert report["next_run_playbook"]["treatment_signal_diversity_required"] is True
+    assert report["next_run_playbook"]["fresh_treatment_signal_diversity_required"] is True
+    assert report["next_run_playbook"]["treatment_signal_diversity_gaps"][0]["lane"] == focus_category
+    assert report["review_samples"]["treatment_signal_diversity_gap_samples"][0]["lane"] == focus_category
+    assert report["review_samples"]["fresh_treatment_signal_diversity_gap_samples"][0]["lane"] == focus_category
+    assert any(
+        item["code"] == "treatment_signal_diversity_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_reply_workability_quality_flags_risky_or_low_opportunity_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    route_terms = {}
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        terms = tuple(definition.get("terms") or ())
+        if not terms:
+            continue
+        for lens_name in tuple(definition.get("lenses") or ()):
+            route_terms.setdefault(lens_name, terms[0])
+    journey_terms = {
+        lens_name: route_terms[lens_name]
+        for lens_name in ("review", "community", "cost", "consultation", "availability", "safety")
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens, terms in journey_terms.items():
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                risky = copy_idx == 1
+                _insert_target(
+                    conn,
+                    target_id=f"queue-reply-blocked-{idx}-{copy_idx}",
+                    scan_id=95,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"reply workability blocked copy {idx}-{copy_idx}",
+                    title=f"{primary_region} {category} {terms} 沅곴툑?댁슂 ?뚮젮二쇱꽭?? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"reply-seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_reply:specific_{idx}"
+                            if copy_idx == 0
+                            else f"colloquial:reply_workability_{idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82 if risky else 20,
+                        "reply_opportunity_tier": "assist_now" if risky else "low",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                            if risky
+                            else ""
+                        ),
+                        "reply_risk_penalty": -60 if risky else 0,
+                        "reply_risk_flags": "urgent_medical" if risky else "",
+                        "manual_review": 1 if risky else 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=95,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    local_quality = report["local_intent_quality"]
+    patient_surface = report["patient_surface_quality"]
+    action_route = report["viral_action_route_quality"]
+    reply_workability = report["reply_workability_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert patient_surface["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert action_route["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert reply_workability["overall"]["category_lens_reply_workable_ready_rate"] == 0.0
+    assert reply_workability["overall"]["fresh_category_lens_reply_workable_ready_rate"] == 0.0
+    first_gap = reply_workability["priority_gaps"][0]
+    assert first_gap["lane"] == expected_lane
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["reply_workable_actionable_strict"] == 0
+    assert first_gap["reply_workability_missing"] == 2
+    assert first_gap["reply_risk_flagged"] == 1
+    assert first_gap["reply_metric_missing"] == 0
+    assert "no_reply_workable_surface" in first_gap["reasons"]
+    assert "missing_reply_workability" in first_gap["reasons"]
+    assert "reply_risk_flags" in first_gap["reasons"]
+    assert "low_reply_opportunity_score" in first_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "viral_action_route_lens_coverage" not in failed
+    assert "reply_workability_lens_coverage" in failed
+    assert "fresh_reply_workability_lens_coverage" in failed
+    assert report["next_run_playbook"]["reply_workability_required"] is True
+    assert report["next_run_playbook"]["fresh_reply_workability_required"] is True
+    assert report["next_run_playbook"]["reply_workability_gaps"][0]["lane"] == expected_lane
+    assert report["review_samples"]["reply_workability_gap_samples"][0]["lane"] == expected_lane
+    assert report["review_samples"]["fresh_reply_workability_gap_samples"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "reply_workability_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_execution_readiness_flags_fragmented_component_signals(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    route_terms = {}
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        terms = tuple(definition.get("terms") or ())
+        if not terms:
+            continue
+        for lens_name in tuple(definition.get("lenses") or ()):
+            route_terms.setdefault(lens_name, terms[0])
+    journey_terms = {
+        lens_name: route_terms[lens_name]
+        for lens_name in ("review", "community", "cost", "consultation", "availability", "safety")
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = _signature_terms_for(category, count=2)
+        if len(signature_terms) == 1:
+            signature_terms = [signature_terms[0], signature_terms[0]]
+        for lens, route_term in journey_terms.items():
+            rows = (
+                {
+                    "suffix": "missing-reply",
+                    "title_terms": f"{signature_terms[0]} {route_term}",
+                    "reply_score": 20,
+                    "reply_tier": "low",
+                    "reply_signals": "",
+                    "variant": f"axis_exec:specific_{idx}",
+                    "platform": "kin",
+                },
+                {
+                    "suffix": "missing-route",
+                    "title_terms": signature_terms[1],
+                    "reply_score": 82,
+                    "reply_tier": "assist_now",
+                    "reply_signals": (
+                        "public_reply_surface,help_request_language,decision_or_service_task,"
+                        "local_actionable,unanswered_or_low_response"
+                    ),
+                    "variant": f"colloquial:exec_{idx}",
+                    "platform": "cafe",
+                },
+                {
+                    "suffix": "missing-signature",
+                    "title_terms": route_term,
+                    "reply_score": 82,
+                    "reply_tier": "assist_now",
+                    "reply_signals": (
+                        "public_reply_surface,help_request_language,decision_or_service_task,"
+                        "local_actionable,unanswered_or_low_response"
+                    ),
+                    "variant": "patient_voice_question_kin",
+                    "platform": "blog",
+                },
+            )
+            for copy_idx, row in enumerate(rows):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-exec-fragmented-{idx}-{copy_idx}",
+                    scan_id=97,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=row["platform"],
+                    content_preview=f"execution fragmented copy {idx}-{copy_idx}",
+                    title=f"{primary_region} {row['title_terms']} ? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"exec-fragmented-seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": row["variant"],
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": row["reply_score"],
+                        "reply_opportunity_tier": row["reply_tier"],
+                        "reply_opportunity_signals": row["reply_signals"],
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=97,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    assert report["work_queue_readiness"]["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert report["opportunity_diversity"]["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert report["engagement_hook_quality"]["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert report["treatment_signature_quality"]["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert (
+        report["treatment_signal_diversity_quality"]["overall"][
+            "category_lens_treatment_signal_diverse_ready_rate"
+        ]
+        == 1.0
+    )
+    assert report["local_intent_quality"]["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert report["patient_surface_quality"]["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert report["viral_action_route_quality"]["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert report["reply_workability_quality"]["overall"]["category_lens_reply_workable_ready_rate"] == 1.0
+    execution = report["execution_readiness_quality"]
+    assert execution["overall"]["category_lens_execution_ready_rate"] == 0.0
+    assert execution["overall"]["fresh_category_lens_execution_ready_rate"] == 0.0
+    lens_gap = next(item for item in execution["category_lens_gaps"] if item["lane"] == expected_lane)
+    assert lens_gap["unique_actionable_strict"] == 3
+    assert lens_gap["execution_ready_actionable_strict"] == 0
+    assert lens_gap["execution_readiness_missing"] == 3
+    assert lens_gap["fragmented_execution_signals"] is True
+    for component in (
+        "engagement_hook",
+        "treatment_signature",
+        "local_intent",
+        "patient_surface",
+        "viral_action_route",
+        "reply_workability",
+    ):
+        assert lens_gap["execution_readiness_component_counts"][component] >= 2
+    assert "fragmented_execution_signals" in lens_gap["reasons"]
+    assert "missing_treatment_signature" in lens_gap["reasons"]
+    assert "missing_viral_action_route" in lens_gap["reasons"]
+    assert "missing_reply_workability" in lens_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "reply_workability_lens_coverage" not in failed
+    assert "execution_readiness_lens_coverage" in failed
+    assert "fresh_execution_readiness_lens_coverage" in failed
+    assert report["next_run_playbook"]["execution_readiness_required"] is True
+    assert report["next_run_playbook"]["fresh_execution_readiness_required"] is True
+    assert any(item["lane"] == expected_lane for item in report["next_run_playbook"]["execution_readiness_gaps"])
+    assert any(item["lane"] == expected_lane for item in report["review_samples"]["execution_readiness_gap_samples"])
+    assert any(
+        item["code"] == "execution_readiness_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_execution_priority_alignment_flags_buried_ready_targets(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    route_terms = {}
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        terms = tuple(definition.get("terms") or ())
+        if not terms:
+            continue
+        for lens_name in tuple(definition.get("lenses") or ()):
+            route_terms.setdefault(lens_name, terms[0])
+    journey_terms = {
+        lens_name: route_terms[lens_name]
+        for lens_name in ("review", "community", "cost", "consultation", "availability", "safety")
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = _signature_terms_for(category, count=2)
+        if len(signature_terms) == 1:
+            signature_terms = [signature_terms[0], signature_terms[0]]
+        for lens, route_term in journey_terms.items():
+            rows = (
+                {"priority": 160, "reply_score": 20, "reply_tier": "low", "reply_signals": "", "platform": "kin"},
+                {"priority": 159, "reply_score": 20, "reply_tier": "low", "reply_signals": "", "platform": "cafe"},
+                {
+                    "priority": 80,
+                    "reply_score": 82,
+                    "reply_tier": "assist_now",
+                    "reply_signals": (
+                        "public_reply_surface,help_request_language,decision_or_service_task,"
+                        "local_actionable,unanswered_or_low_response"
+                    ),
+                    "platform": "blog",
+                },
+                {
+                    "priority": 79,
+                    "reply_score": 82,
+                    "reply_tier": "assist_now",
+                    "reply_signals": (
+                        "public_reply_surface,help_request_language,decision_or_service_task,"
+                        "local_actionable,unanswered_or_low_response"
+                    ),
+                    "platform": "naver_kin",
+                },
+            )
+            for copy_idx, row in enumerate(rows):
+                signature_term = signature_terms[copy_idx % len(signature_terms)]
+                _insert_target(
+                    conn,
+                    target_id=f"queue-exec-priority-buried-{idx}-{copy_idx}",
+                    scan_id=98,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=row["priority"],
+                    platform=row["platform"],
+                    content_preview=f"execution priority buried copy {idx}-{copy_idx}",
+                    title=f"{primary_region} {signature_term} {route_term} ? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": f"exec-priority-seed-{idx}-{copy_idx}",
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_priority:specific_{idx}_{copy_idx}"
+                            if copy_idx % 2 == 0
+                            else f"colloquial:priority_{idx}_{copy_idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": row["reply_score"],
+                        "reply_opportunity_tier": row["reply_tier"],
+                        "reply_opportunity_signals": row["reply_signals"],
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=98,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    assert report["execution_readiness_quality"]["overall"]["category_lens_execution_ready_rate"] == 1.0
+    priority_alignment = report["execution_priority_alignment_quality"]
+    assert priority_alignment["overall"]["category_lens_priority_alignment_rate"] == 0.0
+    assert priority_alignment["overall"]["fresh_category_lens_priority_alignment_rate"] == 0.0
+    lens_gap = next(item for item in priority_alignment["category_lens_gaps"] if item["lane"] == expected_lane)
+    assert lens_gap["unique_actionable_strict"] == 4
+    assert lens_gap["execution_ready_actionable_strict"] == 2
+    assert lens_gap["top_execution_ready_actionable_strict"] == 1
+    assert lens_gap["priority_top_window"] == 3
+    assert lens_gap["execution_priority_gap"] == 1
+    assert "execution_ready_buried" in lens_gap["reasons"]
+    assert "non_ready_priority_inversion" in lens_gap["reasons"]
+    assert "top_priority_execution_gap" in lens_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "execution_readiness_lens_coverage" not in failed
+    assert "execution_priority_alignment_lens_coverage" in failed
+    assert "fresh_execution_priority_alignment_lens_coverage" in failed
+    assert report["next_run_playbook"]["execution_priority_alignment_required"] is True
+    assert report["next_run_playbook"]["fresh_execution_priority_alignment_required"] is True
+    assert any(
+        item["lane"] == expected_lane
+        for item in report["review_samples"]["execution_priority_alignment_gap_samples"]
+    )
+    assert any(
+        item["code"] == "execution_priority_alignment_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_seed_candidate_alignment_flags_source_keyword_drift(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    route_terms = {}
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        terms = tuple(definition.get("terms") or ())
+        if not terms:
+            continue
+        for lens_name in tuple(definition.get("lenses") or ()):
+            route_terms.setdefault(lens_name, terms[0])
+    journey_terms = {
+        lens_name: route_terms[lens_name]
+        for lens_name in ("review", "community", "cost", "consultation", "availability", "safety")
+    }
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = _signature_terms_for(category, count=2)
+        if not signature_terms:
+            signature_terms = [category]
+        content_term = signature_terms[-1]
+        for lens, route_term in journey_terms.items():
+            for copy_idx in range(2):
+                _insert_target(
+                    conn,
+                    target_id=f"queue-seed-candidate-drift-{idx}-{copy_idx}",
+                    scan_id=99,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140 - copy_idx,
+                    platform=("kin" if copy_idx == 0 else "cafe"),
+                    content_preview=f"seed candidate drift copy {idx}-{copy_idx} {content_term}",
+                    title=f"{primary_region} {content_term} {route_term} ? {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": (
+                            f"{primary_region} 정밀소스키워드{idx}_{copy_idx} 심화상담"
+                        ),
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_seed_alignment:specific_{idx}_{copy_idx}"
+                            if copy_idx == 0
+                            else f"{lens}:seed_alignment_{idx}_{copy_idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 91,
+                        "pathfinder_lens_fit_score": 89,
+                        "clinic_treatment_fit_score": 92,
+                        "worksite_efficiency_score": 88,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=99,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    assert report["work_queue_readiness"]["overall"]["category_lens_ready_rate"] == 1.0
+    alignment = report["seed_candidate_alignment_quality"]
+    assert alignment["overall"]["category_lens_seed_alignment_ready_rate"] == 0.0
+    assert alignment["overall"]["fresh_category_lens_seed_alignment_ready_rate"] == 0.0
+    lens_gap = next(item for item in alignment["category_lens_gaps"] if item["lane"] == expected_lane)
+    assert lens_gap["unique_actionable_strict"] == 2
+    assert lens_gap["seed_aligned_actionable_strict"] == 0
+    assert lens_gap["seed_candidate_alignment_missing"] == 2
+    assert "source_candidate_drift" in lens_gap["reasons"]
+    assert "source_specific_term_lost" in lens_gap["reasons"]
+    assert lens_gap["seed_candidate_missing_reasons"]["missing_source_specific_term"] == 2
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "seed_candidate_alignment_lens_coverage" in failed
+    assert "fresh_seed_candidate_alignment_lens_coverage" in failed
+    assert report["next_run_playbook"]["seed_candidate_alignment_required"] is True
+    assert report["next_run_playbook"]["fresh_seed_candidate_alignment_required"] is True
+    assert any(
+        item["lane"] == expected_lane
+        for item in report["review_samples"]["seed_candidate_alignment_gap_samples"]
+    )
+    assert any(
+        item["code"] == "seed_candidate_alignment_gaps"
+        for item in report["recommendations"]
+    )
 
 
 def test_seed_target_coverage_builds_next_run_playbook_for_undercovered_lanes():
@@ -356,12 +2538,15 @@ def test_seed_target_coverage_builds_next_run_playbook_for_undercovered_lanes():
     assert coverage["by_lens"]["community"]["gap_reasons"] == ["low_target_per_seed", "low_strict_fit_per_seed"]
     assert playbook["rerun_required"] is True
     assert playbook["coverage_gap_required"] is True
-    assert [item["category"] for item in playbook["boost_categories"]] == ["다이어트", "피부/여드름"]
+    assert [item["category"] for item in playbook["boost_categories"]] == ["피부/여드름", "다이어트"]
     assert [item["lens"] for item in playbook["boost_lenses"]] == ["community"]
     assert "--source-scan-id 66" in playbook["suggested_commands"]["live_scan"]
     assert "--boost-category" in playbook["suggested_commands"]["live_scan"]
     assert '--boost-lens "community"' in playbook["suggested_commands"]["live_scan"]
-    assert playbook["suggested_commands"]["post_run_audit"] == "python scripts/viral_handoff_audit.py --scan-id 66 --sample-per-lane 3"
+    assert playbook["suggested_commands"]["post_run_audit"] == (
+        "python scripts/viral_handoff_audit.py --scan-id 66 --days 1 --sample-per-lane 3"
+    )
+    assert '--since "<RUN_STARTED_AT>"' in playbook["suggested_commands"]["post_run_audit_current_run_template"]
 
 
 def test_seed_target_coverage_detects_category_lens_gaps():
@@ -444,3 +2629,62 @@ def test_seed_target_coverage_detects_category_lens_gaps():
     assert [item["category_lens"] for item in playbook["boost_category_lenses"]] == ["흉터/여드름흉터::cost"]
     assert '--boost-category "흉터/여드름흉터"' in playbook["suggested_commands"]["live_scan"]
     assert '--boost-lens "cost"' in playbook["suggested_commands"]["live_scan"]
+
+
+def test_next_run_playbook_prioritizes_gyulim_signature_axes_over_peripheral_gaps():
+    baseline = {
+        "seed_count": 58,
+        "seed_category_counts": {
+            "소화/위장": 1,
+            "두통/어지럼": 1,
+            "흉터/여드름흉터": 18,
+            "안면비대칭": 16,
+            "피부/여드름": 10,
+            "다이어트": 12,
+        },
+        "seed_lens_counts": {"review": 30, "community": 28},
+    }
+    # 주변축은 아예 target이 없고, 핵심축은 target은 많지만 생존율이 낮다.
+    # playbook은 그래도 규림 시그니처 축을 먼저 boost해야 한다.
+    category_summary = {
+        category: {
+            "total": 120,
+            "survived": 3,
+            "strict_fit": 1,
+            "survival_rate": 0.025,
+            "strict_fit_rate": 0.0083,
+        }
+        for category in ("흉터/여드름흉터", "안면비대칭", "피부/여드름", "다이어트")
+    }
+    lens_summary = {
+        "review": {"total": 30, "survived": 1, "strict_fit": 0, "survival_rate": 0.033, "strict_fit_rate": 0.0},
+        "community": {"total": 28, "survived": 1, "strict_fit": 0, "survival_rate": 0.036, "strict_fit_rate": 0.0},
+    }
+
+    coverage = _seed_target_coverage(
+        baseline,
+        category_summary=category_summary,
+        lens_summary=lens_summary,
+        min_targets_per_seed=1.0,
+        min_strict_fit_per_seed=0.25,
+    )
+    playbook = _next_run_playbook(
+        source_scan_run_id=87,
+        row_count=13212,
+        overall={"axis_coverage_rate": 1.0, "lens_coverage_rate": 1.0},
+        seed_target_coverage=coverage,
+        weak_lanes=[],
+        recommendations=[{"code": "undercovered_seed_categories"}],
+        sample_per_lane=2,
+    )
+
+    assert [item["category"] for item in playbook["boost_categories"][:4]] == [
+        "흉터/여드름흉터",
+        "안면비대칭",
+        "피부/여드름",
+        "다이어트",
+    ]
+    assert "소화/위장" not in [item["category"] for item in playbook["boost_categories"][:4]]
+    live_scan = playbook["suggested_commands"]["live_scan"]
+    assert '--boost-category "흉터/여드름흉터"' in live_scan
+    assert '--boost-category "안면비대칭"' in live_scan

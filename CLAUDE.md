@@ -454,3 +454,32 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 3. DB 상태 확인 (위 명령)
 4. 테스트 회귀 확인: `python -m pytest tests -q` (목표: 552+ passed)
 5. 서버 상태: `build_and_run.bat` 후 `http://localhost:8000/health`
+
+---
+
+## 2026-06-24 Memory: Pathfinder -> Viral Hunter handoff audit hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Scope committed in this round should stay limited to:
+  - `core_services/viral_handoff_audit.py`
+  - `scripts/viral_handoff_audit.py`
+  - `tests/test_viral_handoff_audit.py`
+  - `CLAUDE.md`
+- New audit axis: `seed_candidate_alignment`.
+  - Purpose: verify that Pathfinder source-keyword intent survives inside Viral Hunter candidate title/body text.
+  - Signals: source-specific terms, treatment-axis semantic terms, lens/route terms, and Cheongju/local tokens.
+  - World-class gate now fails when candidates are strict/actionable but only preserve generic terms.
+- Previous audit hardening in same workstream:
+  - `reply_workability_quality`
+  - `treatment_signal_diversity_quality`
+  - `execution_readiness_quality`
+  - `execution_priority_alignment_quality`
+- Current operating DB (`db/marketing_data.db`, scan 87) remains `critical`, score `33.51`.
+  - `execution_priority_alignment`: category `3/7`, category_lens `6/42`.
+  - `seed_candidate_alignment`: category `6/7`, category_lens `9/42`.
+  - Representative seed/candidate drift lanes: `피부/여드름::consultation`, `다이어트::safety`.
+- Verification completed:
+  - `python -m py_compile core_services\viral_handoff_audit.py scripts\viral_handoff_audit.py tests\test_viral_handoff_audit.py`
+  - `python -m pytest tests\test_viral_handoff_audit.py -q` -> `34 passed`
+  - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_handoff_audit.py tests\test_gyulim_keyword_profile.py -q` -> `381 passed`
+  - `git diff --check -- core_services\viral_handoff_audit.py scripts\viral_handoff_audit.py tests\test_viral_handoff_audit.py` -> no whitespace errors, LF/CRLF warnings only.
