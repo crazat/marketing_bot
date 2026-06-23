@@ -262,6 +262,20 @@ from openai import OpenAI             # X - 사용 안 함
 | 데이터 정리 | CSV에 섞인 `청주) 보몬 e54 LV60 팔아요` legacy pending 행을 `filtered_out`, `final_reject_reason=marketplace_sale`로 정리 |
 | 검증 | `py_compile` 통과 + 브로커 fresh_pending 회귀 + marketplace_sale 회귀 테스트 통과 |
 
+### 2026-06-23: Pathfinder #87 + Viral Hunter #14 base-query budget gate
+
+> 상세: memory `project_pathfinder_viral_scan_2026_06_23.md`. 500+ Legion 완수 후 Viral Hunter 순차 스캔 완료. 결론: Pathfinder 공급은 충분하고, Viral 병목은 `base`/`community_base`의 반복 재발견과 fresh-zero-yield 레인.
+
+| 영역 | 결과 / 변경 |
+|------|-------------|
+| Pathfinder #87 | `7,506` keywords, 신규 `321`, 갱신 `7,185`, `S=80`, `A=1,585`, `S+A=1,665`, 완료 `8,384s`. 500+ 조건 충족 |
+| Viral audit #14 | source_scan_run_id=87, `13,212` discovered, `516` fresh, `361` actionable, `12` open_pending, `5` fresh_pending, `3,436` ad_filtered, rediscovered `96.1%` |
+| 직전 대비 | audit #13 대비 discovered/fresh는 증가했지만 fresh_pending `10 -> 5`, open_pending `60 -> 12`로 실전환 하락. 신규 공급보다 반복 검색면 관리가 병목 |
+| 핵심 쿼리면 | `base`: `5,804` discovered, `169` fresh, `0` fresh_pending. `patient_voice_kin`: `1,248` discovered, `223` fresh, `0` fresh/open pending이라 다음 계획에서 64건 자동 drop |
+| 코드 개선 | `viral_hunter.py`에 mandatory `base`/`community_base` 차단 대신 budget scaling 추가. fresh/open pending 있는 레인은 보호하고, fresh-zero/high-rediscovery/high-ad 레인은 `0.45~0.80` 계수로 검색 예산 축소 |
+| 관측성 | audit `coverage_bounds.base_variant_budget_scales` 추가. 다음 스캔에서 어떤 base 레인이 얼마나 축소됐는지 추적 가능 |
+| 검증 | base budget 테스트 2개 추가. `pytest -q tests/test_pathfinder_viral_stability.py -k "variant_yield_gate or variant_proven_zero_yield or base_variant_budget"` → 9 passed |
+
 ### 2026-06-20~21: 바이럴 발견 시스템 심층검토 + 13개 개선 (discovery review + 1인칭 정책 end-to-end 완성)
 
 > 상세: memory `project_viral_discovery_review_2026_06_20.md`. 발견 퍼널 핵심 메커니즘은 견고함을 확인(실데이터 포렌식); 개선은 관측성·정밀도·1인칭 정책 일관성에 집중.

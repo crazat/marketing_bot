@@ -8284,6 +8284,7 @@ class ViralHunter:
                             "fresh_discovered": 0,
                             "pending": 0,
                             "fresh_pending": 0,
+                            "open_pending": 0,
                             "rediscovered": 0,
                             "rediscovered_pending": 0,
                             "ad_filtered": 0,
@@ -8294,6 +8295,7 @@ class ViralHunter:
                     bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
                     bucket["pending"] += int(entry.get("pending", 0) or 0)
                     bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                    bucket["open_pending"] += int(entry.get("open_pending", 0) or 0)
                     bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
                     bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
                     bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
@@ -8312,6 +8314,7 @@ class ViralHunter:
                         "fresh_discovered": 0,
                         "pending": 0,
                         "fresh_pending": 0,
+                        "open_pending": 0,
                         "rediscovered": 0,
                         "rediscovered_pending": 0,
                         "ad_filtered": 0,
@@ -8322,6 +8325,7 @@ class ViralHunter:
                 bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
                 bucket["pending"] += int(entry.get("pending", 0) or 0)
                 bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                bucket["open_pending"] += int(entry.get("open_pending", 0) or 0)
                 bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
                 bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
                 bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
@@ -8381,6 +8385,74 @@ class ViralHunter:
             # lane은 있으나 pending==0 & 제로수율 미증명(cold start) → 글로벌 폴백.
         glob = history.get(variant)
         return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
+
+    @staticmethod
+    def _base_variant_budget_has_lane_signal(stats: Dict[str, int]) -> bool:
+        discovered = int(stats.get("discovered", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        runs = int(stats.get("runs", 0) or 0)
+        return discovered >= 80 or fresh_discovered >= 20 or runs >= 2
+
+    @classmethod
+    def _base_variant_budget_stats(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> Dict[str, int]:
+        lane_key = cls._category_lens_variant_history_key(category, lens, variant)
+        lane = history.get(lane_key) or {}
+        if lane and cls._base_variant_budget_has_lane_signal(lane):
+            return lane
+        return history.get(str(variant or "")) or lane or {}
+
+    @classmethod
+    def _base_variant_budget_factor(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> float:
+        """Scale mandatory base query depth when recent audits show low fresh yield."""
+        variant = str(variant or "").strip()
+        if variant not in {"base", "community_base"}:
+            return 1.0
+        stats = cls._base_variant_budget_stats(history, category=category, lens=lens, variant=variant)
+        if not stats:
+            return 1.0
+
+        fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+        open_pending = int(stats.get("open_pending", 0) or 0)
+        if fresh_pending > 0 or open_pending > 0:
+            return 1.0
+
+        discovered = int(stats.get("discovered", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        rediscovered = int(stats.get("rediscovered", 0) or 0)
+        ad_filtered = int(stats.get("ad_filtered", 0) or 0)
+        if discovered <= 0:
+            return 1.0
+
+        rediscovered_rate = rediscovered / discovered if discovered else 0.0
+        ad_rate = ad_filtered / discovered if discovered else 0.0
+        factor = 1.0
+
+        if fresh_discovered >= 80 and fresh_pending == 0:
+            factor = min(factor, 0.45)
+        elif fresh_discovered >= 40 and fresh_pending == 0 and (rediscovered_rate >= 0.75 or discovered >= 120):
+            factor = min(factor, 0.55)
+        if discovered >= 300 and rediscovered_rate >= 0.95:
+            factor = min(factor, 0.65)
+        if factor < 1.0 and ad_rate >= 0.35:
+            factor = min(factor, 0.50)
+        elif factor == 1.0 and ad_rate >= 0.45 and discovered >= 150:
+            factor = 0.80
+
+        return max(0.40, min(1.0, factor))
 
     @staticmethod
     def _variant_requires_lane_specific_yield(variant: str) -> bool:
@@ -8903,6 +8975,10 @@ class ViralHunter:
         """Return query plans for a seed while preserving its Pathfinder lineage."""
         base_plan = self._search_plan_for_keyword(keyword, max_per_platform)
         variants = self._search_query_variants_for_keyword(keyword)
+        ctx = self._planning_context_for_keyword(keyword)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+        execution_lens = str(ctx.get("execution_lens") or "")
+        history = self._load_variant_yield_history()
         plans: List[Dict[str, Any]] = []
 
         for idx, variant in enumerate(variants):
@@ -8919,6 +8995,26 @@ class ViralHunter:
                         0.45,
                     )
                 plan["query_variant_of"] = keyword
+            else:
+                factor = self._base_variant_budget_factor(
+                    history,
+                    category=category,
+                    lens=execution_lens,
+                    variant=str(variant.get("variant") or ""),
+                )
+                if factor < 0.999:
+                    plan["platform_limits"] = self._scaled_platform_limits(
+                        plan.get("platform_limits") or {},
+                        factor,
+                        minimum=8,
+                        maximum=180,
+                    )
+                    scale_counts = getattr(self, "_base_variant_budget_scale_counts", None)
+                    if scale_counts is None:
+                        scale_counts = {}
+                        self._base_variant_budget_scale_counts = scale_counts
+                    scale_key = f"{variant.get('variant') or 'base'}:{factor:.2f}"
+                    scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
             self._register_variant_keyword_context(
                 source_keyword=keyword,
                 query=variant["query"],
@@ -10128,6 +10224,10 @@ class ViralHunter:
                 'filter_survivor_count': filter_survivor_count,
                 'filter_survival_rate': (filter_survivor_count / filter_input_count) if filter_input_count else 0.0,
                 'variant_yield_drops': {k: int(v) for k, v in (getattr(self, "_variant_drop_counts", {}) or {}).items()},
+                'base_variant_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_base_variant_budget_scale_counts", {}) or {}).items()
+                },
                 'platform_yield_drops': {k: int(v) for k, v in (getattr(self, "_platform_drop_counts", {}) or {}).items()},
                 'structure_blocked': {
                     k: int(v)

@@ -10417,6 +10417,90 @@ def test_variant_proven_zero_yield_thresholds():
     assert proven({}) is False
 
 
+def test_viral_hunter_scales_stale_base_variant_budget():
+    from types import SimpleNamespace
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path="")
+    hunter._platform_yield_cache = {}
+    hunter.keyword_context = {
+        "plain seed": {
+            "category": "test-axis",
+            "viral_readiness_score": 10,
+            "community_signal": 0,
+            "conversion_signal": 0,
+            "profile_action_signal": 0,
+            "medical_ad_risk_score": 0,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "",
+            "recommended_content_type": "",
+            "review_intent_type": "none",
+            "execution_lens": "review",
+        }
+    }
+    lane_key = viral_hunter.ViralHunter._category_lens_variant_history_key("test-axis", "review", "base")
+    hunter._variant_yield_cache = {
+        lane_key: {
+            "discovered": 500,
+            "fresh_discovered": 2,
+            "pending": 20,
+            "fresh_pending": 0,
+            "open_pending": 0,
+            "rediscovered": 498,
+            "ad_filtered": 80,
+            "runs": 1,
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["platform_limits"] == {"cafe": 65, "blog": 42, "kin": 65}
+    assert hunter._base_variant_budget_scale_counts == {"base:0.65": 1}
+
+
+def test_viral_hunter_keeps_base_budget_when_lane_has_fresh_or_open_pending():
+    from types import SimpleNamespace
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path="")
+    hunter._platform_yield_cache = {}
+    hunter.keyword_context = {
+        "productive seed": {
+            "category": "test-axis",
+            "viral_readiness_score": 10,
+            "community_signal": 0,
+            "conversion_signal": 0,
+            "profile_action_signal": 0,
+            "medical_ad_risk_score": 0,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "",
+            "recommended_content_type": "",
+            "review_intent_type": "none",
+            "execution_lens": "review",
+        }
+    }
+    lane_key = viral_hunter.ViralHunter._category_lens_variant_history_key("test-axis", "review", "base")
+    hunter._variant_yield_cache = {
+        lane_key: {
+            "discovered": 500,
+            "fresh_discovered": 120,
+            "pending": 20,
+            "fresh_pending": 1,
+            "open_pending": 1,
+            "rediscovered": 380,
+            "ad_filtered": 80,
+            "runs": 1,
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("productive seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["platform_limits"] == {"cafe": 100, "blog": 65, "kin": 100}
+    assert getattr(hunter, "_base_variant_budget_scale_counts", {}) == {}
+
+
 def test_viral_hunter_variant_yield_gate_drops_proven_zero_yield_companions(tmp_path):
     from types import SimpleNamespace
 
