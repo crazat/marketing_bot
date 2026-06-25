@@ -8705,6 +8705,76 @@ def test_viral_final_gate_keeps_diet_medical_treatment_question():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
 
 
+def test_viral_final_gate_rejects_title_only_salon_noise_even_with_hanbang_snippet():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/title-salon-body-hanbang-snippet",
+        title="제주 노형 근처에 지속력 좋고 여름 패디아트 잘하는 단골 네일샵 공유해주세요",
+        content_preview=(
+            "아기 낳고 백일 지났는데 산후풍 예방 겸 모유 수유 중에도 "
+            "안심하고 먹을 수 있는 맑은 한약 조제 잘해주시는 곳 찾고 있습니다. "
+            "청주 시내나 오창 근처에 맥 잘 짚고 상담해주는 곳 있을까요?"
+        ),
+        matched_keywords=["청주 다이어트 한약 잘하는곳"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "off_domain"
+
+
+def test_viral_final_gate_rejects_non_hanbang_fertility_procedure_recommendation():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/ivf-clinic-recommendation",
+        title="시험관 잘하는 곳 추천부탁드려요",
+        content_preview=(
+            "스트레스에 약한 편이라 불면증에 소화불량도 있고 약도 먹었는데 쉽지 않네요. "
+            "인공수정 벌써 3회 해보고 시험관 해보려고 하는데 청주에서 어디가 좋을까요?"
+        ),
+        matched_keywords=["청주 불면증"],
+        category="수면/피로",
+        matched_keyword_category="수면/피로",
+        matched_keyword_grade="B",
+    )
+    hanbang_support = ViralTarget(
+        platform="cafe",
+        url="https://example.com/ivf-hanbang-support",
+        title="시험관 준비 중 난임 한의원 상담 받아보신 분",
+        content_preview=(
+            "청주에서 시험관 준비하면서 한의원 한약이나 침치료 상담을 같이 받아본 "
+            "후기가 궁금합니다. 광고 말고 실제 경험 부탁드려요."
+        ),
+        matched_keywords=["청주 난임 한의원"],
+        category="여성/산후",
+        matched_keyword_category="여성/산후",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "off_domain"
+    assert viral_hunter.CommentableFilter.final_reject_reason(hanbang_support) is None
+
+
+def test_viral_final_gate_rejects_deidentified_case_story_without_user_ask():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/provider-case-story",
+        title="우울증을 회복하고",
+        content_preview=(
+            "유00 54세 여자 청주시 흥덕구 분평동 거주 처음올때 다이어트를 하고 "
+            "요요현상이 심하게 와있고 우울증이 심하지는 않지만 마음을 힘들게 하는 상황이였습니다. "
+            "한의원에서 잠을 잘 자는 약을 드시고 있다고 하였습니다."
+        ),
+        matched_keywords=["분평동 다이어트 한의원"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="B",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "advertorial"
+
+
 def test_viral_final_gate_rejects_marketplace_sale_post():
     target = ViralTarget(
         platform="cafe",

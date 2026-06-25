@@ -2798,6 +2798,26 @@ class CommentableFilter:
         "눈썹문신", "반영구", "아이라인문신", "입술문신",
         "led 마스크", "led마스크", "LED 마스크", "LED마스크", "마스크팩",
     ]
+    NON_SERVICE_BEAUTY_TITLE_RESCUE_PATTERNS = [
+        "한의원", "한방", "한약", "새살침", "침치료", "치료", "상담",
+        "병원", "의원", "클리닉", "피부과",
+    ]
+    NON_HANBANG_FERTILITY_PATTERNS = [
+        "시험관", "인공수정", "난임병원", "난임 병원", "불임병원", "불임 병원",
+        "산부인과", "배아이식", "배아 이식", "난자채취", "난자 채취",
+    ]
+    HANBANG_FERTILITY_RESCUE_PATTERNS = [
+        "난임한의원", "난임 한의원", "한방난임", "한방 난임", "한의원",
+        "한방", "한약", "보약", "침치료", "약침", "뜸", "체질",
+    ]
+    PROVIDER_CASE_STORY_PATTERNS = [
+        "처음올때", "처음 올 때", "처음 내원", "내원 당시", "환자분",
+        "치료 사례", "관리 사례", "회복 사례", "호전 사례", "사례입니다",
+    ]
+    PROVIDER_CASE_STORY_REGEXES = [
+        r"[가-힣]00\s*\d{2}\s*세",
+        r"(?:남|여|남자|여자)\s*\d{2}\s*세",
+    ]
 
     ASYMMETRY_HARD_OFF_AXIS_PATTERNS = [
         "눈썹문신", "반영구", "아이라인문신", "입술문신", "속눈썹",
@@ -3185,6 +3205,7 @@ class CommentableFilter:
         "도봉구", "강북구", "관악구", "구로구", "동작구", "성북구", "중랑구",
         "광진구", "강동구", "양천구",
         "감삼동", "수성구", "동성로", "서면", "해운대",
+        "제주", "제주시", "서귀포",
     ]
 
     # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
@@ -5647,6 +5668,49 @@ class CommentableFilter:
         return bool(product_or_salon_context or not service_rescue)
 
     @classmethod
+    def _is_title_non_service_beauty_target(cls, title: str) -> bool:
+        """Reject obvious salon/beauty-service titles even when snippets contain clinic terms."""
+        title_lc = (title or "").lower()
+        if not cls._contains_any(title_lc, cls.NON_SERVICE_BEAUTY_PATTERNS):
+            return False
+        return not cls._contains_any(title_lc, cls.NON_SERVICE_BEAUTY_TITLE_RESCUE_PATTERNS)
+
+    @classmethod
+    def _is_non_hanbang_fertility_target(cls, text: str) -> bool:
+        """Reject IVF/IUI clinic recommendations unless the post asks about Korean medicine support."""
+        text_lc = (text or "").lower()
+        if not cls._contains_any(text_lc, cls.NON_HANBANG_FERTILITY_PATTERNS):
+            return False
+        return not cls._contains_any(text_lc, cls.HANBANG_FERTILITY_RESCUE_PATTERNS)
+
+    @classmethod
+    def _is_provider_case_story_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject de-identified provider case stories that are not public help requests."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        has_case_shape = cls._contains_any(user_text, cls.PROVIDER_CASE_STORY_PATTERNS) or any(
+            re.search(pattern, user_text) for pattern in cls.PROVIDER_CASE_STORY_REGEXES
+        )
+        if not has_case_shape:
+            return False
+
+        direct_ask = cls._contains_any(
+            user_text,
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS
+            + cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS,
+        )
+        if direct_ask:
+            return False
+        return not cls._contains_any(text, cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+
+    @classmethod
     def _is_asymmetry_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject face/asymmetry seeds that actually point to beauty, brow, dental, or esthetic services."""
         domain = cls._target_domain(target)
@@ -6093,6 +6157,12 @@ class CommentableFilter:
             return "self_target"
         if cls._is_marketplace_sale(text):
             return "marketplace_sale"
+        if cls._is_title_non_service_beauty_target(title):
+            return "off_domain"
+        if cls._is_non_hanbang_fertility_target(text):
+            return "off_domain"
+        if cls._is_provider_case_story_without_user_ask(target, text):
+            return "advertorial"
         if cls._is_off_domain(domain, text, title=title):
             return "off_domain"
         if cls._is_non_service_beauty_target(domain, text):
@@ -6341,6 +6411,16 @@ class CommentableFilter:
                     **(target.score_breakdown or {}),
                     "final_reject_reason": "marketplace_sale",
                 }
+                continue
+
+            if self._is_title_non_service_beauty_target(title_lower):
+                stats['off_domain'] += 1
+                continue
+            if self._is_non_hanbang_fertility_target(text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_provider_case_story_without_user_ask(target, text):
+                stats['advertorial'] += 1
                 continue
 
             # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
