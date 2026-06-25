@@ -140,6 +140,41 @@ def _print_summary(report: dict, *, top_weak: int) -> None:
                 f"grades={metrics.get('grade_counts', {})}"
             )
 
+    variant_feedback = report.get("variant_quality_feedback") or {}
+    if variant_feedback:
+        weak_variants = (
+            list(variant_feedback.get("retire_category_lens_variants") or [])
+            + list(variant_feedback.get("repair_category_lens_variants") or [])
+            + list(variant_feedback.get("retire_variants") or [])
+            + list(variant_feedback.get("repair_variants") or [])
+        )
+        scale_variants = (
+            list(variant_feedback.get("scale_category_lens_variants") or [])
+            + list(variant_feedback.get("scale_variants") or [])
+        )
+        if weak_variants:
+            print(f"\nVariant quality actions (top {min(top_weak, len(weak_variants))})")
+            for item in weak_variants[:top_weak]:
+                print(
+                    f"  - {item.get('action')} {item.get('variant')} "
+                    f"lane={item.get('category_lens') or '-'} "
+                    f"family={item.get('variant_family')} "
+                    f"total={item.get('total', 0)} "
+                    f"survival={_pct(item.get('survival_rate'))} "
+                    f"strict={_pct(item.get('strict_fit_rate'))} "
+                    f"loss={item.get('dominant_loss_reason') or '-'}"
+                )
+        if scale_variants:
+            print(f"\nVariant scale candidates (top {min(top_weak, len(scale_variants))})")
+            for item in scale_variants[:top_weak]:
+                print(
+                    f"  - {item.get('variant')} "
+                    f"lane={item.get('category_lens') or '-'} "
+                    f"family={item.get('variant_family')} "
+                    f"strict={item.get('strict_fit', 0)}/{item.get('total', 0)} "
+                    f"actionable_strict={item.get('actionable_strict', 0)}"
+                )
+
     patient_journey = report.get("patient_journey_coverage") or {}
     journey_overall = patient_journey.get("overall") or {}
     if journey_overall:
@@ -244,6 +279,33 @@ def _print_summary(report: dict, *, top_weak: int) -> None:
                     f"fresh_raw={item.get('fresh_actionable_strict', 0)} "
                     f"dupes={item.get('fresh_actionable_strict_duplicate_count', 0)} "
                     f"gap={item.get('gap', 0)} "
+                    f"reasons={','.join(item.get('reasons') or [])}"
+                )
+
+    compliance = report.get("compliance_work_mode_quality") or {}
+    compliance_overall = compliance.get("overall") or {}
+    if compliance_overall:
+        print("\nCompliance work mode")
+        print(
+            "  overall: "
+            f"auto_categories={compliance_overall.get('auto_work_ready_categories', 0)}/"
+            f"{compliance_overall.get('target_categories', 0)} "
+            f"({_pct(compliance_overall.get('category_auto_work_ready_rate'))}), "
+            f"auto_category_lenses={compliance_overall.get('auto_work_ready_category_lenses', 0)}/"
+            f"{compliance_overall.get('target_category_lenses', 0)} "
+            f"({_pct(compliance_overall.get('category_lens_auto_work_ready_rate'))}), "
+            f"modes={_format_counts(compliance_overall.get('work_mode_counts'))}"
+        )
+        compliance_gaps = compliance.get("priority_gaps") or []
+        if compliance_gaps:
+            print(f"  gaps (top {min(top_weak, len(compliance_gaps))}):")
+            for item in compliance_gaps[:top_weak]:
+                print(
+                    f"    - {item.get('lane')} "
+                    f"auto={item.get('auto_work_ready_actionable_strict', 0)}/{item.get('target', 0)} "
+                    f"manual={item.get('manual_review_only_actionable_strict', 0)} "
+                    f"blocked={item.get('blocked_or_escalate_actionable_strict', 0)} "
+                    f"flags={','.join(item.get('reply_risk_flags') or []) or '-'} "
                     f"reasons={','.join(item.get('reasons') or [])}"
                 )
 

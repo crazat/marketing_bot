@@ -1364,12 +1364,26 @@ class GyulimKeywordProfile:
             "주차",
             "잘하는곳",
         )
+        patient_question_suffixes = (
+            "해보신분",
+            "가보신분",
+            "받아보신분",
+            "괜찮나요",
+            "어떤가요",
+            "후기 궁금",
+        )
         question_patterns = (
             "{region} {anchored_term} 비용 얼마",
             "{region} {anchored_term} 어디",
             "{region} {anchored_term} 상담 가능한곳",
             "{region} {anchored_term} 야간 진료",
             "{region} {anchored_term} 주차 편한",
+        )
+        patient_question_patterns = (
+            "{region} {anchored_term} 해보신분",
+            "{region} {anchored_term} 받아보신분",
+            "{region} {anchored_term} 괜찮나요",
+            "{region} {anchored_term} 후기 궁금",
         )
 
         seeds: List[str] = []
@@ -1391,6 +1405,8 @@ class GyulimKeywordProfile:
             for term in terms:
                 for suffix in suffixes:
                     seeds.append(f"{primary_region} {term} {suffix}")
+                for suffix in patient_question_suffixes[:3]:
+                    seeds.append(f"{primary_region} {term} {suffix}")
                 for context in contexts:
                     seeds.append(f"{primary_region} {context} {term}")
                     seeds.append(f"{primary_region} {term} {context}")
@@ -1406,6 +1422,8 @@ class GyulimKeywordProfile:
                     for suffix in suffixes[:6]:
                         seeds.append(f"{region} {anchored_term} {suffix}")
                     for pattern in question_patterns[:3]:
+                        seeds.append(pattern.format(region=region, term=term, anchored_term=anchored_term))
+                    for pattern in patient_question_patterns[:3]:
                         seeds.append(pattern.format(region=region, term=term, anchored_term=anchored_term))
 
             for context in contexts:

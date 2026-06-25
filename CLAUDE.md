@@ -243,10 +243,10 @@ from openai import OpenAI             # X - 사용 안 함
 
 ---
 
-## 현재 시스템 상태 요약 (2026-06-21 기준)
+## 현재 시스템 상태 요약 (2026-06-25 기준)
 
 **브랜치**: `codex/pathfinder-discovery-audit`
-**테스트**: `pytest tests` → 553 passed, 1 skipped
+**테스트**: `pytest tests` → 620 passed, 1 skipped
 
 ### 2026-06-22: Pathfinder #85 + Viral Hunter #13 퍼널 정밀화
 
@@ -452,7 +452,7 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 1. 이 파일(CLAUDE.md) 읽기
 2. 현재 브랜치 확인 (`git branch`)
 3. DB 상태 확인 (위 명령)
-4. 테스트 회귀 확인: `python -m pytest tests -q` (목표: 552+ passed)
+4. 테스트 회귀 확인: `python -m pytest tests -q` (목표: 620+ passed)
 5. 서버 상태: `build_and_run.bat` 후 `http://localhost:8000/health`
 
 ---
@@ -483,3 +483,39 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m pytest tests\test_viral_handoff_audit.py -q` -> `34 passed`
   - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_handoff_audit.py tests\test_gyulim_keyword_profile.py -q` -> `381 passed`
   - `git diff --check -- core_services\viral_handoff_audit.py scripts\viral_handoff_audit.py tests\test_viral_handoff_audit.py` -> no whitespace errors, LF/CRLF warnings only.
+
+## 2026-06-25 Memory: Pathfinder -> Viral Hunter world-class discovery loop
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Scope of this commit:
+  - `core_services/gyulim_keyword_profile.py`
+  - `core_services/viral_handoff_audit.py`
+  - `core_services/viral_seed_builder.py`
+  - `scripts/viral_handoff_audit.py`
+  - `tests/test_gyulim_keyword_profile.py`
+  - `tests/test_pathfinder_viral_stability.py`
+  - `tests/test_viral_handoff_audit.py`
+  - `viral_hunter.py`
+  - `CLAUDE.md`
+- System-level conclusion:
+  - Pathfinder now explores Gyulim treatment demand broadly enough for scars, asymmetry, skin/acne, diet, pain, sleep, digestion, etc.
+  - Viral Hunter no longer relies on broad category matching alone. The handoff loop now preserves category, lens, platform surface, exact category-lens gaps, source seed intent, venue diversity, and treatment-signal diversity into the candidate queue.
+- Key hardening added in this workstream:
+  - Gyulim profile expansion and patient-question seed coverage.
+  - Patient-voice query variants and zero-yield gates.
+  - Query plan cache and source seed audit feedback loop.
+  - Variant-quality feedback from `viral_handoff_audit.py` into `viral_hunter.py`.
+  - Platform surface quality feedback with `naver_kin` -> `kin` normalization.
+  - Auto handoff playbook boosts for categories, lenses, and exact `category::lens` lanes.
+  - Deep audit gap parser so missing audit lanes become next-run exact boosts even without explicit `boost_*` fields.
+  - AI target venue diversity inside category floors.
+  - AI target treatment-signal diversity so one scar subtype such as `패인흉터` cannot dominate the entire scar queue when `수술흉터`, `모공흉터`, `켈로이드`, `여드름자국` candidates exist.
+- Important behavior:
+  - Treatment-signal caps are soft. Viral Hunter preserves budget by falling back when a lane has only one viable signal, such as a narrow diet pool.
+  - Base/community-base lanes are protected from hard deletion but can be budget-scaled when audit evidence shows high rediscovery, high ad filtering, or fresh-zero yield.
+  - Explicit CLI boosts still take precedence over auto handoff boosts.
+- Verification completed:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -k "treatment_signal_inside_category_floor or treatment_signal_cap or venue_inside_category_floor or category_floor_venue_cap or prefers_boosted_lens_inside_category_floor"` -> `5 passed`
+  - `python -m pytest` -> `620 passed, 1 skipped`
+  - `python -m compileall -q viral_hunter.py core_services tests scripts`
+  - `git diff --check -- viral_hunter.py tests/test_pathfinder_viral_stability.py` -> no whitespace errors, LF/CRLF warnings only.

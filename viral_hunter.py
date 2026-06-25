@@ -30,7 +30,7 @@ import math
 import hashlib
 import logging
 import argparse
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote, urljoin
@@ -95,6 +95,18 @@ AI_CATEGORY_ALIASES: Dict[str, str] = {
     "피부": "피부/여드름",
     "비대칭/교정": "안면비대칭",
     "통증/디스크": "체형교정",
+}
+
+
+AI_COMPLIANCE_SEVERE_REPLY_FLAGS = {
+    "urgent_medical",
+    "medication_advice_request",
+    "acute_side_effect",
+}
+AI_COMPLIANCE_REVIEW_REPLY_FLAGS = {
+    "sensitive_medical",
+    "testimonial_sensitive",
+    "generic_category",
 }
 
 
@@ -232,13 +244,142 @@ def _normalized_ai_category_quotas(quotas: Dict[str, int]) -> Dict[str, int]:
     return normalized
 
 
-def _ordered_ai_floor_categories(quotas: Dict[str, int]) -> List[str]:
-    priority_index = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+def _normalized_ai_priority_categories(categories: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_category in (categories or []):
+        category = _canonical_ai_category(str(raw_category or ""))
+        if not category or category in {"기타", "unknown"}:
+            continue
+        if not GYULIM_KEYWORD_PROFILE.profile_for(category) and category != "경쟁사_역공략":
+            continue
+        if category not in normalized:
+            normalized.append(category)
+    return normalized
 
-    def sort_key(category: str) -> Tuple[int, float, int, str]:
+
+def _normalized_ai_preferred_lenses(lenses: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_lens in (lenses or []):
+        lens = str(raw_lens or "").strip().lower()
+        if not lens:
+            continue
+        if lens not in normalized:
+            normalized.append(lens)
+    return normalized
+
+
+def _normalized_handoff_category_lenses(category_lenses: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_lane in (category_lenses or []):
+        category_part, _, lens_part = str(raw_lane or "").partition("::")
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category_part.strip())
+        lens = lens_part.strip().lower()
+        if not category or not lens:
+            continue
+        lane = f"{category}::{lens}"
+        if lane not in normalized:
+            normalized.append(lane)
+    return normalized
+
+
+def _boosted_ai_category_quotas(
+    boost_categories: Optional[Iterable[str]],
+    *,
+    top_n: int,
+    base_quotas: Optional[Dict[str, int]] = None,
+) -> Optional[Dict[str, int]]:
+    """Return AI category floors with audit-requested focus axes uplifted."""
+    boosted = _normalized_ai_priority_categories(boost_categories)
+    if not boosted:
+        return None
+
+    quotas = _normalized_ai_category_quotas(base_quotas or AI_CATEGORY_MIN_QUOTAS)
+    budget = max(1, int(top_n or 0))
+    min_boost_quota = max(1, int(math.ceil(budget * 0.12)))
+    for category in boosted:
+        current = int(quotas.get(category, 0) or 0)
+        if current <= 0:
+            current = max(1, int(math.ceil(budget * 0.05)))
+        quotas[category] = max(
+            current + max(1, int(math.ceil(current * 0.60))),
+            min_boost_quota,
+        )
+    return quotas
+
+
+def _handoff_audit_command_for_run(
+    run_started_at: str,
+    *,
+    source_scan_run_id: Optional[int] = None,
+    sample_per_lane: int = 2,
+) -> str:
+    """Build the exact post-run handoff audit command for this Viral Hunter run."""
+    timestamp = str(run_started_at or "").replace('"', '\\"')
+    safe_stamp = re.sub(r"[^0-9A-Za-z]+", "_", str(run_started_at or "")).strip("_") or "latest"
+    scan_prefix = f"scan{int(source_scan_run_id)}_" if source_scan_run_id else ""
+    out_path = f"reports/viral_handoff_audit_{scan_prefix}{safe_stamp}.json"
+    command = "python scripts/viral_handoff_audit.py"
+    if source_scan_run_id:
+        command += f" --scan-id {int(source_scan_run_id)}"
+    if timestamp:
+        command += f' --since "{timestamp}"'
+    command += f" --sample-per-lane {max(1, int(sample_per_lane or 1))}"
+    command += f" --out {out_path}"
+    return command
+
+
+AUDIT_ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved", "ai_approved"}
+AUDIT_SURVIVED_STATUSES = AUDIT_ACTIONABLE_STATUSES | {"raw_backlog"}
+AUDIT_REJECT_STATUS_BY_REASON = {
+    "advertorial": "filtered_out_ad",
+    "medical_promo": "filtered_out_ad",
+    "stale_window": "filtered_out_stale_window",
+    "journey_mismatch": "filtered_out_journey_mismatch",
+    "unqualified_lead": "filtered_out_unqualified_lead",
+    "clinic_mismatch": "filtered_out_clinic_mismatch",
+    "low_intent": "filtered_out_low_intent",
+    "low_opportunity": "filtered_out_low_opportunity",
+    "low_worksite_efficiency": "filtered_out_low_worksite_efficiency",
+}
+
+
+def _audit_current_reject_reason(score_breakdown: Dict[str, Any]) -> str:
+    if not isinstance(score_breakdown, dict):
+        return ""
+    for key in ("final_reject_reason", "pathfinder_fit_reject_reason"):
+        reason = str(score_breakdown.get(key) or "").strip()
+        if reason:
+            return reason
+    return ""
+
+
+def _audit_effective_current_status(status: object, score_breakdown: Dict[str, Any]) -> str:
+    """Count current-run rejections even when DB preserves historical work status."""
+    normalized = str(status or "pending").strip() or "pending"
+    if normalized not in AUDIT_SURVIVED_STATUSES:
+        return normalized
+    reason = _audit_current_reject_reason(score_breakdown)
+    if not reason:
+        return normalized
+    return AUDIT_REJECT_STATUS_BY_REASON.get(reason, "filtered_out")
+
+
+def _ordered_ai_floor_categories(
+    quotas: Dict[str, int],
+    priority_categories: Optional[Iterable[str]] = None,
+) -> List[str]:
+    priority_index = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+    boosted_order = {
+        category: idx
+        for idx, category in enumerate(_normalized_ai_priority_categories(priority_categories))
+    }
+
+    def sort_key(category: str) -> Tuple[Any, ...]:
         profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
         weight = float(getattr(profile, "strategic_weight", 1.0) or 1.0) if profile else 1.0
         return (
+            0 if category in boosted_order else 1,
+            boosted_order.get(category, len(boosted_order)),
             priority_index.get(category, len(priority_index)),
             -weight,
             -int(quotas.get(category, 0) or 0),
@@ -269,6 +410,358 @@ def _ai_target_breakdown_float(target: "ViralTarget", key: str) -> float:
         return 0.0
 
 
+AI_EXECUTION_REPLY_READY_TIERS = {"assist_now", "good"}
+AI_EXECUTION_REPLY_READY_SIGNALS = {
+    "clear_question_shape",
+    "help_request_language",
+    "decision_or_service_task",
+    "local_actionable",
+    "unanswered_or_low_response",
+}
+AI_EXECUTION_SIGNATURE_GENERIC_TERMS = {
+    "청주",
+    "한의원",
+    "한방",
+    "한약",
+    "병원",
+    "의원",
+    "클리닉",
+    "치료",
+    "관리",
+    "추천",
+    "후기",
+    "상담",
+    "문의",
+    "비용",
+    "가격",
+    "예약",
+    "가능",
+    "피부",
+    "보험",
+    "교정",
+}
+AI_EXECUTION_PATIENT_SURFACE_TERMS = (
+    "?", "？", "추천", "후기", "경험", "궁금", "고민", "어디", "어떤",
+    "어떻게", "괜찮", "알려", "문의", "상담", "예약", "비용", "가격",
+    "얼마", "받아보", "해보", "다녀", "가보", "아시는", "계신가요",
+)
+AI_EXECUTION_PROVIDER_SURFACE_TERMS = (
+    "한의원입니다", "병원입니다", "의원입니다", "클리닉입니다", "대표원장",
+    "의료진", "내원해보세요", "예약하세요", "관리해드립니다", "청주점에서는",
+)
+AI_EXECUTION_LENS_ROUTE_TERMS: Dict[str, Tuple[str, ...]] = {
+    "review": (
+        "추천", "후기", "잘하는", "괜찮", "어디", "경험", "가본", "가보신",
+        "해보신", "받아보신", "다녀보신", "아시는", "리뷰",
+    ),
+    "community": (
+        "추천", "후기", "어디", "경험", "가본", "가보신", "해보신",
+        "받아보신", "아시는", "궁금", "부탁", "괜찮", "잘하는",
+    ),
+    "cost": ("비용", "가격", "얼마", "실비", "보험", "자보", "치료비", "부담"),
+    "consultation": (
+        "상담", "문의", "처방", "진단", "상담받", "치료받", "검사받",
+        "궁금", "알고싶",
+    ),
+    "availability": (
+        "예약", "예약가능", "야간", "주말", "진료시간", "당일진료",
+        "오늘", "당일", "위치", "주차", "근처", "가까운",
+    ),
+    "safety": (
+        "부작용", "주의", "치료기간", "기간", "통증", "회복", "재발",
+        "안전", "효과", "걱정", "괜찮",
+    ),
+}
+
+
+def _ai_target_breakdown_text(target: "ViralTarget", key: str) -> str:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return ""
+    return str(breakdown.get(key) or "").strip()
+
+
+def _ai_target_breakdown_terms(target: "ViralTarget", key: str) -> List[str]:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict):
+        raw_value = breakdown.get(key)
+        if isinstance(raw_value, (list, tuple, set)):
+            return [str(part or "").strip() for part in raw_value if str(part or "").strip()]
+    value = _ai_target_breakdown_text(target, key)
+    if not value:
+        return []
+    return [part.strip() for part in re.split(r"[,|]", value) if part.strip()]
+
+
+def _ai_target_content_text(target: "ViralTarget") -> str:
+    parts: List[str] = [
+        str(getattr(target, "title", "") or ""),
+        str(getattr(target, "content_preview", "") or ""),
+    ]
+    for keyword in getattr(target, "matched_keywords", None) or []:
+        parts.append(str(keyword or ""))
+    return " ".join(part for part in parts if part).lower()
+
+
+def _ai_text_has_any(compact_text: str, terms: Iterable[str]) -> bool:
+    for term in terms:
+        compact = _compact_query_text(str(term or ""))
+        if compact and compact in compact_text:
+            return True
+    return False
+
+
+def _ai_category_signature_terms(category: str) -> List[str]:
+    profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+    if not profile:
+        return []
+    generic = {_compact_query_text(term) for term in AI_EXECUTION_SIGNATURE_GENERIC_TERMS}
+    terms: List[str] = []
+    for term in (
+        tuple(getattr(profile, "core_tokens", ()) or ())
+        + tuple(getattr(profile, "category_terms", ()) or ())
+        + tuple(getattr(profile, "seed_terms", ()) or ())
+        + tuple(getattr(profile, "direct_service_anchors", ()) or ())
+    ):
+        clean = str(term or "").strip()
+        compact = _compact_query_text(str(term or ""))
+        if len(compact) < 2 or compact in generic:
+            continue
+        if clean and clean not in terms:
+            terms.append(clean)
+    terms.sort(key=lambda value: len(_compact_query_text(value)), reverse=True)
+    return terms
+
+
+def _ai_target_treatment_signal_terms(target: "ViralTarget", compact_text: Optional[str] = None) -> List[str]:
+    terms = _ai_category_signature_terms(_ai_quota_category(target))
+    if not terms:
+        return []
+
+    text_compact = compact_text if compact_text is not None else _compact_query_text(_ai_target_content_text(target))
+    matched = [
+        term for term in terms
+        if _compact_query_text(term) and _compact_query_text(term) in text_compact
+    ]
+    if matched:
+        return matched
+
+    breakdown_terms: List[str] = []
+    for key in ("treatment_signature_terms", "pathfinder_treatment_signature_terms"):
+        breakdown_terms.extend(_ai_target_breakdown_terms(target, key))
+    if not breakdown_terms:
+        return []
+
+    allowed = {_compact_query_text(term): term for term in terms}
+    fallback: List[str] = []
+    for term in breakdown_terms:
+        compact = _compact_query_text(term)
+        if compact in allowed and allowed[compact] not in fallback:
+            fallback.append(allowed[compact])
+    return fallback
+
+
+def _ai_target_treatment_signal_key(target: "ViralTarget") -> str:
+    terms = _ai_target_treatment_signal_terms(target)
+    if not terms:
+        return ""
+    return f"{_ai_quota_category(target)}::{_compact_query_text(terms[0])}"
+
+
+def _ai_target_treatment_signature_matched(target: "ViralTarget", compact_text: str) -> bool:
+    return bool(_ai_target_treatment_signal_terms(target, compact_text))
+
+
+def _ai_target_local_intent_matched(target: "ViralTarget", compact_text: str) -> bool:
+    local_terms = (
+        (getattr(GYULIM_KEYWORD_PROFILE, "primary_region", "") or "",)
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()) or ())
+    )
+    if _ai_text_has_any(compact_text, local_terms):
+        return True
+    platform = str(getattr(target, "platform", "") or "").lower()
+    if platform not in {"cafe", "naver_cafe"}:
+        return False
+    author_compact = _compact_query_text(str(getattr(target, "author", "") or ""))
+    cheongju_terms = (
+        tuple(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+    )
+    return _ai_text_has_any(author_compact, cheongju_terms)
+
+
+def _ai_target_patient_surface_matched(target: "ViralTarget", text: str, compact_text: str) -> bool:
+    platform = str(getattr(target, "platform", "") or "").lower()
+    provider_author = _ai_text_has_any(
+        _compact_query_text(str(getattr(target, "author", "") or "")),
+        ("한의원", "병원", "의원", "클리닉", "피부과", "성형외과"),
+    )
+    provider_body = _ai_text_has_any(compact_text, AI_EXECUTION_PROVIDER_SURFACE_TERMS)
+    if platform in {"blog", "cafe", "naver_cafe"} and (provider_author or provider_body):
+        return False
+    if platform in {"kin", "naver_kin"}:
+        return True
+    return bool("?" in text or "？" in text or _ai_text_has_any(compact_text, AI_EXECUTION_PATIENT_SURFACE_TERMS))
+
+
+def _ai_target_viral_action_route_matched(target: "ViralTarget", compact_text: str) -> bool:
+    lens = _ai_target_execution_lens(target)
+    if lens == "service":
+        return True
+    return _ai_text_has_any(compact_text, AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ()))
+
+
+def _ai_target_reply_workability_ready(target: "ViralTarget") -> Tuple[bool, bool]:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return False, False
+    score_present = "reply_opportunity_score" in breakdown
+    score = _ai_target_breakdown_float(target, "reply_opportunity_score")
+    tier = _ai_target_breakdown_text(target, "reply_opportunity_tier")
+    signals = set(_ai_target_breakdown_terms(target, "reply_opportunity_signals"))
+    risk_flags = set(_ai_target_breakdown_terms(target, "reply_risk_flags"))
+    risk_penalty = _ai_target_breakdown_float(target, "reply_risk_penalty")
+    manual_review = _ai_target_breakdown_float(target, "manual_review") > 0
+    metric_present = bool(score_present or tier or signals or risk_flags or manual_review)
+    if not metric_present:
+        return False, False
+    opportunity_ready = bool(
+        (score_present and score >= 55.0)
+        or tier in AI_EXECUTION_REPLY_READY_TIERS
+        or signals.intersection(AI_EXECUTION_REPLY_READY_SIGNALS)
+    )
+    risk_blocked = bool(risk_flags or risk_penalty <= -40.0 or manual_review)
+    return metric_present, bool(opportunity_ready and not risk_blocked)
+
+
+def _ai_target_execution_readiness_adjustment(target: "ViralTarget") -> float:
+    """Priority nudge for posts that are ready for one-pass Viral Hunter execution."""
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+    metric_keys = {
+        "pathfinder_axis_fit_score",
+        "pathfinder_lens_fit_score",
+        "clinic_treatment_fit_score",
+        "worksite_efficiency_score",
+        "reply_opportunity_score",
+        "reply_opportunity_tier",
+        "reply_opportunity_signals",
+    }
+    if not any(key in breakdown for key in metric_keys):
+        return 0.0
+
+    adjustment = 0.0
+    for key, good_bonus, weak_penalty in (
+        ("clinic_treatment_fit_score", 4.0, -10.0),
+        ("worksite_efficiency_score", 4.0, -10.0),
+        ("pathfinder_axis_fit_score", 3.0, -8.0),
+        ("pathfinder_lens_fit_score", 3.0, -8.0),
+    ):
+        if key not in breakdown:
+            continue
+        value = _ai_target_breakdown_float(target, key)
+        if value >= 75.0:
+            adjustment += good_bonus
+        elif value < 55.0:
+            adjustment += weak_penalty
+
+    reply_metric_present, reply_ready = _ai_target_reply_workability_ready(target)
+    if reply_metric_present:
+        adjustment += 16.0 if reply_ready else -24.0
+    elif any(
+        key in breakdown
+        for key in (
+            "pathfinder_axis_fit_score",
+            "pathfinder_lens_fit_score",
+            "clinic_treatment_fit_score",
+            "worksite_efficiency_score",
+        )
+    ):
+        adjustment -= 18.0
+
+    text = _ai_target_content_text(target)
+    compact_text = _compact_query_text(text)
+    if compact_text:
+        components = {
+            "treatment_signature": _ai_target_treatment_signature_matched(target, compact_text),
+            "local_intent": _ai_target_local_intent_matched(target, compact_text),
+            "patient_surface": _ai_target_patient_surface_matched(target, text, compact_text),
+            "viral_action_route": _ai_target_viral_action_route_matched(target, compact_text),
+        }
+        matched_count = sum(1 for matched in components.values() if matched)
+        adjustment += matched_count * 3.0
+        adjustment -= (len(components) - matched_count) * 4.0
+        if reply_ready and matched_count == len(components):
+            adjustment += 14.0
+        elif reply_ready and matched_count >= 3:
+            adjustment += 7.0
+
+    return round(max(-36.0, min(36.0, adjustment)), 4)
+
+
+def _ai_target_source_seed_audit_selection_adjustment(target: "ViralTarget") -> float:
+    """Bound source-seed audit feedback for final AI target ordering.
+
+    Seed ranking already consumes the audit. This smaller adjustment preserves the
+    signal through the Pathfinder -> Viral Hunter handoff without letting seed-level
+    history override current post fit.
+    """
+    raw = _ai_target_breakdown_float(target, "pathfinder_source_seed_audit_adjustment")
+    if raw:
+        return round(max(-16.0, min(8.0, raw * 0.25)), 4)
+
+    action = _ai_target_breakdown_text(target, "pathfinder_source_seed_audit_action")
+    if action == "scale_or_keep":
+        return 2.0
+    if action == "merge_or_keep_as_companion":
+        return -4.0
+    if action == "repair_query_shape":
+        return -7.0
+    if action == "retire_or_pause":
+        return -12.0
+    return 0.0
+
+
+def _ai_target_compliance_selection_adjustment(target: "ViralTarget") -> float:
+    """Demote targets that are fit matches but not safe for direct viral work."""
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+
+    flags = set(_ai_target_breakdown_terms(target, "reply_risk_flags"))
+    risk_penalty = _ai_target_breakdown_float(target, "reply_risk_penalty")
+    manual_review = _ai_target_breakdown_float(target, "manual_review") > 0
+    medical_ad_risk = _ai_target_breakdown_float(target, "pathfinder_medical_ad_risk_score")
+    reject_reason = _ai_target_breakdown_text(target, "final_reject_reason")
+    status = str(getattr(target, "comment_status", "") or "").strip().lower()
+
+    adjustment = 0.0
+    severe_flags = flags.intersection(AI_COMPLIANCE_SEVERE_REPLY_FLAGS)
+    review_flags = flags.intersection(AI_COMPLIANCE_REVIEW_REPLY_FLAGS)
+    unknown_flags = flags - severe_flags - review_flags
+
+    if reject_reason in {"advertorial", "medical_promo"}:
+        adjustment -= 90.0
+    if severe_flags or risk_penalty <= -40.0 or status == "manual_review":
+        adjustment -= 72.0
+    elif review_flags or unknown_flags or manual_review:
+        adjustment -= 36.0
+    if flags:
+        adjustment -= min(18.0, max(0, len(flags) - 1) * 6.0)
+
+    if medical_ad_risk >= 70.0:
+        adjustment -= 48.0
+    elif medical_ad_risk >= 50.0:
+        adjustment -= 24.0
+    elif medical_ad_risk >= 40.0:
+        adjustment -= 10.0
+
+    return round(max(-100.0, min(0.0, adjustment)), 4)
+
+
 def _ai_target_selection_score(target: "ViralTarget") -> float:
     """AI budget ordering that favors Pathfinder-fit, clinic-fit candidates."""
     priority = float(getattr(target, "priority_score", 0.0) or 0.0)
@@ -292,7 +785,18 @@ def _ai_target_selection_score(target: "ViralTarget") -> float:
         fit_bonus += max(-6.0, min(8.0, (readiness - 60.0) * 0.08))
     if actionability:
         fit_bonus += max(-6.0, min(8.0, (actionability - 60.0) * 0.08))
-    return round(priority + fit_bonus, 4)
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict) and "execution_readiness_selection_adjustment" in breakdown:
+        selection_adjustment = _ai_target_breakdown_float(target, "execution_readiness_selection_adjustment")
+        priority_adjustment = _ai_target_breakdown_float(target, "execution_readiness_priority_adjustment")
+        readiness_adjustment = selection_adjustment - priority_adjustment
+    elif isinstance(breakdown, dict) and "execution_readiness_priority_adjustment" in breakdown:
+        readiness_adjustment = 0.0
+    else:
+        readiness_adjustment = _ai_target_execution_readiness_adjustment(target)
+    seed_audit_adjustment = _ai_target_source_seed_audit_selection_adjustment(target)
+    compliance_adjustment = _ai_target_compliance_selection_adjustment(target)
+    return round(priority + fit_bonus + readiness_adjustment + seed_audit_adjustment + compliance_adjustment, 4)
 
 
 def _ai_target_sort_key(target: "ViralTarget") -> Tuple[float, float, float, float, float, str]:
@@ -322,6 +826,11 @@ def _select_category_floor_targets(
     category: str,
     quota: int,
     selected_urls: set[str],
+    preferred_lenses: Optional[Iterable[str]] = None,
+    venue_counts: Optional[Dict[str, int]] = None,
+    venue_cap: Optional[int] = None,
+    signal_counts: Optional[Dict[str, int]] = None,
+    signal_cap: Optional[int] = None,
 ) -> List["ViralTarget"]:
     """Pick a category floor while preserving Pathfinder execution-lens variety."""
     if quota <= 0:
@@ -340,6 +849,60 @@ def _select_category_floor_targets(
     picked: List[ViralTarget] = []
     local_urls: set[str] = set()
     covered_lenses: set[str] = set()
+    venue_counts = venue_counts if venue_counts is not None else {}
+    effective_venue_cap = max(1, int(venue_cap or max(2, math.ceil(quota * 0.25))))
+    signal_counts = signal_counts if signal_counts is not None else {}
+    effective_signal_cap = max(1, int(signal_cap or max(2, math.ceil(quota * 0.25))))
+    preferred_lens_order = [
+        lens for lens in _normalized_ai_preferred_lenses(preferred_lenses)
+        if lens != "service"
+    ]
+
+    def can_pick(
+        target: ViralTarget,
+        *,
+        enforce_venue: bool = True,
+        enforce_signal: bool = True,
+    ) -> bool:
+        url = target.url or target.id
+        if url in local_urls:
+            return False
+        if enforce_venue:
+            vk = _ai_target_venue_key(target)
+            if vk and int(venue_counts.get(vk, 0) or 0) >= effective_venue_cap:
+                return False
+        if enforce_signal:
+            signal_key = _ai_target_treatment_signal_key(target)
+            if signal_key and int(signal_counts.get(signal_key, 0) or 0) >= effective_signal_cap:
+                return False
+        return True
+
+    def pick(target: ViralTarget) -> None:
+        url = target.url or target.id
+        picked.append(target)
+        local_urls.add(url)
+        vk = _ai_target_venue_key(target)
+        if vk:
+            venue_counts[vk] = int(venue_counts.get(vk, 0) or 0) + 1
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key:
+            signal_counts[signal_key] = int(signal_counts.get(signal_key, 0) or 0) + 1
+
+    for preferred_lens in preferred_lens_order:
+        if len(picked) >= quota:
+            break
+        target = next(
+            (
+                candidate for candidate in candidates
+                if _ai_target_execution_lens(candidate) == preferred_lens
+                and can_pick(candidate)
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        pick(target)
+        covered_lenses.add(preferred_lens)
 
     # First reserve one high-ranked target per non-generic lens. This keeps
     # Pathfinder's cost/consultation/safety discoveries from being crowded out
@@ -350,19 +913,25 @@ def _select_category_floor_targets(
         lens = _ai_target_execution_lens(target)
         if lens == "service" or lens in covered_lenses:
             continue
-        url = target.url or target.id
-        picked.append(target)
-        local_urls.add(url)
+        if not can_pick(target):
+            continue
+        pick(target)
         covered_lenses.add(lens)
 
     for target in candidates:
         if len(picked) >= quota:
             break
-        url = target.url or target.id
-        if url in local_urls:
+        if not can_pick(target):
             continue
-        picked.append(target)
-        local_urls.add(url)
+        pick(target)
+
+    if len(picked) < quota:
+        for target in candidates:
+            if len(picked) >= quota:
+                break
+            if not can_pick(target, enforce_venue=False, enforce_signal=False):
+                continue
+            pick(target)
 
     return picked
 
@@ -371,6 +940,8 @@ def split_ai_targets_with_category_floor(
     targets: List["ViralTarget"],
     top_n: int,
     category_min_quotas: Optional[Dict[str, int]] = None,
+    priority_categories: Optional[Iterable[str]] = None,
+    preferred_lenses: Optional[Iterable[str]] = None,
 ) -> Tuple[List["ViralTarget"], List["ViralTarget"]]:
     """Split AI candidates while keeping minority core categories represented.
 
@@ -384,12 +955,18 @@ def split_ai_targets_with_category_floor(
     if len(targets) <= top_n:
         return list(targets), []
 
-    quotas = _normalized_ai_category_quotas(category_min_quotas or AI_CATEGORY_MIN_QUOTAS)
+    quotas = _normalized_ai_category_quotas(
+        AI_CATEGORY_MIN_QUOTAS if category_min_quotas is None else category_min_quotas
+    )
     selected: List[ViralTarget] = []
     selected_urls: set[str] = set()
     per_category_floor_cap = max(1, math.ceil(top_n * 0.4)) if len(quotas) > 1 else top_n
     selected_category_counts: Dict[str, int] = {}
-    ordered_categories = _ordered_ai_floor_categories(quotas)
+    ordered_categories = _ordered_ai_floor_categories(quotas, priority_categories=priority_categories)
+    floor_venue_counts: Dict[str, int] = {}
+    floor_venue_cap = max(2, math.ceil(top_n * 0.12))
+    floor_signal_counts: Dict[str, int] = {}
+    floor_signal_cap = max(2, math.ceil(top_n * 0.10))
 
     # First pass: when the AI budget is small, guarantee one candidate for each
     # available strategic axis before any high-volume category consumes its full
@@ -405,6 +982,11 @@ def split_ai_targets_with_category_floor(
                     category=category,
                     quota=1,
                     selected_urls=selected_urls,
+                    preferred_lenses=preferred_lenses,
+                    venue_counts=floor_venue_counts,
+                    venue_cap=floor_venue_cap,
+                    signal_counts=floor_signal_counts,
+                    signal_cap=floor_signal_cap,
                 )
             ),
             None,
@@ -427,6 +1009,11 @@ def split_ai_targets_with_category_floor(
             category=category,
             quota=remaining_quota,
             selected_urls=selected_urls,
+            preferred_lenses=preferred_lenses,
+            venue_counts=floor_venue_counts,
+            venue_cap=floor_venue_cap,
+            signal_counts=floor_signal_counts,
+            signal_cap=floor_signal_cap,
         ):
             selected.append(target)
             selected_urls.add(target.url or target.id)
@@ -447,6 +1034,12 @@ def split_ai_targets_with_category_floor(
         if vk:
             venue_counts[vk] = venue_counts.get(vk, 0) + 1
     ai_venue_cap = max(3, math.ceil(top_n * 0.15))
+    signal_counts: Dict[str, int] = {}
+    for target in selected:
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key:
+            signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
+    ai_signal_cap = max(3, math.ceil(top_n * 0.15))
     for target in ranked_rest:
         if len(selected) >= top_n:
             break
@@ -456,10 +1049,15 @@ def split_ai_targets_with_category_floor(
         vk = _ai_target_venue_key(target)
         if vk and venue_counts.get(vk, 0) >= ai_venue_cap:
             continue
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key and signal_counts.get(signal_key, 0) >= ai_signal_cap:
+            continue
         selected.append(target)
         selected_urls.add(url)
         if vk:
             venue_counts[vk] = venue_counts.get(vk, 0) + 1
+        if signal_key:
+            signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
     if len(selected) < top_n:
         for target in ranked_rest:
             if len(selected) >= top_n:
@@ -2833,7 +3431,7 @@ class CommentableFilter:
                 lens in {"cost", "consultation", "availability", "safety"}
                 and (
                     query_variant.startswith("axis_")
-                    or query_variant == "patient_voice_kin"
+                    or query_variant in {"patient_voice_kin", "patient_voice_question_kin"}
                 )
             )
         )
@@ -6338,6 +6936,8 @@ class CommentableFilter:
                     + pathfinder_axis_adjustment * 0.30,
                 ),
             )
+            execution_readiness_selection_adjustment = _ai_target_execution_readiness_adjustment(target)
+            execution_readiness_priority_adjustment = min(0.0, execution_readiness_selection_adjustment)
             target.priority_score = round(
                 max(
                     0.0,
@@ -6352,10 +6952,23 @@ class CommentableFilter:
                 ),
                 2,
             )
+            target.priority_score = round(
+                max(
+                    0.0,
+                    min(150.0, target.priority_score + execution_readiness_priority_adjustment),
+                ),
+                2,
+            )
             target.score_breakdown["timing_priority_adjustment"] = float(timing_priority_adjustment)
             target.score_breakdown["journey_priority_adjustment"] = float(journey_priority_adjustment)
             target.score_breakdown["qualification_priority_adjustment"] = float(qualification_priority_adjustment)
             target.score_breakdown["pathfinder_priority_adjustment"] = float(pathfinder_priority_adjustment)
+            target.score_breakdown["execution_readiness_selection_adjustment"] = float(
+                execution_readiness_selection_adjustment
+            )
+            target.score_breakdown["execution_readiness_priority_adjustment"] = float(
+                execution_readiness_priority_adjustment
+            )
             target.is_commentable = True
             filtered.append(target)
 
@@ -6679,6 +7292,24 @@ class AICommentGenerator:
                 f"sources={', '.join(source_signals[:4]) or 'none'}; "
                 f"flags={', '.join(quality_flags[:3]) or 'none'}"
             )
+        audit_action = str(breakdown.get("pathfinder_source_seed_audit_action") or "").strip()
+        audit_actions = cls._score_breakdown_terms(
+            breakdown.get("pathfinder_source_seed_audit_actions"),
+            limit=4,
+        )
+        audit_adjustment = breakdown.get("pathfinder_source_seed_audit_adjustment")
+        audit_recat = str(breakdown.get("pathfinder_source_seed_audit_recategorized_category") or "").strip()
+        if audit_action or audit_actions or audit_adjustment not in (None, "", 0, 0.0) or audit_recat:
+            audit_parts = []
+            if audit_action:
+                audit_parts.append(f"action={audit_action}")
+            if audit_actions and (len(audit_actions) > 1 or audit_actions[0] != audit_action):
+                audit_parts.append(f"actions={', '.join(audit_actions)}")
+            if audit_adjustment not in (None, "", 0, 0.0):
+                audit_parts.append(f"adjustment={audit_adjustment}")
+            if audit_recat:
+                audit_parts.append(f"recategorized={audit_recat}")
+            pathfinder_lines.append("PATHFINDER_AUDIT: " + "; ".join(audit_parts))
         insight_brief = str(breakdown.get("pathfinder_insight_brief") or "").strip()
         if insight_brief:
             pathfinder_lines.append(f"PATHFINDER_BRIEF: {insight_brief}")
@@ -7728,6 +8359,38 @@ class ViralHunter:
         "체형교정": ("자세 틀어짐", "골반 틀어짐", "어깨 비대칭"),
         "리프팅/탄력": ("얼굴 처짐", "피부 탄력 저하", "팔자주름 고민"),
     }
+    PATIENT_VOICE_QUESTION_TERMS = (
+        "해보신분",
+        "가보신분",
+        "받아보신분",
+        "먹어보신분",
+        "다녀보신분",
+        "아시는분",
+        "계신가요",
+        "괜찮나요",
+        "어떤가요",
+        "어때요",
+        "추천부탁",
+        "후기궁금",
+        "있을까요",
+    )
+    PATIENT_VOICE_VARIANTS = {"patient_voice_kin", "patient_voice_question_kin"}
+    HANDOFF_VARIANT_QUALITY_ACTION_FACTORS: Dict[str, float] = {
+        "retire_or_pause": 0.0,
+        "retire_family_or_pause": 0.45,
+        "repair_query_shape": 0.55,
+        "repair_family_query_shape": 0.70,
+        "scale_or_keep": 1.18,
+        "scale_family_or_keep": 1.10,
+    }
+    HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY: Dict[str, int] = {
+        "scale_or_keep": 1,
+        "scale_family_or_keep": 1,
+        "repair_query_shape": 2,
+        "repair_family_query_shape": 2,
+        "retire_or_pause": 3,
+        "retire_family_or_pause": 3,
+    }
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -7946,24 +8609,27 @@ class ViralHunter:
         *,
         boost_categories: Optional[Iterable[str]] = None,
         boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
     ) -> List[str]:
         """Round-robin keywords by Pathfinder handoff lane before applying run limits."""
         if len(keywords) <= 1:
             return list(keywords or [])
 
-        boosted_categories = {
-            GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
-            for category in (boost_categories or [])
-            if str(category or "").strip()
+        boosted_category_order = {
+            category: idx
+            for idx, category in enumerate(_normalized_ai_priority_categories(boost_categories))
         }
-        boosted_lenses = {
-            str(lens or "").strip().lower()
-            for lens in (boost_lenses or [])
-            if str(lens or "").strip()
+        boosted_lens_order = {
+            lens: idx
+            for idx, lens in enumerate(_normalized_ai_preferred_lenses(boost_lenses))
+        }
+        boosted_category_lens_order = {
+            lane: idx
+            for idx, lane in enumerate(_normalized_handoff_category_lenses(boost_category_lenses))
         }
         lanes: Dict[str, List[str]] = {}
+        lane_meta: Dict[str, Tuple[str, str]] = {}
         ranked_lanes: List[str] = []
-        boosted_lane_keys: set[str] = set()
         missing_context = 0
         for keyword in keywords:
             ctx = self.keyword_context.get(keyword) or {}
@@ -7974,17 +8640,46 @@ class ViralHunter:
             lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
             if lane_key not in lanes:
                 lanes[lane_key] = []
+                lane_meta[lane_key] = (category, lens)
                 ranked_lanes.append(lane_key)
-            if category in boosted_categories or lens in boosted_lenses:
-                boosted_lane_keys.add(lane_key)
             lanes[lane_key].append(keyword)
 
         if len(ranked_lanes) <= 1 or missing_context == len(keywords):
             return list(keywords)
 
-        if boosted_lane_keys:
+        if boosted_category_order or boosted_lens_order or boosted_category_lens_order:
             lane_order = {lane_key: idx for idx, lane_key in enumerate(ranked_lanes)}
-            ranked_lanes.sort(key=lambda lane_key: (0 if lane_key in boosted_lane_keys else 1, lane_order[lane_key]))
+            floor_priority = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+
+            def lane_sort_key(lane_key: str) -> Tuple[Any, ...]:
+                category, lens = lane_meta.get(lane_key, ("unknown", "service"))
+                category_lens_boosted = lane_key in boosted_category_lens_order
+                category_boosted = category in boosted_category_order
+                lens_boosted = lens in boosted_lens_order
+                if category_lens_boosted:
+                    boost_rank = 0
+                elif category_boosted:
+                    boost_rank = 1
+                elif lens_boosted:
+                    boost_rank = 2
+                else:
+                    boost_rank = 3
+                profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+                try:
+                    strategic_weight = float(getattr(profile, "strategic_weight", 1.0) or 1.0) if profile else 1.0
+                except (TypeError, ValueError):
+                    strategic_weight = 1.0
+                return (
+                    boost_rank,
+                    boosted_category_lens_order.get(lane_key, len(boosted_category_lens_order)),
+                    boosted_category_order.get(category, len(boosted_category_order)),
+                    floor_priority.get(category, len(floor_priority)),
+                    boosted_lens_order.get(lens, len(boosted_lens_order)),
+                    -strategic_weight,
+                    lane_order[lane_key],
+                )
+
+            ranked_lanes.sort(key=lane_sort_key)
 
         ordered: List[str] = []
         while len(ordered) < len(keywords):
@@ -7999,6 +8694,195 @@ class ViralHunter:
                 break
 
         return ordered
+
+    def _load_handoff_playbook_boosts(self, max_audits: int = 6) -> Dict[str, List[str]]:
+        """Load latest handoff-audit lane boosts for closed-loop discovery ordering."""
+        cached = getattr(self, "_handoff_playbook_boost_cache", None)
+        if cached is not None:
+            return cached
+
+        boosts: Dict[str, List[str]] = {"categories": [], "lenses": [], "category_lenses": [], "sources": []}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def add_unique(key: str, value: str) -> None:
+            text = str(value or "").strip()
+            if text and text not in boosts[key]:
+                boosts[key].append(text)
+
+        def add_lane_boost(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            lane = str(item.get("category_lens") or item.get("lane") or "").strip()
+            category = str(item.get("category") or "").strip()
+            lens = str(item.get("lens") or "").strip().lower()
+            if (not category or not lens) and "::" in lane:
+                lane_category, _, lane_lens = lane.partition("::")
+                category = category or lane_category.strip()
+                lens = lens or lane_lens.strip().lower()
+            elif not category and not lens and ":" in lane:
+                lane_category, _, lane_lens = lane.rpartition(":")
+                category = lane_category.strip()
+                lens = lane_lens.strip().lower()
+            elif lane and "::" not in lane and ":" not in lane and not category:
+                category = lane
+
+            if category and lens:
+                add_unique("category_lenses", f"{category}::{lens}")
+                add_unique("categories", category)
+                add_unique("lenses", lens)
+            else:
+                if category:
+                    add_unique("categories", category)
+                if lens:
+                    add_unique("lenses", lens)
+
+        def add_gap_lane_boosts(container: Any) -> None:
+            if not isinstance(container, dict):
+                return
+            for key, value in container.items():
+                if not isinstance(value, list):
+                    continue
+                if key == "gaps" or key.endswith("_gaps"):
+                    for item in value[:10]:
+                        add_lane_boost(item)
+
+        quality_gap_sections = (
+            "patient_journey_coverage",
+            "work_queue_readiness",
+            "opportunity_diversity",
+            "engagement_hook_quality",
+            "treatment_signature_quality",
+            "treatment_signal_diversity_quality",
+            "seed_candidate_alignment_quality",
+            "local_intent_quality",
+            "patient_surface_quality",
+            "viral_action_route_quality",
+            "reply_workability_quality",
+            "compliance_work_mode_quality",
+            "execution_readiness_quality",
+            "execution_priority_alignment_quality",
+        )
+
+        for payload, source_name in audit_payloads:
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if not isinstance(playbook, dict):
+                playbook = {}
+
+            for item in (playbook.get("boost_categories") or [])[:10]:
+                if isinstance(item, dict):
+                    add_unique("categories", item.get("category") or "")
+                else:
+                    add_unique("categories", str(item or ""))
+            for item in (playbook.get("boost_lenses") or [])[:10]:
+                if isinstance(item, dict):
+                    add_unique("lenses", item.get("lens") or "")
+                else:
+                    add_unique("lenses", str(item or ""))
+            for item in (playbook.get("boost_category_lenses") or [])[:10]:
+                lane = item.get("category_lens") if isinstance(item, dict) else str(item or "")
+                lane = str(lane or "").strip()
+                category, _, lens = lane.partition("::")
+                if category and lens:
+                    add_unique("category_lenses", lane)
+                    add_unique("categories", category)
+                    add_unique("lenses", lens)
+            add_gap_lane_boosts(playbook)
+            for section_name in quality_gap_sections:
+                add_gap_lane_boosts(payload.get(section_name))
+
+            boosts["categories"] = _normalized_ai_priority_categories(boosts.get("categories") or [])
+            boosts["lenses"] = _normalized_ai_preferred_lenses(boosts.get("lenses") or [])
+            boosts["category_lenses"] = _normalized_handoff_category_lenses(boosts.get("category_lenses") or [])
+            if boosts["categories"] or boosts["lenses"] or boosts["category_lenses"]:
+                boosts["sources"] = [source_name]
+                break
+
+        self._handoff_playbook_boost_cache = boosts
+        return boosts
+
+    def _merge_handoff_playbook_boosts(
+        self,
+        *,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
+    ) -> Tuple[List[str], List[str], List[str]]:
+        explicit_categories = _normalized_ai_priority_categories(boost_categories)
+        explicit_lenses = _normalized_ai_preferred_lenses(boost_lenses)
+        explicit_category_lenses = _normalized_handoff_category_lenses(boost_category_lenses)
+        playbook = self._load_handoff_playbook_boosts()
+
+        def merge(explicit: List[str], automatic: Iterable[str]) -> List[str]:
+            merged = list(explicit)
+            for value in automatic or []:
+                if value not in merged:
+                    merged.append(value)
+            return merged
+
+        auto_categories = [value for value in playbook.get("categories", []) if value not in explicit_categories]
+        auto_lenses = [value for value in playbook.get("lenses", []) if value not in explicit_lenses]
+        auto_category_lenses = [
+            value for value in playbook.get("category_lenses", []) if value not in explicit_category_lenses
+        ]
+        self._handoff_playbook_auto_boosts = {
+            "categories": auto_categories,
+            "lenses": auto_lenses,
+            "category_lenses": auto_category_lenses,
+            "sources": list(playbook.get("sources", []) or []),
+        }
+        return (
+            merge(explicit_categories, auto_categories),
+            merge(explicit_lenses, auto_lenses),
+            merge(explicit_category_lenses, auto_category_lenses),
+        )
 
     @staticmethod
     def _checkpoint_boost_categories(categories: Optional[Iterable[str]]) -> List[str]:
@@ -8020,6 +8904,10 @@ class ViralHunter:
             }
         )
 
+    @staticmethod
+    def _checkpoint_boost_category_lenses(category_lenses: Optional[Iterable[str]]) -> List[str]:
+        return sorted(_normalized_handoff_category_lenses(category_lenses))
+
     def _checkpoint_hash_for_run(
         self,
         keywords: List[str],
@@ -8028,6 +8916,7 @@ class ViralHunter:
         source_scan_run_id: Optional[int] = None,
         boost_categories: Optional[Iterable[str]] = None,
         boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
     ) -> str:
         """Hash the exact Pathfinder handoff execution signature for resume safety."""
         query_plans: List[Dict[str, Any]] = []
@@ -8055,10 +8944,40 @@ class ViralHunter:
             "source_scan_run_id": int(source_scan_run_id or 0),
             "boost_categories": self._checkpoint_boost_categories(boost_categories),
             "boost_lenses": self._checkpoint_boost_lenses(boost_lenses),
+            "boost_category_lenses": self._checkpoint_boost_category_lenses(boost_category_lenses),
             "query_plans": query_plans,
         }
         raw = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _search_plan_cache_key(
+        search_plan: Dict[str, Any],
+        *,
+        max_per_platform: int,
+    ) -> Tuple[str, bool, Tuple[Tuple[str, int], ...]]:
+        query = re.sub(r"\s+", " ", str(search_plan.get("query") or "").strip())
+        limits = search_plan.get("platform_limits") or {}
+        platform_limits = tuple(
+            (platform, int((limits or {}).get(platform, 0) or 0))
+            for platform in ("cafe", "blog", "kin")
+        )
+        return (
+            query,
+            bool(search_plan.get("include_blog")),
+            platform_limits + (("max_per_platform", int(max_per_platform or 0)),),
+        )
+
+    @staticmethod
+    def _clone_search_targets(targets: List[ViralTarget]) -> List[ViralTarget]:
+        clones: List[ViralTarget] = []
+        for target in targets or []:
+            clone = replace(target)
+            clone.matched_keywords = list(target.matched_keywords or [])
+            clone.score_breakdown = dict(target.score_breakdown or {})
+            clone.sort_appearances = list(target.sort_appearances or [])
+            clones.append(clone)
+        return clones
 
     @staticmethod
     def _context_float(ctx: Dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -8095,7 +9014,13 @@ class ViralHunter:
             parts.append("sources=" + ",".join(source_signals[:3]))
         if quality_flags:
             parts.append("flags=" + ",".join(quality_flags[:2]))
-        return "; ".join(parts[:7])
+        audit_action = str(ctx.get("source_seed_audit_action") or "").strip()
+        if audit_action:
+            parts.append(f"audit={audit_action}")
+        recategorized = str(ctx.get("source_seed_audit_recategorized_category") or "").strip()
+        if recategorized:
+            parts.append(f"recat={recategorized}")
+        return "; ".join(parts[:9])
 
     @staticmethod
     def _inferred_execution_lens_for_keyword(keyword: str, ctx: Optional[Dict[str, Any]] = None) -> str:
@@ -8222,6 +9147,7 @@ class ViralHunter:
         # 가중치를 곱한다. 카테고리 룰이 못 보는 플랫폼-단위 ROI 격차(blog 0.4% 등)를
         # 보정 — 카테고리 무관하게 적용되고, 바닥 limit가 탐사를 유지한다.
         limits = self._apply_platform_yield_factors(limits)
+        limits = self._apply_platform_surface_feedback(limits, category=category)
 
         return {
             "include_blog": include_blog,
@@ -8260,10 +9186,32 @@ class ViralHunter:
         try:
             import sqlite3 as _sql
             conn = _sql.connect(self.db.db_path)
-            rows = conn.execute(
-                "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT ?",
-                (int(max_runs),),
-            ).fetchall()
+            audit_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(viral_scan_audits)").fetchall()
+            }
+            if "source_scan_run_id" in audit_columns:
+                rows = conn.execute(
+                    """
+                    SELECT audit_json
+                    FROM viral_scan_audits
+                    WHERE id IN (
+                        SELECT MAX(id)
+                        FROM viral_scan_audits
+                        GROUP BY CASE
+                            WHEN COALESCE(source_scan_run_id, 0) > 0 THEN source_scan_run_id
+                            ELSE id
+                        END
+                    )
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (int(max_runs),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT ?",
+                    (int(max_runs),),
+                ).fetchall()
             conn.close()
         except Exception:
             rows = []
@@ -8341,6 +9289,281 @@ class ViralHunter:
         variant_key = str(variant or "").strip()
         return f"category_lens_variant:{category_key}::{lens_key}::{variant_key}"
 
+    @staticmethod
+    def _category_lens_variant_quality_key(category: str, lens: str, variant: str) -> str:
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        lens_key = str(lens or "service").strip().lower() or "service"
+        variant_key = str(variant or "").strip()
+        return f"quality_category_lens_variant:{category_key}::{lens_key}::{variant_key}"
+
+    @staticmethod
+    def _query_variant_family(query_variant: str) -> str:
+        variant = str(query_variant or "").strip()
+        if variant in {"", "base", "(none)"}:
+            return "base"
+        if variant == "community_base":
+            return "community_base"
+        if variant in ViralHunter.PATIENT_VOICE_VARIANTS:
+            return "patient_voice"
+        if variant.startswith("colloquial:"):
+            return "colloquial"
+        if variant.startswith("axis_") and ":specific_" in variant:
+            return "axis_specific"
+        if variant.startswith("axis_"):
+            return "axis_companion"
+        if "_community:" in variant:
+            return "lens_community"
+        if ":" in variant:
+            return "lens_companion"
+        return "other"
+
+    @staticmethod
+    def _variant_feedback_int(entry: Dict[str, Any], key: str) -> int:
+        try:
+            return int(float(entry.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _load_variant_quality_feedback(self, max_audits: int = 6) -> Dict[str, Dict[str, Any]]:
+        """Load latest handoff-audit query-variant quality actions for planning."""
+        cached = getattr(self, "_variant_quality_feedback_cache", None)
+        if cached is not None:
+            return cached
+
+        feedback: Dict[str, Dict[str, Any]] = {}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        if not root_dir:
+            self._variant_quality_feedback_cache = feedback
+            return feedback
+
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+        reports_dir = os.path.join(root_dir, "reports")
+        try:
+            if os.path.isdir(reports_dir):
+                report_files = [
+                    os.path.join(reports_dir, name)
+                    for name in os.listdir(reports_dir)
+                    if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                ]
+                report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                for path in report_files[: max(1, int(max_audits))]:
+                    try:
+                        with open(path, "r", encoding="utf-8") as fh:
+                            payload = json.load(fh)
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict):
+                        audit_payloads.append((payload, os.path.basename(path)))
+        except OSError:
+            pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        variant_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_variants", "retire_or_pause", 3),
+            ("repair_variants", "repair_query_shape", 2),
+            ("scale_variants", "scale_or_keep", 1),
+        )
+        lane_variant_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_category_lens_variants", "retire_or_pause", 3),
+            ("repair_category_lens_variants", "repair_query_shape", 2),
+            ("scale_category_lens_variants", "scale_or_keep", 1),
+        )
+        family_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_families", "retire_family_or_pause", 3),
+            ("repair_families", "repair_family_query_shape", 2),
+            ("scale_families", "scale_family_or_keep", 1),
+        )
+
+        def maybe_set(key: str, entry: Dict[str, Any], audit_rank: int, severity: int) -> None:
+            existing = feedback.get(key)
+            if existing:
+                existing_rank = int(existing.get("_audit_rank") or 0)
+                existing_severity = int(existing.get("_severity") or 0)
+                if existing_rank < audit_rank:
+                    return
+                if existing_rank == audit_rank and existing_severity >= severity:
+                    return
+            feedback[key] = entry
+
+        for audit_rank, (payload, source_name) in enumerate(audit_payloads):
+            raw_feedback = payload.get("variant_quality_feedback") if isinstance(payload, dict) else None
+            if not isinstance(raw_feedback, dict):
+                continue
+            for list_key, default_action, severity in variant_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    variant = str(item.get("variant") or "").strip()
+                    if not variant:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    entry = {
+                        **item,
+                        "type": "query_variant",
+                        "variant": variant,
+                        "variant_family": str(item.get("variant_family") or self._query_variant_family(variant)),
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(variant, entry, audit_rank, int(entry["_severity"]))
+            for list_key, default_action, severity in lane_variant_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    variant = str(item.get("variant") or "").strip()
+                    category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or ""))
+                    lens = str(item.get("lens") or "").strip().lower()
+                    if not category or not lens:
+                        category_lens = str(item.get("category_lens") or "")
+                        category_part, _, lens_part = category_lens.partition("::")
+                        category = GYULIM_KEYWORD_PROFILE.normalize_category(category_part)
+                        lens = lens_part.strip().lower()
+                    if not variant or not category or not lens:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    key = self._category_lens_variant_quality_key(category, lens, variant)
+                    entry = {
+                        **item,
+                        "type": "category_lens_query_variant",
+                        "category": category,
+                        "lens": lens,
+                        "category_lens": f"{category}::{lens}",
+                        "variant": variant,
+                        "variant_family": str(item.get("variant_family") or self._query_variant_family(variant)),
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(key, entry, audit_rank, int(entry["_severity"]))
+            for list_key, default_action, severity in family_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    family = str(item.get("family") or "").strip()
+                    if not family:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    key = f"family:{family}"
+                    entry = {
+                        **item,
+                        "type": "variant_family",
+                        "family": family,
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(key, entry, audit_rank, int(entry["_severity"]))
+
+        self._variant_quality_feedback_cache = feedback
+        return feedback
+
+    @classmethod
+    def _variant_quality_feedback_for(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> Dict[str, Any]:
+        variant = str(variant or "").strip()
+        if not feedback or not variant:
+            return {}
+        if category or lens:
+            lane = feedback.get(cls._category_lens_variant_quality_key(category, lens, variant))
+            if isinstance(lane, dict):
+                return lane
+        if variant in {"base", "community_base"}:
+            return {}
+        exact = feedback.get(variant)
+        if isinstance(exact, dict):
+            return exact
+        family = feedback.get(f"family:{cls._query_variant_family(variant)}")
+        return family if isinstance(family, dict) else {}
+
+    @classmethod
+    def _variant_quality_gate_should_drop(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> bool:
+        entry = cls._variant_quality_feedback_for(feedback, category=category, lens=lens, variant=variant)
+        if not entry or entry.get("type") not in {"query_variant", "category_lens_query_variant"}:
+            return False
+        if str(entry.get("action") or "") != "retire_or_pause":
+            return False
+        if str(variant or "").strip() in {"", "base", "community_base"}:
+            return False
+        total = cls._variant_feedback_int(entry, "total")
+        survived = cls._variant_feedback_int(entry, "survived")
+        strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+        return total >= 20 and survived == 0 and strict_fit == 0
+
+    @classmethod
+    def _variant_quality_budget_factor(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> float:
+        entry = cls._variant_quality_feedback_for(feedback, category=category, lens=lens, variant=variant)
+        if not entry:
+            return 1.0
+        action = str(entry.get("action") or "").strip()
+        factor = cls.HANDOFF_VARIANT_QUALITY_ACTION_FACTORS.get(action, 1.0)
+        if str(variant or "").strip() in {"", "base", "community_base"}:
+            if entry.get("type") != "category_lens_query_variant":
+                return 1.0
+            if action == "retire_or_pause":
+                return 0.60
+            if action == "repair_query_shape":
+                return 0.75
+            return 1.0
+        return max(0.0, min(1.25, float(factor or 1.0)))
+
     @classmethod
     def _variant_gate_should_drop(
         cls,
@@ -8361,11 +9584,11 @@ class ViralHunter:
         """
         variant = str(variant or "")
 
-        # patient_voice_kin은 진료축이 아니라 '질문 표면(지역어 제거 + KIN)' 자체가
+        # patient_voice 계열은 진료축이 아니라 '질문 표면(지역어 제거 + KIN)' 자체가
         # 수율을 좌우하는 CATEGORY-AGNOSTIC 변형이다. per-(category,lens) lane으로
         # 쪼개면 증거가 사실상 누적되지 않으므로(여러 lens로 분산) 글로벌 누적으로
         # 판정한다. 2-run cold-start는 _variant_proven_zero_yield_for_gate가 유지.
-        if variant == "patient_voice_kin":
+        if variant in cls.PATIENT_VOICE_VARIANTS:
             glob = history.get(variant)
             return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
 
@@ -8457,7 +9680,7 @@ class ViralHunter:
     @staticmethod
     def _variant_requires_lane_specific_yield(variant: str) -> bool:
         variant = str(variant or "").strip()
-        return variant == "patient_voice_kin" or ":specific_" in variant
+        return variant in ViralHunter.PATIENT_VOICE_VARIANTS or ":specific_" in variant
 
     @staticmethod
     def _variant_proven_zero_yield(stats: Dict[str, int]) -> bool:
@@ -8497,6 +9720,20 @@ class ViralHunter:
     def _variant_proven_zero_yield_for_gate(cls, variant: str, stats: Dict[str, int]) -> bool:
         """Zero-yield gate with extra cold-start protection for exploratory variants."""
         if cls._variant_requires_lane_specific_yield(variant) and int(stats.get("runs", 0) or 0) < 2:
+            discovered = int(stats.get("discovered", 0) or 0)
+            pending = int(stats.get("pending", 0) or 0)
+            fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+            fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+            if variant in cls.PATIENT_VOICE_VARIANTS and (
+                (fresh_discovered >= 500 and fresh_pending == 0)
+                or (discovered >= 900 and pending == 0)
+            ):
+                return True
+            if ":specific_" in str(variant or "") and (
+                (fresh_discovered >= 120 and fresh_pending == 0)
+                or (discovered >= 180 and pending == 0)
+            ):
+                return True
             return False
         return cls._variant_proven_zero_yield(stats)
 
@@ -8506,6 +9743,8 @@ class ViralHunter:
     # 수용률인데 발견량은 blog가 최대(21일 9,536)·kin이 최소(7,841)로 역전.
     PLATFORM_YIELD_MIN_SAMPLE = 40   # 이 미만 staff 액션은 미개입(1.0)
     PLATFORM_YIELD_FLOOR_LIMIT = 12  # 가중 후에도 최소 이만큼은 탐사 (완전 블라인드 방지)
+    PLATFORM_SURFACE_MIN_SAMPLE = 20
+    PLATFORM_SURFACE_FLOOR_LIMIT = 6
 
     @staticmethod
     def _acceptance_to_yield_factor(accept_rate: float) -> float:
@@ -8583,6 +9822,216 @@ class ViralHunter:
                 limits[platform] = scaled
         return limits
 
+    @staticmethod
+    def _handoff_platform_key(platform: str) -> str:
+        text = str(platform or "").strip().lower().replace("-", "_")
+        if not text:
+            return ""
+        if "kin" in text or "지식" in text:
+            return "kin"
+        if "cafe" in text or "카페" in text:
+            return "cafe"
+        if "blog" in text or "블로그" in text:
+            return "blog"
+        return text
+
+    @staticmethod
+    def _platform_surface_feedback_key(platform: str, category: str) -> str:
+        platform_key = ViralHunter._handoff_platform_key(platform)
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        return f"platform_surface:{platform_key}::{category_key}"
+
+    @staticmethod
+    def _platform_surface_float(entry: Dict[str, Any], key: str) -> float:
+        try:
+            return float(entry.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _platform_surface_budget_factor(cls, entry: Dict[str, Any]) -> float:
+        total = cls._variant_feedback_int(entry, "total")
+        if total < cls.PLATFORM_SURFACE_MIN_SAMPLE:
+            return 1.0
+
+        platform = cls._handoff_platform_key(str(entry.get("platform") or ""))
+        has_loss_rate = "loss_rate" in entry
+        has_survival_rate = "survival_rate" in entry
+        has_strict_fit_rate = "strict_fit_rate" in entry
+        loss_rate = cls._platform_surface_float(entry, "loss_rate")
+        survival_rate = cls._platform_surface_float(entry, "survival_rate")
+        strict_fit_rate = cls._platform_surface_float(entry, "strict_fit_rate")
+        dominant_loss = str(entry.get("dominant_loss_reason") or "").strip().lower()
+        raw_reasons = entry.get("reasons") or []
+        if isinstance(raw_reasons, str):
+            reasons = {raw_reasons}
+        else:
+            reasons = {str(reason or "") for reason in raw_reasons}
+
+        factor = 1.0
+        if (
+            total >= 40
+            and has_loss_rate
+            and loss_rate >= 0.95
+            and (
+                (has_strict_fit_rate and strict_fit_rate < 0.005)
+                or (has_survival_rate and survival_rate < 0.005)
+            )
+        ):
+            factor = 0.50
+        elif total >= 30 and (
+            (has_strict_fit_rate and strict_fit_rate < 0.015)
+            or (has_loss_rate and loss_rate >= 0.98)
+        ):
+            factor = 0.65
+        elif total >= 20 and reasons.intersection(
+            {"low_platform_survival", "low_platform_strict_fit", "high_platform_loss"}
+        ):
+            factor = 0.80
+
+        if platform == "blog" and dominant_loss == "ad" and total >= 40 and (factor < 1.0 or loss_rate >= 0.90):
+            factor = min(factor, 0.45)
+        return max(0.35, min(1.0, factor))
+
+    def _load_platform_surface_feedback(self, max_audits: int = 6) -> Dict[str, Dict[str, Any]]:
+        """Load category-specific platform loss hotspots from recent handoff audits."""
+        cached = getattr(self, "_platform_surface_feedback_cache", None)
+        if cached is not None:
+            return cached
+
+        feedback: Dict[str, Dict[str, Any]] = {}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def maybe_set(key: str, entry: Dict[str, Any], audit_rank: int, factor: float) -> None:
+            existing = feedback.get(key)
+            if existing:
+                existing_rank = int(existing.get("_audit_rank") or 0)
+                existing_factor = float(existing.get("factor") or 1.0)
+                if existing_rank < audit_rank:
+                    return
+                if existing_rank == audit_rank and existing_factor <= factor:
+                    return
+            feedback[key] = entry
+
+        for audit_rank, (payload, source_name) in enumerate(audit_payloads):
+            candidates: List[Dict[str, Any]] = []
+            surface_quality = payload.get("platform_surface_quality") if isinstance(payload, dict) else None
+            if isinstance(surface_quality, dict):
+                for list_key in ("priority_focus_hotspots", "hotspots"):
+                    items = surface_quality.get(list_key) or []
+                    if isinstance(items, list):
+                        candidates.extend(item for item in items if isinstance(item, dict))
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if isinstance(playbook, dict):
+                items = playbook.get("platform_surface_hotspots") or []
+                if isinstance(items, list):
+                    candidates.extend(item for item in items if isinstance(item, dict))
+
+            for item in candidates:
+                item_type = str(item.get("type") or "").strip()
+                lane = str(item.get("lane") or "")
+                lane_platform, _, lane_category = lane.partition("::")
+                platform = self._handoff_platform_key(str(item.get("platform") or lane_platform))
+                category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or lane_category))
+                if item_type and item_type != "platform_category":
+                    continue
+                if not platform or not category:
+                    continue
+                factor = self._platform_surface_budget_factor({**item, "platform": platform})
+                if factor >= 0.999:
+                    continue
+                key = self._platform_surface_feedback_key(platform, category)
+                entry = {
+                    **item,
+                    "type": "platform_category",
+                    "platform": platform,
+                    "category": category,
+                    "factor": factor,
+                    "action": "reduce_platform_surface_budget",
+                    "_audit_rank": audit_rank,
+                    "_source": source_name,
+                }
+                maybe_set(key, entry, audit_rank, factor)
+
+        self._platform_surface_feedback_cache = feedback
+        return feedback
+
+    def _apply_platform_surface_feedback(self, limits: Dict[str, int], *, category: str) -> Dict[str, int]:
+        feedback = self._load_platform_surface_feedback()
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        if not feedback or not category_key:
+            return limits
+
+        scale_counts = getattr(self, "_platform_surface_budget_scale_counts", None)
+        if scale_counts is None:
+            scale_counts = {}
+            self._platform_surface_budget_scale_counts = scale_counts
+
+        for platform in list((limits or {}).keys()):
+            platform_key = self._handoff_platform_key(platform)
+            entry = feedback.get(self._platform_surface_feedback_key(platform_key, category_key))
+            if not isinstance(entry, dict):
+                continue
+            factor = float(entry.get("factor") or 1.0)
+            original = int(limits.get(platform, 0) or 0)
+            if factor >= 0.999 or original <= 0:
+                continue
+            scaled = max(self.PLATFORM_SURFACE_FLOOR_LIMIT, int(round(original * factor)))
+            scaled = min(original, scaled)
+            if scaled < original:
+                limits[platform] = scaled
+                scale_key = f"{platform_key}::{category_key}:{factor:.2f}"
+                scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
+        return limits
+
     def _patient_voice_kin_variant(
         self,
         keyword: str,
@@ -8592,10 +10041,11 @@ class ViralHunter:
         """지역 앵커 없는 환자 질문(지식인) 표면 탐사 변형.
 
         지식인 질문 대부분은 제목/검색 텍스트에 지역명이 없어 청주-앵커 쿼리로는
-        구조적으로 잡히지 않는다. 사용자-표면 중심 축에 한해 지역 토큰을 제거한
-        서비스 코어를 kin 위주로 1변형만 보낸다. 수율은 안정된 변형 이름
-        (patient_voice_kin)으로 측정되며, 제로수율이 증명되면 변형 수율 게이트가
-        자동으로 끈다.
+        구조적으로 잡히지 않는다. 사용자-표면 중심 축에 한해 지역 토큰을 제거하되,
+        단순 서비스 코어가 아니라 "해보신분" 같은 환자 질문형 표면으로 보낸다.
+        수율은 새 변형 이름(patient_voice_question_kin)으로 측정한다. 기존
+        patient_voice_kin은 지역 제거 코어만 보내던 구형 표면이라, 나쁜 과거
+        수율이 질문형 탐사를 조기에 죽이지 않도록 분리한다.
         """
         if category not in self.USER_SURFACE_HEAVY_CATEGORIES:
             return None
@@ -8604,12 +10054,23 @@ class ViralHunter:
             return None
         if self._compact_query_text(stripped) == self._compact_query_text(core_query):
             return None  # 지역 토큰이 없던 시드 — 이미 비지역 쿼리라 중복
+        question_query = self._patient_voice_question_query(stripped)
         return {
-            "query": stripped,
-            "variant": "patient_voice_kin",
+            "query": question_query,
+            "variant": "patient_voice_question_kin",
             "source_keyword": keyword,
             "surface_override": {"cafe": 15, "blog": 0, "kin": 40},
         }
+
+    @classmethod
+    def _patient_voice_question_query(cls, stripped_core: str) -> str:
+        core = re.sub(r"\s+", " ", str(stripped_core or "").strip())
+        if not core:
+            return ""
+        compact = cls._compact_query_text(core)
+        if any(cls._compact_query_text(term) in compact for term in cls.PATIENT_VOICE_QUESTION_TERMS):
+            return core
+        return f"{core} 해보신분"
 
     AXIS_COMPANION_GENERIC_TERMS = PATHFINDER_AXIS_COMPANION_GENERIC_TERMS
     AXIS_COMPANION_VARIANT_PREFIX = PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX
@@ -8807,6 +10268,26 @@ class ViralHunter:
                 kept.append(variant)
             variants = kept
 
+        quality_feedback = self._load_variant_quality_feedback()
+        if quality_feedback and len(variants) > 1:
+            kept = [variants[0]]
+            for variant in variants[1:]:
+                name = str(variant.get("variant") or "")
+                if self._variant_quality_gate_should_drop(
+                    quality_feedback,
+                    category=category,
+                    lens=execution_lens,
+                    variant=name,
+                ):
+                    drop_counts = getattr(self, "_variant_quality_drop_counts", None)
+                    if drop_counts is None:
+                        drop_counts = {}
+                        self._variant_quality_drop_counts = drop_counts
+                    drop_counts[name] = drop_counts.get(name, 0) + 1
+                    continue
+                kept.append(variant)
+            variants = kept
+
         return variants
 
     @staticmethod
@@ -8845,6 +10326,8 @@ class ViralHunter:
         source_keyword: str,
         query: str,
         query_variant: str,
+        quality_feedback_action: str = "",
+        quality_feedback_factor: float = 1.0,
     ) -> None:
         """Store variant query context without losing stronger source-seed lineage."""
         if not query or query == source_keyword or source_keyword not in self.keyword_context:
@@ -8853,6 +10336,9 @@ class ViralHunter:
         new_context = dict(self.keyword_context[source_keyword])
         new_context["pathfinder_source_keyword"] = source_keyword
         new_context["pathfinder_query_variant"] = query_variant
+        if quality_feedback_action:
+            new_context["pathfinder_query_variant_feedback_action"] = quality_feedback_action
+            new_context["pathfinder_query_variant_feedback_factor"] = float(quality_feedback_factor or 1.0)
         existing = self.keyword_context.get(query)
 
         if not isinstance(existing, dict):
@@ -8979,11 +10465,13 @@ class ViralHunter:
         category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
         execution_lens = str(ctx.get("execution_lens") or "")
         history = self._load_variant_yield_history()
+        quality_feedback = self._load_variant_quality_feedback()
         plans: List[Dict[str, Any]] = []
 
         for idx, variant in enumerate(variants):
             plan = dict(base_plan)
             plan.update(variant)
+            variant_name = str(variant.get("variant") or "")
             if idx > 0:
                 surface_override = variant.get("surface_override")
                 if surface_override:
@@ -9000,7 +10488,7 @@ class ViralHunter:
                     history,
                     category=category,
                     lens=execution_lens,
-                    variant=str(variant.get("variant") or ""),
+                    variant=variant_name,
                 )
                 if factor < 0.999:
                     plan["platform_limits"] = self._scaled_platform_limits(
@@ -9015,10 +10503,41 @@ class ViralHunter:
                         self._base_variant_budget_scale_counts = scale_counts
                     scale_key = f"{variant.get('variant') or 'base'}:{factor:.2f}"
                     scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
+            quality_entry = self._variant_quality_feedback_for(
+                quality_feedback,
+                category=category,
+                lens=execution_lens,
+                variant=variant_name,
+            )
+            quality_action = str(quality_entry.get("action") or "").strip()
+            quality_factor = self._variant_quality_budget_factor(
+                quality_feedback,
+                category=category,
+                lens=execution_lens,
+                variant=variant_name,
+            )
+            if quality_action and abs(quality_factor - 1.0) > 0.001:
+                plan["platform_limits"] = self._scaled_platform_limits(
+                    plan.get("platform_limits") or {},
+                    quality_factor,
+                    minimum=8 if idx == 0 else 6,
+                    maximum=max(160, int(max_per_platform * 2)),
+                )
+                quality_scale_counts = getattr(self, "_variant_quality_budget_scale_counts", None)
+                if quality_scale_counts is None:
+                    quality_scale_counts = {}
+                    self._variant_quality_budget_scale_counts = quality_scale_counts
+                scale_key = f"{variant_name}:{quality_action}:{quality_factor:.2f}"
+                quality_scale_counts[scale_key] = quality_scale_counts.get(scale_key, 0) + 1
+            if quality_action:
+                plan["handoff_variant_quality_action"] = quality_action
+                plan["handoff_variant_quality_factor"] = quality_factor
             self._register_variant_keyword_context(
                 source_keyword=keyword,
                 query=variant["query"],
                 query_variant=variant["variant"],
+                quality_feedback_action=quality_action,
+                quality_feedback_factor=quality_factor,
             )
             plans.append(plan)
 
@@ -9031,6 +10550,8 @@ class ViralHunter:
         source_keyword: str,
         search_query: str,
         query_variant: str,
+        quality_feedback_action: str = "",
+        quality_feedback_factor: float = 1.0,
     ) -> ViralTarget:
         lineage_keywords = [source_keyword]
         if search_query and search_query != source_keyword:
@@ -9045,6 +10566,8 @@ class ViralHunter:
             "pathfinder_source_keyword": source_keyword or "",
             "pathfinder_search_query": search_query or "",
             "pathfinder_query_variant": query_variant or "base",
+            "pathfinder_query_variant_feedback_action": quality_feedback_action or "",
+            "pathfinder_query_variant_feedback_factor": float(quality_feedback_factor or 1.0),
         }
         return target
 
@@ -9115,6 +10638,30 @@ class ViralHunter:
             cls._breakdown_lineage_values(current_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
             + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
         ))
+        audit_actions = list(dict.fromkeys(
+            cls._breakdown_lineage_values(
+                current_breakdown,
+                "pathfinder_source_seed_audit_actions",
+                "pathfinder_source_seed_audit_action",
+            )
+            + cls._breakdown_lineage_values(
+                incoming_breakdown,
+                "pathfinder_source_seed_audit_actions",
+                "pathfinder_source_seed_audit_action",
+            )
+        ))
+        audit_recategorized_categories = list(dict.fromkeys(
+            cls._breakdown_lineage_values(
+                current_breakdown,
+                "pathfinder_source_seed_audit_recategorized_categories",
+                "pathfinder_source_seed_audit_recategorized_category",
+            )
+            + cls._breakdown_lineage_values(
+                incoming_breakdown,
+                "pathfinder_source_seed_audit_recategorized_categories",
+                "pathfinder_source_seed_audit_recategorized_category",
+            )
+        ))
 
         primary_source = str(preferred_breakdown.get("pathfinder_source_keyword") or "")
         primary_query = str(preferred_breakdown.get("pathfinder_search_query") or "")
@@ -9151,16 +10698,30 @@ class ViralHunter:
             current.date_str = incoming.date_str or current.date_str
 
         merged_breakdown = {**current_breakdown, **incoming_breakdown}
+        preferred_lineage_keys = (
+            "pathfinder_source_keyword",
+            "pathfinder_search_query",
+            "pathfinder_query_variant",
+            "pathfinder_query_variant_feedback_action",
+            "pathfinder_query_variant_feedback_factor",
+            "pathfinder_source_seed_audit_action",
+            "pathfinder_source_seed_audit_adjustment",
+            "pathfinder_source_seed_audit_recategorized_category",
+        )
         if not prefer_incoming:
-            for key in ("pathfinder_source_keyword", "pathfinder_search_query", "pathfinder_query_variant"):
+            for key in preferred_lineage_keys:
                 if key in current_breakdown:
                     merged_breakdown[key] = current_breakdown[key]
-        for key in ("pathfinder_source_keyword", "pathfinder_search_query", "pathfinder_query_variant"):
+        for key in preferred_lineage_keys:
             if key in preferred_breakdown:
                 merged_breakdown[key] = preferred_breakdown[key]
         merged_breakdown["pathfinder_query_variants"] = variants
         merged_breakdown["pathfinder_search_queries"] = queries
         merged_breakdown["pathfinder_source_keywords"] = sources
+        if audit_actions:
+            merged_breakdown["pathfinder_source_seed_audit_actions"] = audit_actions
+        if audit_recategorized_categories:
+            merged_breakdown["pathfinder_source_seed_audit_recategorized_categories"] = audit_recategorized_categories
         merged_breakdown["pathfinder_duplicate_query_count"] = len(variants)
         current.score_breakdown = merged_breakdown
         return current
@@ -9263,6 +10824,21 @@ class ViralHunter:
             "pathfinder_staff_reviewed_count": int(ctx.get("historical_staff_reviewed_count") or 0),
             "pathfinder_staff_accept_rate": float(ctx.get("historical_staff_accept_rate") or 0.0),
             "pathfinder_staff_outcome_adjustment": float(ctx.get("staff_outcome_adjustment") or 0.0),
+            "pathfinder_source_seed_audit_action": ctx.get("source_seed_audit_action") or "",
+            "pathfinder_source_seed_audit_adjustment": float(ctx.get("source_seed_audit_adjustment") or 0.0),
+            "pathfinder_source_seed_audit_recategorized_category": (
+                ctx.get("source_seed_audit_recategorized_category") or ""
+            ),
+            "pathfinder_query_variant_feedback_action": (
+                existing_breakdown.get("pathfinder_query_variant_feedback_action")
+                or ctx.get("pathfinder_query_variant_feedback_action")
+                or ""
+            ),
+            "pathfinder_query_variant_feedback_factor": float(
+                existing_breakdown.get("pathfinder_query_variant_feedback_factor")
+                or ctx.get("pathfinder_query_variant_feedback_factor")
+                or 1.0
+            ),
         }
         return target
 
@@ -10017,7 +11593,7 @@ class ViralHunter:
             ).fetchall()
 
             def _bucket_status(status: str) -> str:
-                if status in {'pending', 'generated', 'posted', 'approved', 'ai_approved'}:
+                if status in AUDIT_ACTIONABLE_STATUSES:
                     return 'pending'
                 if status == 'raw_backlog':
                     return 'raw_backlog'
@@ -10033,6 +11609,8 @@ class ViralHunter:
                 'open_pending': 0, 'ai_filtered': 0,
                 'raw_backlog': 0, 'ad_filtered': 0, 'rejected': 0,
                 'other': 0, 'rediscovered': 0,
+                'current_rejected_legacy_actionable': 0,
+                'current_rejected_legacy_survivor': 0,
             }
             per_category: Dict[str, Dict[str, int]] = {}
             per_variant: Dict[str, Dict[str, int]] = {}
@@ -10071,8 +11649,14 @@ class ViralHunter:
                 lens = lens or "service"
                 category_lens_key = f"{category}::{lens}"
                 category_lens_variant_key = f"{category_lens_key}::{variant}"
-                status_text = str(row['comment_status'] or 'pending')
+                stored_status_text = str(row['comment_status'] or 'pending').strip() or 'pending'
+                status_text = _audit_effective_current_status(stored_status_text, breakdown)
                 status_bucket = _bucket_status(status_text)
+                legacy_current_reject = (
+                    status_text != stored_status_text
+                    and stored_status_text in AUDIT_SURVIVED_STATUSES
+                    and status_text.startswith('filtered_out')
+                )
                 discovered_current = (
                     str(row['discovered_at'] or '').replace('T', ' ') >= run_started_at
                 )
@@ -10105,11 +11689,15 @@ class ViralHunter:
                             entry['fresh_pending'] += 1
                         elif rediscovered_current:
                             entry['rediscovered_pending'] += 1
+                    if legacy_current_reject:
+                        entry['current_rejected_legacy_survivor'] += 1
+                        if stored_status_text in AUDIT_ACTIONABLE_STATUSES:
+                            entry['current_rejected_legacy_actionable'] += 1
                     if rediscovered_current:
                         entry['rediscovered'] += 1
 
                 if status_text.startswith('filtered_out'):
-                    reason = str(breakdown.get('final_reject_reason') or '').strip()
+                    reason = _audit_current_reject_reason(breakdown)
                     if not reason:
                         reason = status_text[len('filtered_out'):].lstrip('_') or '(unspecified)'
                     cat_reasons = per_category_reject_reason.setdefault(category, {})
@@ -10126,6 +11714,12 @@ class ViralHunter:
             ad_total = sum(e['ad_filtered'] for e in per_category.values())
             rediscovered_total = sum(e.get('rediscovered', 0) for e in per_category.values())
             rediscovered_pending_total = sum(e.get('rediscovered_pending', 0) for e in per_category.values())
+            current_rejected_legacy_actionable_total = sum(
+                e.get('current_rejected_legacy_actionable', 0) for e in per_category.values()
+            )
+            current_rejected_legacy_survivor_total = sum(
+                e.get('current_rejected_legacy_survivor', 0) for e in per_category.values()
+            )
             post_ai_total = pending_total + ai_filtered_total
             # 제로수율 시드: 이번 런에 실제 신규 SERP 영역을 탐색하고(fresh_discovered)
             # 작업 가능 타겟을 0건 산출한(pending 버킷=posted 포함, 0) 시드만.
@@ -10224,11 +11818,28 @@ class ViralHunter:
                 'filter_survivor_count': filter_survivor_count,
                 'filter_survival_rate': (filter_survivor_count / filter_input_count) if filter_input_count else 0.0,
                 'variant_yield_drops': {k: int(v) for k, v in (getattr(self, "_variant_drop_counts", {}) or {}).items()},
+                'variant_quality_drops': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_variant_quality_drop_counts", {}) or {}).items()
+                },
+                'variant_quality_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_variant_quality_budget_scale_counts", {}) or {}).items()
+                },
                 'base_variant_budget_scales': {
                     k: int(v)
                     for k, v in (getattr(self, "_base_variant_budget_scale_counts", {}) or {}).items()
                 },
                 'platform_yield_drops': {k: int(v) for k, v in (getattr(self, "_platform_drop_counts", {}) or {}).items()},
+                'platform_surface_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_platform_surface_budget_scale_counts", {}) or {}).items()
+                },
+                'handoff_playbook_auto_boosts': getattr(
+                    self,
+                    "_handoff_playbook_auto_boosts",
+                    {"categories": [], "lenses": [], "category_lenses": [], "sources": []},
+                ),
                 'structure_blocked': {
                     k: int(v)
                     for k, v in (getattr(getattr(self, "seed_builder", None), "_structure_blocked_buckets", {}) or {}).items()
@@ -10260,6 +11871,8 @@ class ViralHunter:
                     'rediscovered': rediscovered_total,
                     'rediscovered_pending': rediscovered_pending_total,
                     'rediscovered_rate': (rediscovered_total / discovered_total) if discovered_total else 0.0,
+                    'current_rejected_legacy_actionable': current_rejected_legacy_actionable_total,
+                    'current_rejected_legacy_survivor': current_rejected_legacy_survivor_total,
                     'keyword_count': int(keyword_count or 0),
                 },
                 'per_category': per_category,
@@ -10275,6 +11888,11 @@ class ViralHunter:
                     'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
                 },
                 'coverage_bounds': coverage_bounds,
+                'suggested_handoff_audit_command': _handoff_audit_command_for_run(
+                    run_started_at,
+                    source_scan_run_id=source_scan_run_id,
+                    sample_per_lane=2,
+                ),
             }
 
             conn.execute(
@@ -10326,6 +11944,7 @@ class ViralHunter:
              source_scan_run_id: Optional[int] = None,
              boost_categories: Optional[Iterable[str]] = None,
              boost_lenses: Optional[Iterable[str]] = None,
+             boost_category_lenses: Optional[Iterable[str]] = None,
              rescue_backlog: int = 60,
              rescue_signature: int = 40,
              enrich_bodies: int = 120,
@@ -10365,9 +11984,16 @@ class ViralHunter:
 
         # 변형/플랫폼 수율 캐시·차단 집계는 런 단위로 재계산한다 (직전 런 결과 반영).
         self._variant_yield_cache = None
+        self._variant_quality_feedback_cache = None
         self._variant_drop_counts = {}
+        self._variant_quality_drop_counts = {}
+        self._variant_quality_budget_scale_counts = {}
         self._platform_yield_cache = None
         self._platform_drop_counts = {}
+        self._platform_surface_feedback_cache = None
+        self._platform_surface_budget_scale_counts = {}
+        self._handoff_playbook_boost_cache = None
+        self._handoff_playbook_auto_boosts = {"categories": [], "lenses": [], "category_lenses": [], "sources": []}
 
         if keywords is None:
             keywords = self._load_keywords(
@@ -10378,10 +12004,18 @@ class ViralHunter:
             self._load_keyword_context(keywords)
 
         self._load_keyword_context(keywords)
+        effective_boost_categories, effective_boost_lenses, effective_boost_category_lenses = (
+            self._merge_handoff_playbook_boosts(
+                boost_categories=boost_categories,
+                boost_lenses=boost_lenses,
+                boost_category_lenses=boost_category_lenses,
+            )
+        )
         keywords = self._order_keywords_for_handoff_coverage(
             keywords,
-            boost_categories=boost_categories,
-            boost_lenses=boost_lenses,
+            boost_categories=effective_boost_categories,
+            boost_lenses=effective_boost_lenses,
+            boost_category_lenses=effective_boost_category_lenses,
         )
 
         keyword_total_before_limit = len(keywords)
@@ -10396,12 +12030,16 @@ class ViralHunter:
             keywords,
             max_per_platform=max_per_platform,
             source_scan_run_id=source_scan_run_id,
-            boost_categories=boost_categories,
-            boost_lenses=boost_lenses,
+            boost_categories=effective_boost_categories,
+            boost_lenses=effective_boost_lenses,
+            boost_category_lenses=effective_boost_category_lenses,
         )
         # 해시 계산이 플랜을 한 번 더 생성하므로 차단 집계는 검색 패스 기준으로 리셋
         self._variant_drop_counts = {}
+        self._variant_quality_drop_counts = {}
+        self._variant_quality_budget_scale_counts = {}
         self._platform_drop_counts = {}
+        self._platform_surface_budget_scale_counts = {}
         # 퍼널 거절 누적도 런 단위로 리셋 (같은 헌터 객체 재사용 시 직전 런 누수 방지).
         if getattr(self, "filter", None) is not None:
             self.filter.cumulative_reject_stats = {}
@@ -10413,6 +12051,9 @@ class ViralHunter:
         seen_urls: set = set()
         processed_set: set = set()
         targets_by_url: Dict[str, ViralTarget] = {}
+        search_plan_cache: Dict[Tuple[str, bool, Tuple[Tuple[str, int], ...]], List[ViralTarget]] = {}
+        self._search_plan_cache_hits = 0
+        self._search_plan_cache_misses = 0
 
         if not fresh:
             cp = self._load_checkpoint(kw_hash)
@@ -10472,18 +12113,36 @@ class ViralHunter:
                         search_plan["recommended_content_type"] or "-",
                         limits,
                     )
-                    query_results = self.searcher.search_all(
-                        query,
+                    cache_key = self._search_plan_cache_key(
+                        search_plan,
                         max_per_platform=max_per_platform,
-                        include_blog=bool(search_plan["include_blog"]),
-                        platform_limits=limits,
                     )
+                    if cache_key in search_plan_cache:
+                        query_results = self._clone_search_targets(search_plan_cache[cache_key])
+                        self._search_plan_cache_hits += 1
+                        logger.info(
+                            "[search-plan-cache-hit] query=%s variant=%s reused=%d",
+                            query,
+                            search_plan.get("variant") or "base",
+                            len(query_results),
+                        )
+                    else:
+                        query_results = self.searcher.search_all(
+                            query,
+                            max_per_platform=max_per_platform,
+                            include_blog=bool(search_plan["include_blog"]),
+                            platform_limits=limits,
+                        )
+                        search_plan_cache[cache_key] = self._clone_search_targets(query_results)
+                        self._search_plan_cache_misses += 1
                     for target in query_results:
                         self._attach_search_query_lineage(
                             target,
                             source_keyword=kw,
                             search_query=query,
                             query_variant=search_plan.get("variant") or "base",
+                            quality_feedback_action=search_plan.get("handoff_variant_quality_action") or "",
+                            quality_feedback_factor=float(search_plan.get("handoff_variant_quality_factor") or 1.0),
                         )
                     results.extend(query_results)
             except Exception as e:
@@ -10607,10 +12266,28 @@ class ViralHunter:
         # 상위 N개만 AI 분석 대상, 나머지는 raw 저장.
         # 단, 전역 점수순만 쓰면 피부/교통사고 물량이 많은 날 비대칭/교정 같은
         # 핵심 소수 카테고리가 전부 raw_backlog로 밀린다.
+        ai_category_quotas = _boosted_ai_category_quotas(
+            effective_boost_categories,
+            top_n=top_n_for_ai,
+        )
+        ai_priority_categories = _normalized_ai_priority_categories(effective_boost_categories)
+        ai_preferred_lenses = _normalized_ai_preferred_lenses(effective_boost_lenses)
         ai_targets, rest_targets = split_ai_targets_with_category_floor(
             filtered,
             top_n_for_ai,
+            category_min_quotas=ai_category_quotas,
+            priority_categories=ai_priority_categories,
+            preferred_lenses=ai_preferred_lenses,
         )
+        if ai_category_quotas or ai_preferred_lenses:
+            quota_text = ", ".join(
+                f"{category} {quota}"
+                for category, quota in sorted(
+                    (ai_category_quotas or _normalized_ai_category_quotas(AI_CATEGORY_MIN_QUOTAS)).items()
+                )
+            )
+            lens_text = ", ".join(ai_preferred_lenses) or "-"
+            print(f"   🎯 AI boost 적용: categories=({quota_text}) lenses=({lens_text})")
 
         # 백로그 레스큐 — AI 예산에 밀려 raw_backlog/needs_ai_retry로 사장된 최근
         # 타겟을 매 런 일정량 재심사한다. 직접 pending 승격은 금지(광고/적합성 AI
@@ -11043,6 +12720,9 @@ class ViralHunter:
                 ]
                 if priority_missing:
                     print(f"   ⚠️ actionable 누락 핵심축: {', '.join(priority_missing[:8])}")
+            audit_command = audit_summary.get("suggested_handoff_audit_command")
+            if audit_command:
+                print(f"   🔎 이번 런 handoff audit: {audit_command}")
         if csv_path:
             print(f"   📁 CSV: {csv_path}")
         print(f"\n📊 API 통계:")
@@ -11167,6 +12847,7 @@ def main():
                         help='스캔 시작 시 pending TTL 만료 정리를 건너뜀 (기본: 실행)')
     parser.add_argument('--boost-category', action='append', default=[], help='먼저 실행할 Pathfinder 진료축 lane')
     parser.add_argument('--boost-lens', action='append', default=[], help='먼저 실행할 Pathfinder 실행렌즈 lane')
+    parser.add_argument('--boost-category-lens', action='append', default=[], help='먼저 실행할 Pathfinder 진료축::실행렌즈 lane')
 
     args = parser.parse_args()
 
@@ -11341,6 +13022,7 @@ def main():
                     source_scan_run_id=args.source_scan_id,
                     boost_categories=args.boost_category,
                     boost_lenses=args.boost_lens,
+                    boost_category_lenses=args.boost_category_lens,
                     rescue_backlog=args.rescue_backlog,
                     rescue_signature=args.rescue_signature,
                     enrich_bodies=args.enrich_bodies,

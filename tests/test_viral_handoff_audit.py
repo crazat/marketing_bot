@@ -182,6 +182,7 @@ def test_viral_handoff_audit_summarizes_grade_axis_lens_and_fit_rates(tmp_path):
     )
 
     assert report["row_count"] == 3
+    assert report["generated_at_utc"]
     assert report["overall"]["grade_counts"] == {"S": 1, "A": 1, "B": 1}
     assert report["overall"]["status_counts"]["raw_backlog"] == 1
     assert report["overall"]["strict_fit"] == 1
@@ -292,6 +293,45 @@ def test_viral_handoff_audit_counts_ai_approved_as_actionable_and_survived(tmp_p
     assert report["overall"]["survived"] == 1
     assert report["overall"]["filtered"] == 0
     assert report["by_query_variant"]["axis_scar:specific_수술흉터"]["actionable"] == 1
+
+
+def test_viral_handoff_audit_uses_current_reject_over_preserved_work_status(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="legacy-posted-now-ad",
+        scan_id=13,
+        category="다이어트",
+        grade="S",
+        status="posted",
+        priority=150,
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "base",
+            "pathfinder_axis_fit_score": 95,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 94,
+            "worksite_efficiency_score": 92,
+            "final_reject_reason": "advertorial",
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=13,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    assert report["row_count"] == 1
+    assert report["overall"]["status_counts"]["filtered_out_ad"] == 1
+    assert report["overall"]["actionable"] == 0
+    assert report["overall"]["survived"] == 0
+    assert report["overall"]["strict_fit"] == 0
+    assert report["overall"]["filtered"] == 1
+    assert report["overall"]["loss_reason_counts"]["ad"] == 1
 
 
 def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
@@ -412,6 +452,120 @@ def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
     assert report["by_variant_family"]["lens_community"]["total"] == 1
     assert not any(
         item["code"] == "handoff_quality_bar_not_world_class"
+        for item in report["recommendations"]
+    )
+
+
+def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    good_variant = "axis_scar:specific_surgery_scar"
+    weak_variant = "axis_skin:specific_acne"
+    weak_family_variant = "colloquial:face_balance"
+
+    for idx in range(3):
+        _insert_target(
+            conn,
+            target_id=f"variant-good-{idx}",
+            scan_id=144,
+            category="scar",
+            grade="A",
+            status="pending",
+            priority=135,
+            title=f"Cheongju scar review {idx}",
+            content_preview="patient review asks about scar treatment cost and consultation",
+            breakdown={
+                "pathfinder_source_keyword": "cheongju surgery scar review",
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": good_variant,
+                "pathfinder_axis_fit_score": 91,
+                "pathfinder_lens_fit_score": 88,
+                "clinic_treatment_fit_score": 92,
+                "worksite_efficiency_score": 86,
+            },
+        )
+
+    for idx in range(20):
+        _insert_target(
+            conn,
+            target_id=f"variant-weak-{idx}",
+            scan_id=144,
+            category="skin",
+            grade="B",
+            status="filtered_out_ai",
+            priority=80,
+            title=f"provider promo acne skin {idx}",
+            content_preview="brand promotion without patient question",
+            breakdown={
+                "pathfinder_source_keyword": "skin acne blog promo",
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": weak_variant,
+                "pathfinder_axis_fit_score": 24,
+                "pathfinder_lens_fit_score": 18,
+                "clinic_treatment_fit_score": 22,
+                "worksite_efficiency_score": 12,
+            },
+        )
+
+    for idx in range(60):
+        _insert_target(
+            conn,
+            target_id=f"variant-family-weak-{idx}",
+            scan_id=144,
+            category="asymmetry",
+            grade="B",
+            status="filtered_out_ad",
+            priority=70,
+            title=f"ad facial balance {idx}",
+            content_preview="advertising page without local patient intent",
+            breakdown={
+                "pathfinder_source_keyword": "face balance ad",
+                "pathfinder_execution_lens": "consultation",
+                "pathfinder_query_variant": weak_family_variant,
+                "pathfinder_axis_fit_score": 20,
+                "pathfinder_lens_fit_score": 16,
+                "clinic_treatment_fit_score": 18,
+                "worksite_efficiency_score": 10,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=144,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    feedback = report["variant_quality_feedback"]
+    assert feedback["counts"]["scale_variants"] >= 1
+    assert feedback["scale_variants"][0]["variant"] == good_variant
+    assert any(item["variant"] == weak_variant for item in feedback["repair_variants"])
+    assert any(item["variant"] == weak_variant for item in feedback["retire_variants"])
+    assert any(
+        item["variant"] == weak_variant and item["lens"] == "review"
+        for item in feedback["repair_category_lens_variants"]
+    )
+    assert any(
+        item["variant"] == weak_variant and item["lens"] == "review"
+        for item in feedback["retire_category_lens_variants"]
+    )
+    assert any(item["family"] == "colloquial" for item in feedback["repair_families"])
+    assert any(item["family"] == "colloquial" for item in feedback["retire_families"])
+
+    playbook = report["next_run_playbook"]
+    assert playbook["variant_quality_feedback_required"] is True
+    assert any(item["variant"] == weak_variant for item in playbook["variant_actions"]["retire_or_pause"])
+    assert any(
+        item["variant"] == weak_variant
+        for item in playbook["variant_actions"]["retire_category_lens_or_pause"]
+    )
+    assert any(
+        item["family"] == "colloquial"
+        for item in playbook["variant_actions"]["retire_family_or_pause"]
+    )
+    assert any(
+        item["code"] == "query_variant_quality_feedback"
         for item in report["recommendations"]
     )
 
@@ -1145,6 +1299,7 @@ def test_patient_journey_coverage_boosts_missing_focus_lens(tmp_path):
     assert report["next_run_playbook"]["patient_journey_gaps"][0]["lane"] == expected_lane
     assert f'--boost-category "{focus_category}"' in report["next_run_playbook"]["suggested_commands"]["live_scan"]
     assert '--boost-lens "cost"' in report["next_run_playbook"]["suggested_commands"]["live_scan"]
+    assert f'--boost-category-lens "{expected_lane}"' in report["next_run_playbook"]["suggested_commands"]["live_scan"]
     assert any(
         item["code"] == "patient_journey_coverage_gaps"
         for item in report["recommendations"]
@@ -2120,6 +2275,96 @@ def test_reply_workability_quality_flags_risky_or_low_opportunity_inventory(tmp_
     )
 
 
+def test_compliance_work_mode_splits_auto_review_and_blocked_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    category = _priority_focus_categories()[0]
+    rows = (
+        {
+            "suffix": "safe",
+            "risk_flags": "",
+            "risk_penalty": 0,
+            "manual_review": 0,
+        },
+        {
+            "suffix": "manual",
+            "risk_flags": "testimonial_sensitive",
+            "risk_penalty": -10,
+            "manual_review": 1,
+        },
+        {
+            "suffix": "blocked",
+            "risk_flags": "urgent_medical",
+            "risk_penalty": -60,
+            "manual_review": 1,
+        },
+    )
+    for idx, row in enumerate(rows, start=1):
+        _insert_target(
+            conn,
+            target_id=f"compliance-mode-{row['suffix']}",
+            scan_id=196,
+            category=category,
+            grade="A",
+            status="pending",
+            priority=150 - idx,
+            platform="kin",
+            title=f"Cheongju {category} review consultation question {idx}",
+            content_preview="patient asks for local consultation and recommendation",
+            breakdown={
+                "pathfinder_source_keyword": f"compliance-mode-seed-{idx}",
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": f"axis_compliance:specific_{idx}",
+                "pathfinder_axis_fit_score": 92,
+                "pathfinder_lens_fit_score": 90,
+                "clinic_treatment_fit_score": 91,
+                "worksite_efficiency_score": 88,
+                "reply_opportunity_score": 82,
+                "reply_opportunity_tier": "assist_now",
+                "reply_opportunity_signals": (
+                    "public_reply_surface,help_request_language,decision_or_service_task,"
+                    "local_actionable,unanswered_or_low_response"
+                ),
+                "reply_risk_penalty": row["risk_penalty"],
+                "reply_risk_flags": row["risk_flags"],
+                "manual_review": row["manual_review"],
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=196,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    expected_lane = f"{category}::review"
+    compliance = report["compliance_work_mode_quality"]
+    lens_gap = next(item for item in compliance["category_lens_gaps"] if item["lane"] == expected_lane)
+    assert lens_gap["unique_actionable_strict"] == 3
+    assert lens_gap["auto_work_ready_actionable_strict"] == 1
+    assert lens_gap["manual_review_only_actionable_strict"] == 1
+    assert lens_gap["blocked_or_escalate_actionable_strict"] == 1
+    assert "testimonial_sensitive" in lens_gap["reply_risk_flags"]
+    assert "urgent_medical" in lens_gap["reply_risk_flags"]
+    assert "thin_auto_work_ready_inventory" in lens_gap["reasons"]
+    assert "manual_review_only_inventory" in lens_gap["reasons"]
+    assert "blocked_or_escalate_inventory" in lens_gap["reasons"]
+
+    assert report["quality_bar"]["compliance_work_mode"]["work_mode_counts"]["auto_work_ready"] == 1
+    assert report["quality_bar"]["compliance_work_mode"]["work_mode_counts"]["manual_review_only"] == 1
+    assert report["quality_bar"]["compliance_work_mode"]["work_mode_counts"]["blocked_or_escalate"] == 1
+    assert "compliance_work_mode_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["compliance_work_mode_required"] is True
+    assert report["next_run_playbook"]["compliance_work_mode_gaps"][0]["lane"] == expected_lane
+    assert any(
+        item["code"] == "compliance_work_mode_gaps"
+        for item in report["recommendations"]
+    )
+
+
 def test_execution_readiness_flags_fragmented_component_signals(tmp_path):
     db_path, conn = _make_db(tmp_path)
     primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
@@ -2544,9 +2789,13 @@ def test_seed_target_coverage_builds_next_run_playbook_for_undercovered_lanes():
     assert "--boost-category" in playbook["suggested_commands"]["live_scan"]
     assert '--boost-lens "community"' in playbook["suggested_commands"]["live_scan"]
     assert playbook["suggested_commands"]["post_run_audit"] == (
-        "python scripts/viral_handoff_audit.py --scan-id 66 --days 1 --sample-per-lane 3"
+        "python scripts/viral_handoff_audit.py --scan-id 66 --days 1 --sample-per-lane 3 "
+        "--out reports/viral_handoff_audit_scan66_days1.json"
     )
     assert '--since "<RUN_STARTED_AT>"' in playbook["suggested_commands"]["post_run_audit_current_run_template"]
+    assert "--out reports/viral_handoff_audit_scan66_current_run.json" in (
+        playbook["suggested_commands"]["post_run_audit_current_run_template"]
+    )
 
 
 def test_seed_target_coverage_detects_category_lens_gaps():
@@ -2629,6 +2878,7 @@ def test_seed_target_coverage_detects_category_lens_gaps():
     assert [item["category_lens"] for item in playbook["boost_category_lenses"]] == ["흉터/여드름흉터::cost"]
     assert '--boost-category "흉터/여드름흉터"' in playbook["suggested_commands"]["live_scan"]
     assert '--boost-lens "cost"' in playbook["suggested_commands"]["live_scan"]
+    assert "--boost-category-lens" in playbook["suggested_commands"]["live_scan"]
 
 
 def test_next_run_playbook_prioritizes_gyulim_signature_axes_over_peripheral_gaps():

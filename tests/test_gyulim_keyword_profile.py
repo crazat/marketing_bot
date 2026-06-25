@@ -37,6 +37,22 @@ def test_gyulim_profile_exploration_seeds_cover_patient_journey_and_secondary_ax
     assert any("청주 보약 한의원 가격" in seed for seed in seeds)
 
 
+def test_gyulim_profile_exploration_seeds_include_patient_question_surfaces():
+    seeds = GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+        categories=["흉터/여드름흉터", "안면비대칭", "피부/여드름", "다이어트"],
+        max_terms_per_category=6,
+        max_suffixes_per_category=6,
+        max_contexts_per_category=3,
+        max_neighborhoods_per_category=3,
+    )
+
+    assert any("청주 여드름흉터 해보신분" in seed for seed in seeds)
+    assert any("청주 여드름흉터 받아보신분" in seed for seed in seeds)
+    assert any("복대동 여드름흉터 한의원 괜찮나요" in seed for seed in seeds)
+    assert any("청주 안면비대칭 해보신분" in seed for seed in seeds)
+    assert any("청주 다이어트 한약 받아보신분" in seed for seed in seeds)
+
+
 def test_gyulim_profile_keeps_scar_axis_separate_from_skin_axis():
     # 2026-06-12 taxonomy: 흉터/여드름흉터는 피부/여드름에서 분리된 독립 축이다.
     assert GYULIM_KEYWORD_PROFILE.normalize_category("흉터/여드름흉터") == "흉터/여드름흉터"

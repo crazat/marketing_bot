@@ -1274,6 +1274,216 @@ def test_viral_seed_builder_rewards_keywords_that_produce_qualified_worksites(tm
     assert seeds[0].historical_avg_worksite_efficiency == 88.0
 
 
+def test_viral_seed_builder_consumes_source_seed_audit_feedback(tmp_path):
+    db_path = tmp_path / "seed_builder_source_seed_audit_feedback.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT,
+                longtail_score REAL,
+                business_value_score REAL,
+                high_value_longtail INTEGER,
+                community_signal REAL,
+                conversion_signal REAL,
+                local_service_fit_score REAL,
+                content_actionability_score REAL,
+                preferred_search_surface TEXT,
+                recommended_content_type TEXT,
+                review_intent_type TEXT
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                comment_status TEXT,
+                generated_comment TEXT,
+                scan_count INTEGER,
+                score_breakdown TEXT,
+                priority_score REAL,
+                matched_keyword_category TEXT,
+                category TEXT
+            );
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audit_json TEXT
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (31, 'legion', 'completed', '2026-06-24');
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count, kei, priority_v3,
+                search_intent, scan_run_id, business_core, status, longtail_score,
+                business_value_score, high_value_longtail, community_signal,
+                conversion_signal, local_service_fit_score, content_actionability_score,
+                preferred_search_surface, recommended_content_type, review_intent_type
+            ) VALUES (?, '흉터/여드름흉터', 'A', 100, 1000, 10, ?, 'transactional',
+                      31, 1, 'active', 80, 80, 1, 55, 45, 82, 76,
+                      'hybrid_local_content', 'proof_safe_guide', 'community_recommendation')
+            """,
+            [
+                ("청주 패인흉터 여드름흉터 상담", 260),
+                ("청주 여드름흉터 치료 추천", 150),
+                ("청주 여드름흉터 새살침 해보신분", 145),
+            ],
+        )
+        audit = {
+            "source_seed_feedback": {
+                "retire_candidates": [
+                    {
+                        "seed": "청주 패인흉터 여드름흉터 상담",
+                        "action": "retire_or_pause",
+                        "credit_total": 180,
+                        "primary_total": 150,
+                        "actionable": 0,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "survival_rate": 0.0,
+                        "strict_fit_rate": 0.0,
+                    }
+                ],
+                "scale_candidates": [
+                    {
+                        "seed": "청주 여드름흉터 치료 추천",
+                        "action": "scale_or_keep",
+                        "credit_total": 80,
+                        "primary_total": 40,
+                        "actionable": 6,
+                        "survived": 6,
+                        "strict_fit": 4,
+                        "survival_rate": 0.075,
+                        "strict_fit_rate": 0.05,
+                    }
+                ],
+            }
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(audit, ensure_ascii=False),),
+        )
+
+    seeds = ViralSeedBuilder(str(db_path)).build(
+        scan_run_id=31,
+        quotas={"흉터/여드름흉터": 2},
+    )
+    keywords = [seed.keyword for seed in seeds]
+
+    assert "청주 패인흉터 여드름흉터 상담" not in keywords
+    assert "청주 여드름흉터 치료 추천" in keywords
+    scale_seed = next(seed for seed in seeds if seed.keyword == "청주 여드름흉터 치료 추천")
+    assert scale_seed.source_seed_audit_action == "scale_or_keep"
+    assert scale_seed.source_seed_audit_adjustment > 0
+
+
+def test_viral_seed_builder_recategorizes_audit_drift_seed_into_detected_axis(tmp_path):
+    db_path = tmp_path / "seed_builder_source_seed_audit_recategorize.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT,
+                longtail_score REAL,
+                business_value_score REAL,
+                high_value_longtail INTEGER,
+                community_signal REAL,
+                conversion_signal REAL,
+                local_service_fit_score REAL,
+                content_actionability_score REAL,
+                preferred_search_surface TEXT,
+                recommended_content_type TEXT,
+                review_intent_type TEXT
+            );
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audit_json TEXT
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (32, 'legion', 'completed', '2026-06-24');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count, kei, priority_v3,
+                search_intent, scan_run_id, business_core, status, longtail_score,
+                business_value_score, high_value_longtail, community_signal,
+                conversion_signal, local_service_fit_score, content_actionability_score,
+                preferred_search_surface, recommended_content_type, review_intent_type
+            ) VALUES ('청주 비만 한의원 후기', '피부/여드름', 'A', 100, 1000, 10, 210,
+                      'transactional', 32, 1, 'active', 80, 80, 1, 58, 45, 82, 76,
+                      'hybrid_local_content', 'proof_safe_guide', 'community_recommendation')
+            """
+        )
+        audit = {
+            "source_seed_feedback": {
+                "recategorize_candidates": [
+                    {
+                        "seed": "청주 비만 한의원 후기",
+                        "category": "피부/여드름",
+                        "detected_category": "다이어트",
+                        "action": "recategorize_or_quarantine",
+                        "credit_total": 2,
+                        "primary_total": 0,
+                        "actionable": 0,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "category_drift_rate": 1.0,
+                    }
+                ]
+            }
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(audit, ensure_ascii=False),),
+        )
+
+    seeds = ViralSeedBuilder(str(db_path)).build(
+        scan_run_id=32,
+        quotas={"다이어트": 1},
+    )
+
+    assert [seed.keyword for seed in seeds] == ["청주 비만 한의원 후기"]
+    assert seeds[0].category == "다이어트"
+    assert seeds[0].source_seed_audit_action == "recategorize_or_quarantine"
+    assert seeds[0].source_seed_audit_recategorized_category == "다이어트"
+    assert seeds[0].source_seed_audit_adjustment == 0.0
+
+
 def test_viral_seed_builder_uses_pathfinder_execution_signals_for_viral_readiness(tmp_path):
     db_path = tmp_path / "seed_builder_execution_signals.db"
     with sqlite3.connect(db_path) as conn:
@@ -2617,18 +2827,18 @@ def test_viral_hunter_builds_lens_aware_search_query_variants():
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
-        "여드름흉터",
+        "여드름흉터 해보신분",
     ]
     assert plans[1]["source_keyword"] == "금천동 여드름흉터"
     assert plans[1]["variant"] == "community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
     # 비지역 환자 질문 표면: 지역 토큰 제거 + kin 위주 한정 예산
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
     assert plans[3]["platform_limits"] == {"cafe": 15, "blog": 0, "kin": 40}
     assert plans[1]["platform_limits"]["cafe"] < plans[0]["platform_limits"]["cafe"]
     assert hunter.keyword_context["금천동 여드름흉터 추천"]["pathfinder_source_keyword"] == "금천동 여드름흉터"
     assert hunter.keyword_context["청주 여드름흉터 새살침 후기"]["pathfinder_source_keyword"] == "금천동 여드름흉터"
-    assert hunter.keyword_context["여드름흉터"]["pathfinder_query_variant"] == "patient_voice_kin"
+    assert hunter.keyword_context["여드름흉터 해보신분"]["pathfinder_query_variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_infers_query_plan_for_manual_scar_keyword_without_context():
@@ -2641,13 +2851,13 @@ def test_viral_hunter_infers_query_plan_for_manual_scar_keyword_without_context(
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
-        "여드름흉터",
+        "여드름흉터 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["category"] == "흉터/여드름흉터"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["execution_lens"] == "cost"
 
@@ -2737,16 +2947,16 @@ def test_viral_hunter_adds_axis_companion_query_for_scar_seed():
         "금천동 여드름흉터",
         "금천동 여드름흉터 추천",
         "청주 여드름흉터 새살침 후기",
-        "여드름흉터",
+        "여드름흉터 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_scar:새살침후기"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
     assert plans[3]["platform_limits"] == {"cafe": 15, "blog": 0, "kin": 40}
     assert hunter.keyword_context["청주 여드름흉터 새살침 후기"]["pathfinder_source_keyword"] == "금천동 여드름흉터 비용"
-    assert hunter.keyword_context["여드름흉터"]["pathfinder_source_keyword"] == "금천동 여드름흉터 비용"
+    assert hunter.keyword_context["여드름흉터 해보신분"]["pathfinder_source_keyword"] == "금천동 여드름흉터 비용"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_skin_seed_without_duplicate():
@@ -2772,10 +2982,10 @@ def test_viral_hunter_adds_axis_companion_query_for_skin_seed_without_duplicate(
         "청주 여드름 한의원",
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
-        "여드름 한의원",
+        "여드름 한의원 해보신분",
     ]
     assert plans[2]["variant"] == "axis_skin:피부질환추천"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_preserves_specific_scar_context_in_axis_companion():
@@ -2801,7 +3011,7 @@ def test_viral_hunter_preserves_specific_scar_context_in_axis_companion():
         "청주 수술흉터 새살침",
         "청주 수술흉터 새살침 추천",
         "청주 수술흉터 새살침 후기",
-        "수술흉터 새살침",
+        "수술흉터 새살침 해보신분",
     ]
     assert plans[2]["variant"] == "axis_scar:specific_수술흉터"
     assert hunter.keyword_context["청주 수술흉터 새살침 후기"]["pathfinder_source_keyword"] == "청주 수술흉터 새살침 상담"
@@ -2830,7 +3040,7 @@ def test_viral_hunter_preserves_specific_skin_context_before_generic_companion()
         "청주 아토피 한의원",
         "청주 아토피 한의원 추천",
         "청주 아토피 한의원 후기",
-        "아토피 한의원",
+        "아토피 한의원 해보신분",
     ]
     assert plans[2]["variant"] == "axis_skin:specific_아토피"
 
@@ -2858,7 +3068,7 @@ def test_viral_hunter_preserves_specific_wart_skin_context_before_generic_compan
         "청주 편평사마귀 한의원",
         "청주 편평사마귀 한의원 추천",
         "청주 편평사마귀 한의원 후기",
-        "편평사마귀 한의원",
+        "편평사마귀 한의원 해보신분",
     ]
     assert plans[2]["variant"] == "axis_skin:specific_편평사마귀"
 
@@ -2888,7 +3098,7 @@ def test_viral_hunter_preserves_specific_traffic_context_in_axis_companion():
         "청주 교통사고 입원 한의원 추천",
     ]
     assert plans[2]["variant"] == "axis_traffic:specific_입원"
-    assert all(plan["variant"] != "patient_voice_kin" for plan in plans)
+    assert all(plan["variant"] not in viral_hunter.ViralHunter.PATIENT_VOICE_VARIANTS for plan in plans)
     assert (
         hunter.keyword_context["청주 교통사고 입원 한의원 추천"]["pathfinder_source_keyword"]
         == "청주 교통사고 입원 자동차보험 서류"
@@ -2918,13 +3128,13 @@ def test_viral_hunter_adds_axis_companion_query_for_diet_review_seed():
         "청주 다이어트한약 추천",
         "청주 다이어트한약 후기",
         "청주 한방다이어트 한의원 추천",
-        "다이어트한약 추천",
+        "다이어트한약 추천 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["platform_limits"]["cafe"] >= 150
     assert plans[1]["variant"] == "axis_diet:한약후기"
     assert plans[2]["variant"] == "axis_diet:한방다이어트추천"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_adds_axis_companion_query_for_body_review_seed():
@@ -2949,13 +3159,13 @@ def test_viral_hunter_adds_axis_companion_query_for_body_review_seed():
         "청주 체형교정 한의원 추천",
         "청주 체형교정 추나 한의원 추천",
         "청주 골반교정 추나 한의원 추천",
-        "체형교정 한의원 추천",
+        "체형교정 한의원 추천 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["platform_limits"]["cafe"] >= 150
     assert plans[1]["variant"] == "axis_body:체형추나추천"
     assert plans[2]["variant"] == "axis_body:골반교정추천"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
     assert hunter.keyword_context["청주 체형교정 추나 한의원 추천"]["pathfinder_source_keyword"] == "청주 체형교정 한의원 추천"
     assert hunter.keyword_context["청주 골반교정 추나 한의원 추천"]["pathfinder_source_keyword"] == "청주 체형교정 한의원 추천"
 
@@ -2982,12 +3192,12 @@ def test_viral_hunter_adds_axis_companion_query_for_lifting_seed_even_when_revie
         "청주 한방리프팅 추천",
         "청주 매선 한방리프팅 후기",
         "청주 팔자주름 한방리프팅 후기",
-        "한방리프팅 추천",
+        "한방리프팅 추천 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[1]["variant"] == "axis_lifting:매선한방후기"
     assert plans[2]["variant"] == "axis_lifting:팔자주름후기"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_adds_compound_axis_companion_query_for_asymmetry_seed():
@@ -3015,13 +3225,13 @@ def test_viral_hunter_adds_compound_axis_companion_query_for_asymmetry_seed():
         "봉명동 턱비대칭 한의원",
         "봉명동 턱비대칭 한의원 추천",
         "청주 턱관절 안면비대칭 한의원 추천",
-        "턱비대칭 한의원",
+        "턱비대칭 한의원 해보신분",
     ]
     assert plans[0]["platform_limits"]["blog"] == 35
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_asymmetry:턱관절비대칭추천"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
     assert hunter.keyword_context["봉명동 턱비대칭 한의원"]["pathfinder_source_keyword"] == "봉명동 턱비대칭 한의원 비용"
 
 
@@ -3047,12 +3257,12 @@ def test_viral_hunter_redirects_cost_lens_seed_to_community_surface():
         "청주 여드름 한의원",
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
-        "여드름 한의원",
+        "여드름 한의원 해보신분",
     ]
     assert plans[0]["variant"] == "community_base"
     assert plans[1]["variant"] == "cost_community:추천"
     assert plans[2]["variant"] == "axis_skin:피부질환추천"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
@@ -3076,12 +3286,12 @@ def test_viral_hunter_does_not_duplicate_query_variant_when_lens_term_exists():
         "청주 여드름 한의원 추천",
         "청주 피부질환 한의원 추천",
         "청주 아토피 한의원 후기",
-        "여드름 한의원 추천",
+        "여드름 한의원 추천 해보신분",
     ]
     assert [plan["query"] for plan in plans].count("청주 여드름 한의원 추천") == 1
     assert plans[1]["variant"] == "axis_skin:피부질환추천"
     assert plans[2]["variant"] == "axis_skin:아토피후기"
-    assert plans[3]["variant"] == "patient_voice_kin"
+    assert plans[3]["variant"] == "patient_voice_question_kin"
 
 
 def test_viral_hunter_shared_variant_context_keeps_stronger_source_lineage():
@@ -3298,6 +3508,57 @@ def test_viral_hunter_duplicate_merge_prefers_specific_axis_variant_over_generic
     assert current.search_rank == 1
 
 
+def test_duplicate_merge_preserves_preferred_source_seed_audit_action():
+    current = ViralTarget(
+        platform="kin",
+        url="https://example.com/duplicate-audit-lineage",
+        title="청주 수술흉터 새살침 후기",
+        content_preview="수술흉터 때문에 새살침 상담 받아보신 분 후기가 궁금합니다.",
+        matched_keywords=["청주 수술흉터 새살침 상담"],
+        exposure_score=80,
+        search_rank=1,
+        score_breakdown={
+            "pathfinder_source_keyword": "청주 수술흉터 새살침 상담",
+            "pathfinder_search_query": "청주 수술흉터 새살침 후기",
+            "pathfinder_query_variant": "axis_scar:specific_수술흉터",
+            "pathfinder_source_seed_audit_action": "scale_or_keep",
+            "pathfinder_source_seed_audit_adjustment": 12.0,
+        },
+    )
+    incoming = ViralTarget(
+        platform="kin",
+        url="https://example.com/duplicate-audit-lineage",
+        title="청주 흉터 한의원 후기",
+        content_preview="흉터 상담 가능한 한의원이 궁금합니다.",
+        matched_keywords=["청주 패인흉터 여드름흉터 상담"],
+        exposure_score=30,
+        search_rank=6,
+        score_breakdown={
+            "pathfinder_source_keyword": "청주 패인흉터 여드름흉터 상담",
+            "pathfinder_search_query": "청주 흉터 한의원 후기",
+            "pathfinder_query_variant": "axis_scar:새살침후기",
+            "pathfinder_source_seed_audit_action": "retire_or_pause",
+            "pathfinder_source_seed_audit_adjustment": -58.0,
+        },
+    )
+
+    viral_hunter.ViralHunter._merge_duplicate_search_target(current, incoming)
+
+    assert current.score_breakdown["pathfinder_source_keyword"] == "청주 수술흉터 새살침 상담"
+    assert current.score_breakdown["pathfinder_query_variant"] == "axis_scar:specific_수술흉터"
+    assert current.score_breakdown["pathfinder_source_seed_audit_action"] == "scale_or_keep"
+    assert current.score_breakdown["pathfinder_source_seed_audit_adjustment"] == 12.0
+    assert current.score_breakdown["pathfinder_source_seed_audit_actions"] == [
+        "scale_or_keep",
+        "retire_or_pause",
+    ]
+
+    formatted = AICommentGenerator._format_unified_target(11, current)
+
+    assert "PATHFINDER_AUDIT: action=scale_or_keep" in formatted
+    assert "actions=scale_or_keep, retire_or_pause" in formatted
+
+
 def test_viral_hunter_checkpoint_hash_includes_query_variants(tmp_path):
     class EmptySearcher:
         def search_all(self, *args, **kwargs):
@@ -3366,6 +3627,107 @@ def test_viral_hunter_checkpoint_hash_includes_query_variants(tmp_path):
     assert base_hashes and variant_hashes and base_hashes[0] != variant_hashes[0]
     assert scan_hashes and scan_hashes[0] != base_hashes[0]
     assert boost_hashes and boost_hashes[0] != base_hashes[0]
+
+
+def test_viral_hunter_reuses_duplicate_query_plan_without_losing_lineage(tmp_path):
+    class CapturingSearcher:
+        def __init__(self):
+            self.calls = []
+
+        def search_all(self, keyword, **kwargs):
+            self.calls.append((keyword, bool(kwargs.get("include_blog")), dict(kwargs.get("platform_limits") or {})))
+            return [
+                ViralTarget(
+                    platform="kin",
+                    url="https://example.com/shared-patient-question",
+                    title="여드름흉터 받아보신분 계신가요",
+                    content_preview="여드름흉터 때문에 새살침이나 한의원 상담 받아보신 분 후기가 궁금합니다.",
+                    matched_keywords=[keyword],
+                    category="흉터/여드름흉터",
+                    exposure_score=80,
+                    search_rank=1,
+                    sort_appearances=["sim"],
+                )
+            ]
+
+        def get_stats(self):
+            return {"requests": len(self.calls), "cache_hits": 0, "errors": 0, "error_rate": "0%"}
+
+    class CapturingFilter:
+        def __init__(self):
+            self.input_targets = []
+
+        def filter(self, targets):
+            self.input_targets = list(targets)
+            return []
+
+    class EmptyDb:
+        def insert_viral_target(self, data):
+            return True
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 여드름흉터 새살침 상담": {
+            "category": "흉터/여드름흉터",
+            "execution_lens": "consultation",
+            "viral_readiness_score": 80,
+            "content_actionability_score": 85,
+        },
+        "청주 여드름흉터 새살침 후기": {
+            "category": "흉터/여드름흉터",
+            "execution_lens": "review",
+            "viral_readiness_score": 78,
+            "content_actionability_score": 85,
+        },
+    }
+    hunter.searcher = CapturingSearcher()
+    hunter.filter = CapturingFilter()
+    hunter.db = EmptyDb()
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    hunter.generator = type("Generator", (), {"last_failed_ai_batches": set()})()
+    hunter.seed_builder = None
+    hunter._load_keyword_context = lambda keywords: None
+    hunter._load_checkpoint = lambda keyword_hash: None
+    hunter._save_checkpoint = lambda *args, **kwargs: None
+    hunter._clear_checkpoint = lambda: None
+
+    def same_plan(keyword, max_per_platform):
+        return [
+            {
+                "query": "여드름흉터 새살침 받아보신분",
+                "variant": "patient_voice_question_kin",
+                "source_keyword": keyword,
+                "include_blog": False,
+                "platform_limits": {"cafe": 15, "blog": 0, "kin": 40},
+                "readiness": 80,
+                "medical_risk": 0,
+                "preferred_surface": "hybrid_local_content",
+                "recommended_content_type": "proof_safe_guide",
+            }
+        ]
+
+    hunter._search_queries_for_keyword = same_plan
+
+    hunter.hunt(
+        keywords=["청주 여드름흉터 새살침 상담", "청주 여드름흉터 새살침 후기"],
+        max_per_platform=100,
+        top_n_for_ai=0,
+        fresh=True,
+    )
+
+    assert hunter.searcher.calls == [
+        ("여드름흉터 새살침 받아보신분", False, {"cafe": 15, "blog": 0, "kin": 40})
+    ]
+    assert hunter._search_plan_cache_misses == 1
+    assert hunter._search_plan_cache_hits == 1
+    assert len(hunter.filter.input_targets) == 1
+    breakdown = hunter.filter.input_targets[0].score_breakdown
+    assert breakdown["pathfinder_source_keywords"] == [
+        "청주 여드름흉터 새살침 상담",
+        "청주 여드름흉터 새살침 후기",
+    ]
+    assert breakdown["pathfinder_search_queries"] == ["여드름흉터 새살침 받아보신분"]
+    assert breakdown["pathfinder_query_variants"] == ["patient_voice_question_kin"]
 
 
 def test_viral_hunter_load_keywords_can_pin_pathfinder_scan_id(tmp_path):
@@ -3482,6 +3844,244 @@ def test_viral_hunter_limit_keywords_preserves_axis_lens_coverage(tmp_path):
 
     base_calls = [keyword for keyword in hunter.searcher.calls if keyword in set(original_keywords)]
     assert base_calls == ["skin review one", "skin cost one", "diet review one"]
+
+
+def test_viral_hunter_boost_categories_outrank_broad_lens_boost_when_limited(tmp_path):
+    class CapturingSearcher:
+        def __init__(self):
+            self.calls = []
+
+        def search_all(self, keyword, **kwargs):
+            self.calls.append(keyword)
+            return []
+
+        def get_stats(self):
+            return {"requests": 0, "cache_hits": 0, "errors": 0, "error_rate": "0%"}
+
+    class EmptyFilter:
+        def filter(self, targets):
+            return []
+
+    class EmptyDb:
+        def insert_viral_target(self, data):
+            return True
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "traffic review": {"category": "교통사고", "execution_lens": "review"},
+        "immune community": {"category": "면역/보약", "execution_lens": "community"},
+        "scar review": {"category": "흉터/여드름흉터", "execution_lens": "review"},
+        "asymmetry review": {"category": "안면비대칭", "execution_lens": "review"},
+        "skin community": {"category": "피부/여드름", "execution_lens": "community"},
+        "diet cost": {"category": "다이어트", "execution_lens": "cost"},
+    }
+    hunter.searcher = CapturingSearcher()
+    hunter.filter = EmptyFilter()
+    hunter.db = EmptyDb()
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    hunter.generator = type("Generator", (), {"last_failed_ai_batches": set()})()
+    hunter.seed_builder = None
+    hunter._load_keyword_context = lambda keywords: None
+    hunter._load_checkpoint = lambda keyword_hash: None
+    hunter._save_checkpoint = lambda *args, **kwargs: None
+    hunter._clear_checkpoint = lambda: None
+
+    original_keywords = [
+        "traffic review",
+        "immune community",
+        "scar review",
+        "asymmetry review",
+        "skin community",
+        "diet cost",
+    ]
+    ordered = hunter._order_keywords_for_handoff_coverage(
+        original_keywords,
+        boost_categories=["흉터/여드름흉터", "안면비대칭", "피부/여드름", "다이어트"],
+        boost_lenses=["review", "community", "cost", "consultation"],
+    )
+    assert ordered[:4] == ["scar review", "asymmetry review", "skin community", "diet cost"]
+
+    hunter.hunt(
+        keywords=original_keywords,
+        limit_keywords=3,
+        max_per_platform=10,
+        top_n_for_ai=0,
+        fresh=True,
+        boost_categories=["흉터/여드름흉터", "안면비대칭", "피부/여드름", "다이어트"],
+        boost_lenses=["review", "community", "cost", "consultation"],
+    )
+
+    base_calls = [keyword for keyword in hunter.searcher.calls if keyword in set(original_keywords)]
+    assert base_calls == ["scar review", "asymmetry review", "skin community"]
+
+
+def test_viral_hunter_category_lens_boost_outranks_broad_lens_boost():
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "scar review": {"category": "test-scar", "execution_lens": "review"},
+        "scar cost": {"category": "test-scar", "execution_lens": "cost"},
+        "skin cost": {"category": "test-skin", "execution_lens": "cost"},
+        "diet review": {"category": "test-diet", "execution_lens": "review"},
+    }
+
+    ordered = hunter._order_keywords_for_handoff_coverage(
+        ["skin cost", "diet review", "scar cost", "scar review"],
+        boost_lenses=["cost"],
+        boost_category_lenses=["test-scar::review"],
+    )
+
+    assert ordered[:3] == ["scar review", "skin cost", "scar cost"]
+
+
+def test_viral_hunter_consumes_latest_handoff_playbook_boosts_when_limited(tmp_path):
+    class CapturingSearcher:
+        def __init__(self):
+            self.calls = []
+
+        def search_all(self, keyword, **kwargs):
+            self.calls.append(keyword)
+            return []
+
+        def get_stats(self):
+            return {"requests": 0, "cache_hits": 0, "errors": 0, "error_rate": "0%"}
+
+    class EmptyFilter:
+        def filter(self, targets):
+            return []
+
+    class EmptyDb:
+        db_path = ""
+
+        def insert_viral_target(self, data):
+            return True
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "next_run_playbook": {
+                "boost_category_lenses": [
+                    {"category_lens": "test-scar::review", "gap_reasons": ["low_survival_rate"]}
+                ],
+                "boost_lenses": [{"lens": "cost", "gap_reasons": ["low_survival_rate"]}],
+            }
+        },
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "skin cost": {"category": "test-skin", "execution_lens": "cost"},
+        "diet review": {"category": "test-diet", "execution_lens": "review"},
+        "scar cost": {"category": "test-scar", "execution_lens": "cost"},
+        "scar review": {"category": "test-scar", "execution_lens": "review"},
+    }
+    hunter.searcher = CapturingSearcher()
+    hunter.filter = EmptyFilter()
+    hunter.db = EmptyDb()
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    hunter.generator = type("Generator", (), {"last_failed_ai_batches": set()})()
+    hunter.seed_builder = None
+    hunter._load_keyword_context = lambda keywords: None
+    hunter._load_checkpoint = lambda keyword_hash: None
+    hunter._save_checkpoint = lambda *args, **kwargs: None
+    hunter._clear_checkpoint = lambda: None
+
+    original_keywords = ["skin cost", "diet review", "scar cost", "scar review"]
+    hunter.hunt(
+        keywords=original_keywords,
+        limit_keywords=2,
+        max_per_platform=10,
+        top_n_for_ai=0,
+        fresh=True,
+    )
+
+    base_calls = [keyword for keyword in hunter.searcher.calls if keyword in set(original_keywords)]
+    assert base_calls == ["scar review", "skin cost"]
+    assert hunter._handoff_playbook_auto_boosts["category_lenses"] == ["test-scar::review"]
+    assert hunter._handoff_playbook_auto_boosts["lenses"] == ["cost", "review"]
+
+
+def test_viral_hunter_consumes_handoff_quality_gap_lanes_when_limited(tmp_path):
+    class CapturingSearcher:
+        def __init__(self):
+            self.calls = []
+
+        def search_all(self, keyword, **kwargs):
+            self.calls.append(keyword)
+            return []
+
+        def get_stats(self):
+            return {"requests": 0, "cache_hits": 0, "errors": 0, "error_rate": "0%"}
+
+    class EmptyFilter:
+        def filter(self, targets):
+            return []
+
+    class EmptyDb:
+        db_path = ""
+
+        def insert_viral_target(self, data):
+            return True
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "next_run_playbook": {
+                "local_intent_gaps": [
+                    {
+                        "lane": "test-scar::review",
+                        "category": "test-scar",
+                        "lens": "review",
+                        "reasons": ["no_local_intent"],
+                    }
+                ],
+            },
+            "treatment_signal_diversity_quality": {
+                "category_lens_gaps": [
+                    {
+                        "lane": "test-diet::cost",
+                        "category": "test-diet",
+                        "lens": "cost",
+                        "reasons": ["narrow_treatment_signal_diversity"],
+                    }
+                ]
+            },
+        },
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "skin review": {"category": "test-skin", "execution_lens": "review"},
+        "diet cost": {"category": "test-diet", "execution_lens": "cost"},
+        "scar cost": {"category": "test-scar", "execution_lens": "cost"},
+        "scar review": {"category": "test-scar", "execution_lens": "review"},
+    }
+    hunter.searcher = CapturingSearcher()
+    hunter.filter = EmptyFilter()
+    hunter.db = EmptyDb()
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    hunter.generator = type("Generator", (), {"last_failed_ai_batches": set()})()
+    hunter.seed_builder = None
+    hunter._load_keyword_context = lambda keywords: None
+    hunter._load_checkpoint = lambda keyword_hash: None
+    hunter._save_checkpoint = lambda *args, **kwargs: None
+    hunter._clear_checkpoint = lambda: None
+
+    original_keywords = ["skin review", "diet cost", "scar cost", "scar review"]
+    hunter.hunt(
+        keywords=original_keywords,
+        limit_keywords=2,
+        max_per_platform=10,
+        top_n_for_ai=0,
+        fresh=True,
+    )
+
+    base_calls = [keyword for keyword in hunter.searcher.calls if keyword in set(original_keywords)]
+    assert base_calls == ["scar review", "diet cost"]
+    assert hunter._handoff_playbook_auto_boosts["category_lenses"] == [
+        "test-scar::review",
+        "test-diet::cost",
+    ]
+    assert hunter._handoff_playbook_auto_boosts["lenses"] == ["review", "cost"]
 
 
 def test_naver_search_all_honors_platform_specific_limits():
@@ -3956,6 +4556,9 @@ def test_viral_hunter_attaches_pathfinder_execution_context_to_targets():
             "execution_lens": "review",
             "source_signals_json": '["community_demand", "profile_action_conversion"]',
             "quality_flags_json": '["medical_ad_review_required"]',
+            "source_seed_audit_action": "scale_or_keep",
+            "source_seed_audit_adjustment": 12.0,
+            "source_seed_audit_recategorized_category": "",
         }
     }
 
@@ -3982,10 +4585,14 @@ def test_viral_hunter_attaches_pathfinder_execution_context_to_targets():
         "profile_action_conversion",
     ]
     assert target.score_breakdown["pathfinder_quality_flags"] == ["medical_ad_review_required"]
+    assert target.score_breakdown["pathfinder_source_seed_audit_action"] == "scale_or_keep"
+    assert target.score_breakdown["pathfinder_source_seed_audit_adjustment"] == 12.0
     assert "community_demand" in target.score_breakdown["pathfinder_insight_brief"]
+    assert "audit=scale_or_keep" in target.score_breakdown["pathfinder_insight_brief"]
     assert "PATHFINDER_KEYWORD: 청주 수술흉터 새살침 상담" in formatted
     assert "PATHFINDER_EXECUTION: readiness=91.0" in formatted
     assert "PATHFINDER_SIGNALS: sources=community_demand, profile_action_conversion; flags=medical_ad_review_required" in formatted
+    assert "PATHFINDER_AUDIT: action=scale_or_keep; adjustment=12.0" in formatted
     assert "PATHFINDER_BRIEF: axis=흉터/여드름흉터; lens=review" in formatted
     assert "lens=review" in formatted
 
@@ -4910,6 +5517,187 @@ def test_ai_target_split_uses_pathfinder_fit_for_global_fill_slots():
     assert rest == [high_priority_weak]
 
 
+def test_ai_target_split_prefers_execution_ready_target_over_reply_metric_gap():
+    non_ready_high_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet/non-ready-high",
+        title="청주 다이어트 한약 후기 추천 부탁드려요",
+        content_preview=(
+            "청주에서 다이어트 한약 받아보신 분 후기 궁금합니다. "
+            "식욕 조절이나 비용 경험을 알고 싶어요."
+        ),
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+        },
+    )
+    execution_ready_lower_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet/execution-ready-low",
+        title="청주 다이어트 한약 후기 추천 부탁드려요",
+        content_preview=(
+            "청주에서 다이어트 한약 받아보신 분 후기 궁금합니다. "
+            "식욕 조절이나 비용 경험을 알고 싶어요."
+        ),
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        priority_score=130,
+        score_breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 82,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": "clear_question_shape,help_request_language,local_actionable",
+            "reply_risk_penalty": 0,
+            "reply_risk_flags": "",
+            "manual_review": 0,
+        },
+    )
+
+    assert (
+        viral_hunter._ai_target_execution_readiness_adjustment(execution_ready_lower_priority)
+        > viral_hunter._ai_target_execution_readiness_adjustment(non_ready_high_priority)
+    )
+    assert (
+        viral_hunter._ai_target_selection_score(execution_ready_lower_priority)
+        > viral_hunter._ai_target_selection_score(non_ready_high_priority)
+    )
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        [non_ready_high_priority, execution_ready_lower_priority],
+        top_n=1,
+        category_min_quotas={"다이어트": 1},
+    )
+
+    assert selected == [execution_ready_lower_priority]
+    assert rest == [non_ready_high_priority]
+
+
+def test_ai_target_split_demotes_compliance_review_only_targets():
+    risky_high_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet/risky-review-only",
+        title="cheongju diet review request",
+        content_preview="patient asks for diet treatment review and recommendation",
+        category="?ㅼ씠?댄듃",
+        matched_keyword_category="?ㅼ씠?댄듃",
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 82,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": "clear_question_shape,help_request_language,local_actionable",
+            "reply_risk_penalty": -10,
+            "reply_risk_flags": "testimonial_sensitive",
+            "manual_review": 1,
+        },
+    )
+    safe_lower_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/diet/safe-auto-work",
+        title="cheongju diet consultation question",
+        content_preview="patient asks for consultation timing and local options",
+        category="?ㅼ씠?댄듃",
+        matched_keyword_category="?ㅼ씠?댄듃",
+        priority_score=128,
+        score_breakdown={
+            "pathfinder_execution_lens": "consultation",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 90,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 82,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": "clear_question_shape,help_request_language,local_actionable",
+            "reply_risk_penalty": 0,
+            "reply_risk_flags": "",
+            "manual_review": 0,
+        },
+    )
+
+    assert viral_hunter._ai_target_compliance_selection_adjustment(risky_high_priority) < 0
+    assert viral_hunter._ai_target_compliance_selection_adjustment(safe_lower_priority) == 0
+    assert (
+        viral_hunter._ai_target_selection_score(safe_lower_priority)
+        > viral_hunter._ai_target_selection_score(risky_high_priority)
+    )
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        [risky_high_priority, safe_lower_priority],
+        top_n=1,
+        category_min_quotas={"?ㅼ씠?댄듃": 1},
+    )
+
+    assert selected == [safe_lower_priority]
+    assert rest == [risky_high_priority]
+
+
+def test_ai_target_split_uses_source_seed_audit_feedback_in_selection():
+    retired_higher_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/scar/retired-source",
+        title="청주 여드름흉터 새살침 후기 궁금해요",
+        content_preview="청주에서 여드름흉터 때문에 새살침 상담 받아보신 분 계신가요?",
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 90,
+            "pathfinder_lens_fit_score": 88,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 82,
+            "pathfinder_source_seed_audit_action": "retire_or_pause",
+            "pathfinder_source_seed_audit_adjustment": -58.0,
+        },
+    )
+    scaled_lower_priority = ViralTarget(
+        platform="kin",
+        url="https://example.com/scar/scaled-source",
+        title="청주 여드름흉터 새살침 후기 궁금해요",
+        content_preview="청주에서 여드름흉터 때문에 새살침 상담 받아보신 분 계신가요?",
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        priority_score=140,
+        score_breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 90,
+            "pathfinder_lens_fit_score": 88,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 82,
+            "pathfinder_source_seed_audit_action": "scale_or_keep",
+            "pathfinder_source_seed_audit_adjustment": 14.0,
+        },
+    )
+
+    assert (
+        viral_hunter._ai_target_selection_score(scaled_lower_priority)
+        > viral_hunter._ai_target_selection_score(retired_higher_priority)
+    )
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        [retired_higher_priority, scaled_lower_priority],
+        top_n=1,
+        category_min_quotas={"흉터/여드름흉터": 1},
+    )
+
+    assert selected == [scaled_lower_priority]
+    assert rest == [retired_higher_priority]
+
+
 def test_ai_target_split_guarantees_available_signature_axes_before_large_floors():
     targets = []
     for category, prefix, base_score in (
@@ -4961,6 +5749,82 @@ def test_ai_target_split_guarantees_available_signature_axes_before_large_floors
     assert "안면비대칭" in selected_categories
     assert "다이어트" in selected_categories
     assert selected_urls.isdisjoint(rest_urls)
+
+
+def test_boosted_ai_category_quotas_uplift_audit_focus_axes():
+    quotas = viral_hunter._boosted_ai_category_quotas(
+        ["안면비대칭", "피부", "다이어트"],
+        top_n=300,
+    )
+
+    assert quotas is not None
+    assert quotas["안면비대칭"] > viral_hunter.AI_CATEGORY_MIN_QUOTAS["안면비대칭"]
+    assert quotas["피부/여드름"] > viral_hunter.AI_CATEGORY_MIN_QUOTAS["피부"]
+    assert quotas["다이어트"] > viral_hunter.AI_CATEGORY_MIN_QUOTAS["다이어트"]
+    assert viral_hunter._boosted_ai_category_quotas(["not-a-category"], top_n=300) is None
+
+
+def test_ai_target_split_prioritizes_boosted_category_before_default_floor_order():
+    traffic = ViralTarget(
+        platform="kin",
+        url="https://example.com/traffic/high",
+        title="traffic high",
+        category="교통사고",
+        matched_keyword_category="교통사고",
+        priority_score=1000,
+        score_breakdown={"pathfinder_execution_lens": "review"},
+    )
+    body = ViralTarget(
+        platform="kin",
+        url="https://example.com/body/boosted",
+        title="body boosted",
+        category="체형교정",
+        matched_keyword_category="체형교정",
+        priority_score=100,
+        score_breakdown={"pathfinder_execution_lens": "review"},
+    )
+
+    boosted = viral_hunter._boosted_ai_category_quotas(["체형교정"], top_n=1)
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        [traffic, body],
+        top_n=1,
+        category_min_quotas=boosted,
+        priority_categories=["체형교정"],
+    )
+
+    assert selected == [body]
+    assert rest == [traffic]
+
+
+def test_ai_target_split_prefers_boosted_lens_inside_category_floor():
+    review = ViralTarget(
+        platform="kin",
+        url="https://example.com/scar/review-high",
+        title="scar review",
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        priority_score=1000,
+        score_breakdown={"pathfinder_execution_lens": "review"},
+    )
+    consultation = ViralTarget(
+        platform="kin",
+        url="https://example.com/scar/consultation-low",
+        title="scar consultation",
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        priority_score=100,
+        score_breakdown={"pathfinder_execution_lens": "consultation"},
+    )
+
+    selected, rest = viral_hunter.split_ai_targets_with_category_floor(
+        [review, consultation],
+        top_n=1,
+        category_min_quotas={"흉터/여드름흉터": 1},
+        preferred_lenses=["consultation"],
+    )
+
+    assert selected == [consultation]
+    assert rest == [review]
 
 
 def test_ai_target_split_spreads_venue_in_leftover_fill():
@@ -5021,6 +5885,151 @@ def test_ai_target_split_venue_cap_falls_back_to_fill_budget():
     selected, _rest = viral_hunter.split_ai_targets_with_category_floor(targets, top_n=10)
     # venue 하나뿐이어도 AI 예산은 채운다 (읽기 큐 하드 캡과 달리 pass2 폴백).
     assert len(selected) == 10
+
+
+def test_ai_target_split_spreads_venue_inside_category_floor():
+    """카테고리 보장 슬롯 자체에서도 한 venue 가 흉터 축 예산을 독점하지 못한다."""
+    targets = []
+    for i in range(20):
+        targets.append(
+            ViralTarget(
+                platform="cafe",
+                url=f"https://cafe.naver.com/mega-scar/{i}",
+                title=f"scar mega {i}",
+                category="흉터/여드름흉터",
+                matched_keyword_category="흉터/여드름흉터",
+                priority_score=1000 - i,
+                author="청주맘카페",
+            )
+        )
+    for i in range(8):
+        targets.append(
+            ViralTarget(
+                platform="cafe",
+                url=f"https://cafe.naver.com/local-scar-{i}/post",
+                title=f"scar local {i}",
+                category="흉터/여드름흉터",
+                matched_keyword_category="흉터/여드름흉터",
+                priority_score=500 - i,
+                author=f"동네카페{i}",
+            )
+        )
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=10,
+        category_min_quotas={"흉터/여드름흉터": 8},
+    )
+
+    mega = sum(1 for t in selected if t.author == "청주맘카페")
+    others = sum(1 for t in selected if t.author.startswith("동네카페"))
+    assert len(selected) == 10
+    assert mega <= 4
+    assert others >= 6
+
+
+def test_ai_target_split_category_floor_venue_cap_falls_back_to_fill_budget():
+    """카테고리 floor 에서도 공급 venue 가 하나뿐이면 캡을 넘겨 예산을 채운다."""
+    targets = [
+        ViralTarget(
+            platform="cafe",
+            url=f"https://cafe.naver.com/only-diet/{i}",
+            title=f"diet only {i}",
+            category="다이어트",
+            matched_keyword_category="다이어트",
+            priority_score=1000 - i,
+            author="유일카페",
+        )
+        for i in range(20)
+    ]
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=8,
+        category_min_quotas={"다이어트": 6},
+    )
+
+    assert len(selected) == 8
+
+
+def test_ai_target_split_spreads_treatment_signal_inside_category_floor():
+    """Category floors should not spend a scar-axis budget on one repeated treatment signal."""
+    category = "\ud749\ud130/\uc5ec\ub4dc\ub984\ud749\ud130"
+    dominant_term = "\ud328\uc778\ud749\ud130"
+    other_terms = [
+        "\uc218\uc220\ud749\ud130",
+        "\ubaa8\uacf5\ud749\ud130",
+        "\ucf08\ub85c\uc774\ub4dc",
+        "\uc5ec\ub4dc\ub984\uc790\uad6d",
+    ]
+    targets = []
+    for i in range(20):
+        targets.append(
+            ViralTarget(
+                platform="kin",
+                url=f"https://example.com/scar-dominant/{i}",
+                title=f"\uccad\uc8fc {dominant_term} \uc0c1\ub2f4 {i}",
+                category=category,
+                matched_keyword_category=category,
+                priority_score=1000 - i,
+                score_breakdown={"pathfinder_execution_lens": "review"},
+            )
+        )
+    for term_index, term in enumerate(other_terms):
+        for copy_index in range(2):
+            targets.append(
+                ViralTarget(
+                    platform="kin",
+                    url=f"https://example.com/scar-signal/{term_index}-{copy_index}",
+                    title=f"\uccad\uc8fc {term} \ud6c4\uae30 {copy_index}",
+                    category=category,
+                    matched_keyword_category=category,
+                    priority_score=500 - (term_index * 2 + copy_index),
+                    score_breakdown={"pathfinder_execution_lens": "review"},
+                )
+            )
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=10,
+        category_min_quotas={category: 8},
+    )
+
+    signal_keys = [viral_hunter._ai_target_treatment_signal_key(target) for target in selected]
+    dominant_key = f"{category}::{viral_hunter._compact_query_text(dominant_term)}"
+    assert len(selected) == 10
+    assert signal_keys.count(dominant_key) <= 4
+    assert len({key for key in signal_keys if key}) >= 4
+
+
+def test_ai_target_split_treatment_signal_cap_falls_back_to_fill_budget():
+    """If a category has one treatment signal in supply, the signal cap must not starve AI budget."""
+    category = "\ub2e4\uc774\uc5b4\ud2b8"
+    term = "\ub2e4\uc774\uc5b4\ud2b8\ud55c\uc57d"
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/diet-signal/{i}",
+            title=f"\uccad\uc8fc {term} \uc0c1\ub2f4 {i}",
+            category=category,
+            matched_keyword_category=category,
+            priority_score=1000 - i,
+            score_breakdown={"pathfinder_execution_lens": "consultation"},
+        )
+        for i in range(20)
+    ]
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=8,
+        category_min_quotas={category: 6},
+    )
+
+    assert len(selected) == 8
 
 
 def _worksite_target(comment_count, view_count, *, old_wk=60.0, old_adj=1.75, priority=100.0):
@@ -9379,6 +10388,105 @@ def test_viral_hunter_persists_discovery_audit(tmp_path):
     assert persisted["summary"]["fresh_pending"] == 2
     assert persisted["summary"]["open_pending"] == 2
     assert persisted["per_category_lens_query_variant"]["피부/여드름::review::community:추천"]["pending"] == 2
+    assert persisted["suggested_handoff_audit_command"] == (
+        'python scripts/viral_handoff_audit.py --scan-id 67 --since "2026-06-12 00:00:00" '
+        "--sample-per-lane 2 --out reports/viral_handoff_audit_scan67_2026_06_12_00_00_00.json"
+    )
+
+
+def test_handoff_audit_command_for_run_quotes_exact_run_started_at():
+    assert viral_hunter._handoff_audit_command_for_run(
+        "2026-06-23 17:10:00",
+        source_scan_run_id=87,
+        sample_per_lane=3,
+    ) == (
+        'python scripts/viral_handoff_audit.py --scan-id 87 --since "2026-06-23 17:10:00" '
+        "--sample-per-lane 3 --out reports/viral_handoff_audit_scan87_2026_06_23_17_10_00.json"
+    )
+    assert viral_hunter._handoff_audit_command_for_run(
+        "2026-06-23 17:10:00",
+        sample_per_lane=0,
+    ) == (
+        'python scripts/viral_handoff_audit.py --since "2026-06-23 17:10:00" '
+        "--sample-per-lane 1 --out reports/viral_handoff_audit_2026_06_23_17_10_00.json"
+    )
+
+
+def test_viral_hunter_discovery_audit_uses_current_reject_over_preserved_status(tmp_path):
+    db_path = tmp_path / "audit_effective_status.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                comment_status TEXT,
+                matched_keyword TEXT,
+                matched_keywords TEXT,
+                matched_keyword_category TEXT,
+                score_breakdown TEXT,
+                discovered_at TEXT,
+                source_scan_run_id INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO viral_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "legacy-posted-rejected",
+                    "다이어트",
+                    "posted",
+                    "청주 다이어트 한의원",
+                    json.dumps(["청주 다이어트 한의원"], ensure_ascii=False),
+                    "다이어트",
+                    json.dumps(
+                        {
+                            "pathfinder_source_keyword": "청주 다이어트 한의원",
+                            "pathfinder_query_variant": "base",
+                            "pathfinder_execution_lens": "review",
+                            "final_reject_reason": "advertorial",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "2026-06-12 10:00:00",
+                    71,
+                ),
+                (
+                    "current-pending",
+                    "다이어트",
+                    "pending",
+                    "청주 다이어트 한의원",
+                    json.dumps(["청주 다이어트 한의원"], ensure_ascii=False),
+                    "다이어트",
+                    json.dumps(
+                        {
+                            "pathfinder_source_keyword": "청주 다이어트 한의원",
+                            "pathfinder_query_variant": "base",
+                            "pathfinder_execution_lens": "review",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "2026-06-12 10:05:00",
+                    71,
+                ),
+            ],
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    audit = hunter._persist_viral_discovery_audit(
+        "2026-06-12 00:00:00",
+        source_scan_run_id=71,
+        keyword_count=1,
+        db_path=str(db_path),
+    )
+
+    assert audit["summary"]["discovered"] == 2
+    assert audit["summary"]["pending"] == 1
+    assert audit["summary"]["ad_filtered"] == 1
+    assert audit["summary"]["current_rejected_legacy_actionable"] == 1
+    assert audit["per_query_variant"]["base"]["pending"] == 1
+    assert audit["per_query_variant"]["base"]["ad_filtered"] == 1
 
 
 def test_commentable_filter_accumulates_funnel_reject_stats():
@@ -9461,6 +10569,13 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
     hunter.filter = fobj
     hunter._variant_drop_counts = {"community:추천": 3}
     hunter._platform_drop_counts = {"blog": 7}
+    hunter._platform_surface_budget_scale_counts = {"kin::test-axis:0.50": 2}
+    hunter._handoff_playbook_auto_boosts = {
+        "categories": ["흉터/여드름흉터"],
+        "lenses": ["review"],
+        "category_lenses": ["흉터/여드름흉터::review"],
+        "sources": ["viral_handoff_audit_test.json"],
+    }
     hunter._keyword_limit_dropped = 8
 
     class _SB:
@@ -9484,6 +10599,8 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
     assert cb["filter_survival_rate"] == 30 / 100
     assert cb["variant_yield_drops"] == {"community:추천": 3}
     assert cb["platform_yield_drops"] == {"blog": 7}
+    assert cb["platform_surface_budget_scales"] == {"kin::test-axis:0.50": 2}
+    assert cb["handoff_playbook_auto_boosts"]["category_lenses"] == ["흉터/여드름흉터::review"]
     assert cb["structure_blocked"] == {"structure:흉터/여드름흉터:suffix:neigh": 4}
     assert cb["keyword_limit_dropped"] == 8
 
@@ -9494,6 +10611,8 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
     persisted = json.loads(stored)
     assert persisted["coverage_bounds"]["funnel_rejected_total"] == 17
     assert persisted["coverage_bounds"]["platform_yield_drops"]["blog"] == 7
+    assert persisted["coverage_bounds"]["platform_surface_budget_scales"]["kin::test-axis:0.50"] == 2
+    assert persisted["coverage_bounds"]["handoff_playbook_auto_boosts"]["lenses"] == ["review"]
 
 
 def test_viral_hunter_discovery_audit_breaks_down_reject_reason_by_axis(tmp_path):
@@ -10378,6 +11497,31 @@ def test_strip_region_tokens_removes_local_anchors_only():
     assert strip_region_tokens("다이어트 한약 효과") == "다이어트 한약 효과"
 
 
+def test_patient_voice_question_variant_uses_question_surface():
+    assert viral_hunter.ViralHunter._patient_voice_question_query("여드름흉터") == "여드름흉터 해보신분"
+    assert (
+        viral_hunter.ViralHunter._patient_voice_question_query("다이어트한약 해보신분")
+        == "다이어트한약 해보신분"
+    )
+    assert (
+        viral_hunter.ViralHunter._patient_voice_question_query("여드름흉터 받아보신분")
+        == "여드름흉터 받아보신분"
+    )
+    assert (
+        viral_hunter.ViralHunter._patient_voice_question_query("다이어트한약 후기 궁금")
+        == "다이어트한약 후기 궁금"
+    )
+
+
+def test_profile_gap_seed_scores_patient_question_shapes_above_booking_only():
+    question = ViralSeedBuilder._profile_gap_seed_row("청주 여드름흉터 해보신분", "흉터/여드름흉터")
+    booking = ViralSeedBuilder._profile_gap_seed_row("청주 여드름흉터 예약", "흉터/여드름흉터")
+
+    assert question["review_intent_type"] == "community_recommendation"
+    assert question["community_signal"] > booking["community_signal"]
+    assert ViralSeedBuilder._profile_gap_seed_score(question) > ViralSeedBuilder._profile_gap_seed_score(booking)
+
+
 def test_viral_hunter_skips_patient_voice_for_non_user_surface_axis():
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
     hunter.keyword_context = {
@@ -10403,7 +11547,7 @@ def test_viral_hunter_skips_patient_voice_for_non_user_surface_axis():
         "청주 교통사고 후유증 한의원 추천",
     ]
     assert plans[2]["variant"] == "axis_traffic:후유증추천"
-    assert all(plan["variant"] != "patient_voice_kin" for plan in plans)
+    assert all(plan["variant"] not in viral_hunter.ViralHunter.PATIENT_VOICE_VARIANTS for plan in plans)
 
 
 def test_variant_proven_zero_yield_thresholds():
@@ -10415,6 +11559,66 @@ def test_variant_proven_zero_yield_thresholds():
     assert proven({"discovered": 300, "pending": 1}) is True  # 0.33% < 0.4%
     assert proven({"discovered": 300, "pending": 2}) is False
     assert proven({}) is False
+
+
+def test_patient_voice_gate_drops_massive_single_run_zero_yield():
+    gate = viral_hunter.ViralHunter._variant_proven_zero_yield_for_gate
+
+    assert gate(
+        "patient_voice_question_kin",
+        {
+            "runs": 1,
+            "discovered": 967,
+            "fresh_discovered": 967,
+            "pending": 0,
+            "fresh_pending": 0,
+        },
+    )
+
+
+def test_specific_axis_gate_drops_high_volume_single_run_zero_yield():
+    gate = viral_hunter.ViralHunter._variant_proven_zero_yield_for_gate
+
+    assert gate(
+        "axis_asymmetry:specific_턱관절",
+        {
+            "runs": 1,
+            "discovered": 128,
+            "fresh_discovered": 128,
+            "pending": 0,
+            "fresh_pending": 0,
+        },
+    )
+    assert not gate(
+        "axis_asymmetry:specific_턱관절",
+        {
+            "runs": 1,
+            "discovered": 80,
+            "fresh_discovered": 80,
+            "pending": 0,
+            "fresh_pending": 0,
+        },
+    )
+    assert not gate(
+        "axis_diet:specific_직장인",
+        {
+            "runs": 1,
+            "discovered": 140,
+            "fresh_discovered": 140,
+            "pending": 2,
+            "fresh_pending": 2,
+        },
+    )
+    assert not gate(
+        "patient_voice_question_kin",
+        {
+            "runs": 1,
+            "discovered": 120,
+            "fresh_discovered": 120,
+            "pending": 0,
+            "fresh_pending": 0,
+        },
+    )
 
 
 def test_viral_hunter_scales_stale_base_variant_budget():
@@ -10553,8 +11757,345 @@ def test_viral_hunter_variant_yield_gate_drops_proven_zero_yield_companions(tmp_
     assert "axis_skin:아토피후기" not in variants
     assert "axis_skin:피부질환추천" in variants
     assert variants[0] == "base"
-    assert "patient_voice_kin" in variants
+    assert "patient_voice_question_kin" in variants
     assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
+
+
+def _variant_feedback_plan_hunter(tmp_path):
+    from types import SimpleNamespace
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(tmp_path / "missing.db"))
+    hunter.cfg = SimpleNamespace(root_dir=str(tmp_path))
+    hunter._platform_yield_cache = {}
+    hunter._variant_yield_cache = {}
+    hunter.keyword_context = {
+        "plain seed": {
+            "category": "test-axis",
+            "viral_readiness_score": 60,
+            "community_signal": 50,
+            "conversion_signal": 10,
+            "profile_action_signal": 0,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "review_intent_type": "none",
+            "execution_lens": "review",
+        }
+    }
+    return hunter
+
+
+def _write_variant_feedback_report(tmp_path, payload):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    report_path = reports_dir / "viral_handoff_audit_test.json"
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return report_path
+
+
+def test_viral_hunter_consumes_handoff_variant_retire_feedback_in_query_plan(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    retired_variant = next(plan["variant"] for plan in baseline if plan["variant"] != "base")
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "retire_variants": [
+                    {
+                        "variant": retired_variant,
+                        "total": 20,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "retire_or_pause",
+                    }
+                ]
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+    variants = [plan["variant"] for plan in plans]
+
+    assert retired_variant not in variants
+    assert hunter._variant_quality_drop_counts == {retired_variant: 1}
+
+
+def test_viral_hunter_prefers_lane_variant_feedback_over_global_retire(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    companion = next(plan for plan in baseline if plan["variant"] != "base")
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "retire_variants": [
+                    {
+                        "variant": companion["variant"],
+                        "total": 60,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "retire_or_pause",
+                    }
+                ],
+                "scale_category_lens_variants": [
+                    {
+                        "category": "test-axis",
+                        "lens": "review",
+                        "category_lens": "test-axis::review",
+                        "variant": companion["variant"],
+                        "total": 4,
+                        "survived": 2,
+                        "strict_fit": 2,
+                        "action": "scale_or_keep",
+                    }
+                ],
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+    kept = next(plan for plan in plans if plan["variant"] == companion["variant"])
+
+    assert kept["handoff_variant_quality_action"] == "scale_or_keep"
+    assert kept["handoff_variant_quality_factor"] == 1.18
+    assert kept["platform_limits"]["cafe"] > companion["platform_limits"]["cafe"]
+    assert getattr(hunter, "_variant_quality_drop_counts", {}) == {}
+
+
+def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    base = baseline[0]
+    assert base["variant"] == "base"
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "retire_variants": [
+                    {
+                        "variant": "base",
+                        "total": 500,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "retire_or_pause",
+                    }
+                ],
+                "repair_category_lens_variants": [
+                    {
+                        "category": "test-axis",
+                        "lens": "review",
+                        "category_lens": "test-axis::review",
+                        "variant": "base",
+                        "total": 120,
+                        "survived": 2,
+                        "strict_fit": 0,
+                        "action": "repair_query_shape",
+                    }
+                ],
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["handoff_variant_quality_action"] == "repair_query_shape"
+    assert plans[0]["handoff_variant_quality_factor"] == 0.75
+    assert plans[0]["platform_limits"]["cafe"] < base["platform_limits"]["cafe"]
+    assert getattr(hunter, "_variant_quality_drop_counts", {}) == {}
+    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.75": 1}
+
+
+def test_viral_hunter_consumes_platform_surface_feedback_in_search_plan(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_plan_for_keyword("plain seed", 100)
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "platform_surface_quality": {
+                "priority_focus_hotspots": [
+                    {
+                        "type": "platform_category",
+                        "platform": "blog",
+                        "category": "test-axis",
+                        "total": 80,
+                        "lost": 80,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "loss_rate": 1.0,
+                        "survival_rate": 0.0,
+                        "strict_fit_rate": 0.0,
+                        "dominant_loss_reason": "ad",
+                        "reasons": [
+                            "low_platform_survival",
+                            "low_platform_strict_fit",
+                            "high_platform_loss",
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plan = hunter._search_plan_for_keyword("plain seed", 100)
+
+    assert plan["platform_limits"]["blog"] == 29
+    assert plan["platform_limits"]["blog"] < baseline["platform_limits"]["blog"]
+    assert plan["platform_limits"]["cafe"] == baseline["platform_limits"]["cafe"]
+    assert plan["platform_limits"]["kin"] == baseline["platform_limits"]["kin"]
+    assert hunter._platform_surface_budget_scale_counts == {"blog::test-axis:0.45": 1}
+
+
+def test_viral_hunter_maps_platform_surface_feedback_and_keeps_category_boundary(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_plan_for_keyword("plain seed", 100)
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "platform_surface_quality": {
+                "priority_focus_hotspots": [
+                    {
+                        "type": "platform_category",
+                        "platform": "naver_kin",
+                        "category": "other-axis",
+                        "total": 120,
+                        "lost": 120,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "loss_rate": 1.0,
+                        "survival_rate": 0.0,
+                        "strict_fit_rate": 0.0,
+                        "reasons": ["high_platform_loss"],
+                    },
+                    {
+                        "type": "platform_category",
+                        "platform": "naver_kin",
+                        "category": "test-axis",
+                        "total": 50,
+                        "lost": 50,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "loss_rate": 0.96,
+                        "survival_rate": 0.0,
+                        "strict_fit_rate": 0.0,
+                        "reasons": ["low_platform_strict_fit"],
+                    },
+                ]
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plan = hunter._search_plan_for_keyword("plain seed", 100)
+
+    assert plan["platform_limits"]["kin"] == 68
+    assert plan["platform_limits"]["kin"] < baseline["platform_limits"]["kin"]
+    assert plan["platform_limits"]["cafe"] == baseline["platform_limits"]["cafe"]
+    assert plan["platform_limits"]["blog"] == baseline["platform_limits"]["blog"]
+    assert hunter._platform_surface_budget_scale_counts == {"kin::test-axis:0.50": 1}
+
+
+def test_viral_hunter_scales_handoff_variant_family_repair_feedback(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    companion = next(plan for plan in baseline if plan["variant"] != "base")
+    companion_family = viral_hunter.ViralHunter._query_variant_family(companion["variant"])
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "repair_families": [
+                    {
+                        "family": companion_family,
+                        "total": 30,
+                        "survived": 1,
+                        "strict_fit": 0,
+                        "action": "repair_family_query_shape",
+                    }
+                ]
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+    repaired = next(plan for plan in plans if plan["variant"] == companion["variant"])
+
+    assert repaired["handoff_variant_quality_action"] == "repair_family_query_shape"
+    assert repaired["handoff_variant_quality_factor"] == 0.70
+    assert repaired["platform_limits"]["cafe"] < companion["platform_limits"]["cafe"]
+    assert hunter.keyword_context[repaired["query"]]["pathfinder_query_variant_feedback_action"] == (
+        "repair_family_query_shape"
+    )
+    assert hunter._variant_quality_budget_scale_counts == {
+        f"{companion['variant']}:repair_family_query_shape:0.70": 1
+    }
+
+
+def test_viral_hunter_variant_yield_history_uses_latest_audit_per_source_scan(tmp_path):
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "variant_yield_dedupe.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_scan_run_id INTEGER,
+                audit_json TEXT
+            )
+            """
+        )
+        old_audit = {
+            "per_query_variant": {
+                "patient_voice_question_kin": {
+                    "discovered": 100,
+                    "fresh_discovered": 100,
+                    "pending": 5,
+                    "fresh_pending": 5,
+                }
+            }
+        }
+        corrected_audit = {
+            "per_query_variant": {
+                "patient_voice_question_kin": {
+                    "discovered": 100,
+                    "fresh_discovered": 100,
+                    "pending": 0,
+                    "fresh_pending": 0,
+                }
+            }
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits (source_scan_run_id, audit_json) VALUES (?, ?)",
+            (88, json.dumps(old_audit, ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits (source_scan_run_id, audit_json) VALUES (?, ?)",
+            (88, json.dumps(corrected_audit, ensure_ascii=False)),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    history = hunter._load_variant_yield_history()
+
+    assert history["patient_voice_question_kin"]["discovered"] == 100
+    assert history["patient_voice_question_kin"]["pending"] == 0
+    assert history["patient_voice_question_kin"]["runs"] == 1
 
 
 def test_viral_hunter_variant_yield_gate_prefers_category_lens_specific_evidence(tmp_path):
@@ -10743,7 +12284,7 @@ def test_viral_hunter_variant_yield_gate_uses_fresh_yield_over_rediscovered_pend
     assert hunter._variant_drop_counts == {"axis_skin:아토피후기": 1}
 
 
-def test_viral_hunter_variant_yield_gate_does_not_drop_patient_voice_from_global_only_evidence(tmp_path):
+def test_viral_hunter_variant_yield_gate_does_not_drop_question_patient_voice_from_legacy_evidence(tmp_path):
     from types import SimpleNamespace
 
     db_path = tmp_path / "patient_voice_global_only.db"
@@ -10758,18 +12299,19 @@ def test_viral_hunter_variant_yield_gate_does_not_drop_patient_voice_from_global
             )
             """
         )
-        audit_json = json.dumps(
-            {
-                "per_query_variant": {
-                    "patient_voice_kin": {"discovered": 90, "pending": 0, "ad_filtered": 60},
-                }
-            },
-            ensure_ascii=False,
-        )
-        conn.execute(
-            "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
-            ("2026-06-12 09:00:00", "2026-06-12 10:00:00", audit_json),
-        )
+        for day in ("12", "13"):
+            audit_json = json.dumps(
+                {
+                    "per_query_variant": {
+                        "patient_voice_kin": {"discovered": 150, "pending": 0, "ad_filtered": 60},
+                    }
+                },
+                ensure_ascii=False,
+            )
+            conn.execute(
+                "INSERT INTO viral_scan_audits (run_started_at, created_at, audit_json) VALUES (?, ?, ?)",
+                (f"2026-06-{day} 09:00:00", f"2026-06-{day} 10:00:00", audit_json),
+            )
 
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
     hunter.db = SimpleNamespace(db_path=str(db_path))
@@ -10790,14 +12332,14 @@ def test_viral_hunter_variant_yield_gate_does_not_drop_patient_voice_from_global
     plans = hunter._search_queries_for_keyword("청주 여드름흉터 비용", 100)
     variants = [plan["variant"] for plan in plans]
 
-    assert "patient_voice_kin" in variants
+    assert "patient_voice_question_kin" in variants
     assert getattr(hunter, "_variant_drop_counts", {}) == {}
 
 
-def test_viral_hunter_variant_yield_gate_drops_patient_voice_kin_on_global_evidence_despite_thin_lane(tmp_path):
+def test_viral_hunter_variant_yield_gate_drops_patient_voice_question_on_global_evidence_despite_thin_lane(tmp_path):
     """회귀 가드: per_category_lens_query_variant lane 버킷 도입 후에도, 글로벌
-    누적이 2런으로 제로수율을 증명한 patient_voice_kin을 thin lane 버킷이
-    재활성화(un-gate)하면 안 된다. patient_voice_kin은 진료축이 아닌 '질문
+    누적이 2런으로 제로수율을 증명한 patient_voice_question_kin을 thin lane 버킷이
+    재활성화(un-gate)하면 안 된다. patient_voice 계열은 진료축이 아닌 '질문
     표면' 자체가 수율을 좌우하는 category-agnostic 변형이라 글로벌로 판정한다."""
     from types import SimpleNamespace
 
@@ -10813,16 +12355,16 @@ def test_viral_hunter_variant_yield_gate_drops_patient_voice_kin_on_global_evide
             )
             """
         )
-        # 두 런: 글로벌 patient_voice_kin 누적 disc=300/pending=0(runs=2) → 제로수율 증명.
+        # 두 런: 글로벌 patient_voice_question_kin 누적 disc=300/pending=0(runs=2) → 제로수율 증명.
         # 동시에 thin per-(category,lens) lane 버킷 존재 — 과거 회귀의 트리거.
         for day in ("12", "13"):
             audit_json = json.dumps(
                 {
                     "per_query_variant": {
-                        "patient_voice_kin": {"discovered": 150, "pending": 0, "ad_filtered": 80},
+                        "patient_voice_question_kin": {"discovered": 150, "pending": 0, "ad_filtered": 80},
                     },
                     "per_category_lens_query_variant": {
-                        "흉터/여드름흉터::cost::patient_voice_kin": {
+                        "흉터/여드름흉터::cost::patient_voice_question_kin": {
                             "discovered": 150,
                             "pending": 0,
                             "ad_filtered": 80,
@@ -10855,8 +12397,8 @@ def test_viral_hunter_variant_yield_gate_drops_patient_voice_kin_on_global_evide
     plans = hunter._search_queries_for_keyword("청주 여드름흉터 비용", 100)
     variants = [plan["variant"] for plan in plans]
 
-    assert "patient_voice_kin" not in variants
-    assert hunter._variant_drop_counts.get("patient_voice_kin") == 1
+    assert "patient_voice_question_kin" not in variants
+    assert hunter._variant_drop_counts.get("patient_voice_question_kin") == 1
 
 
 def test_viral_hunter_variant_yield_gate_falls_back_to_global_when_lane_is_cold_start(tmp_path):

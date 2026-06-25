@@ -23,6 +23,17 @@ from core_services.viral_url_canonicalizer import canonicalize_viral_url
 ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved", "ai_approved"}
 SURVIVED_STATUSES = ACTIONABLE_STATUSES | {"raw_backlog"}
 FILTERED_PREFIXES = ("filtered_out",)
+CURRENT_REJECT_STATUS_BY_REASON = {
+    "advertorial": "filtered_out_ad",
+    "medical_promo": "filtered_out_ad",
+    "stale_window": "filtered_out_stale_window",
+    "journey_mismatch": "filtered_out_journey_mismatch",
+    "unqualified_lead": "filtered_out_unqualified_lead",
+    "clinic_mismatch": "filtered_out_clinic_mismatch",
+    "low_intent": "filtered_out_low_intent",
+    "low_opportunity": "filtered_out_low_opportunity",
+    "low_worksite_efficiency": "filtered_out_low_worksite_efficiency",
+}
 PRIORITY_FOCUS_CATEGORIES = (
     "흉터/여드름흉터",
     "안면비대칭",
@@ -55,6 +66,16 @@ SEED_CANDIDATE_ALIGNMENT_MIN_RATIO = 0.34
 REPLY_WORKABILITY_SCORE_READY = 55.0
 REPLY_WORKABILITY_RISK_PENALTY_BLOCK = -40.0
 REPLY_WORKABILITY_READY_TIERS = {"assist_now", "good"}
+COMPLIANCE_SEVERE_RISK_FLAGS = {
+    "urgent_medical",
+    "medication_advice_request",
+    "acute_side_effect",
+}
+COMPLIANCE_REVIEW_RISK_FLAGS = {
+    "sensitive_medical",
+    "testimonial_sensitive",
+    "generic_category",
+}
 REPLY_WORKABILITY_GOOD_SIGNALS = {
     "clear_question_shape",
     "help_request_language",
@@ -622,6 +643,32 @@ def _grade(value: object) -> str:
 
 def _status(value: object) -> str:
     return str(value or "pending").strip() or "pending"
+
+
+def _current_reject_reason(score_breakdown: Dict[str, Any]) -> str:
+    if not isinstance(score_breakdown, dict):
+        return ""
+    for key in ("final_reject_reason", "pathfinder_fit_reject_reason"):
+        reason = str(score_breakdown.get(key) or "").strip()
+        if reason:
+            return reason
+    return ""
+
+
+def _status_from_current_reject_reason(reason: str) -> str:
+    clean = str(reason or "").strip()
+    if not clean:
+        return ""
+    return CURRENT_REJECT_STATUS_BY_REASON.get(clean, "filtered_out")
+
+
+def _effective_current_status(status: object, score_breakdown: Dict[str, Any]) -> str:
+    """Use current-run reject evidence over preserved historical work states."""
+    normalized = _status(status)
+    if normalized not in SURVIVED_STATUSES:
+        return normalized
+    reject_status = _status_from_current_reject_reason(_current_reject_reason(score_breakdown))
+    return reject_status or normalized
 
 
 def _row_value(row: sqlite3.Row, name: str, default: object = "") -> object:
@@ -6400,6 +6447,286 @@ def _reply_workability_quality(
     }
 
 
+def _compliance_work_mode(record: Dict[str, Any]) -> str:
+    """Classify a strict actionable target by how safely it can enter viral work."""
+    if record.get("status") not in ACTIONABLE_STATUSES or not bool(record.get("strict_fit")):
+        return "not_work_queue"
+    risk_flags = {
+        str(flag or "").strip()
+        for flag in (record.get("reply_risk_flags") or [])
+        if str(flag or "").strip()
+    }
+    risk_penalty = float(record.get("reply_risk_penalty") or 0.0)
+    manual_review = bool(record.get("reply_manual_review")) or str(record.get("status") or "") == "manual_review"
+    severe = bool(risk_flags & COMPLIANCE_SEVERE_RISK_FLAGS)
+    if severe or risk_penalty <= REPLY_WORKABILITY_RISK_PENALTY_BLOCK or str(record.get("status") or "") == "manual_review":
+        return "blocked_or_escalate"
+    if risk_flags or manual_review or bool(record.get("reply_risk_blocked")):
+        return "manual_review_only"
+    if bool(record.get("reply_metric_missing")):
+        return "reply_metric_missing"
+    if not bool(record.get("reply_workability_matched")):
+        return "low_reply_opportunity"
+    return "auto_work_ready"
+
+
+def _compliance_work_mode_item(
+    *,
+    lane_type: str,
+    category: str,
+    lens: str = "",
+    records: List[Dict[str, Any]],
+    target: int,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    mode_counts = Counter(_compliance_work_mode(record) for record in records)
+    unique_count = len(records)
+    auto_count = int(mode_counts.get("auto_work_ready") or 0)
+    manual_count = int(mode_counts.get("manual_review_only") or 0)
+    blocked_count = int(mode_counts.get("blocked_or_escalate") or 0)
+    metric_missing_count = int(mode_counts.get("reply_metric_missing") or 0)
+    low_opportunity_count = int(mode_counts.get("low_reply_opportunity") or 0)
+    risk_flags = Counter(
+        flag
+        for record in records
+        for flag in (record.get("reply_risk_flags") or [])
+        if str(flag or "").strip()
+    )
+
+    reasons: List[str] = []
+    if unique_count == 0:
+        reasons.append("no_fresh_unique_actionable_strict" if fresh else "no_unique_actionable_strict")
+    elif auto_count == 0:
+        reasons.append("no_fresh_auto_work_ready_target" if fresh else "no_auto_work_ready_target")
+    elif auto_count < target:
+        reasons.append("thin_fresh_auto_work_ready_inventory" if fresh else "thin_auto_work_ready_inventory")
+    if unique_count and auto_count < target and manual_count:
+        reasons.append("manual_review_only_inventory")
+    if unique_count and auto_count < target and blocked_count:
+        reasons.append("blocked_or_escalate_inventory")
+    if unique_count and auto_count < target and metric_missing_count:
+        reasons.append("missing_reply_opportunity_metrics")
+    if unique_count and auto_count < target and low_opportunity_count:
+        reasons.append("low_reply_opportunity_score")
+
+    lane = f"{category}::{lens}" if lane_type == "category_lens" else category
+    return {
+        "type": lane_type,
+        "lane": lane,
+        "category": category,
+        "lens": lens,
+        "target": target,
+        "unique_actionable_strict": unique_count,
+        "unique_fresh_actionable_strict": unique_count if fresh else 0,
+        "auto_work_ready_actionable_strict": auto_count,
+        "fresh_auto_work_ready_actionable_strict": auto_count if fresh else 0,
+        "manual_review_only_actionable_strict": manual_count,
+        "blocked_or_escalate_actionable_strict": blocked_count,
+        "reply_metric_missing_actionable_strict": metric_missing_count,
+        "low_reply_opportunity_actionable_strict": low_opportunity_count,
+        "work_mode_counts": dict(mode_counts),
+        "reply_risk_flags": [flag for flag, _ in risk_flags.most_common(8)],
+        "ready": auto_count >= target and not reasons,
+        "gap": max(0, target - auto_count),
+        "reasons": reasons,
+    }
+
+
+def _compliance_work_mode_quality(
+    records: List[Dict[str, Any]],
+    *,
+    category_target: int = WORK_QUEUE_CATEGORY_TARGET,
+    category_lens_target: int = WORK_QUEUE_CATEGORY_LENS_TARGET,
+) -> Dict[str, Any]:
+    """Audit whether strict-fit inventory is actually usable without compliance escalation."""
+    focus_categories = _priority_focus_categories()
+    lenses = list(PATIENT_JOURNEY_LENSES)
+    category_target = max(1, int(category_target or 1))
+    category_lens_target = max(1, int(category_lens_target or 1))
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+    fresh_category_gaps: List[Dict[str, Any]] = []
+    fresh_category_lens_gaps: List[Dict[str, Any]] = []
+    category_ready = 0
+    category_lens_ready = 0
+    fresh_category_ready = 0
+    fresh_category_lens_ready = 0
+    overall_modes: Counter = Counter()
+    fresh_overall_modes: Counter = Counter()
+
+    for category in focus_categories:
+        category_records = _unique_actionable_records(records, category=category)
+        fresh_category_records = _unique_actionable_records(records, category=category, fresh_only=True)
+        for record in category_records:
+            overall_modes[_compliance_work_mode(record)] += 1
+        for record in fresh_category_records:
+            fresh_overall_modes[_compliance_work_mode(record)] += 1
+        category_item = _compliance_work_mode_item(
+            lane_type="category",
+            category=category,
+            records=category_records,
+            target=category_target,
+        )
+        fresh_category_item = _compliance_work_mode_item(
+            lane_type="category",
+            category=category,
+            records=fresh_category_records,
+            target=category_target,
+            fresh=True,
+        )
+        if category_item["ready"]:
+            category_ready += 1
+        else:
+            category_gaps.append(category_item)
+        if fresh_category_item["ready"]:
+            fresh_category_ready += 1
+        else:
+            fresh_category_gaps.append(fresh_category_item)
+
+        lens_items: Dict[str, Dict[str, Any]] = {}
+        for lens in lenses:
+            lens_records = _unique_actionable_records(records, category=category, lens=lens)
+            fresh_lens_records = _unique_actionable_records(
+                records,
+                category=category,
+                lens=lens,
+                fresh_only=True,
+            )
+            lens_item = _compliance_work_mode_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=lens_records,
+                target=category_lens_target,
+            )
+            fresh_lens_item = _compliance_work_mode_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=fresh_lens_records,
+                target=category_lens_target,
+                fresh=True,
+            )
+            lens_items[lens] = {
+                **lens_item,
+                "fresh_ready": fresh_lens_item["ready"],
+                "unique_fresh_actionable_strict": fresh_lens_item["unique_actionable_strict"],
+                "fresh_auto_work_ready_actionable_strict": fresh_lens_item[
+                    "auto_work_ready_actionable_strict"
+                ],
+                "fresh_manual_review_only_actionable_strict": fresh_lens_item[
+                    "manual_review_only_actionable_strict"
+                ],
+                "fresh_blocked_or_escalate_actionable_strict": fresh_lens_item[
+                    "blocked_or_escalate_actionable_strict"
+                ],
+                "fresh_reasons": fresh_lens_item["reasons"],
+            }
+            if lens_item["ready"]:
+                category_lens_ready += 1
+            else:
+                category_lens_gaps.append(lens_item)
+            if fresh_lens_item["ready"]:
+                fresh_category_lens_ready += 1
+            else:
+                fresh_category_lens_gaps.append(fresh_lens_item)
+
+        by_category[category] = {
+            **category_item,
+            "fresh_ready": fresh_category_item["ready"],
+            "unique_fresh_actionable_strict": fresh_category_item["unique_actionable_strict"],
+            "fresh_auto_work_ready_actionable_strict": fresh_category_item[
+                "auto_work_ready_actionable_strict"
+            ],
+            "fresh_manual_review_only_actionable_strict": fresh_category_item[
+                "manual_review_only_actionable_strict"
+            ],
+            "fresh_blocked_or_escalate_actionable_strict": fresh_category_item[
+                "blocked_or_escalate_actionable_strict"
+            ],
+            "fresh_reasons": fresh_category_item["reasons"],
+            "lenses": lens_items,
+            "ready_lens_count": sum(1 for item in lens_items.values() if item.get("ready")),
+            "fresh_ready_lens_count": sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+            "lens_count": len(lens_items),
+            "lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("ready")),
+                len(lens_items),
+            ),
+            "fresh_lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+                len(lens_items),
+            ),
+        }
+
+    def gap_key(item: Dict[str, Any]) -> tuple:
+        unique_count = int(item.get("unique_actionable_strict") or 0)
+        manual_count = int(item.get("manual_review_only_actionable_strict") or 0)
+        blocked_count = int(item.get("blocked_or_escalate_actionable_strict") or 0)
+        no_inventory = unique_count == 0
+        return (
+            0 if unique_count and (manual_count or blocked_count) else (2 if no_inventory else 1),
+            _category_priority_sort_key(item.get("category")),
+            _lens_priority_sort_key(item.get("lens")),
+            -int(item.get("gap") or 0),
+            -blocked_count,
+            -manual_count,
+            int(item.get("auto_work_ready_actionable_strict") or 0),
+        )
+
+    category_gaps.sort(key=gap_key)
+    category_lens_gaps.sort(key=gap_key)
+    priority_gaps = category_gaps + category_lens_gaps
+    priority_gaps.sort(key=gap_key)
+    fresh_category_gaps.sort(key=gap_key)
+    fresh_category_lens_gaps.sort(key=gap_key)
+    fresh_priority_gaps = fresh_category_gaps + fresh_category_lens_gaps
+    fresh_priority_gaps.sort(key=gap_key)
+    target_categories = len(focus_categories)
+    target_category_lenses = len(focus_categories) * len(lenses)
+    return {
+        "targets": {
+            "category_auto_work_ready_actionable_strict": category_target,
+            "category_lens_auto_work_ready_actionable_strict": category_lens_target,
+        },
+        "overall": {
+            "target_categories": target_categories,
+            "auto_work_ready_categories": category_ready,
+            "category_auto_work_ready_rate": LaneStats._rate(category_ready, target_categories),
+            "fresh_auto_work_ready_categories": fresh_category_ready,
+            "fresh_category_auto_work_ready_rate": LaneStats._rate(fresh_category_ready, target_categories),
+            "target_category_lenses": target_category_lenses,
+            "auto_work_ready_category_lenses": category_lens_ready,
+            "category_lens_auto_work_ready_rate": LaneStats._rate(
+                category_lens_ready,
+                target_category_lenses,
+            ),
+            "fresh_auto_work_ready_category_lenses": fresh_category_lens_ready,
+            "fresh_category_lens_auto_work_ready_rate": LaneStats._rate(
+                fresh_category_lens_ready,
+                target_category_lenses,
+            ),
+            "work_mode_counts": dict(overall_modes),
+            "fresh_work_mode_counts": dict(fresh_overall_modes),
+        },
+        "by_category": by_category,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": priority_gaps[:10],
+        "fresh_category_gaps": fresh_category_gaps,
+        "fresh_category_lens_gaps": fresh_category_lens_gaps,
+        "fresh_priority_gaps": fresh_priority_gaps[:10],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "fresh_category_gaps": len(fresh_category_gaps),
+            "fresh_category_lens_gaps": len(fresh_category_lens_gaps),
+        },
+    }
+
+
 EXECUTION_READINESS_COMPONENTS = (
     "engagement_hook",
     "treatment_signature",
@@ -7355,6 +7682,256 @@ def _source_seed_feedback(
     }
 
 
+def _variant_quality_feedback(
+    query_variant_summary: Dict[str, Dict[str, Any]],
+    variant_family_summary: Dict[str, Dict[str, Any]],
+    *,
+    category_lens_query_variant_summary: Optional[Dict[str, Dict[str, Any]]] = None,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    """Classify query variants into actionable discovery-quality feedback buckets."""
+    scale_variants: List[Dict[str, Any]] = []
+    repair_variants: List[Dict[str, Any]] = []
+    retire_variants: List[Dict[str, Any]] = []
+    scale_category_lens_variants: List[Dict[str, Any]] = []
+    repair_category_lens_variants: List[Dict[str, Any]] = []
+    retire_category_lens_variants: List[Dict[str, Any]] = []
+    scale_families: List[Dict[str, Any]] = []
+    repair_families: List[Dict[str, Any]] = []
+    retire_families: List[Dict[str, Any]] = []
+
+    protected_variants = {"", "base", "(none)", "community_base"}
+    protected_families = {"base", "community_base"}
+
+    def base_entry(kind: str, name: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        total = int(metrics.get("total") or 0)
+        lost = int(metrics.get("lost") or 0)
+        entry = {
+            "type": kind,
+            "total": total,
+            "survived": int(metrics.get("survived") or 0),
+            "actionable": int(metrics.get("actionable") or 0),
+            "strict_fit": int(metrics.get("strict_fit") or 0),
+            "actionable_strict": int(metrics.get("actionable_strict") or 0),
+            "fresh_actionable_strict": int(metrics.get("fresh_actionable_strict") or 0),
+            "survival_rate": float(metrics.get("survival_rate") or 0.0),
+            "strict_fit_rate": float(metrics.get("strict_fit_rate") or 0.0),
+            "actionable_strict_rate": float(metrics.get("actionable_strict_rate") or 0.0),
+            "fresh_actionable_strict_rate": float(metrics.get("fresh_actionable_strict_rate") or 0.0),
+            "loss_rate": float(metrics.get("loss_rate") or LaneStats._rate(lost, total)),
+            "dominant_loss_reason": str(metrics.get("dominant_loss_reason") or ""),
+            "status_counts": metrics.get("status_counts", {}),
+            "loss_reason_counts": metrics.get("loss_reason_counts", {}),
+            "lens_counts": metrics.get("lens_counts", {}),
+            "grade_counts": metrics.get("grade_counts", {}),
+        }
+        if kind == "query_variant":
+            entry["variant"] = name
+            entry["variant_family"] = _variant_family(name)
+        elif kind == "category_lens_query_variant":
+            category, _, rest = name.partition("::")
+            lens, _, variant = rest.partition("::")
+            entry["category"] = category
+            entry["lens"] = lens or "service"
+            entry["category_lens"] = f"{category}::{lens or 'service'}"
+            entry["variant"] = variant
+            entry["variant_family"] = _variant_family(variant)
+        else:
+            entry["family"] = name
+        return entry
+
+    def with_action(entry: Dict[str, Any], action: str, why: str) -> Dict[str, Any]:
+        return {
+            **entry,
+            "action": action,
+            "why": why,
+        }
+
+    for variant, metrics in query_variant_summary.items():
+        entry = base_entry("query_variant", variant, metrics)
+        total = int(entry["total"])
+        survived = int(entry["survived"])
+        strict_fit = int(entry["strict_fit"])
+        actionable_strict = int(entry["actionable_strict"])
+        survival_rate = float(entry["survival_rate"])
+        strict_fit_rate = float(entry["strict_fit_rate"])
+        protected = variant in protected_variants
+
+        if total >= 3 and (strict_fit > 0 or actionable_strict > 0):
+            scale_variants.append(with_action(
+                entry,
+                "scale_or_keep",
+                "query variant produced strict-fit or actionable-strict targets",
+            ))
+        if total >= 8 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
+            repair_variants.append(with_action(
+                entry,
+                "repair_query_shape",
+                "query variant generated volume but weak survival/strict-fit yield",
+            ))
+        if not protected and total >= 20 and survived == 0 and strict_fit == 0:
+            retire_variants.append(with_action(
+                entry,
+                "retire_or_pause",
+                "query variant has enough evidence with zero survived/strict-fit targets",
+            ))
+
+    for lane_variant, metrics in (category_lens_query_variant_summary or {}).items():
+        entry = base_entry("category_lens_query_variant", lane_variant, metrics)
+        total = int(entry["total"])
+        survived = int(entry["survived"])
+        strict_fit = int(entry["strict_fit"])
+        actionable_strict = int(entry["actionable_strict"])
+        survival_rate = float(entry["survival_rate"])
+        strict_fit_rate = float(entry["strict_fit_rate"])
+        variant = str(entry.get("variant") or "")
+        protected = variant in protected_variants
+
+        if total >= 3 and (strict_fit > 0 or actionable_strict > 0):
+            scale_category_lens_variants.append(with_action(
+                entry,
+                "scale_or_keep",
+                "category/lens query variant produced strict-fit or actionable-strict targets",
+            ))
+        if total >= 8 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
+            repair_category_lens_variants.append(with_action(
+                entry,
+                "repair_query_shape",
+                "category/lens query variant generated volume but weak survival/strict-fit yield",
+            ))
+        if not protected and total >= 20 and survived == 0 and strict_fit == 0:
+            retire_category_lens_variants.append(with_action(
+                entry,
+                "retire_or_pause",
+                "category/lens query variant has enough evidence with zero survived/strict-fit targets",
+            ))
+
+    for family, metrics in variant_family_summary.items():
+        entry = base_entry("variant_family", family, metrics)
+        total = int(entry["total"])
+        survived = int(entry["survived"])
+        strict_fit = int(entry["strict_fit"])
+        actionable_strict = int(entry["actionable_strict"])
+        survival_rate = float(entry["survival_rate"])
+        strict_fit_rate = float(entry["strict_fit_rate"])
+        protected = family in protected_families
+
+        if total >= 5 and (strict_fit > 0 or actionable_strict > 0):
+            scale_families.append(with_action(
+                entry,
+                "scale_or_keep",
+                "variant family produced strict-fit or actionable-strict targets",
+            ))
+        if total >= 15 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
+            repair_families.append(with_action(
+                entry,
+                "repair_family_query_shape",
+                "variant family generated volume but weak survival/strict-fit yield",
+            ))
+        if not protected and total >= 60 and survived == 0 and strict_fit == 0:
+            retire_families.append(with_action(
+                entry,
+                "retire_family_or_pause",
+                "variant family has enough evidence with zero survived/strict-fit targets",
+            ))
+
+    scale_variants.sort(
+        key=lambda item: (
+            -int(item.get("strict_fit") or 0),
+            -int(item.get("actionable_strict") or 0),
+            -float(item.get("strict_fit_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("variant") or ""),
+        )
+    )
+    repair_variants.sort(
+        key=lambda item: (
+            float(item.get("strict_fit_rate") or 0.0),
+            float(item.get("survival_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("variant") or ""),
+        )
+    )
+    retire_variants.sort(
+        key=lambda item: (
+            -int(item.get("total") or 0),
+            str(item.get("variant") or ""),
+        )
+    )
+    scale_category_lens_variants.sort(
+        key=lambda item: (
+            -int(item.get("strict_fit") or 0),
+            -int(item.get("actionable_strict") or 0),
+            -float(item.get("strict_fit_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("category_lens") or ""),
+            str(item.get("variant") or ""),
+        )
+    )
+    repair_category_lens_variants.sort(
+        key=lambda item: (
+            float(item.get("strict_fit_rate") or 0.0),
+            float(item.get("survival_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("category_lens") or ""),
+            str(item.get("variant") or ""),
+        )
+    )
+    retire_category_lens_variants.sort(
+        key=lambda item: (
+            -int(item.get("total") or 0),
+            str(item.get("category_lens") or ""),
+            str(item.get("variant") or ""),
+        )
+    )
+    scale_families.sort(
+        key=lambda item: (
+            -int(item.get("strict_fit") or 0),
+            -int(item.get("actionable_strict") or 0),
+            -float(item.get("strict_fit_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("family") or ""),
+        )
+    )
+    repair_families.sort(
+        key=lambda item: (
+            float(item.get("strict_fit_rate") or 0.0),
+            float(item.get("survival_rate") or 0.0),
+            -int(item.get("total") or 0),
+            str(item.get("family") or ""),
+        )
+    )
+    retire_families.sort(
+        key=lambda item: (
+            -int(item.get("total") or 0),
+            str(item.get("family") or ""),
+        )
+    )
+
+    return {
+        "scale_variants": scale_variants[:limit],
+        "repair_variants": repair_variants[:limit],
+        "retire_variants": retire_variants[:limit],
+        "scale_category_lens_variants": scale_category_lens_variants[:limit],
+        "repair_category_lens_variants": repair_category_lens_variants[:limit],
+        "retire_category_lens_variants": retire_category_lens_variants[:limit],
+        "scale_families": scale_families[:limit],
+        "repair_families": repair_families[:limit],
+        "retire_families": retire_families[:limit],
+        "counts": {
+            "scale_variants": len(scale_variants),
+            "repair_variants": len(repair_variants),
+            "retire_variants": len(retire_variants),
+            "scale_category_lens_variants": len(scale_category_lens_variants),
+            "repair_category_lens_variants": len(repair_category_lens_variants),
+            "retire_category_lens_variants": len(retire_category_lens_variants),
+            "scale_families": len(scale_families),
+            "repair_families": len(repair_families),
+            "retire_families": len(retire_families),
+        },
+    }
+
+
 def _metrics_rate(metrics: Dict[str, Any], key: str) -> float:
     try:
         return float((metrics or {}).get(key) or 0.0)
@@ -7396,6 +7973,7 @@ def _handoff_quality_bar(
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
+    compliance_work_mode_quality: Optional[Dict[str, Any]] = None,
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
@@ -7655,6 +8233,28 @@ def _handoff_quality_bar(
     reply_workability_target_categories = int(reply_workability_overall.get("target_categories") or 0)
     reply_workability_target_category_lenses = int(
         reply_workability_overall.get("target_category_lenses") or 0
+    )
+    compliance_work_mode_quality = compliance_work_mode_quality or {}
+    compliance_work_mode_overall = compliance_work_mode_quality.get("overall") or {}
+    compliance_category_ready_rate = _metrics_rate(
+        compliance_work_mode_overall,
+        "category_auto_work_ready_rate",
+    )
+    compliance_category_lens_ready_rate = _metrics_rate(
+        compliance_work_mode_overall,
+        "category_lens_auto_work_ready_rate",
+    )
+    fresh_compliance_category_ready_rate = _metrics_rate(
+        compliance_work_mode_overall,
+        "fresh_category_auto_work_ready_rate",
+    )
+    fresh_compliance_category_lens_ready_rate = _metrics_rate(
+        compliance_work_mode_overall,
+        "fresh_category_lens_auto_work_ready_rate",
+    )
+    compliance_target_categories = int(compliance_work_mode_overall.get("target_categories") or 0)
+    compliance_target_category_lenses = int(
+        compliance_work_mode_overall.get("target_category_lenses") or 0
     )
     execution_readiness_quality = execution_readiness_quality or {}
     execution_readiness_overall = execution_readiness_quality.get("overall") or {}
@@ -8135,6 +8735,34 @@ def _handoff_quality_bar(
             required=False,
         ),
         _gate(
+            "compliance_work_mode_category_coverage",
+            compliance_target_categories == 0 or compliance_category_ready_rate >= 0.70,
+            actual=round(compliance_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "compliance_work_mode_lens_coverage",
+            compliance_target_category_lenses == 0 or compliance_category_lens_ready_rate >= 0.35,
+            actual=round(compliance_category_lens_ready_rate, 4),
+            target=0.35,
+            required=False,
+        ),
+        _gate(
+            "fresh_compliance_work_mode_category_coverage",
+            compliance_target_categories == 0 or fresh_compliance_category_ready_rate >= 0.70,
+            actual=round(fresh_compliance_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "fresh_compliance_work_mode_lens_coverage",
+            compliance_target_category_lenses == 0 or fresh_compliance_category_lens_ready_rate >= 0.30,
+            actual=round(fresh_compliance_category_lens_ready_rate, 4),
+            target=0.30,
+            required=False,
+        ),
+        _gate(
             "execution_readiness_category_coverage",
             execution_readiness_target_categories == 0 or execution_readiness_category_ready_rate >= 0.70,
             actual=round(execution_readiness_category_ready_rate, 4),
@@ -8559,6 +9187,33 @@ def _handoff_quality_bar(
             "priority_gaps": reply_workability_quality.get("priority_gaps") or [],
             "fresh_priority_gaps": reply_workability_quality.get("fresh_priority_gaps") or [],
         },
+        "compliance_work_mode": {
+            "target_categories": compliance_target_categories,
+            "auto_work_ready_categories": int(
+                compliance_work_mode_overall.get("auto_work_ready_categories") or 0
+            ),
+            "category_auto_work_ready_rate": round(compliance_category_ready_rate, 4),
+            "fresh_auto_work_ready_categories": int(
+                compliance_work_mode_overall.get("fresh_auto_work_ready_categories") or 0
+            ),
+            "fresh_category_auto_work_ready_rate": round(fresh_compliance_category_ready_rate, 4),
+            "target_category_lenses": compliance_target_category_lenses,
+            "auto_work_ready_category_lenses": int(
+                compliance_work_mode_overall.get("auto_work_ready_category_lenses") or 0
+            ),
+            "category_lens_auto_work_ready_rate": round(compliance_category_lens_ready_rate, 4),
+            "fresh_auto_work_ready_category_lenses": int(
+                compliance_work_mode_overall.get("fresh_auto_work_ready_category_lenses") or 0
+            ),
+            "fresh_category_lens_auto_work_ready_rate": round(
+                fresh_compliance_category_lens_ready_rate,
+                4,
+            ),
+            "work_mode_counts": compliance_work_mode_overall.get("work_mode_counts") or {},
+            "fresh_work_mode_counts": compliance_work_mode_overall.get("fresh_work_mode_counts") or {},
+            "priority_gaps": compliance_work_mode_quality.get("priority_gaps") or [],
+            "fresh_priority_gaps": compliance_work_mode_quality.get("fresh_priority_gaps") or [],
+        },
         "execution_readiness": {
             "target_categories": execution_readiness_target_categories,
             "execution_ready_categories": int(
@@ -8636,6 +9291,7 @@ def _next_run_playbook(
     recommendations: List[Dict[str, Any]],
     sample_per_lane: int,
     source_seed_feedback: Optional[Dict[str, Any]] = None,
+    variant_quality_feedback: Optional[Dict[str, Any]] = None,
     loss_analysis: Optional[Dict[str, Any]] = None,
     patient_journey_coverage: Optional[Dict[str, Any]] = None,
     work_queue_readiness: Optional[Dict[str, Any]] = None,
@@ -8648,11 +9304,13 @@ def _next_run_playbook(
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
+    compliance_work_mode_quality: Optional[Dict[str, Any]] = None,
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     source_seed_feedback = source_seed_feedback or {}
+    variant_quality_feedback = variant_quality_feedback or {}
     loss_analysis = loss_analysis or {}
     patient_journey_coverage = patient_journey_coverage or {}
     work_queue_readiness = work_queue_readiness or {}
@@ -8665,6 +9323,7 @@ def _next_run_playbook(
     patient_surface_quality = patient_surface_quality or {}
     viral_action_route_quality = viral_action_route_quality or {}
     reply_workability_quality = reply_workability_quality or {}
+    compliance_work_mode_quality = compliance_work_mode_quality or {}
     execution_readiness_quality = execution_readiness_quality or {}
     execution_priority_alignment_quality = execution_priority_alignment_quality or {}
     platform_surface_quality = platform_surface_quality or {}
@@ -8767,6 +9426,31 @@ def _next_run_playbook(
         source_seed_actions["recategorize_or_quarantine"]
         or source_seed_actions["repair_query_shape"]
         or source_seed_actions["retire_or_pause"]
+    )
+    variant_actions = {
+        "repair_query_shape": (variant_quality_feedback.get("repair_variants") or [])[:10],
+        "retire_or_pause": (variant_quality_feedback.get("retire_variants") or [])[:10],
+        "scale_or_keep": (variant_quality_feedback.get("scale_variants") or [])[:10],
+        "repair_category_lens_query_shape": (
+            variant_quality_feedback.get("repair_category_lens_variants") or []
+        )[:10],
+        "retire_category_lens_or_pause": (
+            variant_quality_feedback.get("retire_category_lens_variants") or []
+        )[:10],
+        "scale_category_lens_or_keep": (
+            variant_quality_feedback.get("scale_category_lens_variants") or []
+        )[:10],
+        "repair_family_query_shape": (variant_quality_feedback.get("repair_families") or [])[:10],
+        "retire_family_or_pause": (variant_quality_feedback.get("retire_families") or [])[:10],
+        "scale_family_or_keep": (variant_quality_feedback.get("scale_families") or [])[:10],
+    }
+    variant_quality_feedback_required = bool(
+        variant_actions["repair_query_shape"]
+        or variant_actions["retire_or_pause"]
+        or variant_actions["repair_category_lens_query_shape"]
+        or variant_actions["retire_category_lens_or_pause"]
+        or variant_actions["repair_family_query_shape"]
+        or variant_actions["retire_family_or_pause"]
     )
     loss_hotspots = (loss_analysis.get("priority_focus_hotspots") or loss_analysis.get("hotspots") or [])[:10]
     filter_loss_required = bool(loss_hotspots)
@@ -8930,6 +9614,20 @@ def _next_run_playbook(
         or []
     )[:10]
     fresh_reply_workability_required = bool(fresh_reply_workability_gaps)
+    compliance_work_mode_gaps = (
+        compliance_work_mode_quality.get("priority_gaps")
+        or compliance_work_mode_quality.get("category_lens_gaps")
+        or compliance_work_mode_quality.get("category_gaps")
+        or []
+    )[:10]
+    compliance_work_mode_required = bool(compliance_work_mode_gaps)
+    fresh_compliance_work_mode_gaps = (
+        compliance_work_mode_quality.get("fresh_priority_gaps")
+        or compliance_work_mode_quality.get("fresh_category_lens_gaps")
+        or compliance_work_mode_quality.get("fresh_category_gaps")
+        or []
+    )[:10]
+    fresh_compliance_work_mode_required = bool(fresh_compliance_work_mode_gaps)
     execution_readiness_gaps = (
         execution_readiness_quality.get("priority_gaps")
         or execution_readiness_quality.get("category_lens_gaps")
@@ -8971,6 +9669,95 @@ def _next_run_playbook(
 
     boost_category_args: List[str] = []
     boost_lens_args: List[str] = []
+    boost_category_lens_args: List[str] = []
+
+    def add_gap_boost_item(item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        lane = str(item.get("category_lens") or item.get("lane") or "").strip()
+        category = str(item.get("category") or "").strip()
+        lens = str(item.get("lens") or "").strip().lower()
+        if (not category or not lens) and "::" in lane:
+            lane_category, _, lane_lens = lane.partition("::")
+            category = category or lane_category.strip()
+            lens = lens or lane_lens.strip().lower()
+        elif not category and not lens and ":" in lane:
+            lane_category, _, lane_lens = lane.rpartition(":")
+            category = lane_category.strip()
+            lens = lane_lens.strip().lower()
+        elif lane and "::" not in lane and ":" not in lane and not category:
+            category = lane
+
+        if category and lens:
+            category_lens = f"{category}::{lens}"
+            if category_lens not in boost_category_lens_args:
+                boost_category_lens_args.append(category_lens)
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+
+    def add_gap_boost_items(items: Iterable[Any]) -> None:
+        for item in list(items or [])[:5]:
+            add_gap_boost_item(item)
+
+    def add_quality_gap_boost_items(section: Dict[str, Any]) -> None:
+        for key, value in (section or {}).items():
+            if not isinstance(value, list):
+                continue
+            if key == "gaps" or key.endswith("_gaps"):
+                add_gap_boost_items(value)
+
+    for gap_items in (
+        fresh_treatment_signature_gaps,
+        treatment_signature_gaps,
+        fresh_treatment_signal_diversity_gaps,
+        treatment_signal_diversity_gaps,
+        fresh_seed_candidate_alignment_gaps,
+        seed_candidate_alignment_gaps,
+        fresh_engagement_hook_gaps,
+        engagement_hook_gaps,
+        fresh_opportunity_diversity_gaps,
+        opportunity_diversity_gaps,
+        fresh_unique_work_queue_gaps,
+        unique_work_queue_gaps,
+        fresh_work_queue_gaps,
+        work_queue_gaps,
+        patient_journey_gaps,
+        fresh_local_intent_gaps,
+        local_intent_gaps,
+        fresh_patient_surface_gaps,
+        patient_surface_gaps,
+        fresh_viral_action_route_gaps,
+        viral_action_route_gaps,
+        fresh_reply_workability_gaps,
+        reply_workability_gaps,
+        fresh_compliance_work_mode_gaps,
+        compliance_work_mode_gaps,
+        fresh_execution_readiness_gaps,
+        execution_readiness_gaps,
+        fresh_execution_priority_alignment_gaps,
+        execution_priority_alignment_gaps,
+    ):
+        add_gap_boost_items(gap_items)
+    for quality_section in (
+        patient_journey_coverage,
+        work_queue_readiness,
+        opportunity_diversity,
+        engagement_hook_quality,
+        treatment_signature_quality,
+        treatment_signal_diversity_quality,
+        seed_candidate_alignment_quality,
+        local_intent_quality,
+        patient_surface_quality,
+        viral_action_route_quality,
+        reply_workability_quality,
+        compliance_work_mode_quality,
+        execution_readiness_quality,
+        execution_priority_alignment_quality,
+    ):
+        add_quality_gap_boost_items(quality_section)
+
     for item in fresh_treatment_signature_gaps[:5]:
         category = item.get("category")
         lens = item.get("lens")
@@ -9132,6 +9919,20 @@ def _next_run_playbook(
             boost_category_args.append(category)
         if lens and lens not in boost_lens_args:
             boost_lens_args.append(lens)
+    for item in fresh_compliance_work_mode_gaps[:5]:
+        category = item.get("category")
+        lens = item.get("lens")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+    for item in compliance_work_mode_gaps[:5]:
+        category = item.get("category")
+        lens = item.get("lens")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
     for item in fresh_execution_readiness_gaps[:5]:
         category = item.get("category")
         lens = item.get("lens")
@@ -9169,7 +9970,10 @@ def _next_run_playbook(
         if lens and lens not in boost_lens_args:
             boost_lens_args.append(lens)
     for item in boost_category_lenses[:5]:
-        category, _, lens = str(item.get("category_lens") or "").partition("::")
+        category_lens = str(item.get("category_lens") or "")
+        category, _, lens = category_lens.partition("::")
+        if category and lens and category_lens not in boost_category_lens_args:
+            boost_category_lens_args.append(category_lens)
         if category and category not in boost_category_args:
             boost_category_args.append(category)
         if lens and lens not in boost_lens_args:
@@ -9177,6 +9981,7 @@ def _next_run_playbook(
 
     boost_args = [f"--boost-category {quote_cli(category)}" for category in boost_category_args[:5]]
     boost_args.extend(f"--boost-lens {quote_cli(lens)}" for lens in boost_lens_args[:5])
+    boost_args.extend(f"--boost-category-lens {quote_cli(lane)}" for lane in boost_category_lens_args[:5])
 
     scan_command = "python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5"
     if source_scan_run_id:
@@ -9188,6 +9993,23 @@ def _next_run_playbook(
         audit_command += f" --scan-id {source_scan_run_id}"
     audit_command += " --days 1"
     audit_command += f" --sample-per-lane {max(1, int(sample_per_lane or 1))}"
+    audit_out = (
+        f"reports/viral_handoff_audit_scan{int(source_scan_run_id)}_days1.json"
+        if source_scan_run_id
+        else "reports/viral_handoff_audit_days1.json"
+    )
+    audit_command += f" --out {audit_out}"
+    audit_current_template = "python scripts/viral_handoff_audit.py"
+    if source_scan_run_id:
+        audit_current_template += f" --scan-id {source_scan_run_id}"
+    audit_current_template += ' --since "<RUN_STARTED_AT>"'
+    audit_current_template += f" --sample-per-lane {max(1, int(sample_per_lane or 1))}"
+    audit_current_out = (
+        f"reports/viral_handoff_audit_scan{int(source_scan_run_id)}_current_run.json"
+        if source_scan_run_id
+        else "reports/viral_handoff_audit_current_run.json"
+    )
+    audit_current_template += f" --out {audit_current_out}"
 
     return {
         "rerun_required": bool(
@@ -9197,6 +10019,7 @@ def _next_run_playbook(
             or content_coherence_required
             or lens_surface_required
             or source_seed_feedback_required
+            or variant_quality_feedback_required
             or filter_loss_required
             or patient_journey_required
             or work_queue_required
@@ -9221,6 +10044,8 @@ def _next_run_playbook(
             or fresh_viral_action_route_required
             or reply_workability_required
             or fresh_reply_workability_required
+            or compliance_work_mode_required
+            or fresh_compliance_work_mode_required
             or execution_readiness_required
             or fresh_execution_readiness_required
             or execution_priority_alignment_required
@@ -9234,6 +10059,7 @@ def _next_run_playbook(
         "lens_surface_required": lens_surface_required,
         "lens_surface_mismatch_lanes": lens_surface_mismatch_lanes,
         "source_seed_feedback_required": source_seed_feedback_required,
+        "variant_quality_feedback_required": variant_quality_feedback_required,
         "filter_loss_required": filter_loss_required,
         "filter_loss_hotspots": loss_hotspots,
         "patient_journey_required": patient_journey_required,
@@ -9282,6 +10108,10 @@ def _next_run_playbook(
         "reply_workability_gaps": reply_workability_gaps,
         "fresh_reply_workability_required": fresh_reply_workability_required,
         "fresh_reply_workability_gaps": fresh_reply_workability_gaps,
+        "compliance_work_mode_required": compliance_work_mode_required,
+        "compliance_work_mode_gaps": compliance_work_mode_gaps,
+        "fresh_compliance_work_mode_required": fresh_compliance_work_mode_required,
+        "fresh_compliance_work_mode_gaps": fresh_compliance_work_mode_gaps,
         "execution_readiness_required": execution_readiness_required,
         "execution_readiness_gaps": execution_readiness_gaps,
         "fresh_execution_readiness_required": fresh_execution_readiness_required,
@@ -9296,15 +10126,13 @@ def _next_run_playbook(
         "boost_lenses": boost_lenses[:10],
         "boost_category_lenses": boost_category_lenses[:10],
         "source_seed_actions": source_seed_actions,
+        "variant_actions": variant_actions,
         "review_before_scaling": review_before_scaling,
         "top_recommendation_codes": [item.get("code") for item in recommendations[:5]],
         "suggested_commands": {
             "live_scan": scan_command,
             "post_run_audit": audit_command,
-            "post_run_audit_current_run_template": audit_command.replace(
-                " --days 1",
-                ' --since "<RUN_STARTED_AT>"',
-            ),
+            "post_run_audit_current_run_template": audit_current_template,
         },
     }
 
@@ -9318,6 +10146,7 @@ def _recommendations(
     seed_target_coverage: Dict[str, Any],
     quality_bar: Optional[Dict[str, Any]] = None,
     source_seed_feedback: Optional[Dict[str, Any]] = None,
+    variant_quality_feedback: Optional[Dict[str, Any]] = None,
     loss_analysis: Optional[Dict[str, Any]] = None,
     patient_journey_coverage: Optional[Dict[str, Any]] = None,
     work_queue_readiness: Optional[Dict[str, Any]] = None,
@@ -9330,6 +10159,7 @@ def _recommendations(
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
+    compliance_work_mode_quality: Optional[Dict[str, Any]] = None,
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
@@ -9349,6 +10179,7 @@ def _recommendations(
     seed_count = int(baseline.get("seed_count") or 0)
     quality_bar = quality_bar or {}
     source_seed_feedback = source_seed_feedback or {}
+    variant_quality_feedback = variant_quality_feedback or {}
     loss_analysis = loss_analysis or {}
     patient_journey_coverage = patient_journey_coverage or {}
     work_queue_readiness = work_queue_readiness or {}
@@ -9361,6 +10192,7 @@ def _recommendations(
     patient_surface_quality = patient_surface_quality or {}
     viral_action_route_quality = viral_action_route_quality or {}
     reply_workability_quality = reply_workability_quality or {}
+    compliance_work_mode_quality = compliance_work_mode_quality or {}
     execution_readiness_quality = execution_readiness_quality or {}
     execution_priority_alignment_quality = execution_priority_alignment_quality or {}
     platform_surface_quality = platform_surface_quality or {}
@@ -9385,6 +10217,30 @@ def _recommendations(
             [
                 f"source_seed:{item.get('category')}->{item.get('detected_category')}:{item.get('seed')}"
                 for item in recategorize_candidates[:6]
+            ],
+        )
+
+    variant_repair_or_retire = (
+        list(variant_quality_feedback.get("retire_variants") or [])
+        + list(variant_quality_feedback.get("repair_variants") or [])
+        + list(variant_quality_feedback.get("retire_category_lens_variants") or [])
+        + list(variant_quality_feedback.get("repair_category_lens_variants") or [])
+        + list(variant_quality_feedback.get("retire_families") or [])
+        + list(variant_quality_feedback.get("repair_families") or [])
+    )
+    if variant_repair_or_retire:
+        add(
+            89,
+            "query_variant_quality_feedback",
+            "Some Pathfinder query variants or variant families generate volume but do not convert into strict-fit Viral Hunter targets.",
+            "repair or pause weak query variants before scaling; keep high-yield variants as the next-run expansion template",
+            [
+                (
+                    f"{item.get('type')}:{item.get('category_lens') or '-'}:"
+                    f"{item.get('variant') or item.get('family')}:"
+                    f"{item.get('action')}:{item.get('strict_fit')}/{item.get('total')}"
+                )
+                for item in variant_repair_or_retire[:8]
             ],
         )
 
@@ -9673,6 +10529,46 @@ def _recommendations(
                 f"{item.get('lane')}:{item.get('fresh_reply_workable_actionable_strict')}/{item.get('target')}:"
                 f"{','.join(item.get('reasons') or [])}"
                 for item in fresh_reply_workability_gaps[:8]
+            ],
+        )
+
+    compliance_work_mode_gaps = [
+        item for item in (compliance_work_mode_quality.get("priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("auto_work_ready_actionable_strict") or 0) < int(item.get("target") or 0)
+    ]
+    if compliance_work_mode_gaps:
+        add(
+            96,
+            "compliance_work_mode_gaps",
+            "Some strict-fit Gyulim queues overstate usable inventory because targets require manual review or compliance escalation.",
+            "rediscover or reprioritize posts that are auto-work-ready: clear patient need, no medical guardrail flags, and strong reply opportunity",
+            [
+                f"{item.get('lane')}:{item.get('auto_work_ready_actionable_strict')}/{item.get('target')}:"
+                f"manual={item.get('manual_review_only_actionable_strict')}:"
+                f"blocked={item.get('blocked_or_escalate_actionable_strict')}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in compliance_work_mode_gaps[:8]
+            ],
+        )
+
+    fresh_compliance_work_mode_gaps = [
+        item for item in (compliance_work_mode_quality.get("fresh_priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("fresh_auto_work_ready_actionable_strict") or 0) < int(item.get("target") or 0)
+    ]
+    if fresh_compliance_work_mode_gaps:
+        add(
+            96,
+            "fresh_compliance_work_mode_gaps",
+            "Some fresh strict-fit Gyulim queues lack enough posts that are ready for direct, compliant viral work.",
+            "refresh these lanes with recent patient-authored posts that avoid testimonial, urgent-medical, or prescription-advice risk flags",
+            [
+                f"{item.get('lane')}:{item.get('fresh_auto_work_ready_actionable_strict')}/{item.get('target')}:"
+                f"manual={item.get('manual_review_only_actionable_strict')}:"
+                f"blocked={item.get('blocked_or_escalate_actionable_strict')}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in fresh_compliance_work_mode_gaps[:8]
             ],
         )
 
@@ -10098,6 +10994,7 @@ def summarize_viral_handoff_quality(
     by_platform_category: Dict[str, LaneStats] = defaultdict(LaneStats)
     by_query_variant: Dict[str, LaneStats] = defaultdict(LaneStats)
     by_variant_family: Dict[str, LaneStats] = defaultdict(LaneStats)
+    by_category_lens_query_variant: Dict[str, LaneStats] = defaultdict(LaneStats)
     by_source_seed: Dict[str, LaneStats] = defaultdict(LaneStats)
     source_seed_categories: Dict[str, str] = {}
     source_seed_category_counts: Dict[str, Counter] = defaultdict(Counter)
@@ -10123,7 +11020,7 @@ def summarize_viral_handoff_quality(
         content_detected_category = _detected_content_category(row)
         content_category_mismatch = _category_drift_detected(category, content_detected_category)
         grade = _grade(row["matched_keyword_grade"])
-        status = _status(row["comment_status"])
+        status = _effective_current_status(row["comment_status"], score_breakdown)
         platform = _platform(row)
         lens = _lens(score_breakdown)
         query_variant = _variant(score_breakdown)
@@ -10200,6 +11097,7 @@ def summarize_viral_handoff_quality(
         by_platform_category[f"{platform}::{category}"].add(**add_kwargs)
         by_query_variant[query_variant].add(**add_kwargs)
         by_variant_family[variant_family].add(**add_kwargs)
+        by_category_lens_query_variant[f"{category}::{lens}::{query_variant}"].add(**add_kwargs)
         for seed in source_seeds:
             by_source_seed[seed].add(**add_kwargs)
         source_seed_primary_counts[source_seed] += 1
@@ -10297,6 +11195,10 @@ def summarize_viral_handoff_quality(
         key: stats.to_dict()
         for key, stats in sorted(by_variant_family.items())
     }
+    category_lens_query_variant_summary = {
+        key: stats.to_dict()
+        for key, stats in sorted(by_category_lens_query_variant.items())
+    }
     source_seed_summary = {}
     for seed, stats in sorted(by_source_seed.items()):
         metrics = stats.to_dict()
@@ -10335,6 +11237,12 @@ def summarize_viral_handoff_quality(
         source_seed_summary,
         limit=10,
     )
+    variant_quality_feedback = _variant_quality_feedback(
+        query_variant_summary,
+        variant_family_summary,
+        category_lens_query_variant_summary=category_lens_query_variant_summary,
+        limit=10,
+    )
 
     weak_lanes = []
     for lane_type, summary in (
@@ -10344,6 +11252,7 @@ def summarize_viral_handoff_quality(
         ("category_lens", category_lens_summary),
         ("query_variant", query_variant_summary),
         ("variant_family", variant_family_summary),
+        ("category_lens_query_variant", category_lens_query_variant_summary),
     ):
         for lane, metrics in summary.items():
             reasons = _weak_lane_reasons(metrics, min_lane_total=min_lane_total)
@@ -10404,6 +11313,7 @@ def summarize_viral_handoff_quality(
     patient_surface_quality = _patient_surface_quality(records)
     viral_action_route_quality = _viral_action_route_quality(records)
     reply_workability_quality = _reply_workability_quality(records)
+    compliance_work_mode_quality = _compliance_work_mode_quality(records)
     execution_readiness_quality = _execution_readiness_quality(records)
     execution_priority_alignment_quality = _execution_priority_alignment_quality(records)
     platform_surface_quality = _platform_surface_quality(
@@ -10436,6 +11346,7 @@ def summarize_viral_handoff_quality(
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
+        compliance_work_mode_quality=compliance_work_mode_quality,
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
@@ -10448,6 +11359,7 @@ def summarize_viral_handoff_quality(
         seed_target_coverage=seed_target_coverage,
         quality_bar=quality_bar,
         source_seed_feedback=source_seed_feedback,
+        variant_quality_feedback=variant_quality_feedback,
         loss_analysis=loss_analysis,
         patient_journey_coverage=patient_journey_coverage,
         work_queue_readiness=work_queue_readiness,
@@ -10460,6 +11372,7 @@ def summarize_viral_handoff_quality(
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
+        compliance_work_mode_quality=compliance_work_mode_quality,
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
@@ -10473,6 +11386,7 @@ def summarize_viral_handoff_quality(
         recommendations=recommendations,
         sample_per_lane=sample_per_lane,
         source_seed_feedback=source_seed_feedback,
+        variant_quality_feedback=variant_quality_feedback,
         loss_analysis=loss_analysis,
         patient_journey_coverage=patient_journey_coverage,
         work_queue_readiness=work_queue_readiness,
@@ -10485,6 +11399,7 @@ def summarize_viral_handoff_quality(
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
+        compliance_work_mode_quality=compliance_work_mode_quality,
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
@@ -10492,6 +11407,7 @@ def summarize_viral_handoff_quality(
 
     return {
         "db_path": path,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_scan_run_id": source_scan_run_id,
         "row_count": len(rows),
         "thresholds": {
@@ -10518,6 +11434,7 @@ def summarize_viral_handoff_quality(
         "by_platform_category": platform_category_summary,
         "by_query_variant": query_variant_summary,
         "by_variant_family": variant_family_summary,
+        "by_category_lens_query_variant": category_lens_query_variant_summary,
         "by_source_seed": source_seed_summary,
         "loss_analysis": loss_analysis,
         "patient_journey_coverage": patient_journey_coverage,
@@ -10531,11 +11448,13 @@ def summarize_viral_handoff_quality(
         "patient_surface_quality": patient_surface_quality,
         "viral_action_route_quality": viral_action_route_quality,
         "reply_workability_quality": reply_workability_quality,
+        "compliance_work_mode_quality": compliance_work_mode_quality,
         "execution_readiness_quality": execution_readiness_quality,
         "execution_priority_alignment_quality": execution_priority_alignment_quality,
         "platform_surface_quality": platform_surface_quality,
         "weak_source_seeds": weak_source_seeds,
         "source_seed_feedback": source_seed_feedback,
+        "variant_quality_feedback": variant_quality_feedback,
         "quality_bar": quality_bar,
         "seed_target_coverage": seed_target_coverage,
         "weak_lanes": weak_lanes,

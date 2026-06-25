@@ -479,6 +479,9 @@ class ViralSeed:
     historical_staff_reviewed_count: int = 0
     historical_staff_accept_rate: float = 0.0
     staff_outcome_adjustment: float = 0.0
+    source_seed_audit_action: str = ""
+    source_seed_audit_adjustment: float = 0.0
+    source_seed_audit_recategorized_category: str = ""
     longtail_score: float = 0.0
     business_value_score: float = 0.0
     high_value_longtail: bool = False
@@ -676,6 +679,15 @@ class ViralSeedBuilder:
             fb = self._feedback_for_keyword(feedback, keyword)
             if not fb and raw_keyword != keyword:
                 fb = self._feedback_for_keyword(feedback, raw_keyword)
+            audit_recategorized_category = self._source_seed_audit_recategorized_category(
+                keyword,
+                row_data["category"],
+                fb,
+            )
+            if audit_recategorized_category:
+                row_data["category"] = audit_recategorized_category
+                if self._is_non_hanbang_diet_seed(row_data):
+                    continue
             axis_lens_fb = self._feedback_for_axis_lens(feedback, row_data)
             axis_lens_feedback_adjustment = self._axis_lens_feedback_adjustment(axis_lens_fb)
             # 프록시 패널티가 robust한 직원 실수요와 충돌하면 감쇠 (revealed demand 우선).
@@ -699,6 +711,10 @@ class ViralSeedBuilder:
                 feedback.get(f"axis:{row_data['category']}") or {},
             )
             staff_outcome_adjustment = self._staff_outcome_adjustment(staff_fb)
+            source_seed_audit_adjustment = self._source_seed_audit_adjustment(
+                fb,
+                recategorized=bool(audit_recategorized_category),
+            )
             final_gate_count = fb.get("final_gate_count", 0)
             skip_rate = fb.get("skip_rate", 0.0)
             total_count = fb.get("total_count", 0)
@@ -729,6 +745,7 @@ class ViralSeedBuilder:
                 + axis_lens_feedback_adjustment
                 + structure_yield_adjustment
                 + staff_outcome_adjustment
+                + source_seed_audit_adjustment
                 - feedback_penalty
                 - history_penalty
                 - execution_risk_penalty
@@ -766,6 +783,10 @@ class ViralSeedBuilder:
                 0.0,
                 round(viral_seed_fit_score + staff_outcome_adjustment * 1.1, 2),
             )
+            viral_seed_fit_score = max(
+                0.0,
+                round(viral_seed_fit_score + source_seed_audit_adjustment * 1.2, 2),
+            )
             candidate_item = {
                 "adjusted_priority": adjusted_priority,
                 "novelty_score": novelty_score,
@@ -779,6 +800,9 @@ class ViralSeedBuilder:
                 "structure_yield_adjustment": structure_yield_adjustment,
                 "staff_feedback": staff_fb,
                 "staff_outcome_adjustment": staff_outcome_adjustment,
+                "source_seed_audit_action": str(fb.get("source_seed_audit_action") or ""),
+                "source_seed_audit_adjustment": source_seed_audit_adjustment,
+                "source_seed_audit_recategorized_category": audit_recategorized_category,
                 "feedback": fb,
                 "row": row_data,
             }
@@ -859,6 +883,11 @@ class ViralSeedBuilder:
                             (item.get("staff_feedback") or {}).get("staff_accept_rate", 0.0) or 0.0
                         ),
                         staff_outcome_adjustment=float(item.get("staff_outcome_adjustment") or 0.0),
+                        source_seed_audit_action=str(item.get("source_seed_audit_action") or ""),
+                        source_seed_audit_adjustment=float(item.get("source_seed_audit_adjustment") or 0.0),
+                        source_seed_audit_recategorized_category=str(
+                            item.get("source_seed_audit_recategorized_category") or ""
+                        ),
                         longtail_score=float(row["longtail_score"] or 0),
                         business_value_score=float(row["business_value_score"] or 0),
                         high_value_longtail=bool(row["high_value_longtail"] or 0),
@@ -1018,7 +1047,16 @@ class ViralSeedBuilder:
     @staticmethod
     def _profile_gap_seed_row(keyword: str, category: str) -> dict:
         compact = re.sub(r"\s+", "", (keyword or "").lower())
-        has_recommendation = any(term in compact for term in ("추천", "어디", "잘하는곳", "괜찮은곳", "후기"))
+        has_recommendation = any(
+            term in compact
+            for term in (
+                "추천", "어디", "잘하는곳", "괜찮은곳", "후기",
+                "해보신", "가보신", "아시는분", "계신가요",
+                "괜찮나요", "어떤가요", "어때요",
+                "받아보신", "먹어보신", "다녀보신",
+                "추천해주세요", "추천부탁",
+            )
+        )
         has_consult = any(term in compact for term in ("상담", "문의", "처방", "진단"))
         has_cost = any(term in compact for term in ("비용", "가격", "얼마"))
         has_access = any(term in compact for term in ("예약", "야간", "주말", "진료시간", "주차", "근처"))
@@ -1071,8 +1109,26 @@ class ViralSeedBuilder:
         keyword = str(row.get("keyword") or "")
         compact = re.sub(r"\s+", "", keyword)
         score = 40.0 + ViralSeedBuilder._axis_execution_query_bonus(row)
-        if any(term in compact for term in ("추천", "어디", "괜찮은곳", "잘하는곳")):
+        if any(
+            term in compact
+            for term in (
+                "추천", "어디", "괜찮은곳", "잘하는곳",
+                "해보신", "가보신", "아시는분", "계신가요",
+                "괜찮나요", "어떤가요", "어때요",
+                "받아보신", "먹어보신", "다녀보신",
+                "추천해주세요", "추천부탁",
+            )
+        ):
             score += 24.0
+        if any(
+            term in compact
+            for term in (
+                "해보신", "가보신", "받아보신", "먹어보신", "다녀보신",
+                "아시는분", "계신가요", "괜찮나요", "어떤가요", "어때요",
+                "후기궁금",
+            )
+        ):
+            score += 14.0
         if "한의원" in compact or "한방" in compact:
             score += 16.0
         if any(term in compact for term in ("상담", "비용", "후기")):
@@ -1080,7 +1136,14 @@ class ViralSeedBuilder:
         if GYULIM_KEYWORD_PROFILE.is_target_region(keyword, include_nearby=True):
             score += 8.0
         if any(term in compact for term in ("예약", "진료시간", "주차")) and not any(
-            term in compact for term in ("추천", "어디", "괜찮은곳", "잘하는곳")
+            term in compact
+            for term in (
+                "추천", "어디", "괜찮은곳", "잘하는곳",
+                "해보신", "가보신", "아시는분", "계신가요",
+                "괜찮나요", "어떤가요", "어때요",
+                "받아보신", "먹어보신", "다녀보신",
+                "추천해주세요", "추천부탁",
+            )
         ):
             score -= 10.0
         return score
@@ -1367,6 +1430,190 @@ class ViralSeedBuilder:
         if accept_rate < 0.30:
             return round(5.0 * evidence_weight, 2)
         return round(min(12.0, 6.0 + accept_rate * 12.0) * evidence_weight, 2)
+
+    @staticmethod
+    def _source_seed_audit_adjustment(feedback: dict, *, recategorized: bool = False) -> float:
+        """Translate handoff audit source-seed actions into next-run seed ranking.
+
+        `source_seed_feedback` is the audit's human-readable diagnosis layer. The
+        normal outcome buckets already learn raw yield, but they can miss audit-level
+        decisions such as "this seed should only be companion lineage" or "pause this
+        exact query shape". Keep this as a bounded ranking adjustment, not a hard
+        delete, so thin categories still retain a recoverable probe path.
+        """
+        action = str((feedback or {}).get("source_seed_audit_action") or "").strip()
+        if not action:
+            return 0.0
+        total = int((feedback or {}).get("source_seed_audit_credit_total") or 0)
+        strict_fit = int((feedback or {}).get("source_seed_audit_strict_fit") or 0)
+        actionable = int((feedback or {}).get("source_seed_audit_actionable") or 0)
+        survived = int((feedback or {}).get("source_seed_audit_survived") or 0)
+        drift_rate = ViralSeedBuilder._as_float((feedback or {}).get("source_seed_audit_category_drift_rate"))
+        evidence_weight = 1.0
+        if total < 50:
+            evidence_weight = 0.70 if total >= 10 else 0.50
+
+        if action == "scale_or_keep":
+            if strict_fit <= 0 and actionable <= 0 and survived <= 0:
+                return 0.0
+            return round(min(14.0, 6.0 + strict_fit * 1.4 + actionable * 0.4), 2)
+        if action == "merge_or_keep_as_companion":
+            return round(-18.0 * evidence_weight, 2)
+        if action == "repair_query_shape":
+            return round(-30.0 * evidence_weight, 2)
+        if action == "retire_or_pause":
+            return round(-58.0 * evidence_weight, 2)
+        if action == "recategorize_or_quarantine":
+            if recategorized:
+                return 0.0
+            recat_weight = 1.0 if drift_rate >= 0.8 else evidence_weight
+            return round(-64.0 * recat_weight, 2)
+        return 0.0
+
+    @staticmethod
+    def _source_seed_audit_recategorized_category(
+        keyword: str,
+        current_category: str,
+        feedback: dict,
+    ) -> str:
+        """Return an audit-suggested category when a drift seed can be repaired."""
+        action = str((feedback or {}).get("source_seed_audit_action") or "").strip()
+        if action != "recategorize_or_quarantine":
+            return ""
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            str((feedback or {}).get("source_seed_audit_detected_category") or "")
+        )
+        current = GYULIM_KEYWORD_PROFILE.normalize_category(current_category or "")
+        if not detected or detected in {"기타", "unknown"} or detected == current:
+            return ""
+        if not GYULIM_KEYWORD_PROFILE.profile_for(detected):
+            return ""
+
+        credit_total = int((feedback or {}).get("source_seed_audit_credit_total") or 0)
+        drift_rate = ViralSeedBuilder._as_float((feedback or {}).get("source_seed_audit_category_drift_rate"))
+        keyword_detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(keyword or "", default="")
+        )
+        high_confidence = (
+            drift_rate >= 0.8
+            or credit_total >= 3
+            or (keyword_detected and keyword_detected == detected)
+        )
+        return detected if high_confidence else ""
+
+    def _load_source_seed_audit_feedback(self, max_audits: int = 6) -> Dict[str, dict]:
+        """Load latest handoff-audit source-seed actions keyed by normalized seed."""
+        audit_payloads: List[dict] = []
+        reports_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(self.db_path))), "reports")
+        try:
+            if os.path.isdir(reports_dir):
+                report_files = [
+                    os.path.join(reports_dir, name)
+                    for name in os.listdir(reports_dir)
+                    if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                ]
+                report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                for path in report_files[: max(1, int(max_audits))]:
+                    try:
+                        with open(path, "r", encoding="utf-8") as fh:
+                            payload = json.load(fh)
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict):
+                        audit_payloads.append(payload)
+        except OSError:
+            pass
+
+        try:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                if not self._table_exists(conn, "viral_scan_audits"):
+                    rows = []
+                else:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (int(max_audits),),
+                    ).fetchall()
+        except sqlite3.Error:
+            rows = []
+
+        for row in rows:
+            try:
+                audit = json.loads(row["audit_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(audit, dict):
+                audit_payloads.append(audit)
+
+        action_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("recategorize_candidates", "recategorize_or_quarantine", 5),
+            ("retire_candidates", "retire_or_pause", 5),
+            ("repair_candidates", "repair_query_shape", 4),
+            ("assist_only_candidates", "merge_or_keep_as_companion", 3),
+            ("scale_candidates", "scale_or_keep", 1),
+        )
+        latest: Dict[str, dict] = {}
+        for audit in audit_payloads:
+            feedback = audit.get("source_seed_feedback") if isinstance(audit, dict) else None
+            if not isinstance(feedback, dict):
+                continue
+            audit_actions: Dict[str, dict] = {}
+            for list_key, default_action, severity in action_specs:
+                items = feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    seed = normalize_seed_keyword_text(str(item.get("seed") or "").strip())
+                    norm = self._keyword_feedback_key(seed)
+                    if not norm:
+                        continue
+                    action = str(item.get("action") or default_action)
+                    existing = audit_actions.get(norm)
+                    if existing and int(existing.get("_severity") or 0) > severity:
+                        continue
+                    audit_actions[norm] = {
+                        "_severity": severity,
+                        "source_seed_audit_action": action,
+                        "source_seed_audit_category": GYULIM_KEYWORD_PROFILE.normalize_category(
+                            str(item.get("category") or "")
+                        ),
+                        "source_seed_audit_detected_category": GYULIM_KEYWORD_PROFILE.normalize_category(
+                            str(item.get("detected_category") or "")
+                        ),
+                        "source_seed_audit_credit_total": int(item.get("credit_total") or 0),
+                        "source_seed_audit_primary_total": int(item.get("primary_total") or 0),
+                        "source_seed_audit_assist_total": int(item.get("assist_total") or 0),
+                        "source_seed_audit_actionable": int(item.get("actionable") or 0),
+                        "source_seed_audit_survived": int(item.get("survived") or 0),
+                        "source_seed_audit_strict_fit": int(item.get("strict_fit") or 0),
+                        "source_seed_audit_survival_rate": ViralSeedBuilder._as_float(item.get("survival_rate")),
+                        "source_seed_audit_strict_fit_rate": ViralSeedBuilder._as_float(item.get("strict_fit_rate")),
+                        "source_seed_audit_category_drift_rate": ViralSeedBuilder._as_float(
+                            item.get("category_drift_rate")
+                        ),
+                    }
+            for norm, payload in audit_actions.items():
+                if norm in latest:
+                    continue
+                payload.pop("_severity", None)
+                latest[f"norm:{norm}"] = payload
+        return latest
+
+    @staticmethod
+    def _merge_source_seed_audit_feedback(
+        feedback: Dict[str, dict],
+        audit_feedback: Dict[str, dict],
+    ) -> Dict[str, dict]:
+        if not audit_feedback:
+            return feedback
+        merged = dict(feedback or {})
+        for key, payload in audit_feedback.items():
+            bucket = dict(merged.get(key) or {})
+            bucket.update(payload)
+            merged[key] = bucket
+        return merged
 
     @staticmethod
     def _category_demand_factor(stats: dict) -> Tuple[float, str]:
@@ -1779,7 +2026,11 @@ class ViralSeedBuilder:
 
         recommendation_terms = (
             "추천", "어디", "괜찮은곳", "잘하는곳", "좋은곳",
-            "해보신", "가보신", "아시는분", "아시는 분",
+            "해보신", "해보신분", "가보신", "가보신분",
+            "아시는분", "아시는 분", "계신가요", "괜찮나요",
+            "어떤가요", "어때요", "받아보신", "받아보신분",
+            "먹어보신", "먹어보신분", "다녀보신", "다녀보신분",
+            "추천해주세요", "추천부탁",
         )
         clinic_terms = (
             "한의원", "한방", "병원", "추나", "턱관절", "골반교정",
@@ -2332,9 +2583,23 @@ class ViralSeedBuilder:
 
         has_recommendation = any(
             term in compact
-            for term in ("추천", "어디", "괜찮은곳", "잘하는곳", "좋은곳", "해보신", "가보신")
+            for term in (
+                "추천", "어디", "괜찮은곳", "잘하는곳", "좋은곳",
+                "해보신", "가보신", "아시는분", "계신가요",
+                "괜찮나요", "어떤가요", "어때요",
+                "받아보신", "먹어보신", "다녀보신",
+                "추천해주세요", "추천부탁",
+            )
         )
-        has_user_question = any(term in compact for term in ("후기", "궁금", "있나요", "어때", "문의", "상담"))
+        has_user_question = any(
+            term in compact
+            for term in (
+                "후기", "궁금", "있나요", "어때", "문의", "상담",
+                "계신가요", "괜찮나요", "어떤가요", "해보신", "가보신",
+                "받아보신", "먹어보신", "다녀보신", "있을까요",
+                "추천해주세요", "추천부탁",
+            )
+        )
         has_clinic_axis = any(
             term in compact
             for term in (
@@ -2410,7 +2675,16 @@ class ViralSeedBuilder:
             journey = "access"
         elif any(term in compact for term in ("부작용", "주의사항", "재발", "치료기간", "기간")):
             journey = "safety"
-        elif any(term in compact for term in ("후기", "추천", "괜찮은곳", "잘하는곳")):
+        elif any(
+            term in compact
+            for term in (
+                "후기", "추천", "괜찮은곳", "잘하는곳",
+                "해보신", "가보신", "아시는분", "계신가요",
+                "괜찮나요", "어떤가요", "어때요",
+                "받아보신", "먹어보신", "다녀보신",
+                "추천해주세요", "추천부탁",
+            )
+        ):
             journey = "validation"
         elif any(term in compact for term in ("비용", "가격", "상담", "예약")):
             journey = "decision"
@@ -2440,6 +2714,17 @@ class ViralSeedBuilder:
                 "\uad1c\ucc2e",
                 "\uc5b4\ub514",
                 "\uacbd\ud5d8",
+                "\ud574\ubcf4\uc2e0",
+                "\uac00\ubcf4\uc2e0",
+                "\uc544\uc2dc\ub294\ubd84",
+                "\uacc4\uc2e0\uac00\uc694",
+                "\uc5b4\ub5a4\uac00\uc694",
+                "\uc5b4\ub54c\uc694",
+                "받아보신",
+                "먹어보신",
+                "다녀보신",
+                "추천해주세요",
+                "추천부탁",
                 "review",
                 "recommend",
             )
@@ -2524,14 +2809,15 @@ class ViralSeedBuilder:
 
     def _load_keyword_feedback(self) -> Dict[str, dict]:
         """Summarize Viral Hunter outcomes by matched keyword for seed ranking."""
+        audit_feedback = self._load_source_seed_audit_feedback()
         try:
             with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 if not self._table_exists(conn, "viral_targets"):
-                    return {}
+                    return self._merge_source_seed_audit_feedback({}, audit_feedback)
                 columns = self._table_columns(conn, "viral_targets")
                 if "matched_keyword" not in columns and "matched_keywords" not in columns:
-                    return {}
+                    return self._merge_source_seed_audit_feedback({}, audit_feedback)
                 matched_keyword_expr = self._select_expr(columns, "matched_keyword", "''")
                 matched_keywords_expr = self._select_expr(columns, "matched_keywords", "'[]'")
                 scan_count_expr = "COALESCE(scan_count, 1)"
@@ -2582,7 +2868,7 @@ class ViralSeedBuilder:
                 ).fetchall()
                 staff_ratings = self._load_staff_rating_map(conn)
         except sqlite3.Error:
-            return {}
+            return self._merge_source_seed_audit_feedback({}, audit_feedback)
 
         buckets: Dict[str, dict] = {}
 
@@ -2715,7 +3001,10 @@ class ViralSeedBuilder:
                 "staff_reviewed_count": staff_reviewed,
                 "staff_accept_rate": (staff_positive / staff_reviewed) if staff_reviewed else 0.0,
             }
-        return feedback
+        return self._merge_source_seed_audit_feedback(
+            feedback,
+            audit_feedback,
+        )
 
     def _load_staff_rating_map(self, conn) -> Dict[str, str]:
         """Latest explicit staff rating per target ('good'/'bad'; 'needs_edit' is neutral)."""
