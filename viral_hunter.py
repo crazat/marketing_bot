@@ -2636,6 +2636,7 @@ class CommentableFilter:
         "lens_mismatch": "filtered_out",
         "marketplace_sale": "filtered_out",
         "response_restricted": "filtered_out",
+        "closed_review_surface": "filtered_out",
         "self_target": "filtered_out",
     }
 
@@ -2727,6 +2728,22 @@ class CommentableFilter:
         "후기입니다", "후기 남", "다녀왔어요", "다녀왔습니다", "받고 왔",
         "해결했습니다", "해결됐", "결정했어요", "결정했습니다", "공유해요",
         "정보공유", "정보 공유", "내돈내산", "추천합니다",
+    ]
+    CLOSED_REVIEW_SURFACE_PATTERNS = [
+        "내돈내산", "솔직후기", "솔직 후기", "찐후기", "찐 후기",
+        "등록 후기", "등록후기", "시술 후기", "관리 후기", "치료 후기",
+        "다녀왔어요", "다녀왔습니다", "받고 왔", "받고왔",
+        "후기 남", "후기남", "후기입니다",
+    ]
+    CLOSED_REVIEW_PROVIDER_SURFACE_PATTERNS = [
+        "청주점", "충북점", "분평점", "봉명점", "가경점", "복대점",
+        "의원", "병원", "한의원", "클리닉", "피부과", "성형외과",
+        "관리실", "피부관리실", "에스테틱", "센터", "스튜디오",
+    ]
+    CLOSED_REVIEW_PROVIDER_REGEXES = [
+        r"\([^)]*(?:점|의원|병원|한의원|클리닉|피부과|관리실|에스테틱)[^)]*\)",
+        r"\d+\s*회\s*등록",
+        r"\d+\s*회\s*(?:관리|시술)\s*후기",
     ]
 
     RESPONSE_PERMISSION_POSITIVE_PATTERNS = [
@@ -5922,6 +5939,41 @@ class CommentableFilter:
         return True
 
     @classmethod
+    def _is_closed_review_surface_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject closed venue/registration reviews that are not asking for public help."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        if not user_text:
+            return False
+
+        direct_ask_patterns = (
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS
+            + [
+                "궁금", "고민", "찾고", "찾아보고", "알려주세요", "알려 주세요",
+                "부탁", "조언", "아시는분", "아시는 분", "해보신", "가보신",
+                "계실까요", "있나요", "있을까요",
+            ]
+        )
+        if re.search(r"[?？]", user_text) or cls._contains_any(user_text, direct_ask_patterns):
+            return False
+
+        has_closed_review = cls._contains_any(user_text, cls.CLOSED_REVIEW_SURFACE_PATTERNS)
+        if not has_closed_review:
+            return False
+
+        compact_user_text = re.sub(r"\s+", "", user_text)
+        provider_shape = cls._contains_any(user_text, cls.CLOSED_REVIEW_PROVIDER_SURFACE_PATTERNS)
+        provider_shape = provider_shape or any(
+            re.search(pattern, user_text) or re.search(pattern, compact_user_text)
+            for pattern in cls.CLOSED_REVIEW_PROVIDER_REGEXES
+        )
+        return bool(provider_shape)
+
+    @classmethod
     def _is_traffic_axis_noise(cls, target: ViralTarget, text: str) -> bool:
         """Reject accident seeds that are about vehicle repair, property damage, or legal settlement."""
         domain = cls._target_domain(target)
@@ -6197,6 +6249,8 @@ class CommentableFilter:
         is_advertorial, _, _ = cls._detect_advertorial(target, text)
         if is_advertorial:
             return "advertorial"
+        if cls._is_closed_review_surface_without_user_ask(target, text):
+            return "closed_review_surface"
         if not cls._has_domain_anchor(domain, text):
             # 교차축 발견 구제 — 시드 축과 다르더라도 글 자체가 다른 핵심 진료축의
             # 글이면 유효한 발견이다 (라이브: 다이어트 시드가 찾은 청주 추나/자세

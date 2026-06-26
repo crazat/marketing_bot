@@ -140,6 +140,11 @@ DEFAULT_MAX_PER_REGION_PER_CATEGORY = 4
 TRANSACTIONAL_SUFFIX_TOKENS: Tuple[str, ...] = (
     "가능한곳",
     "가능한",
+    "치료기간",
+    "회복기간",
+    "교정기간",
+    "복용기간",
+    "처방기간",
     "치료비",
     "주의사항",
     "진료시간",
@@ -153,10 +158,18 @@ TRANSACTIONAL_SUFFIX_TOKENS: Tuple[str, ...] = (
     "주말",
     "당일",
     "가능",
+    "기간",
 )
 
 _SUFFIX_STRIP_ORDER: Tuple[str, ...] = tuple(
     sorted(TRANSACTIONAL_SUFFIX_TOKENS, key=len, reverse=True)
+)
+_SUFFIX_EXACT_ONLY_TOKENS = {"기간"}
+_COMPOUND_SUFFIX_SPLIT_TOKENS: Tuple[str, ...] = tuple(
+    dict.fromkeys(TRANSACTIONAL_SUFFIX_TOKENS + ("후기", "추천", "부작용"))
+)
+_COMPOUND_SUFFIX_SPLIT_ORDER: Tuple[str, ...] = tuple(
+    sorted(_COMPOUND_SUFFIX_SPLIT_TOKENS, key=len, reverse=True)
 )
 
 
@@ -171,6 +184,46 @@ def _region_tokens() -> Tuple[str, ...]:
     )
 
 
+def _split_compound_suffix_token(token: str) -> List[str]:
+    raw = (token or "").strip()
+    if not raw:
+        return []
+
+    parts: List[str] = []
+    suffix_hits = 0
+    remainder = raw
+    while remainder:
+        prefix_match = next(
+            (suffix for suffix in _COMPOUND_SUFFIX_SPLIT_ORDER if remainder.startswith(suffix)),
+            "",
+        )
+        if prefix_match:
+            parts.append(prefix_match)
+            suffix_hits += 1
+            remainder = remainder[len(prefix_match):]
+            continue
+
+        next_hits: List[Tuple[int, str]] = []
+        for suffix in _COMPOUND_SUFFIX_SPLIT_ORDER:
+            idx = remainder.find(suffix)
+            if idx > 0:
+                next_hits.append((idx, suffix))
+        if not next_hits:
+            parts.append(remainder)
+            break
+        next_idx, _suffix = min(next_hits, key=lambda item: (item[0], -len(item[1])))
+        parts.append(remainder[:next_idx])
+        remainder = remainder[next_idx:]
+
+    if suffix_hits < 2:
+        return [raw]
+
+    non_suffix_parts = [part for part in parts if part not in _COMPOUND_SUFFIX_SPLIT_TOKENS]
+    if non_suffix_parts and all(len(part) <= 1 for part in non_suffix_parts):
+        return [raw]
+    return [part for part in parts if part]
+
+
 def _strip_suffix_tokens(text: str) -> str:
     kept: List[str] = []
     for token in (text or "").split():
@@ -179,7 +232,12 @@ def _strip_suffix_tokens(text: str) -> str:
         while core and changed:
             changed = False
             for suffix in _SUFFIX_STRIP_ORDER:
-                if core == suffix or (core.endswith(suffix) and len(core) > len(suffix)):
+                exact_only = suffix in _SUFFIX_EXACT_ONLY_TOKENS
+                if core == suffix or (
+                    not exact_only
+                    and core.endswith(suffix)
+                    and len(core) > len(suffix)
+                ):
                     core = core[: len(core) - len(suffix)]
                     changed = True
                     break
@@ -196,7 +254,7 @@ def strip_transactional_suffix(keyword: str) -> str:
     Falls back to the original keyword when stripping would leave no service token
     (e.g. a bare neighborhood name), so callers can always search the result.
     """
-    text = re.sub(r"\s+", " ", (keyword or "").strip())
+    text = normalize_seed_keyword_text(keyword)
     if not text:
         return keyword or ""
     stripped = _strip_suffix_tokens(text)
@@ -252,6 +310,11 @@ def normalize_seed_keyword_text(keyword: str) -> str:
         for suffix in tuple(dict.fromkeys(TRANSACTIONAL_SUFFIX_TOKENS + ("후기", "추천", "부작용", "치료기간"))):
             if suffix and suffix != anchor:
                 text = re.sub(rf"({anchor_re})({re.escape(suffix)})", rf"\1 {suffix}", text)
+
+    split_tokens: List[str] = []
+    for token in text.split():
+        split_tokens.extend(_split_compound_suffix_token(token))
+    text = " ".join(split_tokens)
 
     return re.sub(r"\s+", " ", text).strip()
 

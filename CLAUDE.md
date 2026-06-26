@@ -28,6 +28,8 @@
 - `viral_scan_audits.pending_count`/`summary.pending`은 과거 posted/generated/manual_review 포함 **actionable 누계**임 — 실제 열린 대기열은 `open_pending`, 신규 수율은 `fresh_pending`으로 판단. Pathfinder zero-yield/blind-spot 판정은 `fresh_discovered >= 25 && fresh_pending == 0` 기준 유지
 - 중고거래/판매/양도 글은 의료 리드가 아님. `marketplace_sale` final reject reason(`팔아요/팝니다/직거래/네고/중고나라/번개장터`) 유지하고 generic `non_relevant`로 묻지 말 것
 - Viral Hunter 최종 게이트는 제목 단독 비진료 미용/살롱 노이즈, 비한방 시험관·인공수정 추천, 비질문 케이스 스토리(예: 유00 54세/처음올때)를 저장 전 차단한다. 이 게이트는 초기 필터와 final gate 양쪽에 유지하고, 한방 난임/한의원 상담 맥락은 rescue해야 한다. (2026-06-25 scan 89 오염 정리)
+- Viral Hunter 검색 쿼리는 Pathfinder 기계 생성 접미사 뭉치(`상담가능한곳비용추천기간` 등)를 그대로 네이버에 보내면 안 된다. `normalize_seed_keyword_text()` + `strip_transactional_suffix()`의 compound suffix split 유지. 단독 `기간`은 exact-only로만 제거해 `시험기간` 같은 실제 서비스어를 훼손하지 말 것. (2026-06-26 scan 90)
+- 지점/등록형 닫힌 후기(`청주점`, `10회 등록 후기`, `내돈내산`)는 공개 질문 표면이 아니면 `closed_review_surface` final reject로 저장 전 차단한다. 단, 진짜 1인칭 환자 경험담과 `해보신분/궁금/부탁`이 있는 provider-named user question은 rescue해야 한다. (2026-06-26 scan 90)
 
 ---
 
@@ -520,3 +522,23 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m pytest` -> `620 passed, 1 skipped`
   - `python -m compileall -q viral_hunter.py core_services tests scripts`
   - `git diff --check -- viral_hunter.py tests/test_pathfinder_viral_stability.py` -> no whitespace errors, LF/CRLF warnings only.
+
+## 2026-06-26 Memory: Pathfinder #90 + Viral Hunter #18 result review
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Detailed memory: `project_pathfinder_viral_scan_2026_06_26.md`.
+- Completed sequential run:
+  - Pathfinder Legion scan_run `90`: completed, target `500`, total keywords `9164`, new `768`, updated `8396`, S `81`, A `1752`, S/A total `1833`.
+  - Viral Hunter audit `18` from source scan `90`: discovered `8302`, keyword_count `93`, pending_count/actionable cumulative `203`, `fresh_discovered=335`, `fresh_pending=2`, `open_pending=9`, `rediscovered=7967`, `rediscovered_rate=0.9596`.
+- Handoff audit remained critical:
+  - `survival=3.2%`, `actionable=2.5%`, `strict_fit=2.2%`, `actionable_strict=1.7%`, loss `96.8%`, quality score `35.65`.
+  - Conclusion: Pathfinder supply is not the bottleneck. Viral loss is dominated by rediscovery, malformed suffix-salad source queries, and low-reply closed review surfaces.
+- Fix applied:
+  - `core_services/viral_seed_builder.py`: split compound transactional suffix tokens before search and strip safety/decision suffixes from query surface while preserving real service terms such as `시험기간`.
+  - `viral_hunter.py`: add `closed_review_surface` final reject for non-question venue/registration reviews while preserving genuine first-person patient experiences and provider-named user questions.
+  - `tests/test_pathfinder_viral_stability.py`: regression coverage for suffix-salad repair and closed-review final gate.
+- Current DB handling:
+  - Dry-run applied new final gate to scan 90 actionable/open states (`pending`, `generated`, `raw_backlog`, `needs_ai_retry`): checked `76`, additional reject hits `0`. No DB row updates were made.
+- Verification completed:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -k "search_query or search_queries or strip_transactional_suffix or viral_final_gate"` -> `79 passed`
+  - `python -m pytest tests/test_pathfinder_viral_stability.py` -> `371 passed`

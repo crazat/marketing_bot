@@ -6,6 +6,7 @@ from collections import Counter
 from core_services.viral_seed_builder import (
     ViralSeedBuilder,
     keyword_structure_features,
+    normalize_seed_keyword_text,
     strip_transactional_suffix,
     is_qualified_viral_outcome,
     load_proven_dead_structures,
@@ -2860,6 +2861,31 @@ def test_viral_hunter_infers_query_plan_for_manual_scar_keyword_without_context(
     assert plans[3]["variant"] == "patient_voice_question_kin"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["category"] == "흉터/여드름흉터"
     assert hunter.keyword_context["금천동 여드름흉터 비용"]["execution_lens"] == "cost"
+
+
+def test_viral_hunter_repairs_compound_suffix_salad_before_searching():
+    keyword = "분평동여드름한의원 상담가능한곳비용추천기간 후기"
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        keyword: {
+            "category": "피부/여드름",
+            "viral_readiness_score": 66,
+            "community_signal": 28,
+            "conversion_signal": 58,
+            "medical_ad_risk_score": 5,
+            "content_actionability_score": 78,
+            "preferred_search_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+            "review_intent_type": "none",
+            "execution_lens": "cost",
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword(keyword, 100)
+
+    assert plans[0]["query"] == "분평동여드름한의원 추천 후기"
+    assert plans[0]["variant"] == "community_base"
+    assert "상담가능한곳비용" not in plans[0]["query"]
 
 
 def test_viral_hunter_applies_inferred_context_when_db_context_is_missing():
@@ -8100,6 +8126,66 @@ def test_viral_final_gate_keeps_cafe_user_question_with_provider_terms_but_no_ct
     assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
 
 
+def test_viral_final_gate_rejects_closed_venue_review_without_user_ask():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-closed-review",
+        title="결이고은(청주점) 10회 등록 후기! 내돈내산",
+        content_preview=(
+            "얼굴 비대칭 때문에 10회 등록하고 관리 받은 후기 남겨요. "
+            "분위기와 과정 위주로 정리했습니다."
+        ),
+        matched_keywords=["청주 안면비대칭 비용"],
+        category="안면비대칭",
+        matched_keyword_category="안면비대칭",
+        matched_keyword_grade="B",
+    )
+    text = f"{target.title} {target.content_preview}".lower()
+
+    assert viral_hunter.CommentableFilter._is_closed_review_surface_without_user_ask(target, text) is True
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "closed_review_surface"
+
+
+def test_viral_final_gate_keeps_provider_named_user_question():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-provider-named-question",
+        title="마이크로병원 흉터치료 해보신분계실까요?",
+        content_preview=(
+            "청주에서 수술흉터 치료 알아보는 중인데 비용이나 치료기간 후기가 궁금합니다. "
+            "직접 받아보신 분 계시면 조언 부탁드려요."
+        ),
+        matched_keywords=["청주 수술흉터 새살침"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+    text = f"{target.title} {target.content_preview}".lower()
+
+    assert viral_hunter.CommentableFilter._is_closed_review_surface_without_user_ask(target, text) is False
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
+
+
+def test_viral_final_gate_keeps_genuine_peer_experience_without_provider_shape():
+    target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/cafe-genuine-peer-review",
+        title="여드름흉터 새살침 내돈내산 후기 공유해요",
+        content_preview=(
+            "저도 여드름흉터 때문에 오래 고생했는데 새살침 받아봤어요. "
+            "몇 달 받고나서 효과 봤고 비슷한 분들께 경험담 남겨요."
+        ),
+        matched_keywords=["청주 여드름흉터"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="B",
+    )
+    text = f"{target.title} {target.content_preview}".lower()
+
+    assert viral_hunter.CommentableFilter._is_closed_review_surface_without_user_ask(target, text) is False
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) is None
+
+
 def test_viral_final_gate_rejects_response_restricted_user_surface():
     target = ViralTarget(
         platform="cafe",
@@ -10003,9 +10089,19 @@ def test_strip_transactional_suffix_keeps_service_core():
     assert strip_transactional_suffix("사창동 매선침 상담 가능한곳") == "사창동 매선침"
     assert strip_transactional_suffix("봉명동 교통사고 한의원 입원 가능") == "봉명동 교통사고 한의원 입원"
     assert strip_transactional_suffix("분평동 안면홍조 한의원 야간 예약") == "분평동 안면홍조 한의원"
+    assert strip_transactional_suffix("봉명동 여드름흉터 한의원 치료기간") == "봉명동 여드름흉터 한의원"
+    assert (
+        normalize_seed_keyword_text("분평동여드름한의원 상담가능한곳비용추천기간 후기")
+        == "분평동여드름한의원 상담 가능한곳 비용 추천 기간 후기"
+    )
+    assert (
+        strip_transactional_suffix("분평동여드름한의원상담가능한곳비용추천기간후기")
+        == "분평동여드름한의원 추천 후기"
+    )
     # 접미사가 없으면 그대로 유지
     assert strip_transactional_suffix("청주 여드름 한의원") == "청주 여드름 한의원"
     assert strip_transactional_suffix("청주 체형교정 한의원 추천") == "청주 체형교정 한의원 추천"
+    assert strip_transactional_suffix("청주 시험기간 집중력 한약") == "청주 시험기간 집중력 한약"
     # 서비스 토큰이 남지 않으면 원본 유지 (동네명 단독 검색 방지)
     assert strip_transactional_suffix("봉명동 상담") == "봉명동 상담"
 
