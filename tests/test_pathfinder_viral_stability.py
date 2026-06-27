@@ -12081,6 +12081,42 @@ def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path)
     assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.75": 1}
 
 
+def test_viral_hunter_scales_zero_survival_base_repair_more_aggressively(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    base = baseline[0]
+    assert base["variant"] == "base"
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "repair_category_lens_variants": [
+                    {
+                        "category": "test-axis",
+                        "lens": "review",
+                        "category_lens": "test-axis::review",
+                        "variant": "base",
+                        "total": 120,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "repair_query_shape",
+                    }
+                ],
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["handoff_variant_quality_action"] == "repair_query_shape"
+    assert plans[0]["handoff_variant_quality_factor"] == 0.55
+    assert plans[0]["platform_limits"]["cafe"] < base["platform_limits"]["cafe"]
+    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.55": 1}
+
+
 def test_viral_hunter_consumes_platform_surface_feedback_in_search_plan(tmp_path):
     probe = _variant_feedback_plan_hunter(tmp_path)
     baseline = probe._search_plan_for_keyword("plain seed", 100)
@@ -12116,11 +12152,43 @@ def test_viral_hunter_consumes_platform_surface_feedback_in_search_plan(tmp_path
 
     plan = hunter._search_plan_for_keyword("plain seed", 100)
 
-    assert plan["platform_limits"]["blog"] == 29
+    assert plan["platform_limits"]["blog"] == 0
     assert plan["platform_limits"]["blog"] < baseline["platform_limits"]["blog"]
     assert plan["platform_limits"]["cafe"] == baseline["platform_limits"]["cafe"]
     assert plan["platform_limits"]["kin"] == baseline["platform_limits"]["kin"]
-    assert hunter._platform_surface_budget_scale_counts == {"blog::test-axis:0.45": 1}
+    assert hunter._platform_surface_budget_scale_counts == {"blog::test-axis:0.00": 1}
+
+
+def test_viral_hunter_consumes_global_blog_zero_survival_feedback(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_plan_for_keyword("plain seed", 100)
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "by_platform": {
+                "blog": {
+                    "total": 745,
+                    "lost": 745,
+                    "survived": 0,
+                    "strict_fit": 0,
+                    "loss_rate": 1.0,
+                    "survival_rate": 0.0,
+                    "strict_fit_rate": 0.0,
+                    "dominant_loss_reason": "ad",
+                }
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plan = hunter._search_plan_for_keyword("plain seed", 100)
+
+    assert plan["platform_limits"]["blog"] == 0
+    assert plan["platform_limits"]["blog"] < baseline["platform_limits"]["blog"]
+    assert plan["platform_limits"]["cafe"] == baseline["platform_limits"]["cafe"]
+    assert plan["platform_limits"]["kin"] == baseline["platform_limits"]["kin"]
+    assert hunter._platform_surface_budget_scale_counts == {"blog::*:0.00": 1}
 
 
 def test_viral_hunter_maps_platform_surface_feedback_and_keeps_category_boundary(tmp_path):

@@ -542,3 +542,24 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 - Verification completed:
   - `python -m pytest tests/test_pathfinder_viral_stability.py -k "search_query or search_queries or strip_transactional_suffix or viral_final_gate"` -> `79 passed`
   - `python -m pytest tests/test_pathfinder_viral_stability.py` -> `371 passed`
+
+## 2026-06-27 Memory: Pathfinder #91 + Viral Hunter scan91 audit review
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed sequential run:
+  - Pathfinder Legion scan_run `91`: completed, total keywords `9236`, new `464`, updated `8772`, S `83`, A `1858`, S/A total `1941` (500+ satisfied).
+  - Viral Hunter source scan `91`: `posted=312`, `generated=6`, `pending=14`, `raw_backlog=82`; top actionable surfaces were mostly cafe/KIN.
+  - Handoff audit report generated locally: `reports/viral_handoff_audit_scan91_2026_06_27_16_19_03.json`.
+- Audit conclusion:
+  - Quality remained `critical`: survival `3.6%`, actionable `2.7%`, strict fit `2.3%`, actionable strict `1.7%`, loss `96.4%`.
+  - `blog` was the clearest waste surface: total `745`, actionable/survived/strict `0`, dominant loss `ad`.
+  - `availability` lens and several `base` / `community_base` lane shapes had high-volume zero-survival pockets.
+- Fix applied:
+  - `viral_hunter.py`: platform surface feedback now consumes global `by_platform` audit metrics, not only category-specific hotspots.
+  - `viral_hunter.py`: enough-sample `blog` zero-survival feedback can set next-run blog discovery limit to `0` instead of preserving the old probe floor.
+  - `viral_hunter.py`: zero-survival `base` / `community_base` category-lens repair feedback now scales more aggressively (`0.55`) while still avoiding hard deletion.
+  - `tests/test_pathfinder_viral_stability.py`: regression coverage for global blog zero-survival feedback and aggressive zero-survival base repair scaling.
+- Verification completed:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py -k "zero_survival_base_repair or handoff_variant or platform_surface_feedback or global_blog_zero_survival or platform_yield_factors"` -> `7 passed`
+  - `python -m py_compile viral_hunter.py tests\test_pathfinder_viral_stability.py`
+  - Live smoke: scan91 audit loads `platform_surface:blog::*` with `factor=0.0`, sample search plan becomes `{'cafe': 135, 'blog': 0, 'kin': 135}`.

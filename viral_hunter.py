@@ -9691,10 +9691,14 @@ class ViralHunter:
         if str(variant or "").strip() in {"", "base", "community_base"}:
             if entry.get("type") != "category_lens_query_variant":
                 return 1.0
+            total = cls._variant_feedback_int(entry, "total")
+            survived = cls._variant_feedback_int(entry, "survived")
+            strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+            zero_survival_lane = total >= 80 and survived == 0 and strict_fit == 0
             if action == "retire_or_pause":
-                return 0.60
+                return 0.45 if zero_survival_lane else 0.60
             if action == "repair_query_shape":
-                return 0.75
+                return 0.55 if zero_survival_lane else 0.75
             return 1.0
         return max(0.0, min(1.25, float(factor or 1.0)))
 
@@ -9879,6 +9883,7 @@ class ViralHunter:
     PLATFORM_YIELD_FLOOR_LIMIT = 12  # 가중 후에도 최소 이만큼은 탐사 (완전 블라인드 방지)
     PLATFORM_SURFACE_MIN_SAMPLE = 20
     PLATFORM_SURFACE_FLOOR_LIMIT = 6
+    PLATFORM_SURFACE_GLOBAL_CATEGORY = "*"
 
     @staticmethod
     def _acceptance_to_yield_factor(accept_rate: float) -> float:
@@ -9972,7 +9977,12 @@ class ViralHunter:
     @staticmethod
     def _platform_surface_feedback_key(platform: str, category: str) -> str:
         platform_key = ViralHunter._handoff_platform_key(platform)
-        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        category_text = str(category or "").strip()
+        category_key = (
+            ViralHunter.PLATFORM_SURFACE_GLOBAL_CATEGORY
+            if category_text == ViralHunter.PLATFORM_SURFACE_GLOBAL_CATEGORY
+            else GYULIM_KEYWORD_PROFILE.normalize_category(category_text)
+        )
         return f"platform_surface:{platform_key}::{category_key}"
 
     @staticmethod
@@ -10001,6 +10011,22 @@ class ViralHunter:
             reasons = {raw_reasons}
         else:
             reasons = {str(reason or "") for reason in raw_reasons}
+
+        if (
+            platform == "blog"
+            and total >= 40
+            and has_loss_rate
+            and has_survival_rate
+            and has_strict_fit_rate
+            and loss_rate >= 0.98
+            and survival_rate < 0.005
+            and strict_fit_rate < 0.005
+            and (
+                dominant_loss in {"ad", "advertorial", "filtered", "medical_promo"}
+                or "high_platform_loss" in reasons
+            )
+        ):
+            return 0.0
 
         factor = 1.0
         if (
@@ -10108,14 +10134,27 @@ class ViralHunter:
                 items = playbook.get("platform_surface_hotspots") or []
                 if isinstance(items, list):
                     candidates.extend(item for item in items if isinstance(item, dict))
+            by_platform = payload.get("by_platform") if isinstance(payload, dict) else None
+            if isinstance(by_platform, dict):
+                for platform, metrics in by_platform.items():
+                    if isinstance(metrics, dict):
+                        candidates.append({
+                            **metrics,
+                            "type": "platform_global",
+                            "platform": platform,
+                            "category": self.PLATFORM_SURFACE_GLOBAL_CATEGORY,
+                        })
 
             for item in candidates:
                 item_type = str(item.get("type") or "").strip()
                 lane = str(item.get("lane") or "")
                 lane_platform, _, lane_category = lane.partition("::")
                 platform = self._handoff_platform_key(str(item.get("platform") or lane_platform))
-                category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or lane_category))
-                if item_type and item_type != "platform_category":
+                if item_type == "platform_global":
+                    category = self.PLATFORM_SURFACE_GLOBAL_CATEGORY
+                else:
+                    category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or lane_category))
+                if item_type and item_type not in {"platform_category", "platform_global"}:
                     continue
                 if not platform or not category:
                     continue
@@ -10125,7 +10164,7 @@ class ViralHunter:
                 key = self._platform_surface_feedback_key(platform, category)
                 entry = {
                     **item,
-                    "type": "platform_category",
+                    "type": "platform_global" if category == self.PLATFORM_SURFACE_GLOBAL_CATEGORY else "platform_category",
                     "platform": platform,
                     "category": category,
                     "factor": factor,
@@ -10152,17 +10191,41 @@ class ViralHunter:
         for platform in list((limits or {}).keys()):
             platform_key = self._handoff_platform_key(platform)
             entry = feedback.get(self._platform_surface_feedback_key(platform_key, category_key))
+            global_entry = feedback.get(
+                self._platform_surface_feedback_key(platform_key, self.PLATFORM_SURFACE_GLOBAL_CATEGORY)
+            )
+            if isinstance(global_entry, dict):
+                if not isinstance(entry, dict):
+                    entry = global_entry
+                else:
+                    try:
+                        entry_factor = float(entry.get("factor", 1.0))
+                    except (TypeError, ValueError):
+                        entry_factor = 1.0
+                    try:
+                        global_factor = float(global_entry.get("factor", 1.0))
+                    except (TypeError, ValueError):
+                        global_factor = 1.0
+                    if global_factor < entry_factor:
+                        entry = global_entry
             if not isinstance(entry, dict):
                 continue
-            factor = float(entry.get("factor") or 1.0)
+            try:
+                factor = float(entry.get("factor", 1.0))
+            except (TypeError, ValueError):
+                factor = 1.0
             original = int(limits.get(platform, 0) or 0)
             if factor >= 0.999 or original <= 0:
                 continue
-            scaled = max(self.PLATFORM_SURFACE_FLOOR_LIMIT, int(round(original * factor)))
+            if factor <= 0.0:
+                scaled = 0
+            else:
+                scaled = max(self.PLATFORM_SURFACE_FLOOR_LIMIT, int(round(original * factor)))
             scaled = min(original, scaled)
             if scaled < original:
                 limits[platform] = scaled
-                scale_key = f"{platform_key}::{category_key}:{factor:.2f}"
+                scale_category_key = str(entry.get("category") or category_key)
+                scale_key = f"{platform_key}::{scale_category_key}:{factor:.2f}"
                 scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
         return limits
 
