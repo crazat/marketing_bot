@@ -563,3 +563,31 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m pytest tests/test_pathfinder_viral_stability.py -k "zero_survival_base_repair or handoff_variant or platform_surface_feedback or global_blog_zero_survival or platform_yield_factors"` -> `7 passed`
   - `python -m py_compile viral_hunter.py tests\test_pathfinder_viral_stability.py`
   - Live smoke: scan91 audit loads `platform_surface:blog::*` with `factor=0.0`, sample search plan becomes `{'cafe': 135, 'blog': 0, 'kin': 135}`.
+
+## 2026-06-28 Memory: Pathfinder #92 + Viral Hunter scan92 metric backfill
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `92`: completed, target `500`, total keywords `9222`, new `399`, updated `8823`, S `75`, A `1861`, S/A total `1936` (500+ satisfied), execution time `8940s`.
+  - Viral Hunter scan from source scan `92`: audit `20`, keyword_count `93`, discovered `7340`, fresh_discovered `125`, pending/actionable cumulative `200`, open_pending `4`, fresh_pending `0`, ad_filtered `1682`, rediscovered `7215`.
+- Initial handoff audit:
+  - Report: `reports/viral_handoff_audit_scan92_2026_06_28_14_04_15.json`.
+  - Quality tier `critical`, score `37.66`.
+  - Required failures: `metric_coverage`, `overall_survival`, `overall_strict_fit`.
+  - Axis/lens metric coverage was only `1709/7340` (`23.28%`), so audit judgement was partially blind to rediscovered/current-source rows.
+- Improvement applied:
+  - Ran `python scripts\viral_pathfinder_backfill.py --scan-id 92 --apply`.
+  - Updated `5631` stored Viral Hunter targets by merging existing Pathfinder lineage into `score_breakdown`.
+  - Post-backfill dry-run found `0` remaining candidates.
+  - DB check: scan 92 now has `7340/7340` rows with both `pathfinder_axis_fit_score` and `pathfinder_lens_fit_score`.
+- Re-audit result:
+  - Report: `reports/viral_handoff_audit_scan92_after_backfill_2026_06_28_14_04_15.json`.
+  - Quality tier improved to `needs_improvement`, score `51.84`.
+  - `metric_coverage` required gate is now resolved; remaining required failures are `overall_survival` and `overall_strict_fit`.
+  - New playbook boosts exact weak lanes such as `scar/acne-scar::cost`, `scar/acne-scar::consultation`, `scar/acne-scar::availability`, `scar/acne-scar::safety`, and `facial-asymmetry::review` (stored with Korean category labels in report JSON).
+- Next-run behavior:
+  - Latest after-backfill report is newest in `reports/`, so Viral Hunter auto handoff boosts and variant-quality feedback will consume it on the next scan.
+  - Suggested live command in the report keeps `--source-scan-id 92` and adds boost categories/lenses/category-lenses for the weak queue lanes.
+- Verification completed:
+  - `pytest -q tests/test_viral_pathfinder_backfill.py tests/test_viral_handoff_audit.py::test_viral_handoff_audit_reports_query_variant_quality_feedback tests/test_pathfinder_viral_stability.py::test_viral_hunter_consumes_latest_handoff_playbook_boosts_when_limited tests/test_pathfinder_viral_stability.py::test_viral_hunter_consumes_handoff_quality_gap_lanes_when_limited` initially failed because repo root was not on `PYTHONPATH` in this shell.
+  - Re-run with `$env:PYTHONPATH=(Get-Location).Path; ...` -> `7 passed`.
