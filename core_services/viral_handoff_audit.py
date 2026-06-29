@@ -1326,6 +1326,14 @@ def _score_from_breakdown(score_breakdown: Dict[str, Any], key: str) -> Optional
     return _number(score_breakdown.get(key), None)
 
 
+def _score_from_breakdown_any(score_breakdown: Dict[str, Any], keys: Iterable[str]) -> Optional[float]:
+    for key in keys:
+        value = _score_from_breakdown(score_breakdown, key)
+        if value is not None:
+            return value
+    return None
+
+
 def _parse_timestamp(value: object) -> Optional[datetime]:
     text = str(value or "").strip()
     if not text:
@@ -11056,8 +11064,14 @@ def summarize_viral_handoff_quality(
         priority = _number(row["priority_score"], 0.0) or 0.0
         clinic_fit = _score_from_breakdown(score_breakdown, "clinic_treatment_fit_score")
         worksite_efficiency = _score_from_breakdown(score_breakdown, "worksite_efficiency_score")
-        axis_fit = _score_from_breakdown(score_breakdown, "pathfinder_axis_fit_score")
-        lens_fit = _score_from_breakdown(score_breakdown, "pathfinder_lens_fit_score")
+        axis_fit = _score_from_breakdown_any(
+            score_breakdown,
+            ("pathfinder_axis_fit_score", "pathfinder_local_service_fit_score"),
+        )
+        lens_fit = _score_from_breakdown_any(
+            score_breakdown,
+            ("pathfinder_lens_fit_score", "pathfinder_content_actionability_score"),
+        )
         strict_fit = _is_strict_fit(
             status=status,
             lens=lens,

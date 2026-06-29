@@ -4603,6 +4603,8 @@ def test_viral_hunter_attaches_pathfinder_execution_context_to_targets():
     assert target.matched_keyword_category == "흉터/여드름흉터"
     assert target.score_breakdown["pathfinder_viral_readiness_score"] == 91.0
     assert target.score_breakdown["pathfinder_content_actionability_score"] == 86.0
+    assert target.score_breakdown["pathfinder_axis_fit_score"] == 88.0
+    assert target.score_breakdown["pathfinder_lens_fit_score"] == 86.0
     assert target.score_breakdown["pathfinder_preferred_search_surface"] == "hybrid_local_content"
     assert target.score_breakdown["pathfinder_execution_lens"] == "review"
     assert target.score_breakdown["pathfinder_source_keyword"] == "청주 수술흉터 새살침 상담"
@@ -11829,7 +11831,7 @@ def test_viral_hunter_scales_stale_base_variant_budget():
     assert hunter._base_variant_budget_scale_counts == {"base:0.65": 1}
 
 
-def test_viral_hunter_keeps_base_budget_when_lane_has_fresh_or_open_pending():
+def test_viral_hunter_keeps_base_budget_when_lane_has_fresh_pending():
     from types import SimpleNamespace
 
     hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
@@ -11869,6 +11871,48 @@ def test_viral_hunter_keeps_base_budget_when_lane_has_fresh_or_open_pending():
     assert plans[0]["variant"] == "base"
     assert plans[0]["platform_limits"] == {"cafe": 100, "blog": 65, "kin": 100}
     assert getattr(hunter, "_base_variant_budget_scale_counts", {}) == {}
+
+
+def test_viral_hunter_scales_rediscovery_heavy_base_with_only_old_open_pending():
+    from types import SimpleNamespace
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path="")
+    hunter._platform_yield_cache = {}
+    hunter.keyword_context = {
+        "rediscovery seed": {
+            "category": "test-axis",
+            "viral_readiness_score": 10,
+            "community_signal": 0,
+            "conversion_signal": 0,
+            "profile_action_signal": 0,
+            "medical_ad_risk_score": 0,
+            "content_actionability_score": 80,
+            "preferred_search_surface": "",
+            "recommended_content_type": "",
+            "review_intent_type": "none",
+            "execution_lens": "review",
+        }
+    }
+    lane_key = viral_hunter.ViralHunter._category_lens_variant_history_key("test-axis", "review", "base")
+    hunter._variant_yield_cache = {
+        lane_key: {
+            "discovered": 500,
+            "fresh_discovered": 80,
+            "pending": 20,
+            "fresh_pending": 0,
+            "open_pending": 2,
+            "rediscovered": 420,
+            "ad_filtered": 80,
+            "runs": 1,
+        }
+    }
+
+    plans = hunter._search_queries_for_keyword("rediscovery seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["platform_limits"] == {"cafe": 45, "blog": 29, "kin": 45}
+    assert hunter._base_variant_budget_scale_counts == {"base:0.45": 1}
 
 
 def test_viral_hunter_variant_yield_gate_drops_proven_zero_yield_companions(tmp_path):

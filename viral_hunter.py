@@ -9788,7 +9788,7 @@ class ViralHunter:
 
         fresh_pending = int(stats.get("fresh_pending", 0) or 0)
         open_pending = int(stats.get("open_pending", 0) or 0)
-        if fresh_pending > 0 or open_pending > 0:
+        if fresh_pending > 0:
             return 1.0
 
         discovered = int(stats.get("discovered", 0) or 0)
@@ -9800,6 +9800,15 @@ class ViralHunter:
 
         rediscovered_rate = rediscovered / discovered if discovered else 0.0
         ad_rate = ad_filtered / discovered if discovered else 0.0
+        if open_pending > 0:
+            stale_open_only = (
+                fresh_discovered >= ZERO_YIELD_MIN_FRESH_DISCOVERED
+                and rediscovered_rate >= 0.75
+            )
+            saturated_surface = discovered >= 300 and rediscovered_rate >= 0.95
+            if not (stale_open_only or saturated_surface):
+                return 1.0
+
         factor = 1.0
 
         if fresh_discovered >= 80 and fresh_pending == 0:
@@ -10964,6 +10973,31 @@ class ViralHunter:
         quality_flags = self._context_list(ctx, "quality_flags_json")
         insight_brief = self._pathfinder_candidate_insight_brief(ctx, source_signals, quality_flags)
         existing_breakdown = target.score_breakdown or {}
+
+        def first_float(*values: Any, default: float = 0.0) -> float:
+            for value in values:
+                if value is None or value == "":
+                    continue
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+            return float(default)
+
+        local_service_fit = first_float(ctx.get("local_service_fit_score"))
+        content_actionability = first_float(ctx.get("content_actionability_score"))
+        axis_fit_score = first_float(
+            existing_breakdown.get("pathfinder_axis_fit_score"),
+            ctx.get("pathfinder_axis_fit_score"),
+            ctx.get("axis_fit_score"),
+            local_service_fit,
+        )
+        lens_fit_score = first_float(
+            existing_breakdown.get("pathfinder_lens_fit_score"),
+            ctx.get("pathfinder_lens_fit_score"),
+            ctx.get("lens_fit_score"),
+            content_actionability,
+        )
         target.source_scan_run_id = int(ctx.get("scan_run_id") or 0)
         target.matched_keyword_grade = ctx.get("grade") or ""
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
@@ -11001,8 +11035,10 @@ class ViralHunter:
                 or ""
             ),
             "pathfinder_viral_readiness_score": float(ctx.get("viral_readiness_score") or 0),
-            "pathfinder_local_service_fit_score": float(ctx.get("local_service_fit_score") or 0),
-            "pathfinder_content_actionability_score": float(ctx.get("content_actionability_score") or 0),
+            "pathfinder_local_service_fit_score": local_service_fit,
+            "pathfinder_content_actionability_score": content_actionability,
+            "pathfinder_axis_fit_score": axis_fit_score,
+            "pathfinder_lens_fit_score": lens_fit_score,
             "pathfinder_medical_ad_risk_score": float(ctx.get("medical_ad_risk_score") or 0),
             "pathfinder_community_signal": float(ctx.get("community_signal") or 0),
             "pathfinder_conversion_signal": float(ctx.get("conversion_signal") or 0),

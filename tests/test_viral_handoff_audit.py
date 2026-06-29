@@ -570,6 +570,44 @@ def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
     )
 
 
+def test_viral_handoff_audit_uses_baseline_pathfinder_fit_scores_for_metric_coverage(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="baseline-fit-only",
+        scan_id=145,
+        category="scar",
+        grade="A",
+        status="pending",
+        priority=130,
+        title="Cheongju scar treatment review",
+        content_preview="patient asks for local scar consultation and review",
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "base",
+            "pathfinder_local_service_fit_score": 87,
+            "pathfinder_content_actionability_score": 83,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=145,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    assert report["overall"]["axis_coverage_rate"] == 1.0
+    assert report["overall"]["lens_coverage_rate"] == 1.0
+    assert report["overall"]["avg_axis_fit"] == 87.0
+    assert report["overall"]["avg_lens_fit"] == 83.0
+    assert report["overall"]["strict_fit"] == 1
+
+
 def test_viral_handoff_audit_since_filter_includes_rescanned_existing_targets(tmp_path):
     db_path, conn = _make_db(tmp_path)
     conn.execute("ALTER TABLE viral_targets ADD COLUMN last_scanned_at TEXT")

@@ -591,3 +591,32 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 - Verification completed:
   - `pytest -q tests/test_viral_pathfinder_backfill.py tests/test_viral_handoff_audit.py::test_viral_handoff_audit_reports_query_variant_quality_feedback tests/test_pathfinder_viral_stability.py::test_viral_hunter_consumes_latest_handoff_playbook_boosts_when_limited tests/test_pathfinder_viral_stability.py::test_viral_hunter_consumes_handoff_quality_gap_lanes_when_limited` initially failed because repo root was not on `PYTHONPATH` in this shell.
   - Re-run with `$env:PYTHONPATH=(Get-Location).Path; ...` -> `7 passed`.
+
+## 2026-06-29 Memory: Pathfinder #93 + Viral Hunter scan93 audit hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `93`: completed, target `500`, total keywords `9187`, new `295`, updated `8892`, S `94`, A `1688`, S/A total `1782` (500+ satisfied), execution time `11294s`.
+  - Viral Hunter scan from source scan `93`: audit `21`, keyword_count `93`, discovered `6696`, fresh_discovered `142`, pending/actionable cumulative `190`, open_pending `10`, fresh_pending `1`, ad_filtered `1585`, rediscovered `6554`.
+- Initial handoff audit:
+  - Report: `reports/viral_handoff_audit_scan93_2026_06_29_13_39_06.json`.
+  - Quality tier `critical`, score `37.33`.
+  - Required failures: `metric_coverage`, `overall_survival`, `overall_strict_fit`.
+  - Axis/lens metric coverage was `23.4%` even though all rows carried baseline Pathfinder fit scores (`pathfinder_local_service_fit_score`, `pathfinder_content_actionability_score`).
+- Improvement applied:
+  - `core_services/viral_handoff_audit.py`: handoff audit now falls back from detailed `pathfinder_axis_fit_score` / `pathfinder_lens_fit_score` to baseline Pathfinder fit scores when detailed post-filter metrics are absent.
+  - `viral_hunter.py`: new targets now preserve baseline Pathfinder fit as `pathfinder_axis_fit_score` and `pathfinder_lens_fit_score` during context attachment.
+  - `viral_hunter.py`: base query budget scaling no longer lets old `open_pending` alone block reduction when `fresh_pending=0` and the lane is rediscovery-heavy or saturated.
+  - Tests added for baseline metric fallback, Pathfinder context score preservation, and rediscovery-heavy base budget scaling.
+- Re-audit result:
+  - Report: `reports/viral_handoff_audit_scan93_after_improvements_2026_06_29_13_39_06.json`.
+  - Quality tier improved from `critical` to `needs_improvement`, score `37.33 -> 51.48`.
+  - Axis/lens coverage improved `23.4% -> 100.0%`; `metric_coverage` required gate is resolved.
+  - Remaining required failures are `overall_survival` and `overall_strict_fit`; this is real queue quality/yield, not audit blindness.
+- Next-run behavior:
+  - Dry-run over all 93 seeds produced `197` query plans.
+  - Yield/quality gates drop weak variants such as scar/asymmetry/lifting colloquial and specific-axis variants.
+  - Base budget scales include `base:0.45`, `base:0.65`, `base:0.50`, `community_base:0.45`, while `community_base` with fresh pending is still protected.
+- Verification completed:
+  - `python -m pytest -q tests/test_viral_handoff_audit.py` -> `38 passed`.
+  - `python -m pytest -q tests/test_pathfinder_viral_stability.py` -> `374 passed`.
