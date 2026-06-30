@@ -26,6 +26,7 @@
 - `SIGNATURE_BACKLOG_AXES`(viral_hunter)는 `routers/viral.py SIGNATURE_ROUTING_AXES`와 **동일 집합 유지**(수정 시 양쪽 동기화). 시그니처 백로그 레인(`--rescue-signature`)은 raw_backlog만 대상(이미 게이트 통과분) — 자동 승격 없음
 - Q&A 적재(`scripts/seed_signature_qa.py`)는 DML이므로 **반드시 마이그레이션 스크립트로만**(백업+멱등). 적재 후 `QASearchEngine.index_all()` RAG 재인덱스 필수(안 하면 드래프터가 못 찾음)
 - `viral_scan_audits.pending_count`/`summary.pending`은 과거 posted/generated/manual_review 포함 **actionable 누계**임 — 실제 열린 대기열은 `open_pending`, 신규 수율은 `fresh_pending`으로 판단. Pathfinder zero-yield/blind-spot 판정은 `fresh_discovered >= 25 && fresh_pending == 0` 기준 유지
+- Handoff audit의 `scale_or_keep`는 "strict-fit 1개라도 있음"으로 확장하면 안 된다. 표본이 큰 variant/family는 actionable-strict 개수와 비율을 함께 충족해야 하며, Viral Hunter는 약한 `scale_or_keep` 피드백을 받아도 검색 예산을 늘리지 않는다. (2026-06-30 scan 94)
 - 중고거래/판매/양도 글은 의료 리드가 아님. `marketplace_sale` final reject reason(`팔아요/팝니다/직거래/네고/중고나라/번개장터`) 유지하고 generic `non_relevant`로 묻지 말 것
 - Viral Hunter 최종 게이트는 제목 단독 비진료 미용/살롱 노이즈, 비한방 시험관·인공수정 추천, 비질문 케이스 스토리(예: 유00 54세/처음올때)를 저장 전 차단한다. 이 게이트는 초기 필터와 final gate 양쪽에 유지하고, 한방 난임/한의원 상담 맥락은 rescue해야 한다. (2026-06-25 scan 89 오염 정리)
 - Viral Hunter 검색 쿼리는 Pathfinder 기계 생성 접미사 뭉치(`상담가능한곳비용추천기간` 등)를 그대로 네이버에 보내면 안 된다. `normalize_seed_keyword_text()` + `strip_transactional_suffix()`의 compound suffix split 유지. 단독 `기간`은 exact-only로만 제거해 `시험기간` 같은 실제 서비스어를 훼손하지 말 것. (2026-06-26 scan 90)
@@ -620,3 +621,27 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 - Verification completed:
   - `python -m pytest -q tests/test_viral_handoff_audit.py` -> `38 passed`.
   - `python -m pytest -q tests/test_pathfinder_viral_stability.py` -> `374 passed`.
+
+## 2026-06-30 Memory: Pathfinder #94 + Viral Hunter scan94 variant-quality hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `94`: completed, target `500`, total keywords `9215`, new `357`, updated `8858`, S `77`, A `1703`, B `6757`, C `678`, execution time `10761s`.
+  - Viral Hunter scan from source scan `94`: audit `23`, keyword_count `94`, discovered `5816`, fresh_discovered `89`, pending/actionable cumulative `152`, open_pending `0`, fresh_pending `0`, ad_filtered `1519`, rediscovered `5727` (`98.47%`).
+- Handoff audit:
+  - Report regenerated with current rules: `reports/viral_handoff_audit_scan94_2026_06_30_13_26_03.json`.
+  - Quality tier `needs_improvement`, score `50.9`.
+  - Overall survival `3.5%`, actionable `2.6%`, strict-fit `2.5%`, actionable-strict `1.8%`, loss `96.5%`.
+  - Axis/lens coverage `100%`; remaining required failures are `overall_survival` and `overall_strict_fit`.
+- Improvement applied:
+  - `core_services/viral_handoff_audit.py`: `scale_or_keep` query variant feedback now requires enough strict-fit/actionable-strict yield, not just one strict-fit hit in a large sample.
+  - `viral_hunter.py`: weak historical `scale_or_keep` / `scale_family_or_keep` feedback no longer expands next-run search budgets.
+  - Tests added so large-sample, low actionable-strict variants stay repair candidates and do not get budget expansion.
+- Next-run behavior:
+  - scan94 feedback counts after regeneration: `scale_variants=6`, `scale_category_lens_variants=19`, `repair_variants=16`, `repair_category_lens_variants=61`.
+  - Strong scale candidates remain, e.g. `base` for `체형교정::review`, `community:추천` for `다이어트::community`, and `cost_community:추천` for `다이어트::cost`.
+  - Weak variants such as large-sample consultation/community shapes with very low actionable-strict rate should repair or retire instead of receiving more search budget.
+- Verification completed:
+  - `python -m pytest tests\test_viral_handoff_audit.py -q` -> `38 passed`.
+  - `python -m pytest tests\test_pathfinder_viral_stability.py -k "handoff_variant or variant_quality or platform_surface_feedback" -q` -> `5 passed`.
+  - `python -m json.tool reports\viral_handoff_audit_scan94_2026_06_30_13_26_03.json > $null` -> valid JSON.

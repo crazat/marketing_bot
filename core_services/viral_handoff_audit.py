@@ -7755,21 +7755,41 @@ def _variant_quality_feedback(
             "why": why,
         }
 
+    def scale_supported(entry: Dict[str, Any], *, small_total: int) -> bool:
+        total = int(entry["total"])
+        strict_fit = int(entry["strict_fit"])
+        actionable_strict = int(entry["actionable_strict"])
+        strict_fit_rate = float(entry["strict_fit_rate"])
+        actionable_strict_rate = float(entry["actionable_strict_rate"])
+        if strict_fit <= 0 and actionable_strict <= 0:
+            return False
+        if total < small_total:
+            return True
+        if total < 80:
+            return (
+                (actionable_strict >= 2 and actionable_strict_rate >= 0.02)
+                or (strict_fit >= 3 and strict_fit_rate >= 0.05)
+            )
+        return (
+            actionable_strict >= 3
+            and actionable_strict_rate >= 0.015
+            and strict_fit_rate >= 0.02
+        )
+
     for variant, metrics in query_variant_summary.items():
         entry = base_entry("query_variant", variant, metrics)
         total = int(entry["total"])
         survived = int(entry["survived"])
         strict_fit = int(entry["strict_fit"])
-        actionable_strict = int(entry["actionable_strict"])
         survival_rate = float(entry["survival_rate"])
         strict_fit_rate = float(entry["strict_fit_rate"])
         protected = variant in protected_variants
 
-        if total >= 3 and (strict_fit > 0 or actionable_strict > 0):
+        if total >= 3 and scale_supported(entry, small_total=30):
             scale_variants.append(with_action(
                 entry,
                 "scale_or_keep",
-                "query variant produced strict-fit or actionable-strict targets",
+                "query variant produced enough strict-fit/actionable-strict yield",
             ))
         if total >= 8 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
             repair_variants.append(with_action(
@@ -7789,17 +7809,16 @@ def _variant_quality_feedback(
         total = int(entry["total"])
         survived = int(entry["survived"])
         strict_fit = int(entry["strict_fit"])
-        actionable_strict = int(entry["actionable_strict"])
         survival_rate = float(entry["survival_rate"])
         strict_fit_rate = float(entry["strict_fit_rate"])
         variant = str(entry.get("variant") or "")
         protected = variant in protected_variants
 
-        if total >= 3 and (strict_fit > 0 or actionable_strict > 0):
+        if total >= 3 and scale_supported(entry, small_total=30):
             scale_category_lens_variants.append(with_action(
                 entry,
                 "scale_or_keep",
-                "category/lens query variant produced strict-fit or actionable-strict targets",
+                "category/lens query variant produced enough strict-fit/actionable-strict yield",
             ))
         if total >= 8 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
             repair_category_lens_variants.append(with_action(
@@ -7819,16 +7838,15 @@ def _variant_quality_feedback(
         total = int(entry["total"])
         survived = int(entry["survived"])
         strict_fit = int(entry["strict_fit"])
-        actionable_strict = int(entry["actionable_strict"])
         survival_rate = float(entry["survival_rate"])
         strict_fit_rate = float(entry["strict_fit_rate"])
         protected = family in protected_families
 
-        if total >= 5 and (strict_fit > 0 or actionable_strict > 0):
+        if total >= 5 and scale_supported(entry, small_total=40):
             scale_families.append(with_action(
                 entry,
                 "scale_or_keep",
-                "variant family produced strict-fit or actionable-strict targets",
+                "variant family produced enough strict-fit/actionable-strict yield",
             ))
         if total >= 15 and (strict_fit_rate < 0.02 or survival_rate < 0.08):
             repair_families.append(with_action(

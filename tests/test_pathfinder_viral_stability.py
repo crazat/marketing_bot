@@ -12079,6 +12079,42 @@ def test_viral_hunter_prefers_lane_variant_feedback_over_global_retire(tmp_path)
     assert getattr(hunter, "_variant_quality_drop_counts", {}) == {}
 
 
+def test_viral_hunter_does_not_expand_weak_handoff_variant_scale_feedback(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    companion = next(plan for plan in baseline if plan["variant"] != "base")
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "scale_variants": [
+                    {
+                        "variant": companion["variant"],
+                        "total": 200,
+                        "survived": 20,
+                        "strict_fit": 2,
+                        "actionable_strict": 1,
+                        "survival_rate": 0.10,
+                        "strict_fit_rate": 0.01,
+                        "actionable_strict_rate": 0.005,
+                        "action": "scale_or_keep",
+                    }
+                ],
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+    kept = next(plan for plan in plans if plan["variant"] == companion["variant"])
+
+    assert kept["handoff_variant_quality_action"] == "scale_or_keep"
+    assert kept["handoff_variant_quality_factor"] == 1.0
+    assert kept["platform_limits"] == companion["platform_limits"]
+    assert getattr(hunter, "_variant_quality_budget_scale_counts", {}) == {}
+
+
 def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path):
     probe = _variant_feedback_plan_hunter(tmp_path)
     baseline = probe._search_queries_for_keyword("plain seed", 100)

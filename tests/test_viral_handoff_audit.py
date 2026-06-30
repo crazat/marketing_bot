@@ -461,6 +461,7 @@ def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
     good_variant = "axis_scar:specific_surgery_scar"
     weak_variant = "axis_skin:specific_acne"
     weak_family_variant = "colloquial:face_balance"
+    weak_scale_variant = "consultation_community:thin_signal"
 
     for idx in range(3):
         _insert_target(
@@ -527,6 +528,50 @@ def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
                 "worksite_efficiency_score": 10,
             },
         )
+
+    for idx in range(2):
+        _insert_target(
+            conn,
+            target_id=f"variant-weak-scale-survivor-{idx}",
+            scan_id=144,
+            category="consultation",
+            grade="A",
+            status="pending",
+            priority=120,
+            title=f"thin consultation survivor {idx}",
+            content_preview="patient asks a local consultation question",
+            breakdown={
+                "pathfinder_source_keyword": "thin consultation keyword",
+                "pathfinder_execution_lens": "consultation",
+                "pathfinder_query_variant": weak_scale_variant,
+                "pathfinder_axis_fit_score": 91,
+                "pathfinder_lens_fit_score": 86,
+                "clinic_treatment_fit_score": 90,
+                "worksite_efficiency_score": 82,
+            },
+        )
+
+    for idx in range(158):
+        _insert_target(
+            conn,
+            target_id=f"variant-weak-scale-lost-{idx}",
+            scan_id=144,
+            category="consultation",
+            grade="B",
+            status="filtered_out",
+            priority=55,
+            title=f"thin consultation lost {idx}",
+            content_preview="generic provider mention without workable patient context",
+            breakdown={
+                "pathfinder_source_keyword": "thin consultation keyword",
+                "pathfinder_execution_lens": "consultation",
+                "pathfinder_query_variant": weak_scale_variant,
+                "pathfinder_axis_fit_score": 24,
+                "pathfinder_lens_fit_score": 20,
+                "clinic_treatment_fit_score": 18,
+                "worksite_efficiency_score": 12,
+            },
+        )
     conn.commit()
     conn.close()
 
@@ -540,6 +585,11 @@ def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
     feedback = report["variant_quality_feedback"]
     assert feedback["counts"]["scale_variants"] >= 1
     assert feedback["scale_variants"][0]["variant"] == good_variant
+    assert not any(item["variant"] == weak_scale_variant for item in feedback["scale_variants"])
+    assert not any(
+        item["variant"] == weak_scale_variant for item in feedback["scale_category_lens_variants"]
+    )
+    assert any(item["variant"] == weak_scale_variant for item in feedback["repair_variants"])
     assert any(item["variant"] == weak_variant for item in feedback["repair_variants"])
     assert any(item["variant"] == weak_variant for item in feedback["retire_variants"])
     assert any(

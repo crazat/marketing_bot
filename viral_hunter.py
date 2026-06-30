@@ -9458,6 +9458,36 @@ class ViralHunter:
         except (TypeError, ValueError):
             return 0
 
+    @staticmethod
+    def _variant_feedback_float(entry: Dict[str, Any], key: str) -> float:
+        try:
+            return float(entry.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _variant_quality_scale_supported(cls, entry: Dict[str, Any]) -> bool:
+        total = cls._variant_feedback_int(entry, "total")
+        strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+        actionable_strict = cls._variant_feedback_int(entry, "actionable_strict")
+        strict_fit_rate = cls._variant_feedback_float(entry, "strict_fit_rate")
+        actionable_strict_rate = cls._variant_feedback_float(entry, "actionable_strict_rate")
+
+        if strict_fit <= 0 and actionable_strict <= 0:
+            return False
+        if total < 30:
+            return True
+        if total < 80:
+            return (
+                (actionable_strict >= 2 and actionable_strict_rate >= 0.02)
+                or (strict_fit >= 3 and strict_fit_rate >= 0.05)
+            )
+        return (
+            actionable_strict >= 3
+            and actionable_strict_rate >= 0.015
+            and strict_fit_rate >= 0.02
+        )
+
     def _load_variant_quality_feedback(self, max_audits: int = 6) -> Dict[str, Dict[str, Any]]:
         """Load latest handoff-audit query-variant quality actions for planning."""
         cached = getattr(self, "_variant_quality_feedback_cache", None)
@@ -9699,6 +9729,8 @@ class ViralHunter:
                 return 0.45 if zero_survival_lane else 0.60
             if action == "repair_query_shape":
                 return 0.55 if zero_survival_lane else 0.75
+            return 1.0
+        if action in {"scale_or_keep", "scale_family_or_keep"} and not cls._variant_quality_scale_supported(entry):
             return 1.0
         return max(0.0, min(1.25, float(factor or 1.0)))
 
