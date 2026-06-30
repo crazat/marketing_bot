@@ -16,6 +16,7 @@ export interface FilterState {
   search?: string;
   sort?: string;
   scan_batch?: string;
+  exclude_revisited?: boolean;
   // [2026-04-27] AI 분류 필터
   ai_ad_label?: string;        // 자연_질문 / 광고 / 광고성_후기톤 / 기타_노이즈 (콤마 가능)
   min_confidence?: number;     // 0.0~1.0

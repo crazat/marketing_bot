@@ -310,6 +310,7 @@ export default function ViralHunter() {
         min_clinic_fit: filters.min_clinic_fit,
         min_worksite_efficiency: filters.min_worksite_efficiency,
         commentable_only: filters.commentable_only,
+        exclude_revisited: filters.exclude_revisited,
         search: filters.search,
         sort: filters.sort,
         scan_batch: filters.scan_batch,
@@ -342,6 +343,7 @@ export default function ViralHunter() {
         min_clinic_fit: filters.min_clinic_fit,
         min_worksite_efficiency: filters.min_worksite_efficiency,
         commentable_only: filters.commentable_only,
+        exclude_revisited: filters.exclude_revisited,
         search: filters.search,
         scan_batch: filters.scan_batch,
         ai_ad_label: filters.ai_ad_label,
@@ -641,6 +643,22 @@ export default function ViralHunter() {
       setCategoryTargets([])
     }
   }
+
+  const handleOpenScannedCategory = useCallback((category: string) => {
+    setCurrentPage(1)
+    setSelectedTargets(new Set())
+    setFilters((prev) => ({
+      ...prev,
+      status: 'final_scan_result',
+      comment_status: undefined,
+      category,
+      scan_batch: homeScanBatch || undefined,
+      sort: 'date',
+      work_scope: 'latest_legion',
+      exclude_revisited: false,
+    }))
+    setView('list')
+  }, [homeScanBatch])
 
   // 타겟 펼치기/접기
   const toggleExpand = (targetId: string) => {
@@ -1248,6 +1266,7 @@ export default function ViralHunter() {
           onMissionComplete={handleMissionComplete}
           onMissionStop={handleMissionStop}
           onSelectCategory={handleSelectCategory}
+          onOpenScannedCategory={handleOpenScannedCategory}
           onBatchVerify={handleBatchVerify}
           onViewList={() => setView('list')}
           onKpiNavigate={handleKpiNavigate}

@@ -140,11 +140,31 @@ VIRAL_CORE_CATEGORIES = _unique_categories(
 )
 
 VALID_VIRAL_WORK_SCOPES = {"latest_legion", "core", "all_backlog"}
+VIRAL_FINAL_SCAN_RESULT_STATUSES = (
+    "pending",
+    "generated",
+    "approved",
+    "posted",
+    "ai_approved",
+    "raw_backlog",
+    "manual_review",
+    "needs_ai_retry",
+)
 
 
 def _normalize_work_scope(work_scope: Optional[str]) -> str:
     scope = (work_scope or "latest_legion").strip()
     return scope if scope in VALID_VIRAL_WORK_SCOPES else "latest_legion"
+
+
+def _append_final_scan_result_scope(
+    where: List[str],
+    params: List[Any],
+    status_column: str = "comment_status",
+) -> None:
+    placeholders = ",".join(["?"] * len(VIRAL_FINAL_SCAN_RESULT_STATUSES))
+    where.append(f"COALESCE(NULLIF({status_column}, ''), 'pending') IN ({placeholders})")
+    params.extend(VIRAL_FINAL_SCAN_RESULT_STATUSES)
 
 
 def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
@@ -206,6 +226,40 @@ def _viral_category_expr(cursor: sqlite3.Cursor) -> str:
     if "matched_keyword_category" in columns:
         return "COALESCE(NULLIF(matched_keyword_category, ''), NULLIF(category, ''), '기타')"
     return "COALESCE(NULLIF(category, ''), '기타')"
+
+
+def _build_category_stats(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
+    category_buckets: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        category = _canonical_viral_category(row["category"])
+        count = int(row["count"] or 0)
+        avg_score = float(row["avg_score"] or 0)
+        max_score = float(row["max_score"] or 0)
+        bucket = category_buckets.setdefault(
+            category,
+            {"count": 0, "score_sum": 0.0, "max_score": 0.0},
+        )
+        bucket["count"] += count
+        bucket["score_sum"] += avg_score * count
+        bucket["max_score"] = max(bucket["max_score"], max_score)
+
+    category_stats = []
+    for category, bucket in category_buckets.items():
+        count = int(bucket["count"])
+        avg_score = (bucket["score_sum"] / count) if count else 0.0
+        max_score = bucket["max_score"]
+        priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
+
+        category_stats.append({
+            "category": category,
+            "count": count,
+            "avgScore": round(avg_score, 2),
+            "maxScore": round(max_score, 2),
+            "priority": round(priority, 2),
+        })
+
+    category_stats.sort(key=lambda x: x["priority"], reverse=True)
+    return category_stats
 
 
 def _apply_work_scope_sql(
@@ -298,6 +352,11 @@ def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
             elif "mode" in run_columns:
                 scan_type_filter = "AND sr.mode LIKE '%legion%'"
 
+            final_where: List[str] = []
+            final_params: List[Any] = []
+            _append_final_scan_result_scope(final_where, final_params, "v.comment_status")
+            final_status_filter = "AND " + " AND ".join(final_where)
+
             query = f"""
                 SELECT
                     sr.id as scan_run_id,
@@ -307,14 +366,15 @@ def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
                     MAX(COALESCE(v.last_scanned_at, v.discovered_at)) as last_discovered
                 FROM scan_runs sr
                 JOIN viral_targets v ON v.source_scan_run_id = sr.id
-                WHERE v.comment_status = 'pending'
+                WHERE 1=1
+                  {final_status_filter}
                   {scan_type_filter}
                 GROUP BY sr.id
                 HAVING count > 0
                 ORDER BY batch_time DESC, sr.id DESC
                 LIMIT 30
             """
-            for scan_run_id, batch_time, count, first_discovered, last_discovered in cursor.execute(query).fetchall():
+            for scan_run_id, batch_time, count, first_discovered, last_discovered in cursor.execute(query, final_params).fetchall():
                 batch_dt = datetime.fromisoformat(str(batch_time).replace(" ", "T"))
                 batch_date = batch_dt.strftime("%Y-%m-%d")
                 hour = batch_dt.strftime("%H")
@@ -333,6 +393,10 @@ def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
             return batches
 
         scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
+        final_where = []
+        final_params = []
+        _append_final_scan_result_scope(final_where, final_params)
+        final_status_filter = "AND " + " AND ".join(final_where)
         query = f"""
             SELECT
                 strftime('%Y-%m-%d %H', {scanned_expr}) as batch_hour,
@@ -342,13 +406,14 @@ def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
                 MIN({scanned_expr}) as first_discovered,
                 MAX({scanned_expr}) as last_discovered
             FROM viral_targets
-            WHERE comment_status = 'pending'
+            WHERE 1=1
+              {final_status_filter}
             GROUP BY strftime('%Y-%m-%d %H', {scanned_expr})
             ORDER BY batch_hour DESC
             LIMIT 30
         """
 
-        for batch_hour, batch_date, hour, count, first_discovered, last_discovered in cursor.execute(query).fetchall():
+        for batch_hour, batch_date, hour, count, first_discovered, last_discovered in cursor.execute(query, final_params).fetchall():
             batches.append({
                 "batch_id": batch_hour,
                 "batch_label": f"{batch_date} {hour}시 ({int(count):,}개)",
@@ -1229,38 +1294,44 @@ async def get_viral_home_stats(
             ORDER BY MAX(COALESCE(priority_score, 0)) DESC
         """, params)
 
-        category_rows = cursor.fetchall()
-        category_buckets: Dict[str, Dict[str, float]] = {}
-        for row in category_rows:
-            category = _canonical_viral_category(row['category'])
-            count = int(row['count'] or 0)
-            avg_score = float(row['avg_score'] or 0)
-            max_score = float(row['max_score'] or 0)
-            bucket = category_buckets.setdefault(
-                category,
-                {'count': 0, 'score_sum': 0.0, 'max_score': 0.0},
-            )
-            bucket['count'] += count
-            bucket['score_sum'] += avg_score * count
-            bucket['max_score'] = max(bucket['max_score'], max_score)
+        category_stats = _build_category_stats(cursor.fetchall())
+        # Scanned categories are separate from the actionable pending queue.
+        scanned_scope_where: List[str] = []
+        scanned_params: List[Any] = []
+        scanned_work_scope = "all_backlog" if scan_batch else work_scope
+        _apply_work_scope_sql(
+            cursor,
+            scanned_work_scope,
+            scanned_scope_where,
+            scanned_params,
+            exclude_revisited=False,
+        )
+        if scan_batch:
+            _append_scan_batch_sql(cursor, scanned_scope_where, scanned_params, scan_batch)
+        _append_final_scan_result_scope(scanned_scope_where, scanned_params)
+        scanned_batch_condition = f"AND {' AND '.join(scanned_scope_where)}" if scanned_scope_where else ""
 
-        category_stats = []
-        for category, bucket in category_buckets.items():
-            count = int(bucket['count'])
-            avg_score = (bucket['score_sum'] / count) if count else 0.0
-            max_score = bucket['max_score']
-            priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
+        cursor.execute(f"""
+            SELECT
+                {category_expr} as category,
+                COUNT(*) as count,
+                AVG(COALESCE(priority_score, 0)) as avg_score,
+                MAX(COALESCE(priority_score, 0)) as max_score
+            FROM viral_targets
+            WHERE 1=1
+            {scanned_batch_condition}
+            GROUP BY {category_expr}
+            ORDER BY MAX(COALESCE(priority_score, 0)) DESC
+        """, scanned_params)
+        scanned_category_stats = _build_category_stats(cursor.fetchall())
 
-            category_stats.append({
-                'category': category,
-                'count': count,
-                'avgScore': round(avg_score, 2),
-                'maxScore': round(max_score, 2),
-                'priority': round(priority, 2)
-            })
-
-        # 우선순위순 정렬
-        category_stats.sort(key=lambda x: x['priority'], reverse=True)
+        cursor.execute(f"""
+            SELECT COUNT(*) as total
+            FROM viral_targets
+            WHERE 1=1
+            {scanned_batch_condition}
+        """, scanned_params)
+        scanned_total_count = cursor.fetchone()['total']
 
         # 3. 총 개수
         cursor.execute(f"""
@@ -1307,8 +1378,10 @@ async def get_viral_home_stats(
 
         return {
             'total_count': total_count,
+            'scanned_total_count': scanned_total_count,
             'platform_stats': platform_stats,
             'category_stats': category_stats,
+            'scanned_category_stats': scanned_category_stats,
             'status_stats': status_stats,
             'score_distribution': score_distribution
         }

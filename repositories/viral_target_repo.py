@@ -21,6 +21,18 @@ from typing import Any, Dict, Iterator, List, Optional
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 
 
+FINAL_SCAN_RESULT_STATUSES = (
+    "pending",
+    "generated",
+    "approved",
+    "posted",
+    "ai_approved",
+    "raw_backlog",
+    "manual_review",
+    "needs_ai_retry",
+)
+
+
 class ViralTargetRepository:
     """viral_targets 테이블 접근 전담 Repository."""
 
@@ -399,8 +411,14 @@ class ViralTargetRepository:
         scan_batch = filters.get("scan_batch")
         effective_status = filters.get("comment_status") or filters.get("status")
         if effective_status:
-            clauses.append("comment_status = ?")
-            params.append(effective_status)
+            normalized_status = str(effective_status).strip().lower()
+            if normalized_status in {"final", "final_scan_result", "scan_result", "survived"}:
+                placeholders = ",".join(["?"] * len(FINAL_SCAN_RESULT_STATUSES))
+                clauses.append(f"COALESCE(NULLIF(comment_status, ''), 'pending') IN ({placeholders})")
+                params.extend(FINAL_SCAN_RESULT_STATUSES)
+            elif normalized_status not in {"all", "any", "*"}:
+                clauses.append("comment_status = ?")
+                params.append(effective_status)
 
         platforms = filters.get("platforms")
         if platforms:

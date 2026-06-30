@@ -645,3 +645,27 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m pytest tests\test_viral_handoff_audit.py -q` -> `38 passed`.
   - `python -m pytest tests\test_pathfinder_viral_stability.py -k "handoff_variant or variant_quality or platform_surface_feedback" -q` -> `5 passed`.
   - `python -m json.tool reports\viral_handoff_audit_scan94_2026_06_30_13_26_03.json > $null` -> valid JSON.
+
+## 2026-06-30 Memory: Viral Hunter WEB UI final scan category display
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Issue:
+  - Viral Hunter WEB UI category cards were empty because the home screen only counted `comment_status='pending'`.
+  - Latest scan run `94` had `pending=0`, but still had final scan survivors.
+  - A first fallback to all scanned rows was too broad: run `94` showed raw scan volume `5816`, including `filtered_out*` and other rejected rows.
+- Correct UI rule:
+  - Date/scan-batch category display must show final filtered scan results, not raw scanned rows.
+  - Final scan result statuses are `pending`, `generated`, `approved`, `posted`, `ai_approved`, `raw_backlog`, `manual_review`, and `needs_ai_retry`.
+  - Exclude rejected/removed statuses such as `filtered_out*`, `filtered_out_ai`, `filtered_out_ad`, `filtered_out_stale_window`, `self_excluded`, `deleted`, and `skipped`.
+- Implementation:
+  - `marketing_bot_web/backend/routers/viral.py`: added final scan-result status scope; `/viral/home-stats` now returns `scanned_total_count` and `scanned_category_stats` using final survivors only; `/viral/scan-batches` counts final survivors only.
+  - `repositories/viral_target_repo.py`: `status=final_scan_result` maps to the same final survivor status set for list/count APIs.
+  - `marketing_bot_web/frontend/src/components/viral/views/HomeView.tsx`: when the pending work queue is empty, show “카테고리별 최종 통과 결과” from `scanned_category_stats`.
+  - `marketing_bot_web/frontend/src/pages/ViralHunter.tsx`: clicking a final-result category opens list view with `status=final_scan_result`, the selected category, and the selected scan batch.
+- Live verification after backend restart:
+  - `/api/viral/home-stats`: `total_count=0`, `scanned_total_count=299`, `final_category_count=14` for latest run `94`.
+  - `/api/viral/scan-batches`: run `94` shows `299`, run `93` shows `81`, run `92` shows `57`.
+- Checks:
+  - `python -m py_compile marketing_bot_web\backend\routers\viral.py repositories\viral_target_repo.py`.
+  - `npm run typecheck`.
+  - `npm run build`.

@@ -96,8 +96,16 @@ export interface TargetContext {
 // [Phase 9.0] 홈 화면 집계 통계 타입
 export interface HomeStats {
   total_count: number
+  scanned_total_count?: number
   platform_stats: Record<string, { count: number; avgScore: number; maxScore: number }>
   category_stats: Array<{
+    category: string
+    count: number
+    avgScore: number
+    maxScore: number
+    priority: number
+  }>
+  scanned_category_stats?: Array<{
     category: string
     count: number
     avgScore: number
@@ -129,7 +137,7 @@ export const viralApi = {
   },
 
   getTargets: async (
-    status = 'pending',
+    status: string | null = 'pending',
     category?: string,
     limit = 50,
     filters?: {
@@ -155,7 +163,8 @@ export const viralApi = {
       exclude_revisited?: boolean
     }
   ) => {
-    const params: Record<string, any> = { status, limit }
+    const params: Record<string, any> = { limit }
+    if (status) params.status = status
 
     if (category) params.category = category
     if (filters?.category) params.category = filters.category
@@ -186,7 +195,7 @@ export const viralApi = {
   },
 
   getTargetsCount: async (
-    status = 'pending',
+    status: string | null = 'pending',
     category?: string,
     filters?: {
       date_filter?: string
@@ -209,7 +218,8 @@ export const viralApi = {
       exclude_revisited?: boolean
     }
   ): Promise<{ total: number }> => {
-    const params: Record<string, any> = { status }
+    const params: Record<string, any> = {}
+    if (status) params.status = status
 
     if (category) params.category = category
     if (filters?.category) params.category = filters.category
