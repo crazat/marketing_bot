@@ -636,6 +636,20 @@ def _ai_target_reply_workability_ready(target: "ViralTarget") -> Tuple[bool, boo
     return metric_present, bool(opportunity_ready and not risk_blocked)
 
 
+def _ai_target_needs_manual_review(target: "ViralTarget") -> bool:
+    """Return True when a target is suitable only after human compliance review."""
+    status = str(getattr(target, "comment_status", "") or "").strip().lower()
+    if status == "manual_review":
+        return True
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return False
+    return bool(
+        _ai_target_breakdown_float(target, "manual_review") > 0
+        or _ai_target_breakdown_terms(target, "reply_risk_flags")
+    )
+
+
 def _ai_target_execution_readiness_adjustment(target: "ViralTarget") -> float:
     """Priority nudge for posts that are ready for one-pass Viral Hunter execution."""
     breakdown = getattr(target, "score_breakdown", None) or {}
@@ -7036,6 +7050,8 @@ class CommentableFilter:
                 "manual_review": 1.0 if risk_flags else 0.0,
                 "reply_risk_flags": ",".join(risk_flags),
             }
+            if risk_flags:
+                target.comment_status = "manual_review"
             target.priority_score = self._compose_priority_score(
                 target.exposure_score,
                 target.workability_score,
@@ -8302,6 +8318,8 @@ POST_ID: {i}
                     "ai_infiltration_bonus": float(bonus),
                     "ai_infiltration_score": float(infiltration_score),
                 }
+                if _ai_target_needs_manual_review(target):
+                    target.comment_status = "manual_review"
 
                 # 타입별 태그 추가
                 type_tags = {

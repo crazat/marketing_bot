@@ -26,6 +26,7 @@
 - `SIGNATURE_BACKLOG_AXES`(viral_hunter)는 `routers/viral.py SIGNATURE_ROUTING_AXES`와 **동일 집합 유지**(수정 시 양쪽 동기화). 시그니처 백로그 레인(`--rescue-signature`)은 raw_backlog만 대상(이미 게이트 통과분) — 자동 승격 없음
 - Q&A 적재(`scripts/seed_signature_qa.py`)는 DML이므로 **반드시 마이그레이션 스크립트로만**(백업+멱등). 적재 후 `QASearchEngine.index_all()` RAG 재인덱스 필수(안 하면 드래프터가 못 찾음)
 - `viral_scan_audits.pending_count`/`summary.pending`은 과거 posted/generated/manual_review 포함 **actionable 누계**임 — 실제 열린 대기열은 `open_pending`, 신규 수율은 `fresh_pending`으로 판단. Pathfinder zero-yield/blind-spot 판정은 `fresh_discovered >= 25 && fresh_pending == 0` 기준 유지
+- `reply_risk_flags` 또는 `score_breakdown.manual_review`가 있는 Viral target은 자동 `pending`에 남기면 안 된다. AI가 `SUITABLE=true`를 반환해도 `comment_status='manual_review'`로 격리한다. (2026-07-01 scan 95)
 - Handoff audit의 `scale_or_keep`는 "strict-fit 1개라도 있음"으로 확장하면 안 된다. 표본이 큰 variant/family는 actionable-strict 개수와 비율을 함께 충족해야 하며, Viral Hunter는 약한 `scale_or_keep` 피드백을 받아도 검색 예산을 늘리지 않는다. (2026-06-30 scan 94)
 - 중고거래/판매/양도 글은 의료 리드가 아님. `marketplace_sale` final reject reason(`팔아요/팝니다/직거래/네고/중고나라/번개장터`) 유지하고 generic `non_relevant`로 묻지 말 것
 - Viral Hunter 최종 게이트는 제목 단독 비진료 미용/살롱 노이즈, 비한방 시험관·인공수정 추천, 비질문 케이스 스토리(예: 유00 54세/처음올때)를 저장 전 차단한다. 이 게이트는 초기 필터와 final gate 양쪽에 유지하고, 한방 난임/한의원 상담 맥락은 rescue해야 한다. (2026-06-25 scan 89 오염 정리)
@@ -669,3 +670,22 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m py_compile marketing_bot_web\backend\routers\viral.py repositories\viral_target_repo.py`.
   - `npm run typecheck`.
   - `npm run build`.
+
+## 2026-07-01 Memory: Pathfinder #95 + Viral Hunter scan95 manual-review queue hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `95`: completed, target `500`, total keywords `9120`, new `388`, updated `8732`, S `84`, A `1781`, B `6661`, C `594`, execution time `11251s`.
+  - Viral Hunter source scan `95`: audit `24`, keyword_count `90`, discovered `4941`, fresh_discovered `136`, pending/actionable cumulative `53`, open_pending `6` before correction, ad_filtered `1176`, rediscovered `4805`.
+- Handoff audit:
+  - Report regenerated with current rules: `reports/viral_handoff_audit_scan95_2026_07_01_13_22_55.json`.
+  - Quality tier `critical`, score `46.52`.
+  - Overall survival `1.4%`, actionable `1.0%`, strict-fit `0.9%`, loss `98.6%`, content mismatch `23.0%`, lens mismatch `36.5%`.
+- Improvement applied:
+  - Review-risk targets with `reply_risk_flags` or `score_breakdown.manual_review` must not remain in automatic `pending`.
+  - `viral_hunter.py` now routes these targets to `manual_review` in both filter and AI unified-analysis paths.
+  - Data correction applied for source scan `95`: 2 `testimonial_sensitive` rows moved from `pending` to `manual_review`; current queue is `pending=4`, `manual_review=2`, `generated=1`.
+- Verification completed:
+  - `$env:PYTHONPATH=(Resolve-Path '.'); pytest tests/test_pathfinder_viral_stability.py::test_unified_analysis_parallel_persists_manual_review_risk_separately tests/test_pathfinder_viral_stability.py::test_unified_analysis_parallel_persists_ai_unsuitable -q` -> `2 passed`.
+  - `python -m py_compile viral_hunter.py`.
+  - `git diff --check -- viral_hunter.py tests\test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).

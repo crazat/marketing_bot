@@ -11652,6 +11652,61 @@ def test_unified_analysis_parallel_persists_ai_unsuitable(monkeypatch):
     assert (unsuitable_target.score_breakdown or {}).get("ai_verdict") == "unsuitable"
 
 
+def test_unified_analysis_parallel_persists_manual_review_risk_separately(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    monkeypatch.setattr(
+        AICommentGenerator,
+        "_load_prompts",
+        lambda self: {"unified_analysis": {"template": "{posts_formatted}", "batch_size": 25}},
+    )
+    monkeypatch.setattr(
+        viral_hunter,
+        "ai_generate",
+        lambda *args, **kwargs: (
+            "POST_ID: 1\nSUITABLE: true\nSCORE: 85\nTYPE: consultation\n"
+            "COMPETITOR: false\n---"
+        ),
+    )
+
+    target = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=manual-review",
+        title="청주 다이어트 한약 상담 후기 궁금해요",
+        content_preview="청주에서 다이어트 한약 상담 받아보신 분 후기와 비용이 궁금합니다.",
+        matched_keywords=["청주 다이어트 한약 상담"],
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        matched_keyword_grade="A",
+        priority_score=120,
+        score_breakdown={
+            "manual_review": 1.0,
+            "reply_risk_flags": "testimonial_sensitive",
+        },
+    )
+
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    fake_db = FakeDB()
+    results = generator.unified_analysis_parallel(
+        [target],
+        batch_size=25,
+        max_workers=1,
+        db=fake_db,
+    )
+
+    assert results == [target]
+    assert target.comment_status == "manual_review"
+    saved = [row for row in fake_db.saved if row.get("url") == target.url]
+    assert saved
+    assert saved[-1]["comment_status"] == "manual_review"
+
+
 
 def test_strip_region_tokens_removes_local_anchors_only():
     from core_services.viral_seed_builder import strip_region_tokens
