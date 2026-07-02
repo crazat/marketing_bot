@@ -9314,9 +9314,14 @@ class ViralHunter:
     @staticmethod
     def _scaled_platform_limits(limits: Dict[str, int], factor: float, *, minimum: int = 10, maximum: int = 140) -> Dict[str, int]:
         scaled: Dict[str, int] = {}
+        factor = float(factor or 0.0)
         for platform, value in (limits or {}).items():
             limit = int(value or 0)
-            scaled[platform] = 0 if limit <= 0 else max(minimum, min(maximum, int(round(limit * factor))))
+            scaled[platform] = (
+                0
+                if limit <= 0 or factor <= 0.0
+                else max(minimum, min(maximum, int(round(limit * factor))))
+            )
         return scaled
 
     @staticmethod
@@ -9744,8 +9749,10 @@ class ViralHunter:
             strict_fit = cls._variant_feedback_int(entry, "strict_fit")
             zero_survival_lane = total >= 80 and survived == 0 and strict_fit == 0
             if action == "retire_or_pause":
-                return 0.45 if zero_survival_lane else 0.60
+                return 0.0 if zero_survival_lane else 0.60
             if action == "repair_query_shape":
+                if zero_survival_lane and total >= 120:
+                    return 0.40
                 return 0.55 if zero_survival_lane else 0.75
             return 1.0
         if action in {"scale_or_keep", "scale_family_or_keep"} and not cls._variant_quality_scale_supported(entry):

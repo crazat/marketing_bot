@@ -12216,6 +12216,43 @@ def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path)
     assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.75": 1}
 
 
+def test_viral_hunter_pauses_zero_survival_lane_base_retire_feedback(tmp_path):
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    baseline = probe._search_queries_for_keyword("plain seed", 100)
+    base = baseline[0]
+    assert base["variant"] == "base"
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "retire_category_lens_variants": [
+                    {
+                        "category": "test-axis",
+                        "lens": "review",
+                        "category_lens": "test-axis::review",
+                        "variant": "base",
+                        "total": 120,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "retire_or_pause",
+                    }
+                ],
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+
+    plans = hunter._search_queries_for_keyword("plain seed", 100)
+
+    assert plans[0]["variant"] == "base"
+    assert plans[0]["handoff_variant_quality_action"] == "retire_or_pause"
+    assert plans[0]["handoff_variant_quality_factor"] == 0.0
+    assert plans[0]["platform_limits"] == {"cafe": 0, "blog": 0, "kin": 0}
+    assert getattr(hunter, "_variant_quality_drop_counts", {}) == {}
+    assert hunter._variant_quality_budget_scale_counts == {"base:retire_or_pause:0.00": 1}
+
+
 def test_viral_hunter_scales_zero_survival_base_repair_more_aggressively(tmp_path):
     probe = _variant_feedback_plan_hunter(tmp_path)
     baseline = probe._search_queries_for_keyword("plain seed", 100)
@@ -12247,9 +12284,9 @@ def test_viral_hunter_scales_zero_survival_base_repair_more_aggressively(tmp_pat
 
     assert plans[0]["variant"] == "base"
     assert plans[0]["handoff_variant_quality_action"] == "repair_query_shape"
-    assert plans[0]["handoff_variant_quality_factor"] == 0.55
+    assert plans[0]["handoff_variant_quality_factor"] == 0.40
     assert plans[0]["platform_limits"]["cafe"] < base["platform_limits"]["cafe"]
-    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.55": 1}
+    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.40": 1}
 
 
 def test_viral_hunter_consumes_platform_surface_feedback_in_search_plan(tmp_path):
