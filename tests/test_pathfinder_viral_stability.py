@@ -4764,18 +4764,16 @@ def test_viral_filter_prioritizes_posts_matching_pathfinder_execution_lens():
     filtered = viral_hunter.CommentableFilter().filter([recommendation_mismatch, cost_match])
     by_url = {target.url: target for target in filtered}
 
-    assert set(by_url) == {
-        "https://example.com/pathfinder-lens-cost",
-        "https://example.com/pathfinder-lens-review",
-    }
-    assert by_url["https://example.com/pathfinder-lens-cost"].priority_score > by_url["https://example.com/pathfinder-lens-review"].priority_score
+    assert set(by_url) == {"https://example.com/pathfinder-lens-cost"}
+    assert recommendation_mismatch.comment_status == "filtered_out"
+    assert recommendation_mismatch.score_breakdown["final_reject_reason"] == "lens_mismatch"
     cost_breakdown = by_url["https://example.com/pathfinder-lens-cost"].score_breakdown
-    mismatch_breakdown = by_url["https://example.com/pathfinder-lens-review"].score_breakdown
+    mismatch_breakdown = recommendation_mismatch.score_breakdown
     assert cost_breakdown["pathfinder_lens_fit_score"] >= 75
     assert cost_breakdown["pathfinder_lens_fit_tier"] == "strong"
     assert "pathfinder_lens_cost_match" in cost_breakdown["pathfinder_lens_fit_signals"]
     assert mismatch_breakdown["pathfinder_lens_fit_tier"] in {"weak", "mismatch"}
-    assert mismatch_breakdown["pathfinder_lens_adjustment"] < cost_breakdown["pathfinder_lens_adjustment"]
+    assert "pathfinder_lens_cost_mismatch" in mismatch_breakdown["pathfinder_lens_fit_signals"]
 
 
 def test_viral_filter_scores_pathfinder_axis_fit_separately_from_lens():

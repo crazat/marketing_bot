@@ -29,6 +29,7 @@
 - `reply_risk_flags` 또는 `score_breakdown.manual_review`가 있는 Viral target은 자동 `pending`에 남기면 안 된다. AI가 `SUITABLE=true`를 반환해도 `comment_status='manual_review'`로 격리한다. (2026-07-01 scan 95)
 - Handoff audit의 `scale_or_keep`는 "strict-fit 1개라도 있음"으로 확장하면 안 된다. 표본이 큰 variant/family는 actionable-strict 개수와 비율을 함께 충족해야 하며, Viral Hunter는 약한 `scale_or_keep` 피드백을 받아도 검색 예산을 늘리지 않는다. (2026-06-30 scan 94)
 - Handoff audit에서 lane-specific `base`/`community_base`가 충분한 zero-yield 증거로 `retire_or_pause`를 받으면 최소 예산으로 되살리면 안 된다. `factor=0.0`을 실제 0 budget으로 유지하고, high-volume zero-yield `repair_query_shape` lane은 강하게 축소한다. (2026-07-02 scan 96)
+- Viral Hunter `cost`/`availability` execution lens는 사용자 질문 본문에 비용·가격·보험·예약·위치 등 직접 lens route 신호가 없으면 추천/경험 같은 community rescue만으로 통과시키지 말고 `lens_mismatch` final reject로 격리한다. scan 97의 `청주 불면증 비용` KIN 후보처럼 치료/원인 질문만 있는 글은 cost 리드가 아니다. (2026-07-03 scan 97)
 - 중고거래/판매/양도 글은 의료 리드가 아님. `marketplace_sale` final reject reason(`팔아요/팝니다/직거래/네고/중고나라/번개장터`) 유지하고 generic `non_relevant`로 묻지 말 것
 - Viral Hunter 최종 게이트는 제목 단독 비진료 미용/살롱 노이즈, 비한방 시험관·인공수정 추천, 비질문 케이스 스토리(예: 유00 54세/처음올때)를 저장 전 차단한다. 이 게이트는 초기 필터와 final gate 양쪽에 유지하고, 한방 난임/한의원 상담 맥락은 rescue해야 한다. (2026-06-25 scan 89 오염 정리)
 - Viral Hunter 검색 쿼리는 Pathfinder 기계 생성 접미사 뭉치(`상담가능한곳비용추천기간` 등)를 그대로 네이버에 보내면 안 된다. `normalize_seed_keyword_text()` + `strip_transactional_suffix()`의 compound suffix split 유지. 단독 `기간`은 exact-only로만 제거해 `시험기간` 같은 실제 서비스어를 훼손하지 말 것. (2026-06-26 scan 90)

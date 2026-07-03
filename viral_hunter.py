@@ -6107,8 +6107,17 @@ class CommentableFilter:
             ],
         )
         lens_mismatch = guarded_lens and (lens_tier == "mismatch" or (0.0 < lens_score < 50.0))
-        if lens_mismatch and not community_rescue:
-            return "lens_mismatch"
+        if lens_mismatch:
+            if lens in {"cost", "availability"}:
+                user_lens_text = f"{getattr(target, 'title', '') or ''} {cls._user_need_text(target) or ''}".lower()
+                has_direct_lens_route = _ai_text_has_any(
+                    _compact_query_text(user_lens_text),
+                    AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ()),
+                )
+                if not has_direct_lens_route:
+                    return "lens_mismatch"
+            if not community_rescue:
+                return "lens_mismatch"
         is_advertorial, _, _ = cls._detect_advertorial(target, text)
         if (
             not is_advertorial
