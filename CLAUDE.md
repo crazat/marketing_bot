@@ -710,3 +710,28 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 - Verification completed:
   - `python -m pytest tests/test_pathfinder_viral_stability.py -k "handoff_variant or platform_surface or stale_base_variant or base_repair or lane_base"` -> `9 passed`.
   - `python -m pytest tests/test_pathfinder_viral_stability.py` -> `377 passed`.
+
+## 2026-07-05 Memory: Pathfinder #99 + Viral Hunter source-seed audit hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `99`: completed, target `500`, total keywords `9333`, new `522`, updated `8811`, S `92`, A `1914`, B `6965`, C `362`, execution time `10242s`. S+A total `2006`, satisfying the 500+ requirement.
+  - Initial Viral Hunter run from source scan `99`: audit `28`, keyword_count `90`, discovered `2157`, fresh_discovered `41`, actionable/open pending `2`, ad_filtered `513`, rediscovered `2116` (`98.1%`).
+- Handoff audit:
+  - Initial report: `reports/viral_handoff_audit_scan99_2026_07_05_17_46_27.json`.
+  - Quality tier `critical`, score `34.62`; required failures were `overall_survival`, `overall_strict_fit`, and `focus_strict_coverage`.
+  - Main diagnosis was not Pathfinder supply. The bottleneck was Viral rediscovery plus weak source-seed/lane reuse: low fresh discovery, overused review/patient-voice surfaces, source seed category drift, and zero-yield `retire/repair` feedback not sufficiently suppressing next-run seed selection.
+- Improvement applied:
+  - `core_services/viral_seed_builder.py`: `_load_source_seed_audit_feedback()` now keeps the newest normalized source-seed feedback instead of allowing older audits to override through raw-vs-`norm:` key mismatch.
+  - `core_services/viral_seed_builder.py`: canonicalized recategorize feedback is treated as repaired when detected category already equals current category, avoiding a false `-64` penalty.
+  - `core_services/viral_seed_builder.py`: sufficiently evidenced `retire_or_pause` and `repair_query_shape` source-seed audit actions suppress next-run seed candidates when they have zero current fit; low-evidence repair and productive retire feedback remain recoverable.
+  - `ViralSeed.viral_seed_fit_score` is now preserved into seed context for audit/debug visibility.
+  - `tests/test_pathfinder_viral_stability.py`: regression coverage added for latest feedback precedence, canonicalized drift repair, and proven non-workable source-seed suppression.
+- Re-run after improvement:
+  - Viral Hunter audit `29`: discovered `3122`, fresh_discovered `443`, actionable/open pending `2`, fresh_pending `1`, ad_filtered `818`, rediscovered `2679` (`85.8%`).
+  - Fresh discovery improved materially (`41 -> 443`), but quality remained `critical` because actionable survival stayed near `0.1%`.
+  - Re-audit report: `reports/viral_handoff_audit_scan99_2026_07_05_18_10_23.json`, quality score `32.09`.
+  - New strongest next-run feedback: `patient_voice_question_kin` should retire in multiple high-volume zero-survival lanes (`안면비대칭::review`, `흉터/여드름흉터::review`, `체형교정::review`, `리프팅/탄력::review`, etc.). Do not expand patient-voice query budget until a later audit shows fresh actionable-strict recovery.
+- Verification completed:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py` -> `380 passed`.
+  - `git diff --check -- core_services/viral_seed_builder.py tests/test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).

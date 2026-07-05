@@ -549,6 +549,7 @@ class ViralSeed:
     business_value_score: float = 0.0
     high_value_longtail: bool = False
     viral_readiness_score: float = 0.0
+    viral_seed_fit_score: float = 0.0
     local_service_fit_score: float = 0.0
     content_actionability_score: float = 0.0
     medical_ad_risk_score: float = 0.0
@@ -869,6 +870,8 @@ class ViralSeedBuilder:
                 "feedback": fb,
                 "row": row_data,
             }
+            if self._should_suppress_source_seed_audit(candidate_item):
+                continue
             if self._should_suppress_weak_execution_lens(candidate_item):
                 continue
             scored_rows.append(candidate_item)
@@ -955,6 +958,7 @@ class ViralSeedBuilder:
                         business_value_score=float(row["business_value_score"] or 0),
                         high_value_longtail=bool(row["high_value_longtail"] or 0),
                         viral_readiness_score=float(item["viral_readiness_score"] or 0),
+                        viral_seed_fit_score=float(item.get("viral_seed_fit_score") or 0),
                         local_service_fit_score=float(row["local_service_fit_score"] or 0),
                         content_actionability_score=float(row["content_actionability_score"] or 0),
                         medical_ad_risk_score=float(row["medical_ad_risk_score"] or 0),
@@ -1547,10 +1551,12 @@ class ViralSeedBuilder:
             str((feedback or {}).get("source_seed_audit_detected_category") or "")
         )
         current = GYULIM_KEYWORD_PROFILE.normalize_category(current_category or "")
-        if not detected or detected in {"기타", "unknown"} or detected == current:
+        if not detected or detected in {"기타", "unknown"}:
             return ""
         if not GYULIM_KEYWORD_PROFILE.profile_for(detected):
             return ""
+        if detected == current:
+            return detected
 
         credit_total = int((feedback or {}).get("source_seed_audit_credit_total") or 0)
         drift_rate = ViralSeedBuilder._as_float((feedback or {}).get("source_seed_audit_category_drift_rate"))
@@ -1658,10 +1664,11 @@ class ViralSeedBuilder:
                         ),
                     }
             for norm, payload in audit_actions.items():
-                if norm in latest:
+                latest_key = f"norm:{norm}"
+                if latest_key in latest:
                     continue
                 payload.pop("_severity", None)
-                latest[f"norm:{norm}"] = payload
+                latest[latest_key] = payload
         return latest
 
     @staticmethod
@@ -2609,6 +2616,47 @@ class ViralSeedBuilder:
             selected.extend(fallback[: quota - len(selected)])
 
         return selected[:quota]
+
+    @staticmethod
+    def _should_suppress_source_seed_audit(item: dict) -> bool:
+        """Drop source seeds that handoff audit says are proven non-workable."""
+        feedback = item.get("feedback", {}) if isinstance(item, dict) else {}
+        action = str(
+            feedback.get("source_seed_audit_action")
+            or item.get("source_seed_audit_action")
+            or ""
+        ).strip()
+        if not action:
+            return False
+        if str(item.get("source_seed_audit_recategorized_category") or "").strip():
+            return False
+
+        credit_total = int(feedback.get("source_seed_audit_credit_total") or 0)
+        primary_total = int(feedback.get("source_seed_audit_primary_total") or 0)
+        actionable = int(feedback.get("source_seed_audit_actionable") or 0)
+        survived = int(feedback.get("source_seed_audit_survived") or 0)
+        strict_fit = int(feedback.get("source_seed_audit_strict_fit") or 0)
+        survival_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_survival_rate"))
+        strict_fit_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_strict_fit_rate"))
+        drift_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_category_drift_rate"))
+
+        no_current_fit = (
+            actionable <= 0
+            and survived <= 0
+            and strict_fit <= 0
+            and survival_rate <= 0.0
+            and strict_fit_rate <= 0.0
+        )
+        if not no_current_fit:
+            return False
+
+        if action == "retire_or_pause":
+            return credit_total >= 40 and primary_total >= 20
+        if action == "repair_query_shape":
+            return credit_total >= 50 and primary_total >= 30
+        if action == "recategorize_or_quarantine":
+            return drift_rate >= 0.8 or credit_total >= 10
+        return False
 
     @staticmethod
     def _should_suppress_weak_execution_lens(item: dict) -> bool:

@@ -1395,6 +1395,131 @@ def test_viral_seed_builder_consumes_source_seed_audit_feedback(tmp_path):
     assert scale_seed.source_seed_audit_adjustment > 0
 
 
+def test_viral_seed_builder_keeps_latest_source_seed_audit_feedback(tmp_path):
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = db_dir / "seed_builder_latest_source_seed_audit_feedback.db"
+    seed = "청주 여드름흉터 치료 추천"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audit_json TEXT
+            );
+            """
+        )
+        older_audit = {
+            "source_seed_feedback": {
+                "scale_candidates": [
+                    {
+                        "seed": seed,
+                        "action": "scale_or_keep",
+                        "credit_total": 80,
+                        "primary_total": 40,
+                        "actionable": 6,
+                        "survived": 6,
+                        "strict_fit": 4,
+                    }
+                ]
+            }
+        }
+        newer_audit = {
+            "source_seed_feedback": {
+                "retire_candidates": [
+                    {
+                        "seed": seed,
+                        "action": "retire_or_pause",
+                        "credit_total": 180,
+                        "primary_total": 150,
+                        "actionable": 0,
+                        "survived": 0,
+                        "strict_fit": 0,
+                    }
+                ]
+            }
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(older_audit, ensure_ascii=False),),
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(newer_audit, ensure_ascii=False),),
+        )
+
+    feedback = ViralSeedBuilder(str(db_path))._load_source_seed_audit_feedback(max_audits=2)
+    key = f"norm:{ViralSeedBuilder._keyword_feedback_key(seed)}"
+
+    assert feedback[key]["source_seed_audit_action"] == "retire_or_pause"
+    assert feedback[key]["source_seed_audit_credit_total"] == 180
+
+
+def test_viral_seed_builder_treats_already_canonicalized_audit_drift_as_repaired():
+    feedback = {
+        "source_seed_audit_action": "recategorize_or_quarantine",
+        "source_seed_audit_detected_category": "안면비대칭",
+        "source_seed_audit_credit_total": 2,
+        "source_seed_audit_category_drift_rate": 1.0,
+    }
+
+    repaired = ViralSeedBuilder._source_seed_audit_recategorized_category(
+        "청주 얼굴교정 추천",
+        "안면비대칭",
+        feedback,
+    )
+
+    assert repaired == "안면비대칭"
+    assert ViralSeedBuilder._source_seed_audit_adjustment(
+        feedback,
+        recategorized=bool(repaired),
+    ) == 0.0
+
+
+def test_viral_seed_builder_suppresses_proven_non_workable_source_seed_audit():
+    retired = {
+        "feedback": {
+            "source_seed_audit_action": "retire_or_pause",
+            "source_seed_audit_credit_total": 60,
+            "source_seed_audit_primary_total": 42,
+            "source_seed_audit_actionable": 0,
+            "source_seed_audit_survived": 0,
+            "source_seed_audit_strict_fit": 0,
+            "source_seed_audit_survival_rate": 0.0,
+            "source_seed_audit_strict_fit_rate": 0.0,
+        }
+    }
+    repaired_drift = {
+        "source_seed_audit_recategorized_category": "안면비대칭",
+        "feedback": {
+            **retired["feedback"],
+            "source_seed_audit_action": "recategorize_or_quarantine",
+            "source_seed_audit_category_drift_rate": 1.0,
+        },
+    }
+    low_evidence_repair = {
+        "feedback": {
+            **retired["feedback"],
+            "source_seed_audit_action": "repair_query_shape",
+            "source_seed_audit_credit_total": 12,
+            "source_seed_audit_primary_total": 8,
+        }
+    }
+    productive_retire = {
+        "feedback": {
+            **retired["feedback"],
+            "source_seed_audit_actionable": 1,
+            "source_seed_audit_survived": 1,
+            "source_seed_audit_strict_fit": 1,
+        }
+    }
+
+    assert ViralSeedBuilder._should_suppress_source_seed_audit(retired)
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit(repaired_drift)
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit(low_evidence_repair)
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit(productive_retire)
+
+
 def test_viral_seed_builder_recategorizes_audit_drift_seed_into_detected_axis(tmp_path):
     db_path = tmp_path / "seed_builder_source_seed_audit_recategorize.db"
     with sqlite3.connect(db_path) as conn:
