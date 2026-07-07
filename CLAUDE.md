@@ -34,6 +34,7 @@
 - Viral Hunter 최종 게이트는 제목 단독 비진료 미용/살롱 노이즈, 비한방 시험관·인공수정 추천, 비질문 케이스 스토리(예: 유00 54세/처음올때)를 저장 전 차단한다. 이 게이트는 초기 필터와 final gate 양쪽에 유지하고, 한방 난임/한의원 상담 맥락은 rescue해야 한다. (2026-06-25 scan 89 오염 정리)
 - Viral Hunter 검색 쿼리는 Pathfinder 기계 생성 접미사 뭉치(`상담가능한곳비용추천기간` 등)를 그대로 네이버에 보내면 안 된다. `normalize_seed_keyword_text()` + `strip_transactional_suffix()`의 compound suffix split 유지. 단독 `기간`은 exact-only로만 제거해 `시험기간` 같은 실제 서비스어를 훼손하지 말 것. (2026-06-26 scan 90)
 - 지점/등록형 닫힌 후기(`청주점`, `10회 등록 후기`, `내돈내산`)는 공개 질문 표면이 아니면 `closed_review_surface` final reject로 저장 전 차단한다. 단, 진짜 1인칭 환자 경험담과 `해보신분/궁금/부탁`이 있는 provider-named user question은 rescue해야 한다. (2026-06-26 scan 90)
+- Pathfinder → ViralSeedBuilder 단계의 카테고리 quota는 한 세부 진료의도에 쏠리면 안 된다. `SEED_TREATMENT_SUBINTENT_BUCKETS`, `_keyword_treatment_subintent_key()`, profile-gap subintent round-robin, `allow_subintent_fallback=not fill_profile_gaps` 계약 유지. 흉터 quota는 `여드름흉터`뿐 아니라 `새살침/피부재생`, `모공/피부결`, `수술/상처흉터` 등으로 분산되어야 한다. (2026-07-07 scan 100)
 
 ---
 
@@ -735,3 +736,28 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
 - Verification completed:
   - `python -m pytest tests/test_pathfinder_viral_stability.py` -> `380 passed`.
   - `git diff --check -- core_services/viral_seed_builder.py tests/test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).
+
+## 2026-07-07 Memory: Pathfinder #100 + Viral Hunter handoff/subintent hardening
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed context:
+  - Pathfinder Legion scan 100 기반 handoff/seed 품질을 재검토했다.
+  - 핵심 결론: Pathfinder 공급량 자체보다 Viral Hunter로 넘어가는 후보 풀의 구조가 병목이었다. 후단 AI target cap만으로는 부족하고, seed 단계부터 진료 세부의도 다양성을 보장해야 한다.
+- Handoff audit hardening:
+  - `core_services/viral_handoff_audit.py`: treatment subintent diversity gate, discarded execution false-negative audit, filtered-out rescue contract split을 추가했다.
+  - scan100 re-audit report: `reports/viral_handoff_audit_scan100_after_rescue_contract_split_20260707_101500.json`.
+  - 결과: row_count `2154`, tier `critical`, score `18.39`, discarded rescue total `86` (`auto_requeue=47`, `manual_review=39`).
+- Viral Hunter hardening:
+  - `viral_hunter.py`: strict auto rescue는 `filtered_out*`만 대상으로 하고 `skipped/deleted`는 제외한다.
+  - backlog/signature rescue는 `source_scan_run_id` scope를 보존한다.
+  - AI target split은 카테고리 floor 내부에서도 treatment subintent cap을 적용한다.
+- Seed Builder hardening:
+  - `core_services/viral_seed_builder.py`: `SEED_TREATMENT_SUBINTENT_BUCKETS`와 `_keyword_treatment_subintent_key()` 추가.
+  - `_select_diverse_rows()`에 subintent cap과 fallback 재검증을 추가해 lens fallback이 cap을 우회하지 못하게 했다.
+  - `_append_profile_gap_fill_seeds()`와 `_profile_gap_seed_candidates()`는 profile gap 보강 시 세부의도별 round-robin 후보를 공급한다.
+  - scan100 seed portfolio: total `90`. 핵심 카테고리 `흉터/여드름흉터=18`, `안면비대칭=16`, `다이어트=12`, `피부/여드름=10`, `교통사고=8`, `체형교정=7`, `리프팅/탄력=5`.
+  - 흉터 분포는 기존 `acne_scar 11 / regeneration 6 / surgery 1`에서 `regeneration_hanbang 5 / acne_scar 5 / surgery_wound 5 / pore_texture 3`로 개선됐다.
+- Verification completed:
+  - `python -m py_compile core_services\viral_seed_builder.py tests\test_pathfinder_viral_stability.py`
+  - `pytest tests/test_pathfinder_viral_stability.py::test_viral_seed_builder_diversifies_treatment_subintent_inside_category tests/test_pathfinder_viral_stability.py::test_profile_gap_seed_candidates_interleave_treatment_subintents -q` -> `2 passed`.
+  - `pytest -q` -> `675 passed, 1 skipped`.

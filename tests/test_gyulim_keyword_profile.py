@@ -140,6 +140,25 @@ def test_quality_filter_uses_profile_for_pain_and_skin_relevance():
     assert wart.relevance_score >= 0.8
 
 
+def test_gyulim_profile_detects_specific_axis_over_generic_terms():
+    assert (
+        GYULIM_KEYWORD_PROFILE.detect_category("청주 피부과 리프팅 잘하는 곳 어디가 있을까요?")
+        == "리프팅/탄력"
+    )
+    assert (
+        GYULIM_KEYWORD_PROFILE.detect_category("청주 여드름흉터 피부 치료 후기")
+        == "흉터/여드름흉터"
+    )
+    assert (
+        GYULIM_KEYWORD_PROFILE.detect_category("청주 피부과 안면비대칭교정 추천 받아요")
+        == "안면비대칭"
+    )
+    assert (
+        GYULIM_KEYWORD_PROFILE.detect_category("청주탈모 병원 갈만한곳 추천 좀 해주세요")
+        == "탈모/두피"
+    )
+
+
 def test_legion_longtail_templates_include_pain_category():
     assert "통증/디스크" in PathfinderLegion.CATEGORY_CANONICAL_SERVICES
     assert "통증/디스크" in PathfinderLegion.HIGH_VALUE_LONGTAIL_SUFFIXES

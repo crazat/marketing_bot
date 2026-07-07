@@ -11,6 +11,7 @@ from core_services.viral_seed_builder import (
     is_qualified_viral_outcome,
     load_proven_dead_structures,
 )
+from core_services.viral_handoff_audit import _source_seed_feedback
 from db.database import DatabaseManager
 from pathfinder_v3_legion import KeywordResult, PathfinderLegion, LegionCollector
 from scripts.ai_ad_classify_apply import _execute_scoped_update
@@ -4453,6 +4454,113 @@ def test_viral_seed_builder_diversifies_skin_clusters_and_regions(tmp_path):
     assert Counter(seed.category for seed in seeds) == Counter({"흉터/여드름흉터": 3, "피부/여드름": 1})
 
 
+def test_viral_seed_builder_diversifies_treatment_subintent_inside_category(tmp_path):
+    db_path = tmp_path / "seed_builder_subintent_diversity.db"
+    category = "\ud749\ud130/\uc5ec\ub4dc\ub984\ud749\ud130"
+    dominant_terms = [
+        "\uc5ec\ub4dc\ub984\ud749\ud130",
+        "\ud328\uc778\ud749\ud130",
+        "\uc5ec\ub4dc\ub984\uc790\uad6d",
+    ]
+    other_terms = [
+        "\uc0c8\uc0b4\uce68",
+        "\ubaa8\uacf5\ud749\ud130",
+        "\uc0c9\uc18c\uce68\ucc29",
+        "\uc218\uc220\ud749\ud130",
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT,
+                longtail_score REAL,
+                business_value_score REAL,
+                high_value_longtail INTEGER
+            );
+            CREATE TABLE viral_targets (
+                id TEXT PRIMARY KEY,
+                matched_keyword TEXT
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (101, 'legion', 'completed', '2026-07-07');
+            """
+        )
+        rows = []
+        for i in range(12):
+            term = dominant_terms[i % len(dominant_terms)]
+            rows.append((f"\uccad\uc8fc {term} \uc0c1\ub2f4 {i}", category, 1000 - i))
+        for term_index, term in enumerate(other_terms):
+            for copy_index in range(2):
+                rows.append(
+                    (
+                        f"\uccad\uc8fc {term} \ud6c4\uae30 {copy_index}",
+                        category,
+                        500 - (term_index * 2 + copy_index),
+                    )
+                )
+        conn.executemany(
+            """
+            INSERT INTO keyword_insights(
+                keyword, category, grade, search_volume, document_count,
+                kei, priority_v3, search_intent, scan_run_id, business_core,
+                status, longtail_score, business_value_score, high_value_longtail
+            ) VALUES (?, ?, 'A', 100, 1000, 10, ?, 'commercial',
+                      101, 1, 'active', 100, 100, 1)
+            """,
+            rows,
+        )
+
+    seeds = ViralSeedBuilder(str(db_path)).build(
+        scan_run_id=101,
+        quotas={category: 8},
+        max_per_intent_per_category=20,
+        max_per_cluster_per_category=20,
+        max_per_region_per_category=20,
+    )
+
+    subintent_keys = [
+        ViralSeedBuilder._keyword_treatment_subintent_key(seed.keyword, seed.category)
+        for seed in seeds
+    ]
+    assert len(seeds) == 8
+    assert subintent_keys.count(f"{category}:acne_scar") <= 2
+    assert len({key for key in subintent_keys if key}) >= 4
+
+
+def test_profile_gap_seed_candidates_interleave_treatment_subintents():
+    category = "\ud749\ud130/\uc5ec\ub4dc\ub984\ud749\ud130"
+    builder = ViralSeedBuilder(db_path="unused.db")
+
+    rows = builder._profile_gap_seed_candidates(category, 40)
+    subintent_keys = [
+        ViralSeedBuilder._keyword_treatment_subintent_key(row["keyword"], category)
+        for row in rows
+    ]
+
+    assert len(rows) == 40
+    assert f"{category}:acne_scar" in subintent_keys
+    assert f"{category}:regeneration_hanbang" in subintent_keys
+    assert f"{category}:pore_texture" in subintent_keys
+    assert f"{category}:surgery_wound" in subintent_keys
+    assert len({key for key in subintent_keys if key}) >= 4
+
+
 def test_viral_seed_builder_keeps_gyulim_scar_axis_separate_from_skin(tmp_path):
     db_path = tmp_path / "seed_builder_scar_alias.db"
     with sqlite3.connect(db_path) as conn:
@@ -6156,6 +6264,65 @@ def test_ai_target_split_spreads_treatment_signal_inside_category_floor():
     assert len({key for key in signal_keys if key}) >= 4
 
 
+def test_ai_target_split_spreads_treatment_subintent_inside_category_floor():
+    """Different scar terms in the same patient-problem bucket should not crowd out other buckets."""
+    category = "\ud749\ud130/\uc5ec\ub4dc\ub984\ud749\ud130"
+    dominant_terms = [
+        "\uc5ec\ub4dc\ub984\ud749\ud130",
+        "\ud328\uc778\ud749\ud130",
+        "\uc5ec\ub4dc\ub984\uc790\uad6d",
+    ]
+    other_terms = [
+        "\uc0c8\uc0b4\uce68",
+        "\ubaa8\uacf5\ud749\ud130",
+        "\uc0c9\uc18c\uce68\ucc29",
+        "\uc218\uc220\ud749\ud130",
+    ]
+    targets = []
+    for i in range(18):
+        term = dominant_terms[i % len(dominant_terms)]
+        targets.append(
+            ViralTarget(
+                platform="kin",
+                url=f"https://example.com/scar-subintent-dominant/{i}",
+                title=f"\uccad\uc8fc {term} \uc0c1\ub2f4 {i}",
+                category=category,
+                matched_keyword_category=category,
+                priority_score=1000 - i,
+                score_breakdown={"pathfinder_execution_lens": "review"},
+            )
+        )
+    for term_index, term in enumerate(other_terms):
+        for copy_index in range(2):
+            targets.append(
+                ViralTarget(
+                    platform="kin",
+                    url=f"https://example.com/scar-subintent/{term_index}-{copy_index}",
+                    title=f"\uccad\uc8fc {term} \ud6c4\uae30 {copy_index}",
+                    category=category,
+                    matched_keyword_category=category,
+                    priority_score=500 - (term_index * 2 + copy_index),
+                    score_breakdown={"pathfinder_execution_lens": "review"},
+                )
+            )
+    targets.sort(key=lambda t: t.priority_score, reverse=True)
+
+    selected, _rest = viral_hunter.split_ai_targets_with_category_floor(
+        targets,
+        top_n=10,
+        category_min_quotas={category: 8},
+    )
+
+    subintent_keys = [
+        viral_hunter._ai_target_treatment_subintent_key(target)
+        for target in selected
+    ]
+    dominant_key = f"{category}::acne_scar"
+    assert len(selected) == 10
+    assert subintent_keys.count(dominant_key) <= 3
+    assert len({key for key in subintent_keys if key}) >= 4
+
+
 def test_ai_target_split_treatment_signal_cap_falls_back_to_fill_budget():
     """If a category has one treatment signal in supply, the signal cap must not starve AI budget."""
     category = "\ub2e4\uc774\uc5b4\ud2b8"
@@ -6682,13 +6849,39 @@ def test_pathfinder_lens_fit_accepts_cost_seed_community_bridge_variant():
     assert "pathfinder_lens_cost_community_bridge" in signals
 
 
-def test_pathfinder_lens_fit_keeps_plain_cost_seed_mismatch_without_bridge_or_cost_term():
+def test_pathfinder_lens_fit_accepts_cost_seed_community_base_bridge_variant():
     target = ViralTarget(
         platform="kin",
         url="https://example.com/cost-plain-mismatch",
         title="청주 여드름흉터 새살침 추천 부탁드려요",
         content_preview="실제 경험이나 후기 있는 곳이 궁금합니다.",
         matched_keywords=["금천동 여드름흉터 비용"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        score_breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "community_base",
+        },
+    )
+
+    score, tier, signals = viral_hunter.CommentableFilter._pathfinder_lens_post_fit(
+        target,
+        platform=target.platform,
+        text=f"{target.title} {target.content_preview}".lower(),
+    )
+
+    assert score >= 55
+    assert tier in {"acceptable", "strong"}
+    assert "pathfinder_lens_cost_community_bridge" in signals
+
+
+def test_pathfinder_lens_fit_keeps_community_base_mismatch_without_bridge_or_cost_term():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/cost-community-base-no-bridge",
+        title="청주 여드름흉터 새살침 정보",
+        content_preview="치료 과정 정리 글입니다.",
+        matched_keywords=["청주 여드름흉터 비용"],
         category="흉터/여드름흉터",
         matched_keyword_category="흉터/여드름흉터",
         score_breakdown={
@@ -7440,7 +7633,7 @@ def test_viral_final_gate_rejects_skin_companion_without_skin_anchor():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) == "off_domain"
 
 
-def test_viral_filter_rejects_kin_question_with_ad_answer_snippet():
+def test_viral_filter_keeps_natural_kin_question_with_unlabeled_ad_answer_snippet():
     target = ViralTarget(
         platform="kin",
         url="https://example.com/kin-answer-ad",
@@ -7458,14 +7651,77 @@ def test_viral_filter_rejects_kin_question_with_ad_answer_snippet():
         date_str="방금 전",
         comment_count=0,
         view_count=150,
+        score_breakdown={
+            "pathfinder_viral_readiness_score": 85,
+            "pathfinder_content_actionability_score": 82,
+            "pathfinder_medical_ad_risk_score": 5,
+            "pathfinder_community_signal": 64,
+            "pathfinder_execution_lens": "community",
+        },
     )
 
     filtered = viral_hunter.CommentableFilter().filter([target])
 
-    assert filtered == []
-    assert target.comment_status == "filtered_out_ad"
-    assert target.score_breakdown["ad_signal_score"] >= 4
-    assert "answer_snippet_ad" in target.score_breakdown["ad_signals"]
+    assert filtered == [target]
+    assert target.comment_status == "pending"
+    assert "answer_snippet_ad" not in target.score_breakdown.get("ad_signals", "")
+    assert "치료가 되는지 궁금합니다" in target.content_preview
+    assert "청주 성안길 쪽 규림한의원" in target.content_preview
+    assert target.score_breakdown["local_gate_text_mode"] == "kin_question_segment"
+    assert target.score_breakdown["local_gate_preserved_answer_tail"] is True
+    assert "치료가 되는지 궁금합니다" in target.score_breakdown["local_gate_question_segment"]
+    assert "청주 성안길 쪽 규림한의원" not in target.score_breakdown["local_gate_question_segment"]
+
+
+def test_unified_analysis_format_keeps_kin_question_segment_and_full_preview():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/kin-full-preview",
+        title="청주 교통사고 한의원 치료 될까요?",
+        content_preview=(
+            "[❓질문] 청주에서 사고가 난 뒤 목 통증이 있는데 한의원 치료가 되는지 궁금합니다. "
+            "청주 성안길 쪽 규림한의원이 교통사고 진료도 꼼꼼하니 상담 한번 받아보세요."
+        ),
+        matched_keywords=["청주 교통사고 한의원"],
+        category="교통사고",
+        score_breakdown={
+            "local_gate_question_segment": "청주에서 사고가 난 뒤 목 통증이 있는데 한의원 치료가 되는지 궁금합니다.",
+            "local_gate_preserved_answer_tail": True,
+        },
+    )
+
+    formatted = AICommentGenerator._format_unified_target(1, target)
+
+    assert "사용자 질문 세그먼트:" in formatted
+    assert "치료가 되는지 궁금합니다" in formatted
+    assert "내용:" in formatted
+    assert "청주 성안길 쪽 규림한의원" in formatted
+
+
+def test_unified_prompt_uses_kin_question_segment_as_primary_suitability_basis():
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/kin-answer-tail-prompt",
+        title="청주 여드름흉터 치료 받고 싶어요",
+        content_preview=(
+            "청주여드름흉터 치료 받고 싶은데 어떻게 하면 좋을까요? "
+            "한방 외용제 도포를 권장합니다. 상담 한번 받아보세요."
+        ),
+        matched_keywords=["청주 여드름흉터"],
+        category="흉터/여드름흉터",
+        score_breakdown={
+            "local_gate_question_segment": "청주여드름흉터 치료 받고 싶은데 어떻게 하면 좋을까요?",
+            "local_gate_preserved_answer_tail": True,
+        },
+    )
+
+    prompt = generator._build_unified_prompt("{posts_formatted}", AICommentGenerator._format_unified_target(1, target))
+
+    assert "사용자 질문 세그먼트:" in prompt
+    assert "USER_QUESTION_SEGMENT 우선 판정 원칙" in prompt
+    assert "답변 꼬리만으로 자연스러운 질문글을 SUITABLE=false로 만들지 마세요" in prompt
+    assert "짜맞춘 자문자답처럼 보이면 SUITABLE=false" in prompt
 
 
 def test_viral_final_gate_does_not_reject_plain_user_question():
@@ -9721,6 +9977,193 @@ def test_viral_hunter_excludes_existing_urls_before_ai_but_refreshes_metadata(tm
     assert merged_breakdown["pathfinder_axis_fit_score"] == 77
 
 
+def test_viral_hunter_retries_high_fit_stale_rediscovered_urls_before_ai(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "viral_stale_retry_before_ai.db"))
+    stale_url = "https://example.com/stale-retry"
+    posted_url = "https://example.com/posted"
+
+    assert db.insert_viral_target({
+        "id": "stale-old",
+        "platform": "kin",
+        "url": stale_url,
+        "title": "stale old",
+        "matched_keywords": ["old"],
+        "comment_status": "filtered_out_stale_window",
+        "source_scan_run_id": 1,
+    })
+    assert db.insert_viral_target({
+        "id": "posted-old",
+        "platform": "kin",
+        "url": posted_url,
+        "title": "posted old",
+        "matched_keywords": ["old"],
+        "comment_status": "posted",
+        "source_scan_run_id": 1,
+    })
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = db
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url=stale_url,
+            title="stale retry current",
+            content_preview="current high fit question",
+            matched_keywords=["keyword"],
+            priority_score=138,
+            source_scan_run_id=10,
+            score_breakdown={
+                "pathfinder_axis_fit_score": 92,
+                "pathfinder_lens_fit_score": 84,
+                "reply_opportunity_score": 91,
+                "reply_opportunity_tier": "assist_now",
+            },
+        ),
+        ViralTarget(
+            platform="kin",
+            url=posted_url,
+            title="posted current",
+            matched_keywords=["keyword"],
+            priority_score=145,
+            source_scan_run_id=10,
+            score_breakdown={
+                "pathfinder_axis_fit_score": 95,
+                "pathfinder_lens_fit_score": 90,
+                "reply_opportunity_score": 95,
+            },
+        ),
+        ViralTarget(
+            platform="kin",
+            url="https://example.com/fresh-retry",
+            title="fresh current",
+            matched_keywords=["keyword"],
+            priority_score=120,
+            source_scan_run_id=10,
+        ),
+    ]
+
+    fresh_targets, duplicate_count = hunter._exclude_existing_targets_before_ai(targets)
+
+    assert duplicate_count == 2
+    assert [target.url for target in fresh_targets] == [
+        "https://example.com/fresh-retry",
+        stale_url,
+    ]
+    retried = fresh_targets[1]
+    assert retried.comment_status == "pending"
+    assert retried.score_breakdown["rediscovered_retry_lane"] is True
+    assert retried.score_breakdown["rediscovered_prior_status"] == "filtered_out_stale_window"
+
+    with sqlite3.connect(db.db_path) as conn:
+        rows = dict(conn.execute(
+            "SELECT url, comment_status FROM viral_targets WHERE url IN (?, ?)",
+            (stale_url, posted_url),
+        ).fetchall())
+
+    assert rows[stale_url] == "filtered_out_stale_window"
+    assert rows[posted_url] == "posted"
+
+
+def test_viral_hunter_retries_high_fit_generic_filtered_rediscovery(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "viral_filtered_retry_before_ai.db"))
+    retry_url = "https://example.com/generic-filtered-retry"
+    ad_url = "https://example.com/ad-filtered-no-retry"
+    skipped_url = "https://example.com/skipped-no-retry"
+
+    for target_id, url, status in (
+        ("retry-old", retry_url, "filtered_out"),
+        ("ad-old", ad_url, "filtered_out_ad"),
+        ("skipped-old", skipped_url, "skipped"),
+    ):
+        assert db.insert_viral_target({
+            "id": target_id,
+            "platform": "kin",
+            "url": url,
+            "title": target_id,
+            "matched_keywords": ["old"],
+            "comment_status": status,
+            "source_scan_run_id": 1,
+        })
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = db
+
+    def candidate(url: str) -> ViralTarget:
+        return ViralTarget(
+            platform="kin",
+            url=url,
+            title="current high fit",
+            matched_keywords=["keyword"],
+            priority_score=140,
+            source_scan_run_id=10,
+            score_breakdown={
+                "pathfinder_axis_fit_score": 92,
+                "pathfinder_lens_fit_score": 84,
+                "reply_opportunity_score": 91,
+                "reply_opportunity_tier": "assist_now",
+            },
+        )
+
+    fresh_targets, duplicate_count = hunter._exclude_existing_targets_before_ai([
+        candidate(retry_url),
+        candidate(ad_url),
+        candidate(skipped_url),
+        candidate("https://example.com/fresh-filtered-retry"),
+    ])
+
+    assert duplicate_count == 3
+    assert [target.url for target in fresh_targets] == [
+        "https://example.com/fresh-filtered-retry",
+        retry_url,
+    ]
+    retried = fresh_targets[1]
+    assert retried.comment_status == "pending"
+    assert retried.score_breakdown["rediscovered_retry_lane"] is True
+    assert retried.score_breakdown["rediscovered_prior_status"] == "filtered_out"
+
+
+def test_viral_hunter_does_not_retry_date_enriched_stale_rediscovery(monkeypatch):
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/date-enriched-stale",
+        title="known stale",
+        content_preview="already date enriched",
+        matched_keywords=["keyword"],
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_axis_fit_score": 95,
+            "pathfinder_lens_fit_score": 90,
+            "reply_opportunity_score": 95,
+            "timing_window_score": 0.0,
+            "timing_window_tier": "stale",
+            "timing_window_signals": "post_age_exceeds_ttl",
+            "timing_regated_after_date_enrichment": True,
+        },
+    )
+
+    assert not viral_hunter.ViralHunter._rediscovered_retry_candidate_ready(
+        target,
+        "filtered_out_stale_window",
+    )
+
+
 def test_existing_url_refresh_is_deduped_and_does_not_zero_out_priority(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral_refresh.db"))
     existing = {
@@ -10056,6 +10499,17 @@ def test_comment_input_strips_kin_answer_segment():
     out = f(mk(short))
     assert out == "일본에 다이어트 한약 반입 될까요?"          # 답변(여행 전문가) 제거
     assert "기존답변" not in out and "여행 전문가" not in out
+    unlabeled = (
+        "청주여드름흉터 치료 받고 싶은데 어떻게 하면 좋을까요..? "
+        "제가 이곳 저곳 많이 다녀봤는데 효과가 없어서 너무 답답하네요. "
+        "여드름 흉터를 최소화 하면서 제거하는 치료, 피지와 각질을 조절할 수 있는 "
+        "한방 외용제 도포를 권장합니다."
+    )
+    out = f(mk(unlabeled))
+    assert "어떻게 하면 좋을까요" in out
+    assert "효과가 없어서 너무 답답" in out
+    assert "한방 외용제 도포" not in out
+    assert "권장합니다" not in out
     # 답변 없는 글 → 그대로
     assert f(mk("청주 교통사고 후 목 통증 한의원 추천")) == "청주 교통사고 후 목 통증 한의원 추천"
     # 답변만 있는 비정상 입력 → 원본 폴백(fail-soft, 빈 질문 방지)
@@ -10102,6 +10556,148 @@ def test_raw_backlog_can_be_promoted_to_pending_on_later_ai_success(tmp_path):
         ).fetchone()
 
     assert row == ("pending", 4, 2)
+
+
+def test_stale_window_promotes_only_after_ai_reviewed_success(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_stale_promote.db"))
+    stale = {
+        "id": "stale",
+        "platform": "kin",
+        "url": "https://example.com/stale/1",
+        "title": "stale target",
+        "matched_keywords": ["keyword"],
+        "comment_status": "filtered_out_stale_window",
+        "source_scan_run_id": 3,
+    }
+    assert db.insert_viral_target(stale)
+    assert db.insert_viral_target({
+        **stale,
+        "id": "stale-seen-again",
+        "comment_status": "pending",
+        "source_scan_run_id": 4,
+    })
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            "SELECT comment_status, source_scan_run_id, scan_count FROM viral_targets WHERE url = ?",
+            (stale["url"],),
+        ).fetchone()
+
+    assert row == ("filtered_out_stale_window", 4, 2)
+
+    assert db.insert_viral_target({
+        **stale,
+        "id": "stale-ai-success",
+        "comment_status": "pending",
+        "ai_reviewed": True,
+        "source_scan_run_id": 5,
+    })
+
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            "SELECT comment_status, source_scan_run_id, scan_count FROM viral_targets WHERE url = ?",
+            (stale["url"],),
+        ).fetchone()
+
+    assert row == ("pending", 5, 3)
+
+
+def test_retryable_filtered_statuses_promote_after_ai_reviewed_success(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_filtered_retry_promote.db"))
+    retryable_statuses = [
+        "filtered_out",
+        "filtered_out_ai",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_unqualified_lead",
+        "filtered_out_journey_mismatch",
+    ]
+
+    for idx, status in enumerate(retryable_statuses):
+        row = {
+            "id": f"retryable-{idx}",
+            "platform": "kin",
+            "url": f"https://example.com/retryable/{idx}",
+            "title": f"retryable {idx}",
+            "matched_keywords": ["keyword"],
+            "comment_status": status,
+            "source_scan_run_id": 10,
+        }
+        assert db.insert_viral_target(row)
+        assert db.insert_viral_target({
+            **row,
+            "id": f"retryable-seen-{idx}",
+            "comment_status": "pending",
+            "source_scan_run_id": 11,
+        })
+
+    with sqlite3.connect(db.db_path) as conn:
+        rows = dict(conn.execute(
+            "SELECT url, comment_status FROM viral_targets WHERE url LIKE 'https://example.com/retryable/%'"
+        ).fetchall())
+
+    assert rows == {
+        f"https://example.com/retryable/{idx}": status
+        for idx, status in enumerate(retryable_statuses)
+    }
+
+    for idx, status in enumerate(retryable_statuses):
+        assert db.insert_viral_target({
+            "id": f"retryable-ai-{idx}",
+            "platform": "kin",
+            "url": f"https://example.com/retryable/{idx}",
+            "title": f"retryable ai {idx}",
+            "matched_keywords": ["keyword"],
+            "comment_status": "pending",
+            "ai_reviewed": True,
+            "source_scan_run_id": 12,
+        }), status
+
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute(
+            "SELECT comment_status, source_scan_run_id, scan_count "
+            "FROM viral_targets WHERE url LIKE 'https://example.com/retryable/%' "
+            "ORDER BY url"
+        ).fetchall()
+
+    assert rows == [("pending", 12, 3)] * len(retryable_statuses)
+
+
+def test_protected_filtered_statuses_do_not_promote_on_ai_reviewed_success(tmp_path):
+    db = DatabaseManager(str(tmp_path / "viral_protected_status.db"))
+    protected_statuses = ["filtered_out_ad", "skipped", "deleted", "posted"]
+
+    for idx, status in enumerate(protected_statuses):
+        row = {
+            "id": f"protected-{idx}",
+            "platform": "kin",
+            "url": f"https://example.com/protected/{idx}",
+            "title": f"protected {idx}",
+            "matched_keywords": ["keyword"],
+            "comment_status": status,
+            "source_scan_run_id": 10,
+        }
+        assert db.insert_viral_target(row)
+        assert db.insert_viral_target({
+            **row,
+            "id": f"protected-ai-{idx}",
+            "comment_status": "pending",
+            "ai_reviewed": True,
+            "source_scan_run_id": 11,
+        }), status
+
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute(
+            "SELECT url, comment_status, source_scan_run_id, scan_count "
+            "FROM viral_targets WHERE url LIKE 'https://example.com/protected/%' "
+            "ORDER BY url"
+        ).fetchall()
+
+    assert rows == [
+        (f"https://example.com/protected/{idx}", status, 11, 2)
+        for idx, status in enumerate(protected_statuses)
+    ]
 
 
 def test_needs_ai_retry_is_not_demoted_to_raw_backlog(tmp_path):
@@ -10229,6 +10825,17 @@ def test_strip_transactional_suffix_keeps_service_core():
     assert strip_transactional_suffix("청주 시험기간 집중력 한약") == "청주 시험기간 집중력 한약"
     # 서비스 토큰이 남지 않으면 원본 유지 (동네명 단독 검색 방지)
     assert strip_transactional_suffix("봉명동 상담") == "봉명동 상담"
+
+
+def test_seed_keyword_normalization_dedupes_repeated_intent_tokens():
+    assert (
+        normalize_seed_keyword_text("청주 직장인 다이어트 한의원 상담 추천 비용 추천")
+        == "청주 직장인 다이어트 한의원 상담 추천 비용"
+    )
+    assert (
+        strip_transactional_suffix("청주 직장인 다이어트 한의원 상담 추천 비용 추천")
+        == "청주 직장인 다이어트 한의원 추천"
+    )
 
 
 def test_keyword_structure_features_buckets():
@@ -11648,28 +12255,55 @@ def _create_rescue_viral_targets_table(conn):
             posted_at TEXT,
             comment_status TEXT,
             discovered_at TEXT,
+            last_scanned_at TEXT,
             source_scan_run_id INTEGER,
             matched_keyword_grade TEXT,
             matched_keyword_kei REAL,
             matched_keyword_priority REAL,
-            matched_keyword_category TEXT
+            matched_keyword_category TEXT,
+            score_breakdown TEXT
         )
         """
     )
 
 
-def _insert_rescue_target(conn, target_id, url, category, status, priority, discovered_at):
+def _insert_rescue_target(
+    conn,
+    target_id,
+    url,
+    category,
+    status,
+    priority,
+    discovered_at,
+    *,
+    last_scanned_at=None,
+    is_commentable=1,
+    source_scan_run_id=60,
+    score_breakdown=None,
+):
     conn.execute(
         """
         INSERT INTO viral_targets (
             id, platform, url, title, content_preview, matched_keywords, matched_keyword,
             category, is_commentable, generated_comment, priority_score, author, posted_at,
-            comment_status, discovered_at, source_scan_run_id, matched_keyword_grade,
-            matched_keyword_kei, matched_keyword_priority, matched_keyword_category
+            comment_status, discovered_at, last_scanned_at, source_scan_run_id, matched_keyword_grade,
+            matched_keyword_kei, matched_keyword_priority, matched_keyword_category, score_breakdown
         ) VALUES (?, 'cafe', ?, '청주 후기 질문글', '실제 사용자 질문 본문', '["청주 키워드"]', '청주 키워드',
-                  ?, 1, '', ?, 'user', '', ?, ?, 60, 'A', 10.0, 100.0, ?)
+                  ?, ?, '', ?, 'user', '', ?, ?, ?, ?, 'A', 10.0, 100.0, ?, ?)
         """,
-        (target_id, url, category, priority, status, discovered_at, category),
+        (
+            target_id,
+            url,
+            category,
+            is_commentable,
+            priority,
+            status,
+            discovered_at,
+            last_scanned_at or discovered_at,
+            source_scan_run_id,
+            category,
+            json.dumps(score_breakdown or {}, ensure_ascii=False),
+        ),
     )
 
 
@@ -11708,6 +12342,338 @@ def test_viral_hunter_loads_backlog_rescue_targets(tmp_path):
     assert "https://cafe.naver.com/t/pending" not in rescued_urls
     assert "https://cafe.naver.com/t/old" not in rescued_urls
     assert "https://cafe.naver.com/t/dup" not in rescued_urls
+
+
+def test_viral_hunter_backlog_rescue_scopes_to_source_scan_run_id(tmp_path):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "scoped_rescue.db"
+    now = datetime.now().isoformat()
+    with sqlite3.connect(db_path) as conn:
+        _create_rescue_viral_targets_table(conn)
+        _insert_rescue_target(
+            conn,
+            "scan-60",
+            "https://cafe.naver.com/t/scan-60",
+            "skin",
+            "raw_backlog",
+            120,
+            now,
+            source_scan_run_id=60,
+        )
+        _insert_rescue_target(
+            conn,
+            "scan-61",
+            "https://cafe.naver.com/t/scan-61",
+            "skin",
+            "raw_backlog",
+            119,
+            now,
+            source_scan_run_id=61,
+        )
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    all_urls = {target.url for target in hunter._load_backlog_rescue_targets(5)}
+    scoped_urls = {
+        target.url
+        for target in hunter._load_backlog_rescue_targets(5, source_scan_run_id=60)
+    }
+
+    assert all_urls == {
+        "https://cafe.naver.com/t/scan-60",
+        "https://cafe.naver.com/t/scan-61",
+    }
+    assert scoped_urls == {"https://cafe.naver.com/t/scan-60"}
+
+
+def test_viral_hunter_signature_backlog_rescue_scopes_to_source_scan_run_id(tmp_path):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "scoped_signature_rescue.db"
+    now = datetime.now().isoformat()
+    signature_category = viral_hunter.SIGNATURE_BACKLOG_AXES[0]
+    with sqlite3.connect(db_path) as conn:
+        _create_rescue_viral_targets_table(conn)
+        _insert_rescue_target(
+            conn,
+            "sig-scan-60",
+            "https://cafe.naver.com/t/sig-scan-60",
+            signature_category,
+            "raw_backlog",
+            120,
+            now,
+            source_scan_run_id=60,
+        )
+        _insert_rescue_target(
+            conn,
+            "sig-scan-61",
+            "https://cafe.naver.com/t/sig-scan-61",
+            signature_category,
+            "raw_backlog",
+            119,
+            now,
+            source_scan_run_id=61,
+        )
+        conn.commit()
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    all_urls = {
+        target.url
+        for target in hunter._load_backlog_rescue_targets(
+            5,
+            set(),
+            days=viral_hunter.SIGNATURE_BACKLOG_RESCUE_DAYS,
+            categories=viral_hunter.SIGNATURE_BACKLOG_AXES,
+        )
+    }
+    scoped_urls = {
+        target.url
+        for target in hunter._load_backlog_rescue_targets(
+            5,
+            set(),
+            days=viral_hunter.SIGNATURE_BACKLOG_RESCUE_DAYS,
+            categories=viral_hunter.SIGNATURE_BACKLOG_AXES,
+            source_scan_run_id=60,
+        )
+    }
+
+    assert all_urls == {
+        "https://cafe.naver.com/t/sig-scan-60",
+        "https://cafe.naver.com/t/sig-scan-61",
+    }
+    assert scoped_urls == {"https://cafe.naver.com/t/sig-scan-60"}
+
+
+def test_viral_hunter_rescues_recently_scanned_high_fit_unexplained_filtered_targets(
+    tmp_path,
+    monkeypatch,
+):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "filtered_rescue.db"
+    now = datetime.now().isoformat()
+    old = "2020-01-01T00:00:00"
+    high_fit = {
+        "pathfinder_axis_fit_score": 96,
+        "pathfinder_lens_fit_score": 84,
+        "reply_opportunity_score": 93,
+        "reply_opportunity_tier": "assist_now",
+    }
+    explicit_reject = {**high_fit, "final_reject_reason": "off_domain"}
+    low_fit = {**high_fit, "pathfinder_axis_fit_score": 40}
+
+    with sqlite3.connect(db_path) as conn:
+        _create_rescue_viral_targets_table(conn)
+        _insert_rescue_target(
+            conn,
+            "retry",
+            "https://cafe.naver.com/t/retry",
+            "피부/여드름",
+            "filtered_out",
+            145,
+            old,
+            last_scanned_at=now,
+            is_commentable=0,
+            score_breakdown=high_fit,
+        )
+        _insert_rescue_target(
+            conn,
+            "raw-current",
+            "https://cafe.naver.com/t/raw-current",
+            "피부/여드름",
+            "raw_backlog",
+            120,
+            old,
+            last_scanned_at=now,
+        )
+        _insert_rescue_target(
+            conn,
+            "explicit",
+            "https://cafe.naver.com/t/explicit",
+            "피부/여드름",
+            "filtered_out",
+            150,
+            old,
+            last_scanned_at=now,
+            is_commentable=0,
+            score_breakdown=explicit_reject,
+        )
+        _insert_rescue_target(
+            conn,
+            "low-fit",
+            "https://cafe.naver.com/t/low-fit",
+            "피부/여드름",
+            "filtered_out",
+            150,
+            old,
+            last_scanned_at=now,
+            is_commentable=0,
+            score_breakdown=low_fit,
+        )
+        _insert_rescue_target(
+            conn,
+            "old-scan",
+            "https://cafe.naver.com/t/old-scan",
+            "피부/여드름",
+            "filtered_out",
+            150,
+            old,
+            last_scanned_at=old,
+            is_commentable=0,
+            score_breakdown=high_fit,
+        )
+        conn.commit()
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    rescued = hunter._load_backlog_rescue_targets(5)
+    by_url = {target.url: target for target in rescued}
+
+    assert "https://cafe.naver.com/t/retry" in by_url
+    assert by_url["https://cafe.naver.com/t/retry"].comment_status == "needs_ai_retry"
+    assert by_url["https://cafe.naver.com/t/retry"].score_breakdown["backlog_filtered_retry_lane"] is True
+    assert by_url["https://cafe.naver.com/t/retry"].score_breakdown["backlog_rescue_prior_status"] == "filtered_out"
+    assert "https://cafe.naver.com/t/raw-current" in by_url
+    assert "https://cafe.naver.com/t/explicit" not in by_url
+    assert "https://cafe.naver.com/t/low-fit" not in by_url
+    assert "https://cafe.naver.com/t/old-scan" not in by_url
+
+
+def test_viral_hunter_rescues_execution_ready_discarded_statuses(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "discarded_rescue.db"
+    now = datetime.now().isoformat()
+    old = "2020-01-01T00:00:00"
+    category = "\ud749\ud130/\uc5ec\ub4dc\ub984\ud749\ud130"
+    source_keyword = "\uccad\uc8fc \uc5ec\ub4dc\ub984\ud749\ud130 \ud55c\uc758\uc6d0 \ucd94\ucc9c"
+    question_text = (
+        "\uccad\uc8fc \uc5ec\ub4dc\ub984\ud749\ud130 \ud55c\uc758\uc6d0 "
+        "\ucd94\ucc9c \uad81\uae08\ud569\ub2c8\ub2e4?"
+    )
+    high_fit = {
+        "pathfinder_source_keyword": source_keyword,
+        "pathfinder_query_variant": "patient_voice_question_kin",
+        "pathfinder_execution_lens": "service",
+        "pathfinder_axis_fit_score": 96,
+        "pathfinder_lens_fit_score": 84,
+        "clinic_treatment_fit_score": 92,
+        "worksite_efficiency_score": 90,
+        "reply_opportunity_score": 62,
+        "reply_opportunity_tier": "assist_now",
+        "reply_opportunity_signals": (
+            "clear_question_shape,help_request_language,decision_or_service_task,"
+            "local_actionable,unanswered_or_low_response"
+        ),
+        "reply_risk_penalty": 0,
+        "reply_risk_flags": "",
+        "manual_review": 0,
+        "final_reject_reason": "advertorial",
+    }
+    low_reply = {**high_fit, "reply_opportunity_score": 40}
+
+    with sqlite3.connect(db_path) as conn:
+        _create_rescue_viral_targets_table(conn)
+        _insert_rescue_target(
+            conn,
+            "discarded-ready",
+            "https://cafe.naver.com/t/discarded-ready",
+            category,
+            "filtered_out_ad",
+            145,
+            old,
+            last_scanned_at=now,
+            is_commentable=0,
+            score_breakdown=high_fit,
+        )
+        _insert_rescue_target(
+            conn,
+            "discarded-low-reply",
+            "https://cafe.naver.com/t/discarded-low-reply",
+            category,
+            "filtered_out_ad",
+            145,
+            old,
+            last_scanned_at=now,
+            is_commentable=0,
+            score_breakdown=low_reply,
+        )
+        conn.execute(
+            """
+            UPDATE viral_targets
+               SET title = ?, content_preview = ?, matched_keyword = ?, matched_keywords = ?
+             WHERE id IN ('discarded-ready', 'discarded-low-reply')
+            """,
+            (
+                question_text,
+                question_text,
+                source_keyword,
+                json.dumps([source_keyword], ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(db_path))
+
+    rescued = hunter._load_backlog_rescue_targets(5)
+    by_url = {target.url: target for target in rescued}
+
+    ready = by_url["https://cafe.naver.com/t/discarded-ready"]
+    assert ready.comment_status == "needs_ai_retry"
+    assert ready.score_breakdown["backlog_discarded_retry_lane"] is True
+    assert ready.score_breakdown["backlog_rescue_prior_status"] == "filtered_out_ad"
+    assert ready.score_breakdown["backlog_rescue_prior_reject_reason"] == "advertorial"
+    assert "final_reject_reason" not in ready.score_breakdown
+    assert "pathfinder_fit_reject_reason" not in ready.score_breakdown
+    assert "https://cafe.naver.com/t/discarded-low-reply" not in by_url
+
+
+def test_viral_hunter_rescue_prior_status_preserves_original_retry_status():
+    filtered_retry = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/t/retry",
+        title="retry",
+        comment_status="needs_ai_retry",
+        score_breakdown={"backlog_rescue_prior_status": "filtered_out"},
+    )
+    rediscovered_retry = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?d1id=1&docId=1",
+        title="retry",
+        comment_status="pending",
+        score_breakdown={"rediscovered_prior_status": "filtered_out_stale_window"},
+    )
+    raw_retry = ViralTarget(
+        platform="blog",
+        url="https://blog.naver.com/example/1",
+        title="retry",
+        comment_status="",
+    )
+
+    assert viral_hunter.ViralHunter._rescue_prior_status(filtered_retry) == "filtered_out"
+    assert viral_hunter.ViralHunter._rescue_prior_status(rediscovered_retry) == "filtered_out_stale_window"
+    assert viral_hunter.ViralHunter._rescue_prior_status(raw_retry) == "raw_backlog"
 
 
 def test_unified_analysis_parallel_persists_ai_unsuitable(monkeypatch):
@@ -12293,6 +13259,81 @@ def test_viral_hunter_does_not_expand_weak_handoff_variant_scale_feedback(tmp_pa
     assert getattr(hunter, "_variant_quality_budget_scale_counts", {}) == {}
 
 
+def test_viral_hunter_loads_variant_quality_feedback_from_explicit_reports_root(tmp_path):
+    from types import SimpleNamespace
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "retire_variants": [
+                    {
+                        "variant": "review:test",
+                        "total": 25,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "retire_or_pause",
+                    }
+                ]
+            }
+        },
+    )
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = SimpleNamespace(db_path=str(tmp_path / "missing.db"))
+    hunter._variant_feedback_reports_root = str(tmp_path)
+
+    feedback = hunter._load_variant_quality_feedback(max_audits=1)
+
+    assert feedback["review:test"]["action"] == "retire_or_pause"
+    assert feedback["review:test"]["_source"] == "viral_handoff_audit_test.json"
+
+
+def test_viral_hunter_drops_zero_survival_variant_family_feedback():
+    feedback = {
+        "family:axis_companion": {
+            "type": "variant_family",
+            "family": "axis_companion",
+            "total": 80,
+            "survived": 0,
+            "strict_fit": 0,
+            "action": "retire_family_or_pause",
+        }
+    }
+
+    assert viral_hunter.ViralHunter._variant_quality_gate_should_drop(
+        feedback,
+        category="test-axis",
+        lens="review",
+        variant="axis_skin:acne",
+    )
+    assert not viral_hunter.ViralHunter._variant_quality_gate_should_drop(
+        {
+            "family:axis_companion": {
+                **feedback["family:axis_companion"],
+                "survived": 1,
+            }
+        },
+        category="test-axis",
+        lens="review",
+        variant="axis_skin:acne",
+    )
+    assert not viral_hunter.ViralHunter._variant_quality_gate_should_drop(
+        {
+            "family:community_base": {
+                "type": "variant_family",
+                "family": "community_base",
+                "total": 570,
+                "survived": 0,
+                "strict_fit": 0,
+                "action": "retire_family_or_pause",
+            }
+        },
+        category="test-axis",
+        lens="review",
+        variant="community_base",
+    )
+
+
 def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path):
     probe = _variant_feedback_plan_hunter(tmp_path)
     baseline = probe._search_queries_for_keyword("plain seed", 100)
@@ -12410,6 +13451,49 @@ def test_viral_hunter_scales_zero_survival_base_repair_more_aggressively(tmp_pat
     assert plans[0]["handoff_variant_quality_factor"] == 0.40
     assert plans[0]["platform_limits"]["cafe"] < base["platform_limits"]["cafe"]
     assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.40": 1}
+
+
+def test_viral_hunter_scales_community_base_family_feedback(tmp_path, monkeypatch):
+    keyword = "plain seed suffix"
+    monkeypatch.setattr(
+        viral_hunter,
+        "strip_transactional_suffix",
+        lambda value: "plain seed" if value == keyword else value,
+    )
+    probe = _variant_feedback_plan_hunter(tmp_path)
+    probe.keyword_context[keyword] = dict(probe.keyword_context["plain seed"])
+    baseline = probe._search_queries_for_keyword(keyword, 100)
+    community_base = baseline[0]
+    assert community_base["variant"] == "community_base"
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "variant_quality_feedback": {
+                "repair_families": [
+                    {
+                        "family": "community_base",
+                        "total": 570,
+                        "survived": 0,
+                        "strict_fit": 0,
+                        "action": "repair_family_query_shape",
+                    }
+                ]
+            }
+        },
+    )
+    hunter = _variant_feedback_plan_hunter(tmp_path)
+    hunter.keyword_context[keyword] = dict(hunter.keyword_context["plain seed"])
+
+    plans = hunter._search_queries_for_keyword(keyword, 100)
+
+    assert plans[0]["variant"] == "community_base"
+    assert plans[0]["handoff_variant_quality_action"] == "repair_family_query_shape"
+    assert plans[0]["handoff_variant_quality_factor"] == 0.40
+    assert plans[0]["platform_limits"]["cafe"] < community_base["platform_limits"]["cafe"]
+    assert hunter._variant_quality_budget_scale_counts == {
+        "community_base:repair_family_query_shape:0.40": 1
+    }
 
 
 def test_viral_hunter_consumes_platform_surface_feedback_in_search_plan(tmp_path):
@@ -13761,6 +14845,149 @@ def test_platform_yield_factors_and_budget_application(tmp_path):
     assert hunter._platform_drop_counts.get("blog", 0) > 0
 
 
+def test_source_seed_feedback_does_not_recategorize_assist_only_drift():
+    feedback = _source_seed_feedback(
+        {
+            "청주 체형교정 한의원 후기": {
+                "category": "다이어트",
+                "detected_category": "체형교정",
+                "category_counts": {"다이어트": 1},
+                "detected_category_counts": {"체형교정": 1},
+                "credit_total": 1,
+                "primary_total": 0,
+                "assist_total": 1,
+                "actionable": 0,
+                "survived": 0,
+                "strict_fit": 0,
+                "survival_rate": 0.0,
+                "strict_fit_rate": 0.0,
+                "category_drift_count": 1,
+                "category_drift_rate": 1.0,
+                "dominant_category_drift": True,
+                "query_variant_counts": {"base": 1},
+            },
+            "청주 비만 치료": {
+                "category": "여성/산후",
+                "detected_category": "다이어트",
+                "category_counts": {"여성/산후": 2},
+                "detected_category_counts": {"다이어트": 2},
+                "credit_total": 2,
+                "primary_total": 2,
+                "assist_total": 0,
+                "actionable": 0,
+                "survived": 0,
+                "strict_fit": 0,
+                "survival_rate": 0.0,
+                "strict_fit_rate": 0.0,
+                "category_drift_count": 2,
+                "category_drift_rate": 1.0,
+                "dominant_category_drift": True,
+                "query_variant_counts": {"base": 2},
+            },
+        },
+        limit=10,
+    )
+
+    recat_seeds = {item["seed"] for item in feedback["recategorize_candidates"]}
+    assist_seeds = {item["seed"] for item in feedback["assist_only_candidates"]}
+
+    assert "청주 체형교정 한의원 후기" not in recat_seeds
+    assert "청주 체형교정 한의원 후기" in assist_seeds
+    assert recat_seeds == {"청주 비만 치료"}
+    assert feedback["counts"]["recategorize_candidates"] == 1
+    assert feedback["counts"]["assist_only_candidates"] == 1
+
+
+def test_seed_builder_treats_legacy_assist_only_recat_feedback_as_companion():
+    feedback = {
+        "source_seed_audit_action": "recategorize_or_quarantine",
+        "source_seed_audit_category": "다이어트",
+        "source_seed_audit_detected_category": "체형교정",
+        "source_seed_audit_credit_total": 2,
+        "source_seed_audit_primary_total": 0,
+        "source_seed_audit_assist_total": 2,
+        "source_seed_audit_actionable": 0,
+        "source_seed_audit_survived": 0,
+        "source_seed_audit_strict_fit": 0,
+        "source_seed_audit_category_drift_rate": 1.0,
+    }
+
+    assert ViralSeedBuilder._source_seed_audit_recategorized_category(
+        "청주 체형교정 한의원 후기",
+        "다이어트",
+        feedback,
+    ) == ""
+    assert ViralSeedBuilder._source_seed_audit_adjustment(feedback) == -9.0
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit({"feedback": feedback})
+
+
+def test_seed_builder_loads_legacy_assist_only_recat_report_as_companion(tmp_path):
+    root = tmp_path / "project"
+    db_path = root / "db" / "marketing_data.db"
+    reports_dir = root / "reports"
+    db_path.parent.mkdir(parents=True)
+    reports_dir.mkdir(parents=True)
+
+    seed = "청주 체형교정 한의원 후기"
+    (reports_dir / "viral_handoff_audit_scan100_legacy.json").write_text(
+        json.dumps(
+            {
+                "source_seed_feedback": {
+                    "recategorize_candidates": [
+                        {
+                            "seed": seed,
+                            "category": "다이어트",
+                            "detected_category": "체형교정",
+                            "credit_total": 1,
+                            "primary_total": 0,
+                            "assist_total": 1,
+                            "actionable": 0,
+                            "survived": 0,
+                            "strict_fit": 0,
+                            "survival_rate": 0.0,
+                            "strict_fit_rate": 0.0,
+                            "category_drift_rate": 1.0,
+                            "action": "recategorize_or_quarantine",
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    builder = ViralSeedBuilder(str(db_path))
+    feedback = builder._load_source_seed_audit_feedback(max_audits=1)
+    key = "norm:" + builder._keyword_feedback_key(normalize_seed_keyword_text(seed))
+
+    assert feedback[key]["source_seed_audit_action"] == "merge_or_keep_as_companion"
+    assert feedback[key]["source_seed_audit_primary_total"] == 0
+    assert feedback[key]["source_seed_audit_assist_total"] == 1
+
+
+def test_seed_builder_suppresses_proven_assist_only_primary_seed():
+    feedback = {
+        "source_seed_audit_action": "merge_or_keep_as_companion",
+        "source_seed_audit_category": "흉터/여드름흉터",
+        "source_seed_audit_detected_category": "흉터/여드름흉터",
+        "source_seed_audit_credit_total": 20,
+        "source_seed_audit_primary_total": 0,
+        "source_seed_audit_assist_total": 20,
+        "source_seed_audit_actionable": 0,
+        "source_seed_audit_survived": 0,
+        "source_seed_audit_strict_fit": 0,
+        "source_seed_audit_survival_rate": 0.0,
+        "source_seed_audit_strict_fit_rate": 0.0,
+        "source_seed_audit_category_drift_rate": 0.0,
+    }
+
+    assert ViralSeedBuilder._should_suppress_source_seed_audit({"feedback": feedback})
+
+    thin_feedback = {**feedback, "source_seed_audit_credit_total": 2, "source_seed_audit_assist_total": 2}
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit({"feedback": thin_feedback})
+
+
 def test_scar_patient_exploration_rescues_comparison_question():
     """흉터 환자의 탐색 질문은 본문에 시술 단어(레이저)가 있어도 살아남는다."""
     target = ViralTarget(
@@ -13857,14 +15084,39 @@ def test_kin_answer_segment_isolated_in_final_gate_everywhere():
     # 게이트 통과 후에도 preview 원본(답변 포함)은 보존돼 AI가 전체를 본다.
     assert "[기존답변1]" in labeled.content_preview
 
-    # 라벨 없는 snippet 연결(미보강)은 기존 광고 판정 규칙이 그대로 적용된다.
+    # 라벨 없는 snippet 연결도 질문 세그먼트가 명확하면 로컬 게이트는 질문만 본다.
+    # 기존 답변/경쟁사 홍보 여부는 AI 적합성 레이어가 원문 preview를 보고 판단한다.
     unlabeled = _final_gate_target(
         "kin", "추나치료 자세 불균형에도 도움이 될까요?",
         question + " # 병원 위치 | 진료 예약 | 문의 전화 안녕하세요, 닥톡-네이버 지식iN "
         "상담한의사입니다. 상담 한번 받아보세요. 비용 부담 없이 진료받으세요",
         "체형교정", "체형교정", "seg-unlabeled",
     )
-    assert viral_hunter.CommentableFilter.apply_final_reject(unlabeled) == "advertorial"
+    assert viral_hunter.CommentableFilter.apply_final_reject(unlabeled) is None
+    assert "# 병원 위치" in unlabeled.content_preview
+
+
+def test_unlabeled_kin_answer_tail_is_removed_from_user_need_text():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/unlabeled-answer-tail",
+        title="청주 여드름흉터 치료 받고 싶어요",
+        content_preview=(
+            "청주여드름흉터 치료 받고 싶은데 어떻게 하면 좋을까요..? "
+            "제가 이곳 저곳 많이 다녀봤는데 효과가 없어서 너무 답답하네요. "
+            "여드름 흉터를 최소화 하면서 제거하는 치료, 피지와 각질을 조절할 수 있는 "
+            "한방 외용제 도포를 권장합니다."
+        ),
+        matched_keywords=["청주 여드름흉터"],
+        category="흉터/여드름흉터",
+    )
+
+    user_text = viral_hunter.CommentableFilter._user_need_text(target)
+
+    assert "어떻게 하면 좋을까요" in user_text
+    assert "효과가 없어서 너무 답답" in user_text
+    assert "한방 외용제 도포" not in user_text
+    assert "권장합니다" not in user_text
 
 
 def test_asymmetry_patient_vocab_passes_anchor_gate():
@@ -13906,8 +15158,9 @@ def test_signature_backlog_rescue_lane_reaches_old_starved_axis(tmp_path):
         with sqlite3.connect(db.db_path) as conn:
             conn.execute(
                 "UPDATE viral_targets SET discovered_at = datetime('now', ?), "
+                "last_scanned_at = datetime('now', ?), "
                 "matched_keyword_category = ?, is_commentable = 1 WHERE id = ?",
-                (age, cat, rid),
+                (age, age, cat, rid),
             )
             conn.commit()
 

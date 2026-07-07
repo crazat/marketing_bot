@@ -59,6 +59,10 @@ OPPORTUNITY_DIVERSITY_MIN_SOURCE_SEEDS = 2
 OPPORTUNITY_DIVERSITY_MIN_VARIANT_FAMILIES = 2
 TREATMENT_SIGNAL_DIVERSITY_CATEGORY_MIN_TERMS = 4
 TREATMENT_SIGNAL_DIVERSITY_CATEGORY_LENS_MIN_TERMS = 2
+TREATMENT_SUBINTENT_CATEGORY_TARGET = WORK_QUEUE_CATEGORY_TARGET
+TREATMENT_SUBINTENT_CATEGORY_LENS_TARGET = WORK_QUEUE_CATEGORY_LENS_TARGET
+TREATMENT_SUBINTENT_CATEGORY_MIN_BUCKETS = 3
+TREATMENT_SUBINTENT_CATEGORY_LENS_MIN_BUCKETS = 2
 EXECUTION_PRIORITY_CATEGORY_TOP_WINDOW = 8
 EXECUTION_PRIORITY_CATEGORY_LENS_TOP_WINDOW = 3
 SEED_CANDIDATE_ALIGNMENT_MIN_OVERLAP = 2
@@ -66,6 +70,34 @@ SEED_CANDIDATE_ALIGNMENT_MIN_RATIO = 0.34
 REPLY_WORKABILITY_SCORE_READY = 55.0
 REPLY_WORKABILITY_RISK_PENALTY_BLOCK = -40.0
 REPLY_WORKABILITY_READY_TIERS = {"assist_now", "good"}
+REANALYSIS_RESCUE_MIN_PRIORITY = 115.0
+REANALYSIS_RESCUE_MIN_AXIS_FIT = 80.0
+REANALYSIS_RESCUE_MIN_LENS_FIT = 70.0
+REANALYSIS_RESCUE_MIN_REPLY_SCORE = 75.0
+DISCARDED_EXECUTION_RESCUE_MIN_PRIORITY = 115.0
+DISCARDED_EXECUTION_RESCUE_MIN_REPLY_SCORE = 55.0
+DISCARDED_EXECUTION_AUTO_REQUEUE_STATUSES = {
+    "filtered_out",
+    "filtered_out_ad",
+    "filtered_out_ai",
+    "filtered_out_clinic_mismatch",
+    "filtered_out_journey_mismatch",
+    "filtered_out_low_intent",
+    "filtered_out_low_opportunity",
+    "filtered_out_stale_window",
+    "filtered_out_unqualified_lead",
+}
+DISCARDED_EXECUTION_MANUAL_REVIEW_STATUSES = {"deleted", "skipped"}
+SOURCE_LINEAGE_MIN_SOURCE_SEED_COVERAGE = 0.90
+SOURCE_LINEAGE_MIN_PRIORITY_FOCUS_SOURCE_SEED_COVERAGE = 0.90
+SOURCE_LINEAGE_MIN_ACTIONABLE_STRICT_SOURCE_SEED_COVERAGE = 0.90
+SOURCE_LINEAGE_MIN_QUERY_VARIANT_COVERAGE = 0.80
+LOCAL_AREA_DIVERSITY_CATEGORY_MIN_AREAS = 3
+LOCAL_AREA_DIVERSITY_CATEGORY_LENS_MIN_AREAS = 2
+CLINIC_MODALITY_CATEGORY_TARGET = WORK_QUEUE_CATEGORY_TARGET
+CLINIC_MODALITY_CATEGORY_LENS_TARGET = WORK_QUEUE_CATEGORY_LENS_TARGET
+DECISION_WINDOW_CATEGORY_TARGET = WORK_QUEUE_CATEGORY_TARGET
+DECISION_WINDOW_CATEGORY_LENS_TARGET = WORK_QUEUE_CATEGORY_LENS_TARGET
 COMPLIANCE_SEVERE_RISK_FLAGS = {
     "urgent_medical",
     "medication_advice_request",
@@ -75,6 +107,257 @@ COMPLIANCE_REVIEW_RISK_FLAGS = {
     "sensitive_medical",
     "testimonial_sensitive",
     "generic_category",
+}
+CONTENT_REPLY_RISK_PATTERNS: Dict[str, tuple[str, ...]] = {
+    "urgent_medical": (
+        "응급",
+        "응급실",
+        "119",
+        "심한통증",
+        "출혈",
+        "마비",
+        "호흡곤란",
+        "emergency",
+        "urgent",
+        "ervisit",
+    ),
+    "sensitive_medical": (
+        "임신",
+        "수유",
+        "청소년",
+        "소아",
+        "당뇨",
+        "고혈압",
+        "스테로이드",
+        "pregnant",
+        "breastfeeding",
+        "steroid",
+    ),
+    "medication_advice_request": (
+        "약먹어도",
+        "복용",
+        "처방",
+        "약물",
+        "medicine",
+        "medication",
+        "prescription",
+        "dosage",
+    ),
+    "acute_side_effect": (
+        "부작용",
+        "감염",
+        "염증",
+        "발열",
+        "알레르기",
+        "sideeffect",
+        "side-effect",
+        "infection",
+        "allergy",
+    ),
+    "testimonial_sensitive": (
+        "전후사진",
+        "효과보장",
+        "치료후기",
+        "beforeafter",
+        "before/after",
+        "guaranteedresult",
+    ),
+}
+CONTENT_REPLY_RISK_PENALTIES = {
+    "urgent_medical": -60.0,
+    "sensitive_medical": -22.0,
+    "medication_advice_request": -45.0,
+    "acute_side_effect": -55.0,
+    "testimonial_sensitive": -10.0,
+}
+CLINIC_MODALITY_POSITIVE_TERMS: tuple[str, ...] = (
+    "한의원",
+    "한방",
+    "한약",
+    "침",
+    "침치료",
+    "약침",
+    "매선",
+    "매선침",
+    "새살침",
+    "추나",
+    "추나요법",
+    "뜸",
+    "부항",
+    "다이어트한약",
+    "한방다이어트",
+    "감량한약",
+    "한방리프팅",
+)
+CLINIC_MODALITY_OFFSCOPE_TERMS: tuple[str, ...] = (
+    "피부과",
+    "성형외과",
+    "레이저",
+    "프락셀",
+    "레이저토닝",
+    "토닝",
+    "필러",
+    "보톡스",
+    "스킨부스터",
+    "쥬베룩",
+    "리쥬란",
+    "인모드",
+    "슈링크",
+    "울쎄라",
+    "지방흡입",
+    "양악",
+    "윤곽수술",
+    "코수술",
+    "쌍수",
+    "위고비",
+    "마운자로",
+    "삭센다",
+    "오젬픽",
+    "다이어트주사",
+    "비만주사",
+    "식욕억제제",
+    "피부과약",
+    "항생제",
+    "미노씬",
+    "독시사이클린",
+    "스테로이드",
+    "양약",
+)
+CLINIC_MODALITY_BRIDGE_TERMS: tuple[str, ...] = (
+    "말고",
+    "대신",
+    "비교",
+    "차이",
+    "vs",
+    "브이에스",
+    "보다",
+    "한의원으로",
+    "한방으로",
+    "한약으로",
+    "침으로",
+)
+CLINIC_MODALITY_STRONG_BRIDGE_TERMS: tuple[str, ...] = (
+    "말고",
+    "대신",
+    "한의원으로",
+    "한방으로",
+    "한약으로",
+    "침으로",
+)
+DECISION_WINDOW_ACTIVE_TERMS: tuple[str, ...] = (
+    "?",
+    "궁금",
+    "추천",
+    "어디",
+    "어떤",
+    "어떻게",
+    "고민",
+    "찾고",
+    "찾아요",
+    "알아보고",
+    "알려",
+    "비용",
+    "가격",
+    "얼마",
+    "상담",
+    "문의",
+    "예약",
+    "가능",
+    "오늘",
+    "주말",
+    "야간",
+    "근처",
+    "가까운",
+    "비교",
+    "차이",
+    "선택",
+    "괜찮",
+    "할까요",
+    "해야",
+    "되나요",
+    "받아도",
+)
+DECISION_WINDOW_COMPLETED_TERMS: tuple[str, ...] = (
+    "다녀왔",
+    "받았",
+    "받아봤",
+    "해봤",
+    "했습니다",
+    "했어요",
+    "완료",
+    "끝났",
+    "예약했",
+    "예약완료",
+    "이미",
+    "지난달",
+    "작년에",
+    "예전에",
+    "후기입니다",
+    "치료후기",
+    "시술후기",
+    "수술후기",
+    "내돈내산",
+    "전후사진",
+    "전후",
+    "효과봤",
+    "효과 보고",
+    "리뷰 남",
+)
+TREATMENT_SUBINTENT_BUCKETS: Dict[str, Dict[str, tuple[str, ...]]] = {
+    "흉터/여드름흉터": {
+        "acne_scar": ("여드름흉터", "여드름자국", "패인흉터", "흉터치료"),
+        "regeneration_hanbang": ("새살침", "흉터새살침", "흉터 새살침", "피부재생"),
+        "pore_texture": ("모공흉터", "모공", "피부결"),
+        "pigmentation": ("색소침착", "붉은자국", "갈색자국", "착색"),
+        "surgery_wound": ("수술흉터", "상처흉터", "수두흉터", "켈로이드"),
+    },
+    "안면비대칭": {
+        "facial_asymmetry": ("안면비대칭", "얼굴비대칭", "얼굴좌우차이", "좌우비대칭"),
+        "jaw_tmj": ("턱비대칭", "턱관절", "턱", "교합"),
+        "cheekbone_head": ("광대비대칭", "광대좌우차이", "두상비대칭", "머리비대칭"),
+        "non_surgical_correction": ("비수술", "안면교정", "비대칭교정", "웨딩 안면비대칭"),
+    },
+    "피부/여드름": {
+        "acne_trouble": ("여드름", "성인여드름", "피부트러블", "트러블", "피지"),
+        "skin_condition": ("피부질환", "피부관리", "건선"),
+        "dermatitis": ("아토피", "지루성피부염", "습진", "두드러기"),
+        "redness_rosacea": ("홍조", "안면홍조", "열감"),
+        "wart_pigment": ("편평사마귀", "색소", "기미", "잡티"),
+    },
+    "다이어트": {
+        "diet_program": ("다이어트", "한방다이어트", "다이어트한약", "다이어트 한의원"),
+        "weight_loss": ("비만", "체중", "감량", "살빼", "체지방"),
+        "appetite_metabolism": ("식욕억제", "식욕", "대사", "요요"),
+        "body_part": ("뱃살", "허벅지살", "팔뚝살", "복부"),
+        "life_event": ("산후다이어트", "웨딩다이어트", "웨딩 다이어트"),
+    },
+    "체형교정": {
+        "posture_correction": ("체형교정", "자세교정", "추나"),
+        "pelvis_spine": ("골반교정", "골반틀어짐", "척추교정", "척추측만"),
+        "neck_shoulder": ("거북목", "라운드숄더", "목", "어깨"),
+        "leg_posture": ("휜다리", "오다리", "휜다리교정"),
+        "posture_pain": ("통증", "허리", "허리통증"),
+    },
+    "리프팅/탄력": {
+        "skin_aging": ("리프팅", "처짐", "노화", "얼굴라인"),
+        "thread_lifting": ("매선", "매선리프팅", "침리프팅", "한방리프팅", "동안침", "매선침"),
+        "elasticity_wrinkle": ("피부탄력", "탄력", "주름", "팔자주름"),
+        "jawline_doublechin": ("이중턱", "턱선", "얼굴라인"),
+    },
+    "교통사고": {
+        "accident_context": (
+            "교통사고",
+            "자동차사고",
+            "추돌사고",
+            "교통사고한의원",
+            "교통사고 한의원",
+            "자동차사고 한의원",
+        ),
+        "insurance_admin": ("자동차보험", "자보", "보험", "합의"),
+        "neck_back_pain": ("목통증", "허리통증", "사고후통증", "통증", "두통"),
+        "hospitalization": ("입원", "교통사고입원", "자동차사고입원"),
+        "aftereffect": ("후유증", "교통사고후유증"),
+    },
 }
 REPLY_WORKABILITY_GOOD_SIGNALS = {
     "clear_question_shape",
@@ -400,6 +683,8 @@ class LaneStats:
     lens_surface_checked: int = 0
     lens_surface_matched: int = 0
     lens_surface_mismatch: int = 0
+    clinic_observed: int = 0
+    worksite_observed: int = 0
     priority_sum: float = 0.0
     axis_fit_sum: float = 0.0
     lens_fit_sum: float = 0.0
@@ -474,8 +759,10 @@ class LaneStats:
             self.lens_observed += 1
             self.lens_fit_sum += lens_fit
         if clinic_fit is not None:
+            self.clinic_observed += 1
             self.clinic_fit_sum += clinic_fit
         if worksite_efficiency is not None:
+            self.worksite_observed += 1
             self.worksite_sum += worksite_efficiency
 
     @staticmethod
@@ -527,8 +814,12 @@ class LaneStats:
             "avg_priority": self._avg(self.priority_sum, self.total),
             "avg_axis_fit": self._avg(self.axis_fit_sum, self.axis_observed),
             "avg_lens_fit": self._avg(self.lens_fit_sum, self.lens_observed),
-            "avg_clinic_fit": self._avg(self.clinic_fit_sum, self.total),
-            "avg_worksite_efficiency": self._avg(self.worksite_sum, self.total),
+            "avg_clinic_fit": self._avg(self.clinic_fit_sum, self.clinic_observed),
+            "avg_worksite_efficiency": self._avg(self.worksite_sum, self.worksite_observed),
+            "clinic_fit_observed": self.clinic_observed,
+            "worksite_efficiency_observed": self.worksite_observed,
+            "clinic_fit_coverage_rate": self._rate(self.clinic_observed, self.total),
+            "worksite_efficiency_coverage_rate": self._rate(self.worksite_observed, self.total),
             "axis_observed": self.axis_observed,
             "lens_observed": self.lens_observed,
             "axis_coverage_rate": self._rate(self.axis_observed, self.total),
@@ -775,7 +1066,8 @@ def _lens_surface_evidence(row: sqlite3.Row, lens: str, query_variant: str) -> D
         or (
             expected_lens in {"cost", "consultation", "availability", "safety"}
             and (
-                variant.startswith("axis_")
+                variant == "community_base"
+                or variant.startswith("axis_")
                 or variant in {"patient_voice_kin", "patient_voice_question_kin"}
             )
         )
@@ -924,6 +1216,49 @@ def _viral_action_route_evidence(row: sqlite3.Row, lens: str) -> Dict[str, Any]:
     }
 
 
+def _content_reply_risk_flags(text: str) -> Dict[str, Any]:
+    compact = _compact_text(text)
+    if not compact:
+        return {"flags": [], "penalty": 0.0, "matched_terms": {}}
+
+    matched_terms: Dict[str, List[str]] = {}
+    for flag, terms in CONTENT_REPLY_RISK_PATTERNS.items():
+        matches: List[str] = []
+        for term in terms:
+            compact_term = _compact_text(term)
+            if compact_term and compact_term in compact and term not in matches:
+                matches.append(term)
+        if matches:
+            matched_terms[flag] = matches[:6]
+
+    flags: List[str] = []
+    if matched_terms.get("urgent_medical"):
+        flags.append("urgent_medical")
+    if matched_terms.get("sensitive_medical"):
+        flags.append("sensitive_medical")
+    if matched_terms.get("medication_advice_request") and (
+        matched_terms.get("sensitive_medical")
+        or matched_terms.get("acute_side_effect")
+    ):
+        flags.append("medication_advice_request")
+    if matched_terms.get("acute_side_effect") and (
+        matched_terms.get("sensitive_medical")
+        or matched_terms.get("medication_advice_request")
+    ):
+        flags.append("acute_side_effect")
+    if matched_terms.get("testimonial_sensitive"):
+        flags.append("testimonial_sensitive")
+
+    penalty = 0.0
+    for flag in flags:
+        penalty += float(CONTENT_REPLY_RISK_PENALTIES.get(flag) or 0.0)
+    return {
+        "flags": flags,
+        "penalty": penalty,
+        "matched_terms": matched_terms,
+    }
+
+
 def _reply_workability_evidence(
     row: sqlite3.Row,
     score_breakdown: Dict[str, Any],
@@ -937,6 +1272,14 @@ def _reply_workability_evidence(
     risk_flags = _split_signal_values(score_breakdown.get("reply_risk_flags"))
     risk_penalty = _number(score_breakdown.get("reply_risk_penalty"), 0.0) or 0.0
     manual_review = _truthy(score_breakdown.get("manual_review")) or status == "manual_review"
+    content_risk = _content_reply_risk_flags(_content_text(row))
+    content_risk_flags = list(content_risk.get("flags") or [])
+    for flag in content_risk_flags:
+        if flag not in risk_flags:
+            risk_flags.append(flag)
+    content_risk_penalty = float(content_risk.get("penalty") or 0.0)
+    if content_risk_penalty < risk_penalty:
+        risk_penalty = content_risk_penalty
 
     comment_count = int(_number(_row_value(row, "comment_count"), 0.0) or 0)
     view_count = int(_number(_row_value(row, "view_count"), 0.0) or 0)
@@ -961,6 +1304,8 @@ def _reply_workability_evidence(
         "tier": tier,
         "signals": signals[:12],
         "risk_flags": risk_flags[:12],
+        "content_risk_flags": content_risk_flags[:12],
+        "content_risk_terms": content_risk.get("matched_terms") or {},
         "risk_penalty": risk_penalty,
         "manual_review": manual_review,
         "metric_missing": metric_missing,
@@ -1030,6 +1375,213 @@ def _treatment_signature_evidence(row: sqlite3.Row, category: str) -> Dict[str, 
     }
 
 
+def _category_subintent_buckets(category: str) -> Dict[str, tuple[str, ...]]:
+    normalized = ACTIVE_KEYWORD_PROFILE.normalize_category(category or "")
+    return TREATMENT_SUBINTENT_BUCKETS.get(normalized, {})
+
+
+def _treatment_subintent_evidence(row: sqlite3.Row, category: str) -> Dict[str, Any]:
+    """Detect which patient sub-problem bucket this target represents."""
+    buckets = _category_subintent_buckets(category)
+    compact = _compact_text(_content_text(row))
+    expected_buckets = list(buckets)
+    if not buckets:
+        return {
+            "checked": False,
+            "matched": False,
+            "buckets": [],
+            "terms": [],
+            "bucket_terms": {},
+            "expected_buckets": [],
+        }
+    if not compact:
+        return {
+            "checked": False,
+            "matched": False,
+            "buckets": [],
+            "terms": [],
+            "bucket_terms": {},
+            "expected_buckets": expected_buckets,
+        }
+
+    matched_buckets: List[str] = []
+    matched_terms: List[str] = []
+    bucket_terms: Dict[str, List[str]] = {}
+    for bucket, terms in buckets.items():
+        term_matches: List[str] = []
+        for term in terms:
+            clean = str(term or "").strip()
+            compact_term = _compact_text(clean)
+            if compact_term and compact_term in compact and clean not in term_matches:
+                term_matches.append(clean)
+                if clean not in matched_terms:
+                    matched_terms.append(clean)
+        if term_matches:
+            matched_buckets.append(bucket)
+            bucket_terms[bucket] = term_matches[:8]
+
+    return {
+        "checked": True,
+        "matched": bool(matched_buckets),
+        "buckets": matched_buckets[:8],
+        "terms": matched_terms[:16],
+        "bucket_terms": bucket_terms,
+        "expected_buckets": expected_buckets,
+    }
+
+
+def _matched_terms_from_text(text: str, terms: Iterable[object], *, limit: int = 12) -> List[str]:
+    compact = _compact_text(text)
+    if not compact:
+        return []
+    matched: List[str] = []
+    for term in terms:
+        clean = str(term or "").strip()
+        compact_term = _compact_text(clean)
+        if compact_term and compact_term in compact and clean not in matched:
+            matched.append(clean)
+            if len(matched) >= limit:
+                break
+    return matched
+
+
+def _clinic_modality_positive_terms(category: str) -> List[str]:
+    terms: List[str] = []
+    anchor_markers = (
+        tuple(getattr(ACTIVE_KEYWORD_PROFILE, "hanbang_indicators", ()) or ())
+        + CLINIC_MODALITY_POSITIVE_TERMS
+        + ("한방병원", "한의사", "경혈", "비수술")
+    )
+    for term in anchor_markers:
+        clean = str(term or "").strip()
+        if clean and clean not in terms:
+            terms.append(clean)
+    normalized = ACTIVE_KEYWORD_PROFILE.normalize_category(category or "")
+    profile = ACTIVE_KEYWORD_PROFILE.profile_for(normalized)
+    if profile:
+        for term in tuple(getattr(profile, "direct_service_anchors", ()) or ()):
+            clean = str(term or "").strip()
+            compact_clean = _compact_text(clean)
+            if (
+                clean
+                and clean not in terms
+                and any(_compact_text(marker) in compact_clean for marker in anchor_markers)
+            ):
+                terms.append(clean)
+    terms.sort(key=lambda value: len(_compact_text(value)), reverse=True)
+    return terms
+
+
+def _clinic_modality_evidence(row: sqlite3.Row, category: str) -> Dict[str, Any]:
+    """Detect whether the post is compatible with Gyulim's Korean-medicine modality."""
+    text = _content_text(row)
+    if not text.strip():
+        return {
+            "checked": False,
+            "matched": False,
+            "compatible": False,
+            "positive_terms": [],
+            "offscope_terms": [],
+            "bridge_terms": [],
+            "reasons": ["empty_text"],
+        }
+
+    positive_terms = _matched_terms_from_text(
+        text,
+        _clinic_modality_positive_terms(category),
+    )
+    offscope_terms = _matched_terms_from_text(
+        text,
+        CLINIC_MODALITY_OFFSCOPE_TERMS,
+    )
+    bridge_terms = _matched_terms_from_text(
+        text,
+        CLINIC_MODALITY_BRIDGE_TERMS,
+        limit=8,
+    )
+    strong_bridge_terms = [
+        term for term in bridge_terms
+        if term in CLINIC_MODALITY_STRONG_BRIDGE_TERMS
+    ]
+    offscope_only = bool(offscope_terms and not positive_terms and not strong_bridge_terms)
+    reasons: List[str] = []
+    if offscope_only:
+        reasons.append("offscope_modality_noise")
+    if offscope_terms and not positive_terms:
+        reasons.append("missing_hanbang_modality_anchor")
+    if offscope_only and bridge_terms and not strong_bridge_terms:
+        reasons.append("weak_comparison_bridge_without_hanbang_anchor")
+
+    compatible = not offscope_only
+    return {
+        "checked": True,
+        "matched": compatible,
+        "compatible": compatible,
+        "positive_terms": positive_terms[:12],
+        "offscope_terms": offscope_terms[:12],
+        "bridge_terms": bridge_terms[:8],
+        "reasons": reasons,
+    }
+
+
+def _decision_window_evidence(
+    row: sqlite3.Row,
+    score_breakdown: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Detect whether the post is still in an actionable decision window."""
+    text = _content_text(row)
+    if not text.strip():
+        return {
+            "checked": False,
+            "matched": False,
+            "active_terms": [],
+            "completed_terms": [],
+            "active_signals": [],
+            "reasons": ["empty_text"],
+        }
+
+    active_terms = _matched_terms_from_text(text, DECISION_WINDOW_ACTIVE_TERMS)
+    completed_terms = _matched_terms_from_text(text, DECISION_WINDOW_COMPLETED_TERMS)
+    reply_signals = _split_signal_values(score_breakdown.get("reply_opportunity_signals"))
+    active_signal_names = [
+        signal for signal in reply_signals
+        if signal in {
+            "decision_stage",
+            "consideration_stage",
+            "qualified_lead_context",
+            "actionable_need",
+            "decision_or_service_task",
+            "help_request_language",
+            "clear_question_shape",
+        }
+    ]
+    active = bool(active_terms or active_signal_names)
+    completed_only = bool(completed_terms and not active)
+    committed_booking_noise = bool(
+        completed_terms
+        and any("예약" in term for term in completed_terms)
+        and not any(term in active_terms for term in ("괜찮", "할까요", "되나요", "?"))
+    )
+
+    reasons: List[str] = []
+    if not active:
+        reasons.append("no_active_decision_window")
+    if completed_only:
+        reasons.append("completed_or_review_only_surface")
+    if committed_booking_noise:
+        reasons.append("already_committed_booking_noise")
+
+    matched = bool(active and not completed_only and not committed_booking_noise)
+    return {
+        "checked": True,
+        "matched": matched,
+        "active_terms": active_terms[:12],
+        "completed_terms": completed_terms[:12],
+        "active_signals": active_signal_names[:8],
+        "reasons": reasons,
+    }
+
+
 def _local_anchor_terms() -> List[str]:
     terms: List[str] = []
     for term in (
@@ -1046,6 +1598,37 @@ def _local_anchor_terms() -> List[str]:
             terms.append(clean)
     terms.sort(key=lambda value: len(_compact_text(value)), reverse=True)
     return terms
+
+
+def _dedupe_local_area_terms(terms: Iterable[object]) -> List[str]:
+    selected: List[str] = []
+    selected_compacts: List[str] = []
+    candidates: List[str] = []
+    for term in terms:
+        clean = str(term or "").strip()
+        compact = _compact_text(clean)
+        if not compact or len(compact) < 2:
+            continue
+        if clean not in candidates:
+            candidates.append(clean)
+    candidates.sort(key=lambda value: len(_compact_text(value)), reverse=True)
+    for term in candidates:
+        compact = _compact_text(term)
+        if any(compact == existing or compact in existing or existing in compact for existing in selected_compacts):
+            continue
+        selected.append(term)
+        selected_compacts.append(compact)
+    return selected
+
+
+def _local_area_terms_from_text(text: str) -> List[str]:
+    compact = _compact_text(text)
+    if not compact:
+        return []
+    return _dedupe_local_area_terms(
+        term for term in _local_anchor_terms()
+        if _compact_text(term) and _compact_text(term) in compact
+    )
 
 
 def _local_intent_evidence(row: sqlite3.Row) -> Dict[str, Any]:
@@ -1076,6 +1659,20 @@ def _local_intent_evidence(row: sqlite3.Row) -> Dict[str, Any]:
         "matched": bool(matched_terms),
         "terms": matched_terms[:8],
         "expected_terms": terms[:12],
+    }
+
+
+def _local_area_evidence(row: sqlite3.Row, *, source_seeds: List[str]) -> Dict[str, Any]:
+    target_terms = _local_area_terms_from_text(_content_text(row))
+    source_terms = _local_area_terms_from_text(" ".join(str(seed or "") for seed in source_seeds))
+    terms = _dedupe_local_area_terms(list(target_terms) + list(source_terms))
+    return {
+        "checked": bool(_content_text(row).strip() or source_seeds),
+        "matched": bool(terms),
+        "terms": terms[:10],
+        "target_terms": target_terms[:10],
+        "source_terms": source_terms[:10],
+        "expected_terms": _local_anchor_terms()[:12],
     }
 
 
@@ -1275,7 +1872,7 @@ def _variant(score_breakdown: Dict[str, Any]) -> str:
     return text or "base"
 
 
-def _source_seeds(score_breakdown: Dict[str, Any], row: sqlite3.Row) -> List[str]:
+def _pathfinder_source_seeds(score_breakdown: Dict[str, Any]) -> List[str]:
     candidates: List[str] = []
 
     def add(value: object) -> None:
@@ -1290,8 +1887,19 @@ def _source_seeds(score_breakdown: Dict[str, Any], row: sqlite3.Row) -> List[str
             add(item)
     elif raw_sources:
         add(raw_sources)
+    return candidates
+
+
+def _source_seeds(score_breakdown: Dict[str, Any], row: sqlite3.Row) -> List[str]:
+    candidates: List[str] = list(_pathfinder_source_seeds(score_breakdown))
     if candidates:
         return candidates
+
+    def add(value: object) -> None:
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+
     for keyword in _matched_keyword_candidates(row):
         add(keyword)
     return candidates or ["(unknown)"]
@@ -1388,15 +1996,21 @@ def _row_sample(
     category: str,
     grade: str,
     status: str,
+    current_reject_reason: str,
     lens: str,
     query_variant: str,
     source_seed: str,
     source_seeds: List[str],
+    pathfinder_source_seeds: List[str],
+    source_seed_lineage_present: bool,
+    source_seed_lineage_fallback: bool,
+    query_variant_lineage_present: bool,
     priority: float,
     axis_fit: Optional[float],
     lens_fit: Optional[float],
     clinic_fit: Optional[float],
     worksite_efficiency: Optional[float],
+    metric_strict_fit: bool,
     strict_fit: bool,
     target_fingerprint: str,
     content_detected_category: str,
@@ -1427,6 +2041,8 @@ def _row_sample(
     reply_opportunity_tier: str,
     reply_opportunity_signals: List[str],
     reply_risk_flags: List[str],
+    content_risk_flags: List[str],
+    content_risk_terms: Dict[str, List[str]],
     reply_risk_penalty: float,
     reply_manual_review: bool,
     reply_metric_missing: bool,
@@ -1438,10 +2054,31 @@ def _row_sample(
     treatment_signature_matched: bool,
     treatment_signature_terms: List[str],
     treatment_signature_expected_terms: List[str],
+    treatment_subintent_checked: bool,
+    treatment_subintent_matched: bool,
+    treatment_subintent_buckets: List[str],
+    treatment_subintent_terms: List[str],
+    treatment_subintent_bucket_terms: Dict[str, List[str]],
+    treatment_subintent_expected_buckets: List[str],
+    clinic_modality_checked: bool,
+    clinic_modality_matched: bool,
+    clinic_modality_positive_terms: List[str],
+    clinic_modality_offscope_terms: List[str],
+    clinic_modality_bridge_terms: List[str],
+    clinic_modality_reasons: List[str],
+    decision_window_checked: bool,
+    decision_window_matched: bool,
+    decision_window_active_terms: List[str],
+    decision_window_completed_terms: List[str],
+    decision_window_active_signals: List[str],
+    decision_window_reasons: List[str],
     local_intent_checked: bool,
     local_intent_matched: bool,
     local_intent_terms: List[str],
     local_intent_expected_terms: List[str],
+    local_area_terms: List[str],
+    local_area_target_terms: List[str],
+    local_area_source_terms: List[str],
     seed_candidate_alignment_checked: bool,
     seed_candidate_alignment_matched: bool,
     seed_candidate_alignment_terms: List[str],
@@ -1469,11 +2106,16 @@ def _row_sample(
         "category": category,
         "grade": grade,
         "status": status,
+        "current_reject_reason": current_reject_reason,
         "lens": lens,
         "query_variant": query_variant,
         "query_variant_family": variant_family,
         "source_seed": source_seed,
         "source_seeds": source_seeds,
+        "pathfinder_source_seeds": pathfinder_source_seeds,
+        "source_seed_lineage_present": bool(source_seed_lineage_present),
+        "source_seed_lineage_fallback": bool(source_seed_lineage_fallback),
+        "query_variant_lineage_present": bool(query_variant_lineage_present),
         "content_detected_category": content_detected_category,
         "content_category_mismatch": content_category_mismatch,
         "lens_surface_checked": lens_surface_checked,
@@ -1502,6 +2144,8 @@ def _row_sample(
         "reply_opportunity_tier": reply_opportunity_tier,
         "reply_opportunity_signals": reply_opportunity_signals,
         "reply_risk_flags": reply_risk_flags,
+        "content_risk_flags": content_risk_flags,
+        "content_risk_terms": content_risk_terms,
         "reply_risk_penalty": round(float(reply_risk_penalty or 0.0), 2),
         "reply_manual_review": reply_manual_review,
         "reply_metric_missing": reply_metric_missing,
@@ -1513,10 +2157,31 @@ def _row_sample(
         "treatment_signature_matched": treatment_signature_matched,
         "treatment_signature_terms": treatment_signature_terms,
         "treatment_signature_expected_terms": treatment_signature_expected_terms,
+        "treatment_subintent_checked": treatment_subintent_checked,
+        "treatment_subintent_matched": treatment_subintent_matched,
+        "treatment_subintent_buckets": treatment_subintent_buckets,
+        "treatment_subintent_terms": treatment_subintent_terms,
+        "treatment_subintent_bucket_terms": treatment_subintent_bucket_terms,
+        "treatment_subintent_expected_buckets": treatment_subintent_expected_buckets,
+        "clinic_modality_checked": clinic_modality_checked,
+        "clinic_modality_matched": clinic_modality_matched,
+        "clinic_modality_positive_terms": clinic_modality_positive_terms,
+        "clinic_modality_offscope_terms": clinic_modality_offscope_terms,
+        "clinic_modality_bridge_terms": clinic_modality_bridge_terms,
+        "clinic_modality_reasons": clinic_modality_reasons,
+        "decision_window_checked": decision_window_checked,
+        "decision_window_matched": decision_window_matched,
+        "decision_window_active_terms": decision_window_active_terms,
+        "decision_window_completed_terms": decision_window_completed_terms,
+        "decision_window_active_signals": decision_window_active_signals,
+        "decision_window_reasons": decision_window_reasons,
         "local_intent_checked": local_intent_checked,
         "local_intent_matched": local_intent_matched,
         "local_intent_terms": local_intent_terms,
         "local_intent_expected_terms": local_intent_expected_terms,
+        "local_area_terms": local_area_terms,
+        "local_area_target_terms": local_area_target_terms,
+        "local_area_source_terms": local_area_source_terms,
         "seed_candidate_alignment_checked": seed_candidate_alignment_checked,
         "seed_candidate_alignment_matched": seed_candidate_alignment_matched,
         "seed_candidate_alignment_terms": seed_candidate_alignment_terms,
@@ -1530,8 +2195,505 @@ def _row_sample(
         "lens_fit": lens_fit,
         "clinic_fit": clinic_fit,
         "worksite_efficiency": worksite_efficiency,
+        "metric_strict_fit": metric_strict_fit,
         "strict_fit": strict_fit,
         "matched_keyword": row["matched_keyword"] or "",
+    }
+
+
+def _reanalysis_rescue_quality(records: List[Dict[str, Any]], *, limit: int = 12) -> Dict[str, Any]:
+    """Find high-fit filtered targets that should be re-entered into AI review.
+
+    This is a state integrity check, not a quality whitelist. It only surfaces
+    recent activity where Viral Hunter has no explicit current reject reason and
+    Pathfinder/reply metrics are already strong enough for the retry lane.
+    """
+
+    candidates: List[Dict[str, Any]] = []
+    by_category: Counter = Counter()
+    by_lens: Counter = Counter()
+    by_category_lens: Counter = Counter()
+    priority_focus = set(_priority_focus_categories())
+
+    for record in records:
+        if str(record.get("status") or "") != "filtered_out":
+            continue
+        if str(record.get("current_reject_reason") or "").strip():
+            continue
+        if not bool(record.get("fresh_activity")):
+            continue
+        priority = float(record.get("priority") or 0.0)
+        axis_fit = float(record.get("axis_fit") or 0.0)
+        lens_fit = float(record.get("lens_fit") or 0.0)
+        reply_score = float(record.get("reply_opportunity_score") or 0.0)
+        if priority < REANALYSIS_RESCUE_MIN_PRIORITY:
+            continue
+        if axis_fit < REANALYSIS_RESCUE_MIN_AXIS_FIT:
+            continue
+        if lens_fit < REANALYSIS_RESCUE_MIN_LENS_FIT:
+            continue
+        if reply_score < REANALYSIS_RESCUE_MIN_REPLY_SCORE:
+            continue
+        if record.get("reply_risk_flags"):
+            continue
+        if bool(record.get("reply_manual_review")):
+            continue
+        if float(record.get("reply_risk_penalty") or 0.0) <= -40.0:
+            continue
+
+        category = str(record.get("category") or "기타")
+        lens = str(record.get("lens") or "unknown")
+        lane = f"{category}::{lens}"
+        by_category[category] += 1
+        by_lens[lens] += 1
+        by_category_lens[lane] += 1
+        candidates.append({
+            "id": record.get("id") or "",
+            "url": record.get("url") or "",
+            "title": record.get("title") or "",
+            "platform": record.get("platform") or "",
+            "category": category,
+            "lens": lens,
+            "priority": round(priority, 2),
+            "axis_fit": round(axis_fit, 2),
+            "lens_fit": round(lens_fit, 2),
+            "reply_opportunity_score": round(reply_score, 2),
+            "activity_at": record.get("activity_at") or "",
+            "source_seed": record.get("source_seed") or "",
+        })
+
+    candidates.sort(
+        key=lambda item: (
+            -float(item.get("priority") or 0.0),
+            -float(item.get("axis_fit") or 0.0),
+            -float(item.get("lens_fit") or 0.0),
+            str(item.get("category") or ""),
+            str(item.get("title") or ""),
+        )
+    )
+    candidate_count = len(candidates)
+    priority_focus_candidate_count = sum(
+        count for category, count in by_category.items() if category in priority_focus
+    )
+
+    return {
+        "overall": {
+            "candidate_count": candidate_count,
+            "priority_focus_candidate_count": priority_focus_candidate_count,
+            "thresholds": {
+                "min_priority": REANALYSIS_RESCUE_MIN_PRIORITY,
+                "min_axis_fit": REANALYSIS_RESCUE_MIN_AXIS_FIT,
+                "min_lens_fit": REANALYSIS_RESCUE_MIN_LENS_FIT,
+                "min_reply_opportunity": REANALYSIS_RESCUE_MIN_REPLY_SCORE,
+            },
+        },
+        "by_category": dict(by_category.most_common()),
+        "by_lens": dict(by_lens.most_common()),
+        "by_category_lens": dict(by_category_lens.most_common()),
+        "samples": candidates[: max(0, int(limit or 0))],
+    }
+
+
+def _discarded_execution_rescue_quality(records: List[Dict[str, Any]], *, limit: int = 12) -> Dict[str, Any]:
+    """Find non-actionable rows that look execution-ready except for discard status."""
+    candidates: List[Dict[str, Any]] = []
+    by_category: Counter = Counter()
+    by_lens: Counter = Counter()
+    by_category_lens: Counter = Counter()
+    by_status: Counter = Counter()
+    by_reject_reason: Counter = Counter()
+    by_rescue_mode: Counter = Counter()
+    priority_focus = set(_priority_focus_categories())
+
+    def missing_reasons(record: Dict[str, Any]) -> List[str]:
+        reasons: List[str] = []
+        status = str(record.get("status") or "")
+        if status in ACTIONABLE_STATUSES:
+            reasons.append("already_actionable")
+        if not bool(record.get("metric_strict_fit")):
+            reasons.append("metric_fit_below_strict")
+        if not bool(record.get("fresh_activity")):
+            reasons.append("not_fresh")
+        if float(record.get("priority") or 0.0) < DISCARDED_EXECUTION_RESCUE_MIN_PRIORITY:
+            reasons.append("low_priority")
+        if float(record.get("reply_opportunity_score") or 0.0) < DISCARDED_EXECUTION_RESCUE_MIN_REPLY_SCORE:
+            reasons.append("low_reply_opportunity")
+        for key, reason in (
+            ("source_seed_lineage_present", "missing_pathfinder_source_keyword"),
+            ("query_variant_lineage_present", "missing_pathfinder_query_variant"),
+            ("engagement_hook_matched", "missing_engagement_hook"),
+            ("treatment_signature_matched", "missing_treatment_signature"),
+            ("treatment_subintent_matched", "missing_treatment_subintent"),
+            ("clinic_modality_matched", "clinic_modality_mismatch"),
+            ("decision_window_matched", "closed_decision_window"),
+            ("local_intent_matched", "missing_local_intent"),
+            ("seed_candidate_alignment_matched", "seed_candidate_misaligned"),
+            ("patient_surface_matched", "missing_patient_surface"),
+            ("viral_action_route_matched", "missing_viral_action_route"),
+            ("reply_workability_matched", "missing_reply_workability"),
+        ):
+            if not bool(record.get(key)):
+                reasons.append(reason)
+        if bool(record.get("patient_surface_provider_noise")):
+            reasons.append("provider_surface_noise")
+        if bool(record.get("viral_action_route_mismatch")):
+            reasons.append("viral_action_route_mismatch")
+        if bool(record.get("reply_risk_blocked")) or record.get("reply_risk_flags"):
+            reasons.append("reply_risk_flags")
+        if bool(record.get("reply_manual_review")):
+            reasons.append("manual_review_required")
+        if float(record.get("reply_risk_penalty") or 0.0) <= REPLY_WORKABILITY_RISK_PENALTY_BLOCK:
+            reasons.append("reply_risk_penalty_block")
+        return reasons
+
+    for record in records:
+        reasons = missing_reasons(record)
+        if reasons:
+            continue
+        category = str(record.get("category") or "기타")
+        lens = str(record.get("lens") or "unknown")
+        lane = f"{category}::{lens}"
+        status = str(record.get("status") or "")
+        reject_reason = str(record.get("current_reject_reason") or "").strip()
+        rescue_mode = (
+            "auto_requeue"
+            if status in DISCARDED_EXECUTION_AUTO_REQUEUE_STATUSES
+            else "manual_review"
+        )
+        by_category[category] += 1
+        by_lens[lens] += 1
+        by_category_lens[lane] += 1
+        by_status[status] += 1
+        by_reject_reason[reject_reason or "(none)"] += 1
+        by_rescue_mode[rescue_mode] += 1
+        candidates.append({
+            "id": record.get("id") or "",
+            "url": record.get("url") or "",
+            "title": record.get("title") or "",
+            "platform": record.get("platform") or "",
+            "category": category,
+            "lens": lens,
+            "status": status,
+            "rescue_mode": rescue_mode,
+            "current_reject_reason": reject_reason,
+            "loss_reason": _loss_reason_for_status(status),
+            "priority": round(float(record.get("priority") or 0.0), 2),
+            "axis_fit": record.get("axis_fit"),
+            "lens_fit": record.get("lens_fit"),
+            "clinic_fit": record.get("clinic_fit"),
+            "worksite_efficiency": record.get("worksite_efficiency"),
+            "reply_opportunity_score": record.get("reply_opportunity_score"),
+            "activity_at": record.get("activity_at") or "",
+            "source_seed": record.get("source_seed") or "",
+            "query_variant": record.get("query_variant") or "",
+            "treatment_signature_terms": record.get("treatment_signature_terms") or [],
+            "treatment_subintent_buckets": record.get("treatment_subintent_buckets") or [],
+            "viral_action_route_routes": record.get("viral_action_route_routes") or [],
+            "reply_opportunity_signals": record.get("reply_opportunity_signals") or [],
+        })
+
+    candidates.sort(
+        key=lambda item: (
+            _category_priority_sort_key(item.get("category")),
+            _lens_priority_sort_key(item.get("lens")),
+            -float(item.get("priority") or 0.0),
+            str(item.get("status") or ""),
+            str(item.get("title") or ""),
+        )
+    )
+    candidate_count = len(candidates)
+    priority_focus_candidate_count = sum(
+        count for category, count in by_category.items() if category in priority_focus
+    )
+    auto_requeue_candidates = [
+        item for item in candidates
+        if str(item.get("rescue_mode") or "") == "auto_requeue"
+    ]
+    manual_review_candidates = [
+        item for item in candidates
+        if str(item.get("rescue_mode") or "") == "manual_review"
+    ]
+    auto_requeue_candidate_count = len(auto_requeue_candidates)
+    manual_review_candidate_count = len(manual_review_candidates)
+    auto_requeue_priority_focus_candidate_count = sum(
+        1 for item in auto_requeue_candidates
+        if str(item.get("category") or "") in priority_focus
+    )
+    manual_review_priority_focus_candidate_count = sum(
+        1 for item in manual_review_candidates
+        if str(item.get("category") or "") in priority_focus
+    )
+    return {
+        "overall": {
+            "candidate_count": candidate_count,
+            "priority_focus_candidate_count": priority_focus_candidate_count,
+            "auto_requeue_candidate_count": auto_requeue_candidate_count,
+            "auto_requeue_priority_focus_candidate_count": (
+                auto_requeue_priority_focus_candidate_count
+            ),
+            "manual_review_candidate_count": manual_review_candidate_count,
+            "manual_review_priority_focus_candidate_count": (
+                manual_review_priority_focus_candidate_count
+            ),
+            "thresholds": {
+                "min_priority": DISCARDED_EXECUTION_RESCUE_MIN_PRIORITY,
+                "min_reply_opportunity": DISCARDED_EXECUTION_RESCUE_MIN_REPLY_SCORE,
+            },
+            "auto_requeue_statuses": sorted(DISCARDED_EXECUTION_AUTO_REQUEUE_STATUSES),
+            "manual_review_statuses": sorted(DISCARDED_EXECUTION_MANUAL_REVIEW_STATUSES),
+        },
+        "by_category": dict(by_category.most_common()),
+        "by_lens": dict(by_lens.most_common()),
+        "by_category_lens": dict(by_category_lens.most_common()),
+        "by_status": dict(by_status.most_common()),
+        "by_reject_reason": dict(by_reject_reason.most_common()),
+        "by_rescue_mode": dict(by_rescue_mode.most_common()),
+        "auto_requeue_samples": auto_requeue_candidates[: max(0, int(limit or 0))],
+        "manual_review_samples": manual_review_candidates[: max(0, int(limit or 0))],
+        "samples": candidates[: max(0, int(limit or 0))],
+    }
+
+
+def _source_lineage_sample(record: Dict[str, Any]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    if not bool(record.get("source_seed_lineage_present")):
+        if bool(record.get("source_seed_lineage_fallback")):
+            reasons.append("fallback_matched_keyword_used")
+        else:
+            reasons.append("missing_pathfinder_source_keyword")
+    if not bool(record.get("query_variant_lineage_present")):
+        reasons.append("missing_pathfinder_query_variant")
+    return {
+        "id": record.get("id") or "",
+        "url": record.get("url") or "",
+        "title": record.get("title") or "",
+        "platform": record.get("platform") or "",
+        "category": record.get("category") or "",
+        "lens": record.get("lens") or "",
+        "status": record.get("status") or "",
+        "priority": record.get("priority") or 0.0,
+        "source_seed": record.get("source_seed") or "",
+        "pathfinder_source_seeds": record.get("pathfinder_source_seeds") or [],
+        "query_variant": record.get("query_variant") or "",
+        "matched_keyword": record.get("matched_keyword") or "",
+        "reasons": reasons,
+    }
+
+
+def _source_lineage_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(records)
+    source_seed_present = sum(1 for record in records if bool(record.get("source_seed_lineage_present")))
+    query_variant_present = sum(1 for record in records if bool(record.get("query_variant_lineage_present")))
+    fallback_count = sum(1 for record in records if bool(record.get("source_seed_lineage_fallback")))
+    unknown_count = sum(1 for record in records if str(record.get("source_seed") or "").strip() == "(unknown)")
+    actionable_strict = [
+        record for record in records
+        if record.get("status") in ACTIONABLE_STATUSES and bool(record.get("strict_fit"))
+    ]
+    actionable_strict_total = len(actionable_strict)
+    actionable_strict_source_seed_present = sum(
+        1 for record in actionable_strict
+        if bool(record.get("source_seed_lineage_present"))
+    )
+    return {
+        "total": total,
+        "source_seed_present": source_seed_present,
+        "source_seed_missing": max(0, total - source_seed_present),
+        "source_seed_fallback_count": fallback_count,
+        "unknown_source_seed_count": unknown_count,
+        "source_seed_coverage_rate": LaneStats._rate(source_seed_present, total),
+        "query_variant_present": query_variant_present,
+        "query_variant_missing": max(0, total - query_variant_present),
+        "query_variant_coverage_rate": LaneStats._rate(query_variant_present, total),
+        "actionable_strict_total": actionable_strict_total,
+        "actionable_strict_source_seed_present": actionable_strict_source_seed_present,
+        "actionable_strict_source_seed_missing": max(
+            0,
+            actionable_strict_total - actionable_strict_source_seed_present,
+        ),
+        "actionable_strict_source_seed_coverage_rate": LaneStats._rate(
+            actionable_strict_source_seed_present,
+            actionable_strict_total,
+        ),
+    }
+
+
+def _source_lineage_quality(records: List[Dict[str, Any]], *, limit: int = 12) -> Dict[str, Any]:
+    """Audit explicit Pathfinder source-keyword lineage through Viral Hunter targets.
+
+    `_source_seeds` intentionally falls back to matched keywords for legacy rows.
+    This audit keeps the fallback useful for diagnostics while preventing fallback
+    values from being treated as auditable Pathfinder lineage.
+    """
+    priority_focus = set(_priority_focus_categories())
+    records = list(records)
+    priority_records = [
+        record for record in records
+        if str(record.get("category") or "") in priority_focus
+    ]
+    actionable_strict = [
+        record for record in records
+        if record.get("status") in ACTIONABLE_STATUSES and bool(record.get("strict_fit"))
+    ]
+    priority_actionable_strict = [
+        record for record in actionable_strict
+        if str(record.get("category") or "") in priority_focus
+    ]
+
+    overall = _source_lineage_metrics(records)
+    priority_overall = _source_lineage_metrics(priority_records)
+    actionable_overall = _source_lineage_metrics(actionable_strict)
+    priority_actionable_overall = _source_lineage_metrics(priority_actionable_strict)
+    targets = {
+        "source_seed_coverage_rate": SOURCE_LINEAGE_MIN_SOURCE_SEED_COVERAGE,
+        "priority_focus_source_seed_coverage_rate": (
+            SOURCE_LINEAGE_MIN_PRIORITY_FOCUS_SOURCE_SEED_COVERAGE
+        ),
+        "actionable_strict_source_seed_coverage_rate": (
+            SOURCE_LINEAGE_MIN_ACTIONABLE_STRICT_SOURCE_SEED_COVERAGE
+        ),
+        "query_variant_coverage_rate": SOURCE_LINEAGE_MIN_QUERY_VARIANT_COVERAGE,
+    }
+
+    def meets(metrics: Dict[str, Any], key: str, target: float) -> bool:
+        return int(metrics.get("total") or 0) == 0 or float(metrics.get(key) or 0.0) >= target
+
+    source_ready = (
+        meets(overall, "source_seed_coverage_rate", targets["source_seed_coverage_rate"])
+        and meets(
+            priority_overall,
+            "source_seed_coverage_rate",
+            targets["priority_focus_source_seed_coverage_rate"],
+        )
+        and meets(
+            actionable_overall,
+            "source_seed_coverage_rate",
+            targets["actionable_strict_source_seed_coverage_rate"],
+        )
+        and meets(
+            priority_actionable_overall,
+            "source_seed_coverage_rate",
+            targets["actionable_strict_source_seed_coverage_rate"],
+        )
+    )
+    query_variant_ready = meets(
+        overall,
+        "query_variant_coverage_rate",
+        targets["query_variant_coverage_rate"],
+    )
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    by_category_lens: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+
+    category_records: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    category_lens_records: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        category = str(record.get("category") or "")
+        lens = str(record.get("lens") or "unknown")
+        category_records[category].append(record)
+        category_lens_records[f"{category}::{lens}"].append(record)
+
+    for category, items in category_records.items():
+        metrics = _source_lineage_metrics(items)
+        by_category[category] = metrics
+        if (
+            category in priority_focus
+            and int(metrics.get("total") or 0)
+            and float(metrics.get("source_seed_coverage_rate") or 0.0)
+            < targets["priority_focus_source_seed_coverage_rate"]
+        ):
+            category_gaps.append({
+                "type": "category",
+                "lane": category,
+                "category": category,
+                **metrics,
+                "target": targets["priority_focus_source_seed_coverage_rate"],
+                "reasons": ["source_lineage_coverage_low"],
+            })
+
+    for lane, items in category_lens_records.items():
+        category, _, lens = lane.partition("::")
+        metrics = _source_lineage_metrics(items)
+        by_category_lens[lane] = {
+            "category": category,
+            "lens": lens,
+            **metrics,
+        }
+        if (
+            category in priority_focus
+            and int(metrics.get("total") or 0)
+            and float(metrics.get("source_seed_coverage_rate") or 0.0)
+            < targets["priority_focus_source_seed_coverage_rate"]
+        ):
+            category_lens_gaps.append({
+                "type": "category_lens",
+                "lane": lane,
+                "category": category,
+                "lens": lens,
+                **metrics,
+                "target": targets["priority_focus_source_seed_coverage_rate"],
+                "reasons": ["source_lineage_coverage_low"],
+            })
+
+    gap_sort_key = lambda item: (
+        _category_priority_sort_key(item.get("category")),
+        _lens_priority_sort_key(item.get("lens")),
+        float(item.get("source_seed_coverage_rate") or 0.0),
+        -int(item.get("source_seed_missing") or 0),
+    )
+    category_gaps.sort(key=gap_sort_key)
+    category_lens_gaps.sort(key=gap_sort_key)
+    missing_records = [
+        record for record in records
+        if not bool(record.get("source_seed_lineage_present"))
+        or not bool(record.get("query_variant_lineage_present"))
+    ]
+    missing_records.sort(
+        key=lambda record: (
+            _category_priority_sort_key(record.get("category")),
+            -float(record.get("priority") or 0.0),
+            str(record.get("title") or ""),
+        )
+    )
+
+    return {
+        "targets": targets,
+        "overall": {
+            **overall,
+            "priority_focus_total": priority_overall["total"],
+            "priority_focus_source_seed_present": priority_overall["source_seed_present"],
+            "priority_focus_source_seed_missing": priority_overall["source_seed_missing"],
+            "priority_focus_source_seed_coverage_rate": priority_overall[
+                "source_seed_coverage_rate"
+            ],
+            "priority_focus_actionable_strict_total": priority_actionable_overall["total"],
+            "priority_focus_actionable_strict_source_seed_present": (
+                priority_actionable_overall["source_seed_present"]
+            ),
+            "priority_focus_actionable_strict_source_seed_missing": (
+                priority_actionable_overall["source_seed_missing"]
+            ),
+            "priority_focus_actionable_strict_source_seed_coverage_rate": (
+                priority_actionable_overall["source_seed_coverage_rate"]
+            ),
+            "ready": bool(source_ready and query_variant_ready),
+        },
+        "by_category": by_category,
+        "by_category_lens": by_category_lens,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": (category_gaps + category_lens_gaps)[:10],
+        "missing_samples": [
+            _source_lineage_sample(record)
+            for record in missing_records[: max(0, int(limit or 0))]
+        ],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "missing_samples": len(missing_records),
+        },
     }
 
 
@@ -1608,8 +2770,12 @@ def _review_samples(
     engagement_hook_quality: Optional[Dict[str, Any]] = None,
     treatment_signature_quality: Optional[Dict[str, Any]] = None,
     treatment_signal_diversity_quality: Optional[Dict[str, Any]] = None,
+    treatment_subintent_diversity_quality: Optional[Dict[str, Any]] = None,
+    clinic_modality_quality: Optional[Dict[str, Any]] = None,
+    decision_window_quality: Optional[Dict[str, Any]] = None,
     seed_candidate_alignment_quality: Optional[Dict[str, Any]] = None,
     local_intent_quality: Optional[Dict[str, Any]] = None,
+    local_area_diversity_quality: Optional[Dict[str, Any]] = None,
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
@@ -2324,6 +3490,155 @@ def _review_samples(
                 "treatment_signal_diversity_gap": gap.get("treatment_signal_diversity_gap", 0),
                 "treatment_signal_terms": gap.get("treatment_signal_terms", []),
                 "expected_treatment_signal_terms": gap.get("expected_treatment_signal_terms", []),
+                "gap": gap.get("gap", 0),
+                "reasons": gap.get("reasons") or [],
+                "samples": samples,
+            })
+
+    treatment_subintent_diversity_samples = []
+    treatment_subintent_diversity_quality = treatment_subintent_diversity_quality or {}
+    treatment_subintent_diversity_gaps = (
+        treatment_subintent_diversity_quality.get("priority_gaps")
+        or treatment_subintent_diversity_quality.get("category_lens_gaps")
+        or treatment_subintent_diversity_quality.get("category_gaps")
+        or []
+    )
+    for gap in treatment_subintent_diversity_gaps[:10]:
+        samples = _sample_for_lane(
+            records,
+            str(gap.get("type") or ""),
+            str(gap.get("lane") or ""),
+            sample_per_lane,
+            diagnostic=True,
+            record_filter=lambda record: (
+                bool(record.get("strict_fit"))
+                and record.get("status") in ACTIONABLE_STATUSES
+                and bool(record.get("treatment_subintent_matched"))
+            ),
+        )
+        if not samples:
+            samples = _sample_for_lane(
+                records,
+                str(gap.get("type") or ""),
+                str(gap.get("lane") or ""),
+                sample_per_lane,
+                diagnostic=True,
+                record_filter=lambda record: (
+                    bool(record.get("strict_fit"))
+                    and record.get("status") in ACTIONABLE_STATUSES
+                ),
+            )
+        if not samples:
+            samples = _sample_for_lane(
+                records,
+                str(gap.get("type") or ""),
+                str(gap.get("lane") or ""),
+                sample_per_lane,
+                diagnostic=True,
+            )
+        if samples:
+            treatment_subintent_diversity_samples.append({
+                "type": gap.get("type"),
+                "lane": gap.get("lane"),
+                "category": gap.get("category"),
+                "lens": gap.get("lens", ""),
+                "target": gap.get("target", 0),
+                "unique_actionable_strict": gap.get("unique_actionable_strict", 0),
+                "treatment_subintent_actionable_strict": gap.get(
+                    "treatment_subintent_actionable_strict",
+                    0,
+                ),
+                "distinct_treatment_subintent_buckets": gap.get(
+                    "distinct_treatment_subintent_buckets",
+                    0,
+                ),
+                "min_distinct_treatment_subintent_buckets": gap.get(
+                    "min_distinct_treatment_subintent_buckets",
+                    0,
+                ),
+                "treatment_subintent_diversity_gap": gap.get("treatment_subintent_diversity_gap", 0),
+                "treatment_subintent_buckets": gap.get("treatment_subintent_buckets", []),
+                "treatment_subintent_terms": gap.get("treatment_subintent_terms", []),
+                "treatment_subintent_bucket_terms": gap.get("treatment_subintent_bucket_terms", {}),
+                "expected_treatment_subintent_buckets": gap.get(
+                    "expected_treatment_subintent_buckets",
+                    [],
+                ),
+                "gap": gap.get("gap", 0),
+                "reasons": gap.get("reasons") or [],
+                "samples": samples,
+            })
+
+    fresh_treatment_subintent_diversity_samples = []
+    fresh_treatment_subintent_diversity_gaps = (
+        treatment_subintent_diversity_quality.get("fresh_priority_gaps")
+        or treatment_subintent_diversity_quality.get("fresh_category_lens_gaps")
+        or treatment_subintent_diversity_quality.get("fresh_category_gaps")
+        or []
+    )
+    for gap in fresh_treatment_subintent_diversity_gaps[:10]:
+        samples = _sample_for_lane(
+            records,
+            str(gap.get("type") or ""),
+            str(gap.get("lane") or ""),
+            sample_per_lane,
+            diagnostic=True,
+            record_filter=lambda record: (
+                bool(record.get("strict_fit"))
+                and record.get("status") in ACTIONABLE_STATUSES
+                and bool(record.get("fresh_activity"))
+                and bool(record.get("treatment_subintent_matched"))
+            ),
+        )
+        if not samples:
+            samples = _sample_for_lane(
+                records,
+                str(gap.get("type") or ""),
+                str(gap.get("lane") or ""),
+                sample_per_lane,
+                diagnostic=True,
+                record_filter=lambda record: (
+                    bool(record.get("strict_fit"))
+                    and record.get("status") in ACTIONABLE_STATUSES
+                    and bool(record.get("fresh_activity"))
+                ),
+            )
+        if not samples:
+            samples = _sample_for_lane(
+                records,
+                str(gap.get("type") or ""),
+                str(gap.get("lane") or ""),
+                sample_per_lane,
+                diagnostic=True,
+            )
+        if samples:
+            fresh_treatment_subintent_diversity_samples.append({
+                "type": gap.get("type"),
+                "lane": gap.get("lane"),
+                "category": gap.get("category"),
+                "lens": gap.get("lens", ""),
+                "target": gap.get("target", 0),
+                "unique_fresh_actionable_strict": gap.get("unique_fresh_actionable_strict", 0),
+                "fresh_treatment_subintent_actionable_strict": gap.get(
+                    "fresh_treatment_subintent_actionable_strict",
+                    0,
+                ),
+                "distinct_treatment_subintent_buckets": gap.get(
+                    "distinct_treatment_subintent_buckets",
+                    0,
+                ),
+                "min_distinct_treatment_subintent_buckets": gap.get(
+                    "min_distinct_treatment_subintent_buckets",
+                    0,
+                ),
+                "treatment_subintent_diversity_gap": gap.get("treatment_subintent_diversity_gap", 0),
+                "treatment_subintent_buckets": gap.get("treatment_subintent_buckets", []),
+                "treatment_subintent_terms": gap.get("treatment_subintent_terms", []),
+                "treatment_subintent_bucket_terms": gap.get("treatment_subintent_bucket_terms", {}),
+                "expected_treatment_subintent_buckets": gap.get(
+                    "expected_treatment_subintent_buckets",
+                    [],
+                ),
                 "gap": gap.get("gap", 0),
                 "reasons": gap.get("reasons") or [],
                 "samples": samples,
@@ -3188,6 +4503,8 @@ def _review_samples(
         "fresh_treatment_signature_gap_samples": fresh_treatment_signature_samples,
         "treatment_signal_diversity_gap_samples": treatment_signal_diversity_samples,
         "fresh_treatment_signal_diversity_gap_samples": fresh_treatment_signal_diversity_samples,
+        "treatment_subintent_diversity_gap_samples": treatment_subintent_diversity_samples,
+        "fresh_treatment_subintent_diversity_gap_samples": fresh_treatment_subintent_diversity_samples,
         "seed_candidate_alignment_gap_samples": seed_candidate_alignment_samples,
         "fresh_seed_candidate_alignment_gap_samples": fresh_seed_candidate_alignment_samples,
         "local_intent_gap_samples": local_intent_samples,
@@ -3355,7 +4672,11 @@ def _weak_lane_reasons(metrics: Dict[str, Any], *, min_lane_total: int) -> List[
         and float(metrics.get("lens_surface_mismatch_rate") or 0.0) > 0.35
     ):
         reasons.append("lens_surface_mismatch")
-    if float(metrics.get("avg_worksite_efficiency") or 0.0) < 55.0:
+    worksite_observed = int(metrics.get("worksite_efficiency_observed") or 0)
+    if (
+        worksite_observed >= max(3, min_lane_total)
+        and float(metrics.get("avg_worksite_efficiency") or 0.0) < 55.0
+    ):
         reasons.append("low_worksite_efficiency")
     return reasons
 
@@ -5198,6 +6519,820 @@ def _treatment_signal_diversity_quality(
     }
 
 
+def _treatment_subintent_diversity_item(
+    *,
+    lane_type: str,
+    category: str,
+    lens: str = "",
+    records: List[Dict[str, Any]],
+    target: int,
+    min_distinct_buckets: int,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    unique_count = len(records)
+    subintent_records = [record for record in records if bool(record.get("treatment_subintent_matched"))]
+    subintent_count = len(subintent_records)
+    missing_count = max(0, unique_count - subintent_count)
+    bucket_counter = Counter(
+        bucket
+        for record in subintent_records
+        for bucket in (record.get("treatment_subintent_buckets") or [])
+        if str(bucket or "").strip()
+    )
+    term_counter = Counter(
+        term
+        for record in subintent_records
+        for term in (record.get("treatment_subintent_terms") or [])
+        if str(term or "").strip()
+    )
+    merged_bucket_terms: Dict[str, List[str]] = {}
+    for record in subintent_records:
+        for bucket, terms in (record.get("treatment_subintent_bucket_terms") or {}).items():
+            bucket_name = str(bucket or "").strip()
+            if not bucket_name:
+                continue
+            merged_bucket_terms.setdefault(bucket_name, [])
+            for term in list(terms or []):
+                clean = str(term or "").strip()
+                if clean and clean not in merged_bucket_terms[bucket_name]:
+                    merged_bucket_terms[bucket_name].append(clean)
+
+    distinct_buckets = len(bucket_counter)
+    diversity_gap = max(0, min_distinct_buckets - distinct_buckets)
+
+    reasons: List[str] = []
+    if unique_count == 0:
+        reasons.append("no_fresh_unique_actionable_strict" if fresh else "no_unique_actionable_strict")
+    elif subintent_count == 0:
+        reasons.append("no_fresh_treatment_subintent" if fresh else "no_treatment_subintent")
+    elif subintent_count < target:
+        reasons.append("thin_fresh_treatment_subintent_inventory" if fresh else "thin_treatment_subintent_inventory")
+    if unique_count and subintent_count < target and missing_count:
+        reasons.append("missing_treatment_subintent")
+    if unique_count and distinct_buckets < min_distinct_buckets:
+        reasons.append(
+            "narrow_fresh_treatment_subintent_diversity"
+            if fresh
+            else "narrow_treatment_subintent_diversity"
+        )
+
+    lane = f"{category}::{lens}" if lane_type == "category_lens" else category
+    ready = subintent_count >= target and distinct_buckets >= min_distinct_buckets and not reasons
+    return {
+        "type": lane_type,
+        "lane": lane,
+        "category": category,
+        "lens": lens,
+        "target": target,
+        "unique_actionable_strict": unique_count,
+        "unique_fresh_actionable_strict": unique_count if fresh else 0,
+        "treatment_subintent_actionable_strict": subintent_count,
+        "fresh_treatment_subintent_actionable_strict": subintent_count if fresh else 0,
+        "treatment_subintent_missing": missing_count,
+        "distinct_treatment_subintent_buckets": distinct_buckets,
+        "min_distinct_treatment_subintent_buckets": min_distinct_buckets,
+        "treatment_subintent_diversity_gap": diversity_gap,
+        "treatment_subintent_buckets": [bucket for bucket, _ in bucket_counter.most_common(12)],
+        "treatment_subintent_terms": [term for term, _ in term_counter.most_common(16)],
+        "treatment_subintent_bucket_terms": {
+            bucket: terms[:8]
+            for bucket, terms in sorted(merged_bucket_terms.items())
+        },
+        "expected_treatment_subintent_buckets": list(_category_subintent_buckets(category)),
+        "ready": ready,
+        "gap": max(0, target - subintent_count, diversity_gap),
+        "reasons": reasons,
+    }
+
+
+def _treatment_subintent_diversity_quality(
+    records: List[Dict[str, Any]],
+    *,
+    category_target: int = TREATMENT_SUBINTENT_CATEGORY_TARGET,
+    category_lens_target: int = TREATMENT_SUBINTENT_CATEGORY_LENS_TARGET,
+    category_min_buckets: int = TREATMENT_SUBINTENT_CATEGORY_MIN_BUCKETS,
+    category_lens_min_buckets: int = TREATMENT_SUBINTENT_CATEGORY_LENS_MIN_BUCKETS,
+) -> Dict[str, Any]:
+    """Audit whether keyword breadth survives as distinct patient sub-problems."""
+    focus_categories = _priority_focus_categories()
+    lenses = list(PATIENT_JOURNEY_LENSES)
+    category_target = max(1, int(category_target or 1))
+    category_lens_target = max(1, int(category_lens_target or 1))
+    category_min_buckets = max(1, int(category_min_buckets or 1))
+    category_lens_min_buckets = max(1, int(category_lens_min_buckets or 1))
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+    fresh_category_gaps: List[Dict[str, Any]] = []
+    fresh_category_lens_gaps: List[Dict[str, Any]] = []
+    category_ready = 0
+    category_lens_ready = 0
+    fresh_category_ready = 0
+    fresh_category_lens_ready = 0
+
+    for category in focus_categories:
+        category_records = _unique_actionable_records(records, category=category)
+        fresh_category_records = _unique_actionable_records(records, category=category, fresh_only=True)
+        category_item = _treatment_subintent_diversity_item(
+            lane_type="category",
+            category=category,
+            records=category_records,
+            target=category_target,
+            min_distinct_buckets=category_min_buckets,
+        )
+        fresh_category_item = _treatment_subintent_diversity_item(
+            lane_type="category",
+            category=category,
+            records=fresh_category_records,
+            target=category_target,
+            min_distinct_buckets=category_min_buckets,
+            fresh=True,
+        )
+        if category_item["ready"]:
+            category_ready += 1
+        else:
+            category_gaps.append(category_item)
+        if fresh_category_item["ready"]:
+            fresh_category_ready += 1
+        else:
+            fresh_category_gaps.append(fresh_category_item)
+
+        lens_items: Dict[str, Dict[str, Any]] = {}
+        for lens in lenses:
+            lens_records = _unique_actionable_records(records, category=category, lens=lens)
+            fresh_lens_records = _unique_actionable_records(
+                records,
+                category=category,
+                lens=lens,
+                fresh_only=True,
+            )
+            lens_item = _treatment_subintent_diversity_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=lens_records,
+                target=category_lens_target,
+                min_distinct_buckets=category_lens_min_buckets,
+            )
+            fresh_lens_item = _treatment_subintent_diversity_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=fresh_lens_records,
+                target=category_lens_target,
+                min_distinct_buckets=category_lens_min_buckets,
+                fresh=True,
+            )
+            lens_items[lens] = {
+                **lens_item,
+                "fresh_ready": fresh_lens_item["ready"],
+                "unique_fresh_actionable_strict": fresh_lens_item["unique_actionable_strict"],
+                "fresh_treatment_subintent_actionable_strict": fresh_lens_item[
+                    "treatment_subintent_actionable_strict"
+                ],
+                "fresh_distinct_treatment_subintent_buckets": fresh_lens_item[
+                    "distinct_treatment_subintent_buckets"
+                ],
+                "fresh_treatment_subintent_diversity_gap": fresh_lens_item[
+                    "treatment_subintent_diversity_gap"
+                ],
+                "fresh_reasons": fresh_lens_item["reasons"],
+            }
+            if lens_item["ready"]:
+                category_lens_ready += 1
+            else:
+                category_lens_gaps.append(lens_item)
+            if fresh_lens_item["ready"]:
+                fresh_category_lens_ready += 1
+            else:
+                fresh_category_lens_gaps.append(fresh_lens_item)
+
+        by_category[category] = {
+            **category_item,
+            "fresh_ready": fresh_category_item["ready"],
+            "unique_fresh_actionable_strict": fresh_category_item["unique_actionable_strict"],
+            "fresh_treatment_subintent_actionable_strict": fresh_category_item[
+                "treatment_subintent_actionable_strict"
+            ],
+            "fresh_distinct_treatment_subintent_buckets": fresh_category_item[
+                "distinct_treatment_subintent_buckets"
+            ],
+            "fresh_treatment_subintent_diversity_gap": fresh_category_item[
+                "treatment_subintent_diversity_gap"
+            ],
+            "fresh_reasons": fresh_category_item["reasons"],
+            "lenses": lens_items,
+            "ready_lens_count": sum(1 for item in lens_items.values() if item.get("ready")),
+            "fresh_ready_lens_count": sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+            "lens_count": len(lens_items),
+            "lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("ready")),
+                len(lens_items),
+            ),
+            "fresh_lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+                len(lens_items),
+            ),
+        }
+
+    def gap_key(item: Dict[str, Any]) -> tuple:
+        unique_count = int(item.get("unique_actionable_strict") or 0)
+        diversity_gap = int(item.get("treatment_subintent_diversity_gap") or 0)
+        subintent_specific_gap = unique_count > 0 and diversity_gap > 0
+        no_inventory = unique_count == 0
+        return (
+            0 if subintent_specific_gap else (2 if no_inventory else 1),
+            _category_priority_sort_key(item.get("category")),
+            0 if str(item.get("type") or "") == "category" else 1,
+            _lens_priority_sort_key(item.get("lens")),
+            -diversity_gap,
+            -int(item.get("gap") or 0),
+            int(item.get("distinct_treatment_subintent_buckets") or 0),
+            int(item.get("treatment_subintent_actionable_strict") or 0),
+        )
+
+    category_gaps.sort(key=gap_key)
+    category_lens_gaps.sort(key=gap_key)
+    priority_gaps = category_gaps + category_lens_gaps
+    priority_gaps.sort(key=gap_key)
+    fresh_category_gaps.sort(key=gap_key)
+    fresh_category_lens_gaps.sort(key=gap_key)
+    fresh_priority_gaps = fresh_category_gaps + fresh_category_lens_gaps
+    fresh_priority_gaps.sort(key=gap_key)
+    target_categories = len(focus_categories)
+    target_category_lenses = len(focus_categories) * len(lenses)
+    return {
+        "targets": {
+            "category_treatment_subintent_actionable_strict": category_target,
+            "category_lens_treatment_subintent_actionable_strict": category_lens_target,
+            "category_min_distinct_treatment_subintent_buckets": category_min_buckets,
+            "category_lens_min_distinct_treatment_subintent_buckets": category_lens_min_buckets,
+        },
+        "overall": {
+            "target_categories": target_categories,
+            "treatment_subintent_diverse_categories": category_ready,
+            "category_treatment_subintent_diverse_ready_rate": LaneStats._rate(
+                category_ready,
+                target_categories,
+            ),
+            "fresh_treatment_subintent_diverse_categories": fresh_category_ready,
+            "fresh_category_treatment_subintent_diverse_ready_rate": LaneStats._rate(
+                fresh_category_ready,
+                target_categories,
+            ),
+            "target_category_lenses": target_category_lenses,
+            "treatment_subintent_diverse_category_lenses": category_lens_ready,
+            "category_lens_treatment_subintent_diverse_ready_rate": LaneStats._rate(
+                category_lens_ready,
+                target_category_lenses,
+            ),
+            "fresh_treatment_subintent_diverse_category_lenses": fresh_category_lens_ready,
+            "fresh_category_lens_treatment_subintent_diverse_ready_rate": LaneStats._rate(
+                fresh_category_lens_ready,
+                target_category_lenses,
+            ),
+        },
+        "by_category": by_category,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": priority_gaps[:10],
+        "fresh_category_gaps": fresh_category_gaps,
+        "fresh_category_lens_gaps": fresh_category_lens_gaps,
+        "fresh_priority_gaps": fresh_priority_gaps[:10],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "fresh_category_gaps": len(fresh_category_gaps),
+            "fresh_category_lens_gaps": len(fresh_category_lens_gaps),
+        },
+    }
+
+
+def _clinic_modality_item(
+    *,
+    lane_type: str,
+    category: str,
+    lens: str = "",
+    records: List[Dict[str, Any]],
+    target: int,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    unique_count = len(records)
+    compatible_records = [
+        record for record in records
+        if bool(record.get("clinic_modality_matched"))
+    ]
+    compatible_count = len(compatible_records)
+    offscope_records = [
+        record for record in records
+        if record.get("clinic_modality_offscope_terms")
+        and not bool(record.get("clinic_modality_matched"))
+    ]
+    offscope_count = len(offscope_records)
+    positive_terms = Counter(
+        term
+        for record in records
+        for term in (record.get("clinic_modality_positive_terms") or [])
+        if str(term or "").strip()
+    )
+    offscope_terms = Counter(
+        term
+        for record in offscope_records
+        for term in (record.get("clinic_modality_offscope_terms") or [])
+        if str(term or "").strip()
+    )
+    bridge_terms = Counter(
+        term
+        for record in records
+        for term in (record.get("clinic_modality_bridge_terms") or [])
+        if str(term or "").strip()
+    )
+
+    reasons: List[str] = []
+    if unique_count == 0:
+        reasons.append("no_fresh_unique_actionable_strict" if fresh else "no_unique_actionable_strict")
+    elif compatible_count == 0:
+        reasons.append("no_fresh_clinic_modality_fit" if fresh else "no_clinic_modality_fit")
+    elif compatible_count < target:
+        reasons.append("thin_fresh_clinic_modality_inventory" if fresh else "thin_clinic_modality_inventory")
+    if unique_count and compatible_count < target and offscope_count:
+        reasons.append("offscope_modality_noise")
+
+    lane = f"{category}::{lens}" if lane_type == "category_lens" else category
+    return {
+        "type": lane_type,
+        "lane": lane,
+        "category": category,
+        "lens": lens,
+        "target": target,
+        "unique_actionable_strict": unique_count,
+        "unique_fresh_actionable_strict": unique_count if fresh else 0,
+        "clinic_modality_fit_actionable_strict": compatible_count,
+        "fresh_clinic_modality_fit_actionable_strict": compatible_count if fresh else 0,
+        "clinic_modality_missing": max(0, unique_count - compatible_count),
+        "offscope_modality_noise": offscope_count,
+        "clinic_modality_positive_terms": [term for term, _ in positive_terms.most_common(10)],
+        "clinic_modality_offscope_terms": [term for term, _ in offscope_terms.most_common(10)],
+        "clinic_modality_bridge_terms": [term for term, _ in bridge_terms.most_common(8)],
+        "ready": compatible_count >= target and not reasons,
+        "gap": max(0, target - compatible_count),
+        "reasons": reasons,
+    }
+
+
+def _clinic_modality_quality(
+    records: List[Dict[str, Any]],
+    *,
+    category_target: int = CLINIC_MODALITY_CATEGORY_TARGET,
+    category_lens_target: int = CLINIC_MODALITY_CATEGORY_LENS_TARGET,
+) -> Dict[str, Any]:
+    """Audit whether strict-fit targets are compatible with Gyulim's treatment modality."""
+    focus_categories = _priority_focus_categories()
+    lenses = list(PATIENT_JOURNEY_LENSES)
+    category_target = max(1, int(category_target or 1))
+    category_lens_target = max(1, int(category_lens_target or 1))
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+    fresh_category_gaps: List[Dict[str, Any]] = []
+    fresh_category_lens_gaps: List[Dict[str, Any]] = []
+    category_ready = 0
+    category_lens_ready = 0
+    fresh_category_ready = 0
+    fresh_category_lens_ready = 0
+
+    for category in focus_categories:
+        category_records = _unique_actionable_records(records, category=category)
+        fresh_category_records = _unique_actionable_records(records, category=category, fresh_only=True)
+        category_item = _clinic_modality_item(
+            lane_type="category",
+            category=category,
+            records=category_records,
+            target=category_target,
+        )
+        fresh_category_item = _clinic_modality_item(
+            lane_type="category",
+            category=category,
+            records=fresh_category_records,
+            target=category_target,
+            fresh=True,
+        )
+        if category_item["ready"]:
+            category_ready += 1
+        else:
+            category_gaps.append(category_item)
+        if fresh_category_item["ready"]:
+            fresh_category_ready += 1
+        else:
+            fresh_category_gaps.append(fresh_category_item)
+
+        lens_items: Dict[str, Dict[str, Any]] = {}
+        for lens in lenses:
+            lens_records = _unique_actionable_records(records, category=category, lens=lens)
+            fresh_lens_records = _unique_actionable_records(
+                records,
+                category=category,
+                lens=lens,
+                fresh_only=True,
+            )
+            lens_item = _clinic_modality_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=lens_records,
+                target=category_lens_target,
+            )
+            fresh_lens_item = _clinic_modality_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=fresh_lens_records,
+                target=category_lens_target,
+                fresh=True,
+            )
+            lens_items[lens] = {
+                **lens_item,
+                "fresh_ready": fresh_lens_item["ready"],
+                "unique_fresh_actionable_strict": fresh_lens_item["unique_actionable_strict"],
+                "fresh_clinic_modality_fit_actionable_strict": fresh_lens_item[
+                    "clinic_modality_fit_actionable_strict"
+                ],
+                "fresh_clinic_modality_missing": fresh_lens_item["clinic_modality_missing"],
+                "fresh_offscope_modality_noise": fresh_lens_item["offscope_modality_noise"],
+                "fresh_reasons": fresh_lens_item["reasons"],
+            }
+            if lens_item["ready"]:
+                category_lens_ready += 1
+            else:
+                category_lens_gaps.append(lens_item)
+            if fresh_lens_item["ready"]:
+                fresh_category_lens_ready += 1
+            else:
+                fresh_category_lens_gaps.append(fresh_lens_item)
+
+        by_category[category] = {
+            **category_item,
+            "fresh_ready": fresh_category_item["ready"],
+            "unique_fresh_actionable_strict": fresh_category_item["unique_actionable_strict"],
+            "fresh_clinic_modality_fit_actionable_strict": fresh_category_item[
+                "clinic_modality_fit_actionable_strict"
+            ],
+            "fresh_clinic_modality_missing": fresh_category_item["clinic_modality_missing"],
+            "fresh_offscope_modality_noise": fresh_category_item["offscope_modality_noise"],
+            "fresh_reasons": fresh_category_item["reasons"],
+            "lenses": lens_items,
+            "ready_lens_count": sum(1 for item in lens_items.values() if item.get("ready")),
+            "fresh_ready_lens_count": sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+            "lens_count": len(lens_items),
+            "lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("ready")),
+                len(lens_items),
+            ),
+            "fresh_lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+                len(lens_items),
+            ),
+        }
+
+    def gap_key(item: Dict[str, Any]) -> tuple:
+        unique_count = int(item.get("unique_actionable_strict") or 0)
+        offscope_count = int(item.get("offscope_modality_noise") or 0)
+        no_inventory = unique_count == 0
+        return (
+            0 if offscope_count else (2 if no_inventory else 1),
+            _category_priority_sort_key(item.get("category")),
+            _lens_priority_sort_key(item.get("lens")),
+            -offscope_count,
+            -int(item.get("gap") or 0),
+            int(item.get("clinic_modality_fit_actionable_strict") or 0),
+        )
+
+    category_gaps.sort(key=gap_key)
+    category_lens_gaps.sort(key=gap_key)
+    priority_gaps = category_gaps + category_lens_gaps
+    priority_gaps.sort(key=gap_key)
+    fresh_category_gaps.sort(key=gap_key)
+    fresh_category_lens_gaps.sort(key=gap_key)
+    fresh_priority_gaps = fresh_category_gaps + fresh_category_lens_gaps
+    fresh_priority_gaps.sort(key=gap_key)
+    target_categories = len(focus_categories)
+    target_category_lenses = len(focus_categories) * len(lenses)
+    return {
+        "targets": {
+            "category_clinic_modality_fit_actionable_strict": category_target,
+            "category_lens_clinic_modality_fit_actionable_strict": category_lens_target,
+        },
+        "overall": {
+            "target_categories": target_categories,
+            "clinic_modality_fit_categories": category_ready,
+            "category_clinic_modality_fit_ready_rate": LaneStats._rate(
+                category_ready,
+                target_categories,
+            ),
+            "fresh_clinic_modality_fit_categories": fresh_category_ready,
+            "fresh_category_clinic_modality_fit_ready_rate": LaneStats._rate(
+                fresh_category_ready,
+                target_categories,
+            ),
+            "target_category_lenses": target_category_lenses,
+            "clinic_modality_fit_category_lenses": category_lens_ready,
+            "category_lens_clinic_modality_fit_ready_rate": LaneStats._rate(
+                category_lens_ready,
+                target_category_lenses,
+            ),
+            "fresh_clinic_modality_fit_category_lenses": fresh_category_lens_ready,
+            "fresh_category_lens_clinic_modality_fit_ready_rate": LaneStats._rate(
+                fresh_category_lens_ready,
+                target_category_lenses,
+            ),
+        },
+        "by_category": by_category,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": priority_gaps[:10],
+        "fresh_category_gaps": fresh_category_gaps,
+        "fresh_category_lens_gaps": fresh_category_lens_gaps,
+        "fresh_priority_gaps": fresh_priority_gaps[:10],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "fresh_category_gaps": len(fresh_category_gaps),
+            "fresh_category_lens_gaps": len(fresh_category_lens_gaps),
+        },
+    }
+
+
+def _decision_window_item(
+    *,
+    lane_type: str,
+    category: str,
+    lens: str = "",
+    records: List[Dict[str, Any]],
+    target: int,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    unique_count = len(records)
+    active_records = [
+        record for record in records
+        if bool(record.get("decision_window_matched"))
+    ]
+    active_count = len(active_records)
+    completed_noise_records = [
+        record for record in records
+        if record.get("decision_window_completed_terms")
+        and not bool(record.get("decision_window_matched"))
+    ]
+    completed_noise_count = len(completed_noise_records)
+    active_terms = Counter(
+        term
+        for record in active_records
+        for term in (record.get("decision_window_active_terms") or [])
+        if str(term or "").strip()
+    )
+    completed_terms = Counter(
+        term
+        for record in completed_noise_records
+        for term in (record.get("decision_window_completed_terms") or [])
+        if str(term or "").strip()
+    )
+    active_signals = Counter(
+        signal
+        for record in active_records
+        for signal in (record.get("decision_window_active_signals") or [])
+        if str(signal or "").strip()
+    )
+    reason_counts = Counter(
+        reason
+        for record in records
+        if not bool(record.get("decision_window_matched"))
+        for reason in (record.get("decision_window_reasons") or [])
+        if str(reason or "").strip()
+    )
+
+    reasons: List[str] = []
+    if unique_count == 0:
+        reasons.append("no_fresh_unique_actionable_strict" if fresh else "no_unique_actionable_strict")
+    elif active_count == 0:
+        reasons.append("no_fresh_active_decision_window" if fresh else "no_active_decision_window")
+    elif active_count < target:
+        reasons.append("thin_fresh_decision_window_inventory" if fresh else "thin_decision_window_inventory")
+    if unique_count and active_count < target and completed_noise_count:
+        reasons.append("completed_decision_window_noise")
+    for reason, _ in reason_counts.most_common(4):
+        if reason not in reasons:
+            reasons.append(reason)
+
+    lane = f"{category}::{lens}" if lane_type == "category_lens" else category
+    return {
+        "type": lane_type,
+        "lane": lane,
+        "category": category,
+        "lens": lens,
+        "target": target,
+        "unique_actionable_strict": unique_count,
+        "unique_fresh_actionable_strict": unique_count if fresh else 0,
+        "active_decision_actionable_strict": active_count,
+        "fresh_active_decision_actionable_strict": active_count if fresh else 0,
+        "decision_window_missing": max(0, unique_count - active_count),
+        "completed_decision_window_noise": completed_noise_count,
+        "decision_window_active_terms": [term for term, _ in active_terms.most_common(10)],
+        "decision_window_completed_terms": [term for term, _ in completed_terms.most_common(10)],
+        "decision_window_active_signals": [signal for signal, _ in active_signals.most_common(8)],
+        "ready": active_count >= target and not reasons,
+        "gap": max(0, target - active_count),
+        "reasons": reasons,
+    }
+
+
+def _decision_window_quality(
+    records: List[Dict[str, Any]],
+    *,
+    category_target: int = DECISION_WINDOW_CATEGORY_TARGET,
+    category_lens_target: int = DECISION_WINDOW_CATEGORY_LENS_TARGET,
+) -> Dict[str, Any]:
+    """Audit whether strict-fit targets are still actionable decision-stage posts."""
+    focus_categories = _priority_focus_categories()
+    lenses = list(PATIENT_JOURNEY_LENSES)
+    category_target = max(1, int(category_target or 1))
+    category_lens_target = max(1, int(category_lens_target or 1))
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+    fresh_category_gaps: List[Dict[str, Any]] = []
+    fresh_category_lens_gaps: List[Dict[str, Any]] = []
+    category_ready = 0
+    category_lens_ready = 0
+    fresh_category_ready = 0
+    fresh_category_lens_ready = 0
+
+    for category in focus_categories:
+        category_records = _unique_actionable_records(records, category=category)
+        fresh_category_records = _unique_actionable_records(records, category=category, fresh_only=True)
+        category_item = _decision_window_item(
+            lane_type="category",
+            category=category,
+            records=category_records,
+            target=category_target,
+        )
+        fresh_category_item = _decision_window_item(
+            lane_type="category",
+            category=category,
+            records=fresh_category_records,
+            target=category_target,
+            fresh=True,
+        )
+        if category_item["ready"]:
+            category_ready += 1
+        else:
+            category_gaps.append(category_item)
+        if fresh_category_item["ready"]:
+            fresh_category_ready += 1
+        else:
+            fresh_category_gaps.append(fresh_category_item)
+
+        lens_items: Dict[str, Dict[str, Any]] = {}
+        for lens in lenses:
+            lens_records = _unique_actionable_records(records, category=category, lens=lens)
+            fresh_lens_records = _unique_actionable_records(
+                records,
+                category=category,
+                lens=lens,
+                fresh_only=True,
+            )
+            lens_item = _decision_window_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=lens_records,
+                target=category_lens_target,
+            )
+            fresh_lens_item = _decision_window_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=fresh_lens_records,
+                target=category_lens_target,
+                fresh=True,
+            )
+            lens_items[lens] = {
+                **lens_item,
+                "fresh_ready": fresh_lens_item["ready"],
+                "unique_fresh_actionable_strict": fresh_lens_item["unique_actionable_strict"],
+                "fresh_active_decision_actionable_strict": fresh_lens_item[
+                    "active_decision_actionable_strict"
+                ],
+                "fresh_decision_window_missing": fresh_lens_item["decision_window_missing"],
+                "fresh_completed_decision_window_noise": fresh_lens_item[
+                    "completed_decision_window_noise"
+                ],
+                "fresh_reasons": fresh_lens_item["reasons"],
+            }
+            if lens_item["ready"]:
+                category_lens_ready += 1
+            else:
+                category_lens_gaps.append(lens_item)
+            if fresh_lens_item["ready"]:
+                fresh_category_lens_ready += 1
+            else:
+                fresh_category_lens_gaps.append(fresh_lens_item)
+
+        by_category[category] = {
+            **category_item,
+            "fresh_ready": fresh_category_item["ready"],
+            "unique_fresh_actionable_strict": fresh_category_item["unique_actionable_strict"],
+            "fresh_active_decision_actionable_strict": fresh_category_item[
+                "active_decision_actionable_strict"
+            ],
+            "fresh_decision_window_missing": fresh_category_item["decision_window_missing"],
+            "fresh_completed_decision_window_noise": fresh_category_item[
+                "completed_decision_window_noise"
+            ],
+            "fresh_reasons": fresh_category_item["reasons"],
+            "lenses": lens_items,
+            "ready_lens_count": sum(1 for item in lens_items.values() if item.get("ready")),
+            "fresh_ready_lens_count": sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+            "lens_count": len(lens_items),
+            "lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("ready")),
+                len(lens_items),
+            ),
+            "fresh_lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+                len(lens_items),
+            ),
+        }
+
+    def gap_key(item: Dict[str, Any]) -> tuple:
+        unique_count = int(item.get("unique_actionable_strict") or 0)
+        completed_noise = int(item.get("completed_decision_window_noise") or 0)
+        no_inventory = unique_count == 0
+        return (
+            0 if completed_noise else (2 if no_inventory else 1),
+            _category_priority_sort_key(item.get("category")),
+            _lens_priority_sort_key(item.get("lens")),
+            -completed_noise,
+            -int(item.get("gap") or 0),
+            int(item.get("active_decision_actionable_strict") or 0),
+        )
+
+    category_gaps.sort(key=gap_key)
+    category_lens_gaps.sort(key=gap_key)
+    priority_gaps = category_gaps + category_lens_gaps
+    priority_gaps.sort(key=gap_key)
+    fresh_category_gaps.sort(key=gap_key)
+    fresh_category_lens_gaps.sort(key=gap_key)
+    fresh_priority_gaps = fresh_category_gaps + fresh_category_lens_gaps
+    fresh_priority_gaps.sort(key=gap_key)
+    target_categories = len(focus_categories)
+    target_category_lenses = len(focus_categories) * len(lenses)
+    return {
+        "targets": {
+            "category_active_decision_actionable_strict": category_target,
+            "category_lens_active_decision_actionable_strict": category_lens_target,
+        },
+        "overall": {
+            "target_categories": target_categories,
+            "active_decision_categories": category_ready,
+            "category_active_decision_ready_rate": LaneStats._rate(
+                category_ready,
+                target_categories,
+            ),
+            "fresh_active_decision_categories": fresh_category_ready,
+            "fresh_category_active_decision_ready_rate": LaneStats._rate(
+                fresh_category_ready,
+                target_categories,
+            ),
+            "target_category_lenses": target_category_lenses,
+            "active_decision_category_lenses": category_lens_ready,
+            "category_lens_active_decision_ready_rate": LaneStats._rate(
+                category_lens_ready,
+                target_category_lenses,
+            ),
+            "fresh_active_decision_category_lenses": fresh_category_lens_ready,
+            "fresh_category_lens_active_decision_ready_rate": LaneStats._rate(
+                fresh_category_lens_ready,
+                target_category_lenses,
+            ),
+        },
+        "by_category": by_category,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": priority_gaps[:10],
+        "fresh_category_gaps": fresh_category_gaps,
+        "fresh_category_lens_gaps": fresh_category_lens_gaps,
+        "fresh_priority_gaps": fresh_priority_gaps[:10],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "fresh_category_gaps": len(fresh_category_gaps),
+            "fresh_category_lens_gaps": len(fresh_category_lens_gaps),
+        },
+    }
+
+
 def _seed_candidate_alignment_item(
     *,
     lane_type: str,
@@ -5670,6 +7805,270 @@ def _local_intent_quality(
             "category_lens_local_ready_rate": LaneStats._rate(category_lens_ready, target_category_lenses),
             "fresh_local_ready_category_lenses": fresh_category_lens_ready,
             "fresh_category_lens_local_ready_rate": LaneStats._rate(
+                fresh_category_lens_ready,
+                target_category_lenses,
+            ),
+        },
+        "by_category": by_category,
+        "category_gaps": category_gaps,
+        "category_lens_gaps": category_lens_gaps,
+        "priority_gaps": priority_gaps[:10],
+        "fresh_category_gaps": fresh_category_gaps,
+        "fresh_category_lens_gaps": fresh_category_lens_gaps,
+        "fresh_priority_gaps": fresh_priority_gaps[:10],
+        "counts": {
+            "category_gaps": len(category_gaps),
+            "category_lens_gaps": len(category_lens_gaps),
+            "fresh_category_gaps": len(fresh_category_gaps),
+            "fresh_category_lens_gaps": len(fresh_category_lens_gaps),
+        },
+    }
+
+
+def _local_area_diversity_item(
+    *,
+    lane_type: str,
+    category: str,
+    lens: str = "",
+    records: List[Dict[str, Any]],
+    target: int,
+    min_areas: int,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    unique_count = len(records)
+    local_records = [
+        record for record in records
+        if record.get("local_area_terms")
+    ]
+    local_count = len(local_records)
+    area_terms = Counter(
+        term
+        for record in local_records
+        for term in (record.get("local_area_terms") or [])
+        if str(term or "").strip()
+    )
+    target_area_terms = Counter(
+        term
+        for record in local_records
+        for term in (record.get("local_area_target_terms") or [])
+        if str(term or "").strip()
+    )
+    source_area_terms = Counter(
+        term
+        for record in local_records
+        for term in (record.get("local_area_source_terms") or [])
+        if str(term or "").strip()
+    )
+    area_count = len(area_terms)
+    missing_count = max(0, unique_count - local_count)
+
+    reasons: List[str] = []
+    if unique_count == 0:
+        reasons.append("no_fresh_unique_actionable_strict" if fresh else "no_unique_actionable_strict")
+    elif local_count == 0:
+        reasons.append("no_fresh_local_area_terms" if fresh else "no_local_area_terms")
+    elif local_count < target:
+        reasons.append("thin_fresh_local_area_inventory" if fresh else "thin_local_area_inventory")
+    if unique_count and local_count < target and missing_count:
+        reasons.append("missing_local_area_terms")
+    if unique_count and area_count < min_areas:
+        reasons.append(
+            "single_local_area_dependency"
+            if area_count <= 1
+            else "thin_local_area_diversity"
+        )
+
+    lane = f"{category}::{lens}" if lane_type == "category_lens" else category
+    return {
+        "type": lane_type,
+        "lane": lane,
+        "category": category,
+        "lens": lens,
+        "target": target,
+        "min_local_areas": min_areas,
+        "unique_actionable_strict": unique_count,
+        "unique_fresh_actionable_strict": unique_count if fresh else 0,
+        "local_area_actionable_strict": local_count,
+        "fresh_local_area_actionable_strict": local_count if fresh else 0,
+        "local_area_missing": missing_count,
+        "local_area_count": area_count,
+        "local_area_terms": [term for term, _ in area_terms.most_common(10)],
+        "target_local_area_terms": [term for term, _ in target_area_terms.most_common(8)],
+        "source_local_area_terms": [term for term, _ in source_area_terms.most_common(8)],
+        "ready": local_count >= target and area_count >= min_areas and not reasons,
+        "gap": max(0, min_areas - area_count),
+        "reasons": reasons,
+    }
+
+
+def _local_area_diversity_quality(
+    records: List[Dict[str, Any]],
+    *,
+    category_target: int = WORK_QUEUE_CATEGORY_TARGET,
+    category_lens_target: int = WORK_QUEUE_CATEGORY_LENS_TARGET,
+    category_min_areas: int = LOCAL_AREA_DIVERSITY_CATEGORY_MIN_AREAS,
+    category_lens_min_areas: int = LOCAL_AREA_DIVERSITY_CATEGORY_LENS_MIN_AREAS,
+) -> Dict[str, Any]:
+    """Audit whether work-ready local inventory spans independent Cheongju areas."""
+    focus_categories = _priority_focus_categories()
+    lenses = list(PATIENT_JOURNEY_LENSES)
+    category_target = max(1, int(category_target or 1))
+    category_lens_target = max(1, int(category_lens_target or 1))
+    category_min_areas = max(1, int(category_min_areas or 1))
+    category_lens_min_areas = max(1, int(category_lens_min_areas or 1))
+
+    by_category: Dict[str, Dict[str, Any]] = {}
+    category_gaps: List[Dict[str, Any]] = []
+    category_lens_gaps: List[Dict[str, Any]] = []
+    fresh_category_gaps: List[Dict[str, Any]] = []
+    fresh_category_lens_gaps: List[Dict[str, Any]] = []
+    category_ready = 0
+    category_lens_ready = 0
+    fresh_category_ready = 0
+    fresh_category_lens_ready = 0
+
+    for category in focus_categories:
+        category_records = _unique_actionable_records(records, category=category)
+        fresh_category_records = _unique_actionable_records(records, category=category, fresh_only=True)
+        category_item = _local_area_diversity_item(
+            lane_type="category",
+            category=category,
+            records=category_records,
+            target=category_target,
+            min_areas=category_min_areas,
+        )
+        fresh_category_item = _local_area_diversity_item(
+            lane_type="category",
+            category=category,
+            records=fresh_category_records,
+            target=category_target,
+            min_areas=category_min_areas,
+            fresh=True,
+        )
+        if category_item["ready"]:
+            category_ready += 1
+        else:
+            category_gaps.append(category_item)
+        if fresh_category_item["ready"]:
+            fresh_category_ready += 1
+        else:
+            fresh_category_gaps.append(fresh_category_item)
+
+        lens_items: Dict[str, Dict[str, Any]] = {}
+        for lens in lenses:
+            lens_records = _unique_actionable_records(records, category=category, lens=lens)
+            fresh_lens_records = _unique_actionable_records(
+                records,
+                category=category,
+                lens=lens,
+                fresh_only=True,
+            )
+            lens_item = _local_area_diversity_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=lens_records,
+                target=category_lens_target,
+                min_areas=category_lens_min_areas,
+            )
+            fresh_lens_item = _local_area_diversity_item(
+                lane_type="category_lens",
+                category=category,
+                lens=lens,
+                records=fresh_lens_records,
+                target=category_lens_target,
+                min_areas=category_lens_min_areas,
+                fresh=True,
+            )
+            lens_items[lens] = {
+                **lens_item,
+                "fresh_ready": fresh_lens_item["ready"],
+                "unique_fresh_actionable_strict": fresh_lens_item["unique_actionable_strict"],
+                "fresh_local_area_actionable_strict": fresh_lens_item["local_area_actionable_strict"],
+                "fresh_local_area_count": fresh_lens_item["local_area_count"],
+                "fresh_local_area_missing": fresh_lens_item["local_area_missing"],
+                "fresh_reasons": fresh_lens_item["reasons"],
+            }
+            if lens_item["ready"]:
+                category_lens_ready += 1
+            else:
+                category_lens_gaps.append(lens_item)
+            if fresh_lens_item["ready"]:
+                fresh_category_lens_ready += 1
+            else:
+                fresh_category_lens_gaps.append(fresh_lens_item)
+
+        by_category[category] = {
+            **category_item,
+            "fresh_ready": fresh_category_item["ready"],
+            "unique_fresh_actionable_strict": fresh_category_item["unique_actionable_strict"],
+            "fresh_local_area_actionable_strict": fresh_category_item["local_area_actionable_strict"],
+            "fresh_local_area_count": fresh_category_item["local_area_count"],
+            "fresh_local_area_missing": fresh_category_item["local_area_missing"],
+            "fresh_reasons": fresh_category_item["reasons"],
+            "lenses": lens_items,
+            "ready_lens_count": sum(1 for item in lens_items.values() if item.get("ready")),
+            "fresh_ready_lens_count": sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+            "lens_count": len(lens_items),
+            "lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("ready")),
+                len(lens_items),
+            ),
+            "fresh_lens_ready_rate": LaneStats._rate(
+                sum(1 for item in lens_items.values() if item.get("fresh_ready")),
+                len(lens_items),
+            ),
+        }
+
+    def gap_key(item: Dict[str, Any]) -> tuple:
+        unique_count = int(item.get("unique_actionable_strict") or 0)
+        area_count = int(item.get("local_area_count") or 0)
+        has_area_gap = bool(unique_count and area_count < int(item.get("min_local_areas") or 1))
+        return (
+            0 if has_area_gap else (2 if unique_count == 0 else 1),
+            _category_priority_sort_key(item.get("category")),
+            _lens_priority_sort_key(item.get("lens")),
+            area_count,
+            -int(item.get("unique_actionable_strict") or 0),
+        )
+
+    category_gaps.sort(key=gap_key)
+    category_lens_gaps.sort(key=gap_key)
+    priority_gaps = category_gaps + category_lens_gaps
+    priority_gaps.sort(key=gap_key)
+    fresh_category_gaps.sort(key=gap_key)
+    fresh_category_lens_gaps.sort(key=gap_key)
+    fresh_priority_gaps = fresh_category_gaps + fresh_category_lens_gaps
+    fresh_priority_gaps.sort(key=gap_key)
+    target_categories = len(focus_categories)
+    target_category_lenses = len(focus_categories) * len(lenses)
+    return {
+        "targets": {
+            "category_local_area_actionable_strict": category_target,
+            "category_lens_local_area_actionable_strict": category_lens_target,
+            "category_min_local_areas": category_min_areas,
+            "category_lens_min_local_areas": category_lens_min_areas,
+        },
+        "overall": {
+            "target_categories": target_categories,
+            "local_area_diverse_categories": category_ready,
+            "category_local_area_diversity_ready_rate": LaneStats._rate(
+                category_ready,
+                target_categories,
+            ),
+            "fresh_local_area_diverse_categories": fresh_category_ready,
+            "fresh_category_local_area_diversity_ready_rate": LaneStats._rate(
+                fresh_category_ready,
+                target_categories,
+            ),
+            "target_category_lenses": target_category_lenses,
+            "local_area_diverse_category_lenses": category_lens_ready,
+            "category_lens_local_area_diversity_ready_rate": LaneStats._rate(
+                category_lens_ready,
+                target_category_lenses,
+            ),
+            "fresh_local_area_diverse_category_lenses": fresh_category_lens_ready,
+            "fresh_category_lens_local_area_diversity_ready_rate": LaneStats._rate(
                 fresh_category_lens_ready,
                 target_category_lenses,
             ),
@@ -7598,7 +9997,9 @@ def _source_seed_feedback(
             "query_variant_counts": metrics.get("query_variant_counts", {}),
         }
 
-        if dominant_category_drift:
+        assist_only = primary_total == 0 and assist_total > 0
+
+        if dominant_category_drift and not assist_only:
             recategorize_candidates.append({
                 **base,
                 "action": "recategorize_or_quarantine",
@@ -7622,7 +10023,7 @@ def _source_seed_feedback(
                 "action": "retire_or_pause",
                 "why": "primary seed has enough evidence with zero survived/strict-fit targets",
             })
-        if primary_total == 0 and assist_total > 0:
+        if assist_only:
             assist_only_candidates.append({
                 **base,
                 "action": "merge_or_keep_as_companion",
@@ -7994,8 +10395,12 @@ def _handoff_quality_bar(
     engagement_hook_quality: Optional[Dict[str, Any]] = None,
     treatment_signature_quality: Optional[Dict[str, Any]] = None,
     treatment_signal_diversity_quality: Optional[Dict[str, Any]] = None,
+    treatment_subintent_diversity_quality: Optional[Dict[str, Any]] = None,
+    clinic_modality_quality: Optional[Dict[str, Any]] = None,
+    decision_window_quality: Optional[Dict[str, Any]] = None,
     seed_candidate_alignment_quality: Optional[Dict[str, Any]] = None,
     local_intent_quality: Optional[Dict[str, Any]] = None,
+    local_area_diversity_quality: Optional[Dict[str, Any]] = None,
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
@@ -8003,6 +10408,9 @@ def _handoff_quality_bar(
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
+    source_lineage_quality: Optional[Dict[str, Any]] = None,
+    reanalysis_rescue_quality: Optional[Dict[str, Any]] = None,
+    discarded_execution_rescue_quality: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """World-class readiness gate for the Pathfinder -> Viral Hunter handoff.
 
@@ -8028,9 +10436,15 @@ def _handoff_quality_bar(
     focus_survival_rate = round(len(focus_survived) / focus_total, 4) if focus_total else 0.0
     focus_strict_rate = round(len(focus_strict) / focus_total, 4) if focus_total else 0.0
 
+    axis_metric_coverage = _metrics_rate(overall, "axis_coverage_rate")
+    lens_metric_coverage = _metrics_rate(overall, "lens_coverage_rate")
+    clinic_fit_metric_coverage = _metrics_rate(overall, "clinic_fit_coverage_rate")
+    worksite_efficiency_metric_coverage = _metrics_rate(overall, "worksite_efficiency_coverage_rate")
     metric_coverage = min(
-        _metrics_rate(overall, "axis_coverage_rate"),
-        _metrics_rate(overall, "lens_coverage_rate"),
+        axis_metric_coverage,
+        lens_metric_coverage,
+        clinic_fit_metric_coverage,
+        worksite_efficiency_metric_coverage,
     )
     survival_rate = _metrics_rate(overall, "survival_rate")
     strict_fit_rate = _metrics_rate(overall, "strict_fit_rate")
@@ -8038,6 +10452,56 @@ def _handoff_quality_bar(
     source_seed_feedback = source_seed_feedback or {}
     source_seed_counts = source_seed_feedback.get("counts") or {}
     source_seed_category_drift = int(source_seed_counts.get("recategorize_candidates") or 0)
+    row_total = int(overall.get("total") or 0)
+    source_lineage_quality = source_lineage_quality or {}
+    source_lineage_overall = source_lineage_quality.get("overall") or {}
+    source_lineage_targets = source_lineage_quality.get("targets") or {}
+    source_lineage_seed_rate = _metrics_rate(source_lineage_overall, "source_seed_coverage_rate")
+    source_lineage_priority_seed_rate = _metrics_rate(
+        source_lineage_overall,
+        "priority_focus_source_seed_coverage_rate",
+    )
+    source_lineage_actionable_seed_rate = _metrics_rate(
+        source_lineage_overall,
+        "actionable_strict_source_seed_coverage_rate",
+    )
+    source_lineage_priority_actionable_seed_rate = _metrics_rate(
+        source_lineage_overall,
+        "priority_focus_actionable_strict_source_seed_coverage_rate",
+    )
+    source_lineage_query_variant_rate = _metrics_rate(
+        source_lineage_overall,
+        "query_variant_coverage_rate",
+    )
+    source_lineage_priority_total = int(source_lineage_overall.get("priority_focus_total") or 0)
+    source_lineage_actionable_total = int(source_lineage_overall.get("actionable_strict_total") or 0)
+    source_lineage_priority_actionable_total = int(
+        source_lineage_overall.get("priority_focus_actionable_strict_total") or 0
+    )
+    source_lineage_seed_target = float(
+        source_lineage_targets.get("source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_priority_seed_target = float(
+        source_lineage_targets.get("priority_focus_source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_PRIORITY_FOCUS_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_actionable_seed_target = float(
+        source_lineage_targets.get("actionable_strict_source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_ACTIONABLE_STRICT_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_query_variant_target = float(
+        source_lineage_targets.get("query_variant_coverage_rate")
+        or SOURCE_LINEAGE_MIN_QUERY_VARIANT_COVERAGE
+    )
+    source_lineage_seed_rates = [source_lineage_seed_rate]
+    if source_lineage_priority_total:
+        source_lineage_seed_rates.append(source_lineage_priority_seed_rate)
+    if source_lineage_actionable_total:
+        source_lineage_seed_rates.append(source_lineage_actionable_seed_rate)
+    if source_lineage_priority_actionable_total:
+        source_lineage_seed_rates.append(source_lineage_priority_actionable_seed_rate)
+    source_lineage_min_seed_rate = min(source_lineage_seed_rates)
     content_category_observed = int(overall.get("content_category_observed") or 0)
     content_category_mismatch_rate = _metrics_rate(overall, "content_category_mismatch_rate")
     lens_surface_checked = int(overall.get("lens_surface_checked") or 0)
@@ -8152,6 +10616,74 @@ def _handoff_quality_bar(
     treatment_signal_diversity_target_category_lenses = int(
         treatment_signal_diversity_overall.get("target_category_lenses") or 0
     )
+    treatment_subintent_diversity_quality = treatment_subintent_diversity_quality or {}
+    treatment_subintent_diversity_overall = treatment_subintent_diversity_quality.get("overall") or {}
+    treatment_subintent_diversity_category_ready_rate = _metrics_rate(
+        treatment_subintent_diversity_overall,
+        "category_treatment_subintent_diverse_ready_rate",
+    )
+    treatment_subintent_diversity_category_lens_ready_rate = _metrics_rate(
+        treatment_subintent_diversity_overall,
+        "category_lens_treatment_subintent_diverse_ready_rate",
+    )
+    fresh_treatment_subintent_diversity_category_ready_rate = _metrics_rate(
+        treatment_subintent_diversity_overall,
+        "fresh_category_treatment_subintent_diverse_ready_rate",
+    )
+    fresh_treatment_subintent_diversity_category_lens_ready_rate = _metrics_rate(
+        treatment_subintent_diversity_overall,
+        "fresh_category_lens_treatment_subintent_diverse_ready_rate",
+    )
+    treatment_subintent_diversity_target_categories = int(
+        treatment_subintent_diversity_overall.get("target_categories") or 0
+    )
+    treatment_subintent_diversity_target_category_lenses = int(
+        treatment_subintent_diversity_overall.get("target_category_lenses") or 0
+    )
+    clinic_modality_quality = clinic_modality_quality or {}
+    clinic_modality_overall = clinic_modality_quality.get("overall") or {}
+    clinic_modality_category_ready_rate = _metrics_rate(
+        clinic_modality_overall,
+        "category_clinic_modality_fit_ready_rate",
+    )
+    clinic_modality_category_lens_ready_rate = _metrics_rate(
+        clinic_modality_overall,
+        "category_lens_clinic_modality_fit_ready_rate",
+    )
+    fresh_clinic_modality_category_ready_rate = _metrics_rate(
+        clinic_modality_overall,
+        "fresh_category_clinic_modality_fit_ready_rate",
+    )
+    fresh_clinic_modality_category_lens_ready_rate = _metrics_rate(
+        clinic_modality_overall,
+        "fresh_category_lens_clinic_modality_fit_ready_rate",
+    )
+    clinic_modality_target_categories = int(clinic_modality_overall.get("target_categories") or 0)
+    clinic_modality_target_category_lenses = int(
+        clinic_modality_overall.get("target_category_lenses") or 0
+    )
+    decision_window_quality = decision_window_quality or {}
+    decision_window_overall = decision_window_quality.get("overall") or {}
+    decision_window_category_ready_rate = _metrics_rate(
+        decision_window_overall,
+        "category_active_decision_ready_rate",
+    )
+    decision_window_category_lens_ready_rate = _metrics_rate(
+        decision_window_overall,
+        "category_lens_active_decision_ready_rate",
+    )
+    fresh_decision_window_category_ready_rate = _metrics_rate(
+        decision_window_overall,
+        "fresh_category_active_decision_ready_rate",
+    )
+    fresh_decision_window_category_lens_ready_rate = _metrics_rate(
+        decision_window_overall,
+        "fresh_category_lens_active_decision_ready_rate",
+    )
+    decision_window_target_categories = int(decision_window_overall.get("target_categories") or 0)
+    decision_window_target_category_lenses = int(
+        decision_window_overall.get("target_category_lenses") or 0
+    )
     seed_candidate_alignment_quality = seed_candidate_alignment_quality or {}
     seed_candidate_alignment_overall = seed_candidate_alignment_quality.get("overall") or {}
     seed_candidate_alignment_category_ready_rate = _metrics_rate(
@@ -8196,6 +10728,28 @@ def _handoff_quality_bar(
     )
     local_target_categories = int(local_intent_overall.get("target_categories") or 0)
     local_target_category_lenses = int(local_intent_overall.get("target_category_lenses") or 0)
+    local_area_diversity_quality = local_area_diversity_quality or {}
+    local_area_diversity_overall = local_area_diversity_quality.get("overall") or {}
+    local_area_category_ready_rate = _metrics_rate(
+        local_area_diversity_overall,
+        "category_local_area_diversity_ready_rate",
+    )
+    local_area_category_lens_ready_rate = _metrics_rate(
+        local_area_diversity_overall,
+        "category_lens_local_area_diversity_ready_rate",
+    )
+    fresh_local_area_category_ready_rate = _metrics_rate(
+        local_area_diversity_overall,
+        "fresh_category_local_area_diversity_ready_rate",
+    )
+    fresh_local_area_category_lens_ready_rate = _metrics_rate(
+        local_area_diversity_overall,
+        "fresh_category_lens_local_area_diversity_ready_rate",
+    )
+    local_area_target_categories = int(local_area_diversity_overall.get("target_categories") or 0)
+    local_area_target_category_lenses = int(
+        local_area_diversity_overall.get("target_category_lenses") or 0
+    )
     patient_surface_quality = patient_surface_quality or {}
     patient_surface_overall_quality = patient_surface_quality.get("overall") or {}
     authentic_surface_category_ready_rate = _metrics_rate(
@@ -8331,6 +10885,26 @@ def _handoff_quality_bar(
     platform_surface_quality = platform_surface_quality or {}
     platform_surface_counts = platform_surface_quality.get("counts") or {}
     platform_surface_focus_hotspots = int(platform_surface_counts.get("priority_focus_hotspots") or 0)
+    reanalysis_rescue_quality = reanalysis_rescue_quality or {}
+    reanalysis_rescue_overall = reanalysis_rescue_quality.get("overall") or {}
+    reanalysis_rescue_candidates = int(reanalysis_rescue_overall.get("candidate_count") or 0)
+    reanalysis_rescue_priority_focus_candidates = int(
+        reanalysis_rescue_overall.get("priority_focus_candidate_count") or 0
+    )
+    discarded_execution_rescue_quality = discarded_execution_rescue_quality or {}
+    discarded_execution_rescue_overall = discarded_execution_rescue_quality.get("overall") or {}
+    discarded_execution_rescue_candidates = int(
+        discarded_execution_rescue_overall.get("candidate_count") or 0
+    )
+    discarded_execution_rescue_priority_focus_candidates = int(
+        discarded_execution_rescue_overall.get("priority_focus_candidate_count") or 0
+    )
+    discarded_execution_auto_requeue_candidates = int(
+        discarded_execution_rescue_overall.get("auto_requeue_candidate_count") or 0
+    )
+    discarded_execution_manual_review_candidates = int(
+        discarded_execution_rescue_overall.get("manual_review_candidate_count") or 0
+    )
 
     patient_voice = variant_family_summary.get("patient_voice") or {}
     axis_specific = variant_family_summary.get("axis_specific") or {}
@@ -8386,6 +10960,43 @@ def _handoff_quality_bar(
             source_seed_category_drift == 0,
             actual=source_seed_category_drift,
             target=0,
+            required=False,
+        ),
+        _gate(
+            "source_lineage_coverage",
+            row_total == 0
+            or (
+                source_lineage_seed_rate >= source_lineage_seed_target
+                and (
+                    source_lineage_priority_total == 0
+                    or source_lineage_priority_seed_rate >= source_lineage_priority_seed_target
+                )
+                and (
+                    source_lineage_actionable_total == 0
+                    or source_lineage_actionable_seed_rate >= source_lineage_actionable_seed_target
+                )
+                and (
+                    source_lineage_priority_actionable_total == 0
+                    or source_lineage_priority_actionable_seed_rate
+                    >= source_lineage_actionable_seed_target
+                )
+            ),
+            actual=round(source_lineage_min_seed_rate, 4),
+            target=round(
+                min(
+                    source_lineage_seed_target,
+                    source_lineage_priority_seed_target,
+                    source_lineage_actionable_seed_target,
+                ),
+                4,
+            ),
+            required=False,
+        ),
+        _gate(
+            "query_variant_lineage_coverage",
+            row_total == 0 or source_lineage_query_variant_rate >= source_lineage_query_variant_target,
+            actual=round(source_lineage_query_variant_rate, 4),
+            target=round(source_lineage_query_variant_target, 4),
             required=False,
         ),
         _gate(
@@ -8597,6 +11208,126 @@ def _handoff_quality_bar(
             required=False,
         ),
         _gate(
+            "treatment_subintent_diversity_category_coverage",
+            (
+                treatment_subintent_diversity_target_categories == 0
+                or treatment_subintent_diversity_category_ready_rate >= 0.70
+            ),
+            actual=round(treatment_subintent_diversity_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "treatment_subintent_diversity_lens_coverage",
+            (
+                treatment_subintent_diversity_target_category_lenses == 0
+                or treatment_subintent_diversity_category_lens_ready_rate >= 0.35
+            ),
+            actual=round(treatment_subintent_diversity_category_lens_ready_rate, 4),
+            target=0.35,
+            required=False,
+        ),
+        _gate(
+            "fresh_treatment_subintent_diversity_category_coverage",
+            (
+                treatment_subintent_diversity_target_categories == 0
+                or fresh_treatment_subintent_diversity_category_ready_rate >= 0.70
+            ),
+            actual=round(fresh_treatment_subintent_diversity_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "fresh_treatment_subintent_diversity_lens_coverage",
+            (
+                treatment_subintent_diversity_target_category_lenses == 0
+                or fresh_treatment_subintent_diversity_category_lens_ready_rate >= 0.30
+            ),
+            actual=round(fresh_treatment_subintent_diversity_category_lens_ready_rate, 4),
+            target=0.30,
+            required=False,
+        ),
+        _gate(
+            "clinic_modality_category_coverage",
+            (
+                clinic_modality_target_categories == 0
+                or clinic_modality_category_ready_rate >= 0.70
+            ),
+            actual=round(clinic_modality_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "clinic_modality_lens_coverage",
+            (
+                clinic_modality_target_category_lenses == 0
+                or clinic_modality_category_lens_ready_rate >= 0.35
+            ),
+            actual=round(clinic_modality_category_lens_ready_rate, 4),
+            target=0.35,
+            required=False,
+        ),
+        _gate(
+            "fresh_clinic_modality_category_coverage",
+            (
+                clinic_modality_target_categories == 0
+                or fresh_clinic_modality_category_ready_rate >= 0.70
+            ),
+            actual=round(fresh_clinic_modality_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "fresh_clinic_modality_lens_coverage",
+            (
+                clinic_modality_target_category_lenses == 0
+                or fresh_clinic_modality_category_lens_ready_rate >= 0.30
+            ),
+            actual=round(fresh_clinic_modality_category_lens_ready_rate, 4),
+            target=0.30,
+            required=False,
+        ),
+        _gate(
+            "decision_window_category_coverage",
+            (
+                decision_window_target_categories == 0
+                or decision_window_category_ready_rate >= 0.70
+            ),
+            actual=round(decision_window_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "decision_window_lens_coverage",
+            (
+                decision_window_target_category_lenses == 0
+                or decision_window_category_lens_ready_rate >= 0.35
+            ),
+            actual=round(decision_window_category_lens_ready_rate, 4),
+            target=0.35,
+            required=False,
+        ),
+        _gate(
+            "fresh_decision_window_category_coverage",
+            (
+                decision_window_target_categories == 0
+                or fresh_decision_window_category_ready_rate >= 0.70
+            ),
+            actual=round(fresh_decision_window_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "fresh_decision_window_lens_coverage",
+            (
+                decision_window_target_category_lenses == 0
+                or fresh_decision_window_category_lens_ready_rate >= 0.30
+            ),
+            actual=round(fresh_decision_window_category_lens_ready_rate, 4),
+            target=0.30,
+            required=False,
+        ),
+        _gate(
             "seed_candidate_alignment_category_coverage",
             (
                 seed_candidate_alignment_target_categories == 0
@@ -8661,6 +11392,34 @@ def _handoff_quality_bar(
             "fresh_local_intent_lens_coverage",
             local_target_category_lenses == 0 or fresh_local_category_lens_ready_rate >= 0.30,
             actual=round(fresh_local_category_lens_ready_rate, 4),
+            target=0.30,
+            required=False,
+        ),
+        _gate(
+            "local_area_diversity_category_coverage",
+            local_area_target_categories == 0 or local_area_category_ready_rate >= 0.70,
+            actual=round(local_area_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "local_area_diversity_lens_coverage",
+            local_area_target_category_lenses == 0 or local_area_category_lens_ready_rate >= 0.35,
+            actual=round(local_area_category_lens_ready_rate, 4),
+            target=0.35,
+            required=False,
+        ),
+        _gate(
+            "fresh_local_area_diversity_category_coverage",
+            local_area_target_categories == 0 or fresh_local_area_category_ready_rate >= 0.70,
+            actual=round(fresh_local_area_category_ready_rate, 4),
+            target=0.70,
+            required=False,
+        ),
+        _gate(
+            "fresh_local_area_diversity_lens_coverage",
+            local_area_target_category_lenses == 0 or fresh_local_area_category_lens_ready_rate >= 0.30,
+            actual=round(fresh_local_area_category_lens_ready_rate, 4),
             target=0.30,
             required=False,
         ),
@@ -8869,6 +11628,20 @@ def _handoff_quality_bar(
             target=0,
             required=False,
         ),
+        _gate(
+            "reanalysis_rescue_backlog",
+            reanalysis_rescue_candidates == 0,
+            actual=reanalysis_rescue_candidates,
+            target=0,
+            required=False,
+        ),
+        _gate(
+            "discarded_execution_rescue_backlog",
+            discarded_execution_rescue_candidates == 0,
+            actual=discarded_execution_rescue_candidates,
+            target=0,
+            required=False,
+        ),
     ]
 
     score = 0.0
@@ -8916,6 +11689,14 @@ def _handoff_quality_bar(
         "failed_required_gates": failed_required,
         "failed_advisory_gates": failed_advisory,
         "gates": required_gates + advisory_gates,
+        "metric_coverage": {
+            "minimum_rate": round(metric_coverage, 4),
+            "axis_fit_coverage_rate": round(axis_metric_coverage, 4),
+            "lens_fit_coverage_rate": round(lens_metric_coverage, 4),
+            "clinic_fit_coverage_rate": round(clinic_fit_metric_coverage, 4),
+            "worksite_efficiency_coverage_rate": round(worksite_efficiency_metric_coverage, 4),
+            "target": 0.80,
+        },
         "focus_categories": {
             "categories": focus_categories,
             "discovered": focus_discovered,
@@ -8941,6 +11722,42 @@ def _handoff_quality_bar(
         },
         "source_seed_integrity": {
             "category_drift_count": source_seed_category_drift,
+            "total": int(source_lineage_overall.get("total") or 0),
+            "priority_focus_total": source_lineage_priority_total,
+            "actionable_strict_total": source_lineage_actionable_total,
+            "priority_focus_actionable_strict_total": source_lineage_priority_actionable_total,
+            "source_seed_present": int(source_lineage_overall.get("source_seed_present") or 0),
+            "priority_focus_source_seed_present": int(
+                source_lineage_overall.get("priority_focus_source_seed_present") or 0
+            ),
+            "actionable_strict_source_seed_present": int(
+                source_lineage_overall.get("actionable_strict_source_seed_present") or 0
+            ),
+            "priority_focus_actionable_strict_source_seed_present": int(
+                source_lineage_overall.get("priority_focus_actionable_strict_source_seed_present")
+                or 0
+            ),
+            "source_seed_coverage_rate": round(source_lineage_seed_rate, 4),
+            "priority_focus_source_seed_coverage_rate": round(
+                source_lineage_priority_seed_rate,
+                4,
+            ),
+            "actionable_strict_source_seed_coverage_rate": round(
+                source_lineage_actionable_seed_rate,
+                4,
+            ),
+            "priority_focus_actionable_strict_source_seed_coverage_rate": round(
+                source_lineage_priority_actionable_seed_rate,
+                4,
+            ),
+            "query_variant_coverage_rate": round(source_lineage_query_variant_rate, 4),
+            "source_seed_missing": int(source_lineage_overall.get("source_seed_missing") or 0),
+            "source_seed_fallback_count": int(
+                source_lineage_overall.get("source_seed_fallback_count") or 0
+            ),
+            "query_variant_missing": int(source_lineage_overall.get("query_variant_missing") or 0),
+            "target_source_seed_coverage_rate": round(source_lineage_seed_target, 4),
+            "target_query_variant_coverage_rate": round(source_lineage_query_variant_target, 4),
         },
         "content_coherence": {
             "observed": content_category_observed,
@@ -8994,6 +11811,25 @@ def _handoff_quality_bar(
         "platform_surface": {
             "hotspots": int(platform_surface_counts.get("hotspots") or 0),
             "priority_focus_hotspots": platform_surface_focus_hotspots,
+        },
+        "reanalysis_rescue_backlog": {
+            "candidate_count": reanalysis_rescue_candidates,
+            "priority_focus_candidate_count": reanalysis_rescue_priority_focus_candidates,
+            "by_category": reanalysis_rescue_quality.get("by_category") or {},
+            "by_lens": reanalysis_rescue_quality.get("by_lens") or {},
+            "by_category_lens": reanalysis_rescue_quality.get("by_category_lens") or {},
+        },
+        "discarded_execution_rescue_backlog": {
+            "candidate_count": discarded_execution_rescue_candidates,
+            "priority_focus_candidate_count": discarded_execution_rescue_priority_focus_candidates,
+            "auto_requeue_candidate_count": discarded_execution_auto_requeue_candidates,
+            "manual_review_candidate_count": discarded_execution_manual_review_candidates,
+            "by_category": discarded_execution_rescue_quality.get("by_category") or {},
+            "by_lens": discarded_execution_rescue_quality.get("by_lens") or {},
+            "by_category_lens": discarded_execution_rescue_quality.get("by_category_lens") or {},
+            "by_status": discarded_execution_rescue_quality.get("by_status") or {},
+            "by_reject_reason": discarded_execution_rescue_quality.get("by_reject_reason") or {},
+            "by_rescue_mode": discarded_execution_rescue_quality.get("by_rescue_mode") or {},
         },
         "opportunity_diversity": {
             "target_categories": diversity_target_categories,
@@ -9083,6 +11919,111 @@ def _handoff_quality_bar(
             "priority_gaps": treatment_signal_diversity_quality.get("priority_gaps") or [],
             "fresh_priority_gaps": treatment_signal_diversity_quality.get("fresh_priority_gaps") or [],
         },
+        "treatment_subintent_diversity": {
+            "target_categories": treatment_subintent_diversity_target_categories,
+            "treatment_subintent_diverse_categories": int(
+                treatment_subintent_diversity_overall.get("treatment_subintent_diverse_categories") or 0
+            ),
+            "category_treatment_subintent_diverse_ready_rate": round(
+                treatment_subintent_diversity_category_ready_rate,
+                4,
+            ),
+            "fresh_treatment_subintent_diverse_categories": int(
+                treatment_subintent_diversity_overall.get("fresh_treatment_subintent_diverse_categories") or 0
+            ),
+            "fresh_category_treatment_subintent_diverse_ready_rate": round(
+                fresh_treatment_subintent_diversity_category_ready_rate,
+                4,
+            ),
+            "target_category_lenses": treatment_subintent_diversity_target_category_lenses,
+            "treatment_subintent_diverse_category_lenses": int(
+                treatment_subintent_diversity_overall.get("treatment_subintent_diverse_category_lenses") or 0
+            ),
+            "category_lens_treatment_subintent_diverse_ready_rate": round(
+                treatment_subintent_diversity_category_lens_ready_rate,
+                4,
+            ),
+            "fresh_treatment_subintent_diverse_category_lenses": int(
+                treatment_subintent_diversity_overall.get(
+                    "fresh_treatment_subintent_diverse_category_lenses"
+                )
+                or 0
+            ),
+            "fresh_category_lens_treatment_subintent_diverse_ready_rate": round(
+                fresh_treatment_subintent_diversity_category_lens_ready_rate,
+                4,
+            ),
+            "priority_gaps": treatment_subintent_diversity_quality.get("priority_gaps") or [],
+            "fresh_priority_gaps": treatment_subintent_diversity_quality.get("fresh_priority_gaps") or [],
+        },
+        "clinic_modality_fit": {
+            "target_categories": clinic_modality_target_categories,
+            "clinic_modality_fit_categories": int(
+                clinic_modality_overall.get("clinic_modality_fit_categories") or 0
+            ),
+            "category_clinic_modality_fit_ready_rate": round(
+                clinic_modality_category_ready_rate,
+                4,
+            ),
+            "fresh_clinic_modality_fit_categories": int(
+                clinic_modality_overall.get("fresh_clinic_modality_fit_categories") or 0
+            ),
+            "fresh_category_clinic_modality_fit_ready_rate": round(
+                fresh_clinic_modality_category_ready_rate,
+                4,
+            ),
+            "target_category_lenses": clinic_modality_target_category_lenses,
+            "clinic_modality_fit_category_lenses": int(
+                clinic_modality_overall.get("clinic_modality_fit_category_lenses") or 0
+            ),
+            "category_lens_clinic_modality_fit_ready_rate": round(
+                clinic_modality_category_lens_ready_rate,
+                4,
+            ),
+            "fresh_clinic_modality_fit_category_lenses": int(
+                clinic_modality_overall.get("fresh_clinic_modality_fit_category_lenses") or 0
+            ),
+            "fresh_category_lens_clinic_modality_fit_ready_rate": round(
+                fresh_clinic_modality_category_lens_ready_rate,
+                4,
+            ),
+            "priority_gaps": clinic_modality_quality.get("priority_gaps") or [],
+            "fresh_priority_gaps": clinic_modality_quality.get("fresh_priority_gaps") or [],
+        },
+        "decision_window": {
+            "target_categories": decision_window_target_categories,
+            "active_decision_categories": int(
+                decision_window_overall.get("active_decision_categories") or 0
+            ),
+            "category_active_decision_ready_rate": round(
+                decision_window_category_ready_rate,
+                4,
+            ),
+            "fresh_active_decision_categories": int(
+                decision_window_overall.get("fresh_active_decision_categories") or 0
+            ),
+            "fresh_category_active_decision_ready_rate": round(
+                fresh_decision_window_category_ready_rate,
+                4,
+            ),
+            "target_category_lenses": decision_window_target_category_lenses,
+            "active_decision_category_lenses": int(
+                decision_window_overall.get("active_decision_category_lenses") or 0
+            ),
+            "category_lens_active_decision_ready_rate": round(
+                decision_window_category_lens_ready_rate,
+                4,
+            ),
+            "fresh_active_decision_category_lenses": int(
+                decision_window_overall.get("fresh_active_decision_category_lenses") or 0
+            ),
+            "fresh_category_lens_active_decision_ready_rate": round(
+                fresh_decision_window_category_lens_ready_rate,
+                4,
+            ),
+            "priority_gaps": decision_window_quality.get("priority_gaps") or [],
+            "fresh_priority_gaps": decision_window_quality.get("fresh_priority_gaps") or [],
+        },
         "seed_candidate_alignment": {
             "target_categories": seed_candidate_alignment_target_categories,
             "seed_aligned_categories": int(
@@ -9136,6 +12077,37 @@ def _handoff_quality_bar(
             "fresh_category_lens_local_ready_rate": round(fresh_local_category_lens_ready_rate, 4),
             "priority_gaps": local_intent_quality.get("priority_gaps") or [],
             "fresh_priority_gaps": local_intent_quality.get("fresh_priority_gaps") or [],
+        },
+        "local_area_diversity": {
+            "target_categories": local_area_target_categories,
+            "local_area_diverse_categories": int(
+                local_area_diversity_overall.get("local_area_diverse_categories") or 0
+            ),
+            "category_local_area_diversity_ready_rate": round(local_area_category_ready_rate, 4),
+            "fresh_local_area_diverse_categories": int(
+                local_area_diversity_overall.get("fresh_local_area_diverse_categories") or 0
+            ),
+            "fresh_category_local_area_diversity_ready_rate": round(
+                fresh_local_area_category_ready_rate,
+                4,
+            ),
+            "target_category_lenses": local_area_target_category_lenses,
+            "local_area_diverse_category_lenses": int(
+                local_area_diversity_overall.get("local_area_diverse_category_lenses") or 0
+            ),
+            "category_lens_local_area_diversity_ready_rate": round(
+                local_area_category_lens_ready_rate,
+                4,
+            ),
+            "fresh_local_area_diverse_category_lenses": int(
+                local_area_diversity_overall.get("fresh_local_area_diverse_category_lenses") or 0
+            ),
+            "fresh_category_lens_local_area_diversity_ready_rate": round(
+                fresh_local_area_category_lens_ready_rate,
+                4,
+            ),
+            "priority_gaps": local_area_diversity_quality.get("priority_gaps") or [],
+            "fresh_priority_gaps": local_area_diversity_quality.get("fresh_priority_gaps") or [],
         },
         "patient_surface_authenticity": {
             "target_categories": authentic_surface_target_categories,
@@ -9325,8 +12297,12 @@ def _next_run_playbook(
     engagement_hook_quality: Optional[Dict[str, Any]] = None,
     treatment_signature_quality: Optional[Dict[str, Any]] = None,
     treatment_signal_diversity_quality: Optional[Dict[str, Any]] = None,
+    treatment_subintent_diversity_quality: Optional[Dict[str, Any]] = None,
+    clinic_modality_quality: Optional[Dict[str, Any]] = None,
+    decision_window_quality: Optional[Dict[str, Any]] = None,
     seed_candidate_alignment_quality: Optional[Dict[str, Any]] = None,
     local_intent_quality: Optional[Dict[str, Any]] = None,
+    local_area_diversity_quality: Optional[Dict[str, Any]] = None,
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
@@ -9334,6 +12310,9 @@ def _next_run_playbook(
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
+    source_lineage_quality: Optional[Dict[str, Any]] = None,
+    reanalysis_rescue_quality: Optional[Dict[str, Any]] = None,
+    discarded_execution_rescue_quality: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     source_seed_feedback = source_seed_feedback or {}
     variant_quality_feedback = variant_quality_feedback or {}
@@ -9344,8 +12323,12 @@ def _next_run_playbook(
     engagement_hook_quality = engagement_hook_quality or {}
     treatment_signature_quality = treatment_signature_quality or {}
     treatment_signal_diversity_quality = treatment_signal_diversity_quality or {}
+    treatment_subintent_diversity_quality = treatment_subintent_diversity_quality or {}
+    clinic_modality_quality = clinic_modality_quality or {}
+    decision_window_quality = decision_window_quality or {}
     seed_candidate_alignment_quality = seed_candidate_alignment_quality or {}
     local_intent_quality = local_intent_quality or {}
+    local_area_diversity_quality = local_area_diversity_quality or {}
     patient_surface_quality = patient_surface_quality or {}
     viral_action_route_quality = viral_action_route_quality or {}
     reply_workability_quality = reply_workability_quality or {}
@@ -9353,13 +12336,30 @@ def _next_run_playbook(
     execution_readiness_quality = execution_readiness_quality or {}
     execution_priority_alignment_quality = execution_priority_alignment_quality or {}
     platform_surface_quality = platform_surface_quality or {}
-    metric_backfill_required = bool(
-        row_count
-        and (
-            float(overall.get("axis_coverage_rate") or 0.0) < 0.80
-            or float(overall.get("lens_coverage_rate") or 0.0) < 0.80
-        )
-    )
+    source_lineage_quality = source_lineage_quality or {}
+    reanalysis_rescue_quality = reanalysis_rescue_quality or {}
+    discarded_execution_rescue_quality = discarded_execution_rescue_quality or {}
+    metric_backfill_gaps: List[Dict[str, Any]] = []
+    if row_count:
+        for code, metric_key, label in (
+            ("axis_fit_metric_coverage_low", "axis_coverage_rate", "axis_fit"),
+            ("lens_fit_metric_coverage_low", "lens_coverage_rate", "lens_fit"),
+            ("clinic_fit_metric_coverage_low", "clinic_fit_coverage_rate", "clinic_fit"),
+            (
+                "worksite_efficiency_metric_coverage_low",
+                "worksite_efficiency_coverage_rate",
+                "worksite_efficiency",
+            ),
+        ):
+            coverage_rate = float(overall.get(metric_key) or 0.0)
+            if coverage_rate < 0.80:
+                metric_backfill_gaps.append({
+                    "code": code,
+                    "metric": label,
+                    "coverage_rate": round(coverage_rate, 4),
+                    "target": 0.80,
+                })
+    metric_backfill_required = bool(metric_backfill_gaps)
     boost_categories = [
         {
             "category": lane,
@@ -9453,6 +12453,72 @@ def _next_run_playbook(
         or source_seed_actions["repair_query_shape"]
         or source_seed_actions["retire_or_pause"]
     )
+    source_lineage_overall = source_lineage_quality.get("overall") or {}
+    source_lineage_targets = source_lineage_quality.get("targets") or {}
+    source_lineage_seed_target = float(
+        source_lineage_targets.get("source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_priority_seed_target = float(
+        source_lineage_targets.get("priority_focus_source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_PRIORITY_FOCUS_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_actionable_seed_target = float(
+        source_lineage_targets.get("actionable_strict_source_seed_coverage_rate")
+        or SOURCE_LINEAGE_MIN_ACTIONABLE_STRICT_SOURCE_SEED_COVERAGE
+    )
+    source_lineage_query_variant_target = float(
+        source_lineage_targets.get("query_variant_coverage_rate")
+        or SOURCE_LINEAGE_MIN_QUERY_VARIANT_COVERAGE
+    )
+    source_lineage_priority_total = int(source_lineage_overall.get("priority_focus_total") or 0)
+    source_lineage_actionable_total = int(source_lineage_overall.get("actionable_strict_total") or 0)
+    source_lineage_priority_actionable_total = int(
+        source_lineage_overall.get("priority_focus_actionable_strict_total") or 0
+    )
+    source_lineage_repair_required = bool(
+        row_count
+        and source_lineage_overall
+        and (
+            float(source_lineage_overall.get("source_seed_coverage_rate") or 0.0)
+            < source_lineage_seed_target
+            or (
+                source_lineage_priority_total
+                and float(
+                    source_lineage_overall.get("priority_focus_source_seed_coverage_rate")
+                    or 0.0
+                )
+                < source_lineage_priority_seed_target
+            )
+            or (
+                source_lineage_actionable_total
+                and float(
+                    source_lineage_overall.get("actionable_strict_source_seed_coverage_rate")
+                    or 0.0
+                )
+                < source_lineage_actionable_seed_target
+            )
+            or (
+                source_lineage_priority_actionable_total
+                and float(
+                    source_lineage_overall.get(
+                        "priority_focus_actionable_strict_source_seed_coverage_rate"
+                    )
+                    or 0.0
+                )
+                < source_lineage_actionable_seed_target
+            )
+            or float(source_lineage_overall.get("query_variant_coverage_rate") or 0.0)
+            < source_lineage_query_variant_target
+        )
+    )
+    source_lineage_gaps = (
+        source_lineage_quality.get("priority_gaps")
+        or source_lineage_quality.get("category_lens_gaps")
+        or source_lineage_quality.get("category_gaps")
+        or []
+    )[:10]
+    source_lineage_missing_samples = list(source_lineage_quality.get("missing_samples") or [])[:10]
     variant_actions = {
         "repair_query_shape": (variant_quality_feedback.get("repair_variants") or [])[:10],
         "retire_or_pause": (variant_quality_feedback.get("retire_variants") or [])[:10],
@@ -9570,6 +12636,48 @@ def _next_run_playbook(
         or []
     )[:10]
     fresh_treatment_signal_diversity_required = bool(fresh_treatment_signal_diversity_gaps)
+    treatment_subintent_diversity_gaps = (
+        treatment_subintent_diversity_quality.get("priority_gaps")
+        or treatment_subintent_diversity_quality.get("category_lens_gaps")
+        or treatment_subintent_diversity_quality.get("category_gaps")
+        or []
+    )[:10]
+    treatment_subintent_diversity_required = bool(treatment_subintent_diversity_gaps)
+    fresh_treatment_subintent_diversity_gaps = (
+        treatment_subintent_diversity_quality.get("fresh_priority_gaps")
+        or treatment_subintent_diversity_quality.get("fresh_category_lens_gaps")
+        or treatment_subintent_diversity_quality.get("fresh_category_gaps")
+        or []
+    )[:10]
+    fresh_treatment_subintent_diversity_required = bool(fresh_treatment_subintent_diversity_gaps)
+    clinic_modality_gaps = (
+        clinic_modality_quality.get("priority_gaps")
+        or clinic_modality_quality.get("category_lens_gaps")
+        or clinic_modality_quality.get("category_gaps")
+        or []
+    )[:10]
+    clinic_modality_required = bool(clinic_modality_gaps)
+    fresh_clinic_modality_gaps = (
+        clinic_modality_quality.get("fresh_priority_gaps")
+        or clinic_modality_quality.get("fresh_category_lens_gaps")
+        or clinic_modality_quality.get("fresh_category_gaps")
+        or []
+    )[:10]
+    fresh_clinic_modality_required = bool(fresh_clinic_modality_gaps)
+    decision_window_gaps = (
+        decision_window_quality.get("priority_gaps")
+        or decision_window_quality.get("category_lens_gaps")
+        or decision_window_quality.get("category_gaps")
+        or []
+    )[:10]
+    decision_window_required = bool(decision_window_gaps)
+    fresh_decision_window_gaps = (
+        decision_window_quality.get("fresh_priority_gaps")
+        or decision_window_quality.get("fresh_category_lens_gaps")
+        or decision_window_quality.get("fresh_category_gaps")
+        or []
+    )[:10]
+    fresh_decision_window_required = bool(fresh_decision_window_gaps)
     seed_candidate_alignment_gaps = (
         seed_candidate_alignment_quality.get("priority_gaps")
         or seed_candidate_alignment_quality.get("category_lens_gaps")
@@ -9598,6 +12706,20 @@ def _next_run_playbook(
         or []
     )[:10]
     fresh_local_intent_required = bool(fresh_local_intent_gaps)
+    local_area_diversity_gaps = (
+        local_area_diversity_quality.get("priority_gaps")
+        or local_area_diversity_quality.get("category_lens_gaps")
+        or local_area_diversity_quality.get("category_gaps")
+        or []
+    )[:10]
+    local_area_diversity_required = bool(local_area_diversity_gaps)
+    fresh_local_area_diversity_gaps = (
+        local_area_diversity_quality.get("fresh_priority_gaps")
+        or local_area_diversity_quality.get("fresh_category_lens_gaps")
+        or local_area_diversity_quality.get("fresh_category_gaps")
+        or []
+    )[:10]
+    fresh_local_area_diversity_required = bool(fresh_local_area_diversity_gaps)
     patient_surface_gaps = (
         patient_surface_quality.get("priority_gaps")
         or patient_surface_quality.get("category_lens_gaps")
@@ -9688,6 +12810,63 @@ def _next_run_playbook(
         or []
     )[:10]
     platform_surface_required = bool(platform_surface_hotspots)
+    reanalysis_rescue_overall = reanalysis_rescue_quality.get("overall") or {}
+    try:
+        reanalysis_rescue_candidate_count = int(float(reanalysis_rescue_overall.get("candidate_count") or 0))
+    except (TypeError, ValueError):
+        reanalysis_rescue_candidate_count = 0
+    try:
+        reanalysis_rescue_priority_focus_candidate_count = int(
+            float(reanalysis_rescue_overall.get("priority_focus_candidate_count") or 0)
+        )
+    except (TypeError, ValueError):
+        reanalysis_rescue_priority_focus_candidate_count = 0
+    reanalysis_rescue_samples = list(reanalysis_rescue_quality.get("samples") or [])[:10]
+    reanalysis_rescue_required = reanalysis_rescue_candidate_count > 0
+    reanalysis_rescue_budget = (
+        max(60, min(300, int(reanalysis_rescue_candidate_count * 1.5)))
+        if reanalysis_rescue_required
+        else 0
+    )
+    discarded_execution_rescue_overall = discarded_execution_rescue_quality.get("overall") or {}
+    try:
+        discarded_execution_rescue_candidate_count = int(
+            float(discarded_execution_rescue_overall.get("candidate_count") or 0)
+        )
+    except (TypeError, ValueError):
+        discarded_execution_rescue_candidate_count = 0
+    try:
+        discarded_execution_rescue_priority_focus_candidate_count = int(
+            float(discarded_execution_rescue_overall.get("priority_focus_candidate_count") or 0)
+        )
+    except (TypeError, ValueError):
+        discarded_execution_rescue_priority_focus_candidate_count = 0
+    try:
+        discarded_execution_auto_requeue_candidate_count = int(
+            float(discarded_execution_rescue_overall.get("auto_requeue_candidate_count") or 0)
+        )
+    except (TypeError, ValueError):
+        discarded_execution_auto_requeue_candidate_count = 0
+    try:
+        discarded_execution_manual_review_candidate_count = int(
+            float(discarded_execution_rescue_overall.get("manual_review_candidate_count") or 0)
+        )
+    except (TypeError, ValueError):
+        discarded_execution_manual_review_candidate_count = 0
+    discarded_execution_rescue_samples = list(discarded_execution_rescue_quality.get("samples") or [])[:10]
+    discarded_execution_auto_requeue_samples = list(
+        discarded_execution_rescue_quality.get("auto_requeue_samples") or []
+    )[:10]
+    discarded_execution_manual_review_samples = list(
+        discarded_execution_rescue_quality.get("manual_review_samples") or []
+    )[:10]
+    discarded_execution_rescue_required = discarded_execution_auto_requeue_candidate_count > 0
+    discarded_execution_manual_review_required = discarded_execution_manual_review_candidate_count > 0
+    discarded_execution_rescue_budget = (
+        max(30, min(200, int(discarded_execution_auto_requeue_candidate_count * 1.2)))
+        if discarded_execution_rescue_required
+        else 0
+    )
 
     def quote_cli(value: object) -> str:
         text = str(value or "").replace('"', '\\"')
@@ -9739,6 +12918,12 @@ def _next_run_playbook(
         treatment_signature_gaps,
         fresh_treatment_signal_diversity_gaps,
         treatment_signal_diversity_gaps,
+        fresh_treatment_subintent_diversity_gaps,
+        treatment_subintent_diversity_gaps,
+        fresh_clinic_modality_gaps,
+        clinic_modality_gaps,
+        fresh_decision_window_gaps,
+        decision_window_gaps,
         fresh_seed_candidate_alignment_gaps,
         seed_candidate_alignment_gaps,
         fresh_engagement_hook_gaps,
@@ -9752,6 +12937,8 @@ def _next_run_playbook(
         patient_journey_gaps,
         fresh_local_intent_gaps,
         local_intent_gaps,
+        fresh_local_area_diversity_gaps,
+        local_area_diversity_gaps,
         fresh_patient_surface_gaps,
         patient_surface_gaps,
         fresh_viral_action_route_gaps,
@@ -9773,8 +12960,12 @@ def _next_run_playbook(
         engagement_hook_quality,
         treatment_signature_quality,
         treatment_signal_diversity_quality,
+        treatment_subintent_diversity_quality,
+        clinic_modality_quality,
+        decision_window_quality,
         seed_candidate_alignment_quality,
         local_intent_quality,
+        local_area_diversity_quality,
         patient_surface_quality,
         viral_action_route_quality,
         reply_workability_quality,
@@ -9806,6 +12997,20 @@ def _next_run_playbook(
         if lens and lens not in boost_lens_args:
             boost_lens_args.append(lens)
     for item in treatment_signal_diversity_gaps[:5]:
+        category = item.get("category")
+        lens = item.get("lens")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+    for item in fresh_treatment_subintent_diversity_gaps[:5]:
+        category = item.get("category")
+        lens = item.get("lens")
+        if category and category not in boost_category_args:
+            boost_category_args.append(category)
+        if lens and lens not in boost_lens_args:
+            boost_lens_args.append(lens)
+    for item in treatment_subintent_diversity_gaps[:5]:
         category = item.get("category")
         lens = item.get("lens")
         if category and category not in boost_category_args:
@@ -10004,6 +13209,10 @@ def _next_run_playbook(
             boost_category_args.append(category)
         if lens and lens not in boost_lens_args:
             boost_lens_args.append(lens)
+    for item in reanalysis_rescue_samples[:5]:
+        add_gap_boost_item(item)
+    for item in discarded_execution_auto_requeue_samples[:5]:
+        add_gap_boost_item(item)
 
     boost_args = [f"--boost-category {quote_cli(category)}" for category in boost_category_args[:5]]
     boost_args.extend(f"--boost-lens {quote_cli(lens)}" for lens in boost_lens_args[:5])
@@ -10012,6 +13221,9 @@ def _next_run_playbook(
     scan_command = "python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5"
     if source_scan_run_id:
         scan_command += f" --source-scan-id {int(source_scan_run_id)}"
+    rescue_budget = max(reanalysis_rescue_budget, discarded_execution_rescue_budget)
+    if rescue_budget:
+        scan_command += f" --rescue-backlog {rescue_budget}"
     if boost_args:
         scan_command += " " + " ".join(boost_args)
     audit_command = "python scripts/viral_handoff_audit.py"
@@ -10045,6 +13257,7 @@ def _next_run_playbook(
             or content_coherence_required
             or lens_surface_required
             or source_seed_feedback_required
+            or source_lineage_repair_required
             or variant_quality_feedback_required
             or filter_loss_required
             or patient_journey_required
@@ -10060,10 +13273,18 @@ def _next_run_playbook(
             or fresh_treatment_signature_required
             or treatment_signal_diversity_required
             or fresh_treatment_signal_diversity_required
+            or treatment_subintent_diversity_required
+            or fresh_treatment_subintent_diversity_required
+            or clinic_modality_required
+            or fresh_clinic_modality_required
+            or decision_window_required
+            or fresh_decision_window_required
             or seed_candidate_alignment_required
             or fresh_seed_candidate_alignment_required
             or local_intent_required
             or fresh_local_intent_required
+            or local_area_diversity_required
+            or fresh_local_area_diversity_required
             or patient_surface_required
             or fresh_patient_surface_required
             or viral_action_route_required
@@ -10077,14 +13298,20 @@ def _next_run_playbook(
             or execution_priority_alignment_required
             or fresh_execution_priority_alignment_required
             or platform_surface_required
+            or reanalysis_rescue_required
+            or discarded_execution_rescue_required
         ),
         "metric_backfill_required": metric_backfill_required,
+        "metric_backfill_gaps": metric_backfill_gaps,
         "coverage_gap_required": coverage_gap_required,
         "content_coherence_required": content_coherence_required,
         "content_mismatch_lanes": content_mismatch_lanes,
         "lens_surface_required": lens_surface_required,
         "lens_surface_mismatch_lanes": lens_surface_mismatch_lanes,
         "source_seed_feedback_required": source_seed_feedback_required,
+        "source_lineage_repair_required": source_lineage_repair_required,
+        "source_lineage_gaps": source_lineage_gaps,
+        "source_lineage_missing_samples": source_lineage_missing_samples,
         "variant_quality_feedback_required": variant_quality_feedback_required,
         "filter_loss_required": filter_loss_required,
         "filter_loss_hotspots": loss_hotspots,
@@ -10114,6 +13341,18 @@ def _next_run_playbook(
         "treatment_signal_diversity_gaps": treatment_signal_diversity_gaps,
         "fresh_treatment_signal_diversity_required": fresh_treatment_signal_diversity_required,
         "fresh_treatment_signal_diversity_gaps": fresh_treatment_signal_diversity_gaps,
+        "treatment_subintent_diversity_required": treatment_subintent_diversity_required,
+        "treatment_subintent_diversity_gaps": treatment_subintent_diversity_gaps,
+        "fresh_treatment_subintent_diversity_required": fresh_treatment_subintent_diversity_required,
+        "fresh_treatment_subintent_diversity_gaps": fresh_treatment_subintent_diversity_gaps,
+        "clinic_modality_required": clinic_modality_required,
+        "clinic_modality_gaps": clinic_modality_gaps,
+        "fresh_clinic_modality_required": fresh_clinic_modality_required,
+        "fresh_clinic_modality_gaps": fresh_clinic_modality_gaps,
+        "decision_window_required": decision_window_required,
+        "decision_window_gaps": decision_window_gaps,
+        "fresh_decision_window_required": fresh_decision_window_required,
+        "fresh_decision_window_gaps": fresh_decision_window_gaps,
         "seed_candidate_alignment_required": seed_candidate_alignment_required,
         "seed_candidate_alignment_gaps": seed_candidate_alignment_gaps,
         "fresh_seed_candidate_alignment_required": fresh_seed_candidate_alignment_required,
@@ -10122,6 +13361,10 @@ def _next_run_playbook(
         "local_intent_gaps": local_intent_gaps,
         "fresh_local_intent_required": fresh_local_intent_required,
         "fresh_local_intent_gaps": fresh_local_intent_gaps,
+        "local_area_diversity_required": local_area_diversity_required,
+        "local_area_diversity_gaps": local_area_diversity_gaps,
+        "fresh_local_area_diversity_required": fresh_local_area_diversity_required,
+        "fresh_local_area_diversity_gaps": fresh_local_area_diversity_gaps,
         "patient_surface_required": patient_surface_required,
         "patient_surface_gaps": patient_surface_gaps,
         "fresh_patient_surface_required": fresh_patient_surface_required,
@@ -10148,6 +13391,38 @@ def _next_run_playbook(
         "fresh_execution_priority_alignment_gaps": fresh_execution_priority_alignment_gaps,
         "platform_surface_required": platform_surface_required,
         "platform_surface_hotspots": platform_surface_hotspots,
+        "reanalysis_rescue_required": reanalysis_rescue_required,
+        "reanalysis_rescue_candidate_count": reanalysis_rescue_candidate_count,
+        "reanalysis_rescue_priority_focus_candidate_count": reanalysis_rescue_priority_focus_candidate_count,
+        "reanalysis_rescue_budget": reanalysis_rescue_budget,
+        "reanalysis_rescue_samples": reanalysis_rescue_samples,
+        "reanalysis_rescue_by_category": reanalysis_rescue_quality.get("by_category") or {},
+        "reanalysis_rescue_by_lens": reanalysis_rescue_quality.get("by_lens") or {},
+        "discarded_execution_rescue_required": discarded_execution_rescue_required,
+        "discarded_execution_rescue_candidate_count": discarded_execution_rescue_candidate_count,
+        "discarded_execution_rescue_priority_focus_candidate_count": (
+            discarded_execution_rescue_priority_focus_candidate_count
+        ),
+        "discarded_execution_auto_requeue_candidate_count": (
+            discarded_execution_auto_requeue_candidate_count
+        ),
+        "discarded_execution_manual_review_candidate_count": (
+            discarded_execution_manual_review_candidate_count
+        ),
+        "discarded_execution_manual_review_required": discarded_execution_manual_review_required,
+        "discarded_execution_rescue_budget": discarded_execution_rescue_budget,
+        "discarded_execution_rescue_samples": discarded_execution_rescue_samples,
+        "discarded_execution_auto_requeue_samples": discarded_execution_auto_requeue_samples,
+        "discarded_execution_manual_review_samples": discarded_execution_manual_review_samples,
+        "discarded_execution_rescue_by_category": discarded_execution_rescue_quality.get("by_category") or {},
+        "discarded_execution_rescue_by_lens": discarded_execution_rescue_quality.get("by_lens") or {},
+        "discarded_execution_rescue_by_status": discarded_execution_rescue_quality.get("by_status") or {},
+        "discarded_execution_rescue_by_reject_reason": (
+            discarded_execution_rescue_quality.get("by_reject_reason") or {}
+        ),
+        "discarded_execution_rescue_by_rescue_mode": (
+            discarded_execution_rescue_quality.get("by_rescue_mode") or {}
+        ),
         "boost_categories": boost_categories[:10],
         "boost_lenses": boost_lenses[:10],
         "boost_category_lenses": boost_category_lenses[:10],
@@ -10180,8 +13455,12 @@ def _recommendations(
     engagement_hook_quality: Optional[Dict[str, Any]] = None,
     treatment_signature_quality: Optional[Dict[str, Any]] = None,
     treatment_signal_diversity_quality: Optional[Dict[str, Any]] = None,
+    treatment_subintent_diversity_quality: Optional[Dict[str, Any]] = None,
+    clinic_modality_quality: Optional[Dict[str, Any]] = None,
+    decision_window_quality: Optional[Dict[str, Any]] = None,
     seed_candidate_alignment_quality: Optional[Dict[str, Any]] = None,
     local_intent_quality: Optional[Dict[str, Any]] = None,
+    local_area_diversity_quality: Optional[Dict[str, Any]] = None,
     patient_surface_quality: Optional[Dict[str, Any]] = None,
     viral_action_route_quality: Optional[Dict[str, Any]] = None,
     reply_workability_quality: Optional[Dict[str, Any]] = None,
@@ -10189,6 +13468,9 @@ def _recommendations(
     execution_readiness_quality: Optional[Dict[str, Any]] = None,
     execution_priority_alignment_quality: Optional[Dict[str, Any]] = None,
     platform_surface_quality: Optional[Dict[str, Any]] = None,
+    source_lineage_quality: Optional[Dict[str, Any]] = None,
+    reanalysis_rescue_quality: Optional[Dict[str, Any]] = None,
+    discarded_execution_rescue_quality: Optional[Dict[str, Any]] = None,
     top_n: int = 30,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
@@ -10213,8 +13495,12 @@ def _recommendations(
     engagement_hook_quality = engagement_hook_quality or {}
     treatment_signature_quality = treatment_signature_quality or {}
     treatment_signal_diversity_quality = treatment_signal_diversity_quality or {}
+    treatment_subintent_diversity_quality = treatment_subintent_diversity_quality or {}
+    clinic_modality_quality = clinic_modality_quality or {}
+    decision_window_quality = decision_window_quality or {}
     seed_candidate_alignment_quality = seed_candidate_alignment_quality or {}
     local_intent_quality = local_intent_quality or {}
+    local_area_diversity_quality = local_area_diversity_quality or {}
     patient_surface_quality = patient_surface_quality or {}
     viral_action_route_quality = viral_action_route_quality or {}
     reply_workability_quality = reply_workability_quality or {}
@@ -10222,6 +13508,9 @@ def _recommendations(
     execution_readiness_quality = execution_readiness_quality or {}
     execution_priority_alignment_quality = execution_priority_alignment_quality or {}
     platform_surface_quality = platform_surface_quality or {}
+    source_lineage_quality = source_lineage_quality or {}
+    reanalysis_rescue_quality = reanalysis_rescue_quality or {}
+    discarded_execution_rescue_quality = discarded_execution_rescue_quality or {}
     recategorize_candidates = source_seed_feedback.get("recategorize_candidates") or []
     if row_count and quality_bar and quality_bar.get("tier") != "world_class":
         failed = list(quality_bar.get("failed_required_gates") or [])
@@ -10245,6 +13534,77 @@ def _recommendations(
                 for item in recategorize_candidates[:6]
             ],
         )
+
+    source_lineage_overall = source_lineage_quality.get("overall") or {}
+    source_lineage_targets = source_lineage_quality.get("targets") or {}
+    if source_lineage_overall:
+        source_lineage_seed_target = float(
+            source_lineage_targets.get("source_seed_coverage_rate")
+            or SOURCE_LINEAGE_MIN_SOURCE_SEED_COVERAGE
+        )
+        source_lineage_priority_seed_target = float(
+            source_lineage_targets.get("priority_focus_source_seed_coverage_rate")
+            or SOURCE_LINEAGE_MIN_PRIORITY_FOCUS_SOURCE_SEED_COVERAGE
+        )
+        source_lineage_actionable_seed_target = float(
+            source_lineage_targets.get("actionable_strict_source_seed_coverage_rate")
+            or SOURCE_LINEAGE_MIN_ACTIONABLE_STRICT_SOURCE_SEED_COVERAGE
+        )
+        source_lineage_query_variant_target = float(
+            source_lineage_targets.get("query_variant_coverage_rate")
+            or SOURCE_LINEAGE_MIN_QUERY_VARIANT_COVERAGE
+        )
+        source_lineage_priority_total = int(source_lineage_overall.get("priority_focus_total") or 0)
+        source_lineage_actionable_total = int(source_lineage_overall.get("actionable_strict_total") or 0)
+        source_lineage_priority_actionable_total = int(
+            source_lineage_overall.get("priority_focus_actionable_strict_total") or 0
+        )
+        source_lineage_low = (
+            float(source_lineage_overall.get("source_seed_coverage_rate") or 0.0)
+            < source_lineage_seed_target
+            or (
+                source_lineage_priority_total
+                and float(
+                    source_lineage_overall.get("priority_focus_source_seed_coverage_rate")
+                    or 0.0
+                )
+                < source_lineage_priority_seed_target
+            )
+            or (
+                source_lineage_actionable_total
+                and float(
+                    source_lineage_overall.get("actionable_strict_source_seed_coverage_rate")
+                    or 0.0
+                )
+                < source_lineage_actionable_seed_target
+            )
+            or (
+                source_lineage_priority_actionable_total
+                and float(
+                    source_lineage_overall.get(
+                        "priority_focus_actionable_strict_source_seed_coverage_rate"
+                    )
+                    or 0.0
+                )
+                < source_lineage_actionable_seed_target
+            )
+            or float(source_lineage_overall.get("query_variant_coverage_rate") or 0.0)
+            < source_lineage_query_variant_target
+        )
+        if row_count and source_lineage_low:
+            add(
+                58,
+                "source_lineage_coverage_low",
+                "Some Viral Hunter targets lack explicit Pathfinder source-keyword or query-variant lineage.",
+                "backfill pathfinder_source_keyword/pathfinder_source_keywords and preserve query variants before using these posts for viral work",
+                [
+                    (
+                        f"{item.get('category')}::{item.get('lens')}:"
+                        f"{','.join(item.get('reasons') or [])}:{item.get('title')}"
+                    )
+                    for item in (source_lineage_quality.get("missing_samples") or [])[:8]
+                ],
+            )
 
     variant_repair_or_retire = (
         list(variant_quality_feedback.get("retire_variants") or [])
@@ -10280,6 +13640,52 @@ def _recommendations(
             [
                 f"{item.get('type')}:{item.get('lane')}:{item.get('dominant_loss_reason')}"
                 for item in priority_focus_loss_hotspots[:8]
+            ],
+        )
+
+    reanalysis_rescue_overall = reanalysis_rescue_quality.get("overall") or {}
+    reanalysis_rescue_candidates = int(reanalysis_rescue_overall.get("candidate_count") or 0)
+    if reanalysis_rescue_candidates:
+        add(
+            90,
+            "reanalysis_rescue_backlog",
+            "Some recently resurfaced high-fit targets are still stored as filtered_out without an explicit reject reason.",
+            "send these targets through the Viral Hunter reanalysis rescue lane before judging the handoff as production-ready",
+            [
+                f"{item.get('category')}::{item.get('lens')}:{item.get('title')}"
+                for item in (reanalysis_rescue_quality.get("samples") or [])[:8]
+            ],
+        )
+
+    discarded_execution_rescue_overall = discarded_execution_rescue_quality.get("overall") or {}
+    discarded_execution_rescue_candidates = int(
+        discarded_execution_rescue_overall.get("candidate_count") or 0
+    )
+    if discarded_execution_rescue_candidates:
+        auto_requeue_count = int(
+            discarded_execution_rescue_overall.get("auto_requeue_candidate_count") or 0
+        )
+        manual_review_count = int(
+            discarded_execution_rescue_overall.get("manual_review_candidate_count") or 0
+        )
+        add(
+            96,
+            "discarded_execution_rescue_backlog",
+            (
+                "Some non-actionable Viral Hunter rows look ready for execution except for "
+                f"their discard/filter status (auto={auto_requeue_count}, manual={manual_review_count})."
+            ),
+            (
+                "requeue auto_requeue rows through rescue-backlog, and review manual rows "
+                "separately before repairing filters or broadening Pathfinder seeds"
+            ),
+            [
+                (
+                    f"{item.get('rescue_mode')}:{item.get('status')}:"
+                    f"{item.get('current_reject_reason') or '-'}:"
+                    f"{item.get('category')}::{item.get('lens')}:{item.get('title')}"
+                )
+                for item in (discarded_execution_rescue_quality.get("samples") or [])[:8]
             ],
         )
 
@@ -10441,6 +13847,42 @@ def _recommendations(
                 f"{item.get('lane')}:{item.get('fresh_local_actionable_strict')}/{item.get('target')}:"
                 f"{','.join(item.get('reasons') or [])}"
                 for item in fresh_local_intent_gaps[:8]
+            ],
+        )
+
+    local_area_diversity_gaps = [
+        item for item in (local_area_diversity_quality.get("priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("local_area_count") or 0) < int(item.get("min_local_areas") or 1)
+    ]
+    if local_area_diversity_gaps:
+        add(
+            57,
+            "local_area_diversity_gaps",
+            "Some Gyulim priority queues depend on too few independent Cheongju-area anchors.",
+            "expand Pathfinder seed clusters and Viral Hunter queries across Cheongju districts, neighborhoods, and nearby-region modifiers before assigning repeat viral work",
+            [
+                f"{item.get('lane')}:{item.get('local_area_count')}/{item.get('min_local_areas')}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in local_area_diversity_gaps[:8]
+            ],
+        )
+
+    fresh_local_area_diversity_gaps = [
+        item for item in (local_area_diversity_quality.get("fresh_priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("local_area_count") or 0) < int(item.get("min_local_areas") or 1)
+    ]
+    if fresh_local_area_diversity_gaps:
+        add(
+            57,
+            "fresh_local_area_diversity_gaps",
+            "Some Gyulim priority queues lack fresh work-ready posts from diverse Cheongju-area anchors.",
+            "refresh these lanes with distinct recent posts from additional Cheongju districts, neighborhoods, and nearby regions",
+            [
+                f"{item.get('lane')}:{item.get('local_area_count')}/{item.get('min_local_areas')}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in fresh_local_area_diversity_gaps[:8]
             ],
         )
 
@@ -10748,6 +14190,142 @@ def _recommendations(
             ],
         )
 
+    treatment_subintent_diversity_gaps = [
+        item for item in (treatment_subintent_diversity_quality.get("priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("treatment_subintent_diversity_gap") or 0) > 0
+    ]
+    if treatment_subintent_diversity_gaps:
+        add(
+            57,
+            "treatment_subintent_diversity_gaps",
+            "Some Gyulim priority queues have enough treatment keywords, but the patient sub-problems collapse into too few buckets.",
+            "expand Pathfinder seed clusters and Viral Hunter queries across scar, asymmetry, skin, diet, posture, lifting, and accident sub-problem buckets before assigning repeat viral work",
+            [
+                f"{item.get('lane')}:{item.get('distinct_treatment_subintent_buckets')}/"
+                f"{item.get('min_distinct_treatment_subintent_buckets')}:"
+                f"{','.join(item.get('treatment_subintent_buckets') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in treatment_subintent_diversity_gaps[:8]
+            ],
+        )
+
+    fresh_treatment_subintent_diversity_gaps = [
+        item for item in (treatment_subintent_diversity_quality.get("fresh_priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and int(item.get("treatment_subintent_diversity_gap") or 0) > 0
+    ]
+    if fresh_treatment_subintent_diversity_gaps:
+        add(
+            57,
+            "fresh_treatment_subintent_diversity_gaps",
+            "Some fresh Gyulim priority queues repeat the same patient sub-problem even though the treatment signal count looks healthy.",
+            "refresh these lanes with recent posts from different sub-problem buckets, not just synonyms of one high-volume keyword",
+            [
+                f"{item.get('lane')}:{item.get('distinct_treatment_subintent_buckets')}/"
+                f"{item.get('min_distinct_treatment_subintent_buckets')}:"
+                f"{','.join(item.get('treatment_subintent_buckets') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in fresh_treatment_subintent_diversity_gaps[:8]
+            ],
+        )
+
+    clinic_modality_gaps = [
+        item for item in (clinic_modality_quality.get("priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and (
+            int(item.get("clinic_modality_fit_actionable_strict") or 0)
+            < int(item.get("target") or 0)
+            or int(item.get("offscope_modality_noise") or 0) > 0
+        )
+    ]
+    if clinic_modality_gaps:
+        add(
+            57,
+            "clinic_modality_fit_gaps",
+            "Some Gyulim priority queues contain strict-fit targets that point to non-Gyulim modalities such as dermatology, cosmetic surgery, or drug-only diet paths.",
+            "rediscover or reprioritize posts that either mention Korean-medicine/Gyulim modalities or clearly compare outside options against a Korean-medicine alternative",
+            [
+                f"{item.get('lane')}:{item.get('clinic_modality_fit_actionable_strict')}/"
+                f"{item.get('target')}:offscope={item.get('offscope_modality_noise')}:"
+                f"{','.join(item.get('clinic_modality_offscope_terms') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in clinic_modality_gaps[:8]
+            ],
+        )
+
+    fresh_clinic_modality_gaps = [
+        item for item in (clinic_modality_quality.get("fresh_priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and (
+            int(item.get("fresh_clinic_modality_fit_actionable_strict") or 0)
+            < int(item.get("target") or 0)
+            or int(item.get("offscope_modality_noise") or 0) > 0
+        )
+    ]
+    if fresh_clinic_modality_gaps:
+        add(
+            57,
+            "fresh_clinic_modality_fit_gaps",
+            "Some fresh Gyulim priority queues contain work-ready-looking posts centered on non-Gyulim modalities.",
+            "refresh these lanes with recent posts that preserve scar, asymmetry, acne, diet, posture, lifting, or accident intent while staying compatible with Korean-medicine treatment routes",
+            [
+                f"{item.get('lane')}:{item.get('fresh_clinic_modality_fit_actionable_strict')}/"
+                f"{item.get('target')}:offscope={item.get('offscope_modality_noise')}:"
+                f"{','.join(item.get('clinic_modality_offscope_terms') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in fresh_clinic_modality_gaps[:8]
+            ],
+        )
+
+    decision_window_gaps = [
+        item for item in (decision_window_quality.get("priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and (
+            int(item.get("active_decision_actionable_strict") or 0)
+            < int(item.get("target") or 0)
+            or int(item.get("completed_decision_window_noise") or 0) > 0
+        )
+    ]
+    if decision_window_gaps:
+        add(
+            57,
+            "decision_window_gaps",
+            "Some Gyulim priority queues contain strict-fit targets that look completed, booked, or retrospective rather than still in an actionable decision window.",
+            "rediscover or reprioritize posts with current recommendation, cost, consultation, booking, comparison, or concern wording before assigning viral work",
+            [
+                f"{item.get('lane')}:{item.get('active_decision_actionable_strict')}/"
+                f"{item.get('target')}:completed={item.get('completed_decision_window_noise')}:"
+                f"{','.join(item.get('decision_window_completed_terms') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in decision_window_gaps[:8]
+            ],
+        )
+
+    fresh_decision_window_gaps = [
+        item for item in (decision_window_quality.get("fresh_priority_gaps") or [])
+        if int(item.get("unique_actionable_strict") or 0) > 0
+        and (
+            int(item.get("fresh_active_decision_actionable_strict") or 0)
+            < int(item.get("target") or 0)
+            or int(item.get("completed_decision_window_noise") or 0) > 0
+        )
+    ]
+    if fresh_decision_window_gaps:
+        add(
+            57,
+            "fresh_decision_window_gaps",
+            "Some fresh Gyulim priority queues are inflated by recent-looking posts that are already completed or booked.",
+            "refresh these lanes with unresolved current questions, comparison requests, cost inquiries, consultation asks, and booking-intent posts",
+            [
+                f"{item.get('lane')}:{item.get('fresh_active_decision_actionable_strict')}/"
+                f"{item.get('target')}:completed={item.get('completed_decision_window_noise')}:"
+                f"{','.join(item.get('decision_window_completed_terms') or [])}:"
+                f"{','.join(item.get('reasons') or [])}"
+                for item in fresh_decision_window_gaps[:8]
+            ],
+        )
+
     seed_candidate_alignment_gaps = [
         item for item in (seed_candidate_alignment_quality.get("priority_gaps") or [])
         if int(item.get("unique_actionable_strict") or 0) > 0
@@ -10920,6 +14498,20 @@ def _recommendations(
             "Most stored targets do not have pathfinder_lens_fit_* metrics.",
             "rerun with the current build or backfill scoring before judging lens quality",
         )
+    if row_count and float(overall.get("clinic_fit_coverage_rate") or 0.0) < 0.80:
+        add(
+            83,
+            "clinic_fit_metric_coverage_low",
+            "Most stored targets do not have clinic_treatment_fit_score metrics.",
+            "backfill Gyulim treatment-fit scoring before judging whether discovered posts match clinic services",
+        )
+    if row_count and float(overall.get("worksite_efficiency_coverage_rate") or 0.0) < 0.80:
+        add(
+            81,
+            "worksite_efficiency_metric_coverage_low",
+            "Most stored targets do not have worksite_efficiency_score metrics.",
+            "backfill worksite-efficiency scoring before assigning posts to viral production",
+        )
     if row_count and float(overall.get("strict_fit_rate") or 0.0) < 0.30:
         add(
             72,
@@ -11050,18 +14642,32 @@ def summarize_viral_handoff_quality(
         platform = _platform(row)
         lens = _lens(score_breakdown)
         query_variant = _variant(score_breakdown)
+        pathfinder_source_seeds = _pathfinder_source_seeds(score_breakdown)
+        source_seed_lineage_present = bool(pathfinder_source_seeds)
+        query_variant_lineage_present = bool(
+            str(score_breakdown.get("pathfinder_query_variant") or "").strip()
+        )
         lens_surface = _lens_surface_evidence(row, lens, query_variant)
         engagement_hook = _engagement_hook_evidence(row, lens)
         patient_surface = _patient_surface_evidence(row)
         viral_action_route = _viral_action_route_evidence(row, lens)
         reply_workability = _reply_workability_evidence(row, score_breakdown, status=status)
         treatment_signature = _treatment_signature_evidence(row, category)
+        treatment_subintent = _treatment_subintent_evidence(row, category)
+        clinic_modality = _clinic_modality_evidence(row, category)
+        decision_window = _decision_window_evidence(row, score_breakdown)
         local_intent = _local_intent_evidence(row)
         is_fresh_activity = _fresh_activity(row, fresh_days=fresh_days)
         target_fingerprint = _target_fingerprint(row)
         variant_family = _variant_family(query_variant)
         source_seeds = _source_seeds(score_breakdown, row)
         source_seed = source_seeds[0]
+        source_seed_lineage_fallback = (
+            not source_seed_lineage_present
+            and bool(source_seeds)
+            and str(source_seed or "").strip() != "(unknown)"
+        )
+        local_area = _local_area_evidence(row, source_seeds=source_seeds)
         seed_candidate_alignment = _seed_candidate_alignment_evidence(
             row,
             source_seeds=source_seeds,
@@ -11092,6 +14698,18 @@ def summarize_viral_handoff_quality(
         )
         strict_fit = _is_strict_fit(
             status=status,
+            lens=lens,
+            axis_fit=axis_fit,
+            lens_fit=lens_fit,
+            clinic_fit=clinic_fit,
+            worksite_efficiency=worksite_efficiency,
+            min_axis_fit=min_axis_fit,
+            min_lens_fit=min_lens_fit,
+            min_clinic_fit=min_clinic_fit,
+            min_worksite_efficiency=min_worksite_efficiency,
+        )
+        metric_strict_fit = _is_strict_fit(
+            status="pending",
             lens=lens,
             axis_fit=axis_fit,
             lens_fit=lens_fit,
@@ -11141,15 +14759,21 @@ def summarize_viral_handoff_quality(
                 category=category,
                 grade=grade,
                 status=status,
+                current_reject_reason=_current_reject_reason(score_breakdown),
                 lens=lens,
                 query_variant=query_variant,
                 source_seed=source_seed,
                 source_seeds=source_seeds,
+                pathfinder_source_seeds=pathfinder_source_seeds,
+                source_seed_lineage_present=source_seed_lineage_present,
+                source_seed_lineage_fallback=source_seed_lineage_fallback,
+                query_variant_lineage_present=query_variant_lineage_present,
                 priority=priority,
                 axis_fit=axis_fit,
                 lens_fit=lens_fit,
                 clinic_fit=clinic_fit,
                 worksite_efficiency=worksite_efficiency,
+                metric_strict_fit=metric_strict_fit,
                 strict_fit=strict_fit,
                 target_fingerprint=target_fingerprint,
                 content_detected_category=content_detected_category,
@@ -11180,6 +14804,8 @@ def summarize_viral_handoff_quality(
                 reply_opportunity_tier=str(reply_workability.get("tier") or ""),
                 reply_opportunity_signals=list(reply_workability.get("signals") or []),
                 reply_risk_flags=list(reply_workability.get("risk_flags") or []),
+                content_risk_flags=list(reply_workability.get("content_risk_flags") or []),
+                content_risk_terms=dict(reply_workability.get("content_risk_terms") or {}),
                 reply_risk_penalty=float(reply_workability.get("risk_penalty") or 0.0),
                 reply_manual_review=bool(reply_workability.get("manual_review")),
                 reply_metric_missing=bool(reply_workability.get("metric_missing")),
@@ -11191,10 +14817,31 @@ def summarize_viral_handoff_quality(
                 treatment_signature_matched=bool(treatment_signature.get("matched")),
                 treatment_signature_terms=list(treatment_signature.get("terms") or []),
                 treatment_signature_expected_terms=list(treatment_signature.get("expected_terms") or []),
+                treatment_subintent_checked=bool(treatment_subintent.get("checked")),
+                treatment_subintent_matched=bool(treatment_subintent.get("matched")),
+                treatment_subintent_buckets=list(treatment_subintent.get("buckets") or []),
+                treatment_subintent_terms=list(treatment_subintent.get("terms") or []),
+                treatment_subintent_bucket_terms=dict(treatment_subintent.get("bucket_terms") or {}),
+                treatment_subintent_expected_buckets=list(treatment_subintent.get("expected_buckets") or []),
+                clinic_modality_checked=bool(clinic_modality.get("checked")),
+                clinic_modality_matched=bool(clinic_modality.get("matched")),
+                clinic_modality_positive_terms=list(clinic_modality.get("positive_terms") or []),
+                clinic_modality_offscope_terms=list(clinic_modality.get("offscope_terms") or []),
+                clinic_modality_bridge_terms=list(clinic_modality.get("bridge_terms") or []),
+                clinic_modality_reasons=list(clinic_modality.get("reasons") or []),
+                decision_window_checked=bool(decision_window.get("checked")),
+                decision_window_matched=bool(decision_window.get("matched")),
+                decision_window_active_terms=list(decision_window.get("active_terms") or []),
+                decision_window_completed_terms=list(decision_window.get("completed_terms") or []),
+                decision_window_active_signals=list(decision_window.get("active_signals") or []),
+                decision_window_reasons=list(decision_window.get("reasons") or []),
                 local_intent_checked=bool(local_intent.get("checked")),
                 local_intent_matched=bool(local_intent.get("matched")),
                 local_intent_terms=list(local_intent.get("terms") or []),
                 local_intent_expected_terms=list(local_intent.get("expected_terms") or []),
+                local_area_terms=list(local_area.get("terms") or []),
+                local_area_target_terms=list(local_area.get("target_terms") or []),
+                local_area_source_terms=list(local_area.get("source_terms") or []),
                 seed_candidate_alignment_checked=bool(seed_candidate_alignment.get("checked")),
                 seed_candidate_alignment_matched=bool(seed_candidate_alignment.get("matched")),
                 seed_candidate_alignment_terms=list(seed_candidate_alignment.get("source_terms") or []),
@@ -11340,14 +14987,27 @@ def summarize_viral_handoff_quality(
     engagement_hook_quality = _engagement_hook_quality(records)
     treatment_signature_quality = _treatment_signature_quality(records)
     treatment_signal_diversity_quality = _treatment_signal_diversity_quality(records)
+    treatment_subintent_diversity_quality = _treatment_subintent_diversity_quality(records)
+    clinic_modality_quality = _clinic_modality_quality(records)
+    decision_window_quality = _decision_window_quality(records)
     seed_candidate_alignment_quality = _seed_candidate_alignment_quality(records)
+    source_lineage_quality = _source_lineage_quality(records)
     local_intent_quality = _local_intent_quality(records)
+    local_area_diversity_quality = _local_area_diversity_quality(records)
     patient_surface_quality = _patient_surface_quality(records)
     viral_action_route_quality = _viral_action_route_quality(records)
     reply_workability_quality = _reply_workability_quality(records)
     compliance_work_mode_quality = _compliance_work_mode_quality(records)
     execution_readiness_quality = _execution_readiness_quality(records)
     execution_priority_alignment_quality = _execution_priority_alignment_quality(records)
+    reanalysis_rescue_quality = _reanalysis_rescue_quality(
+        records,
+        limit=max(3, int(sample_per_lane or 0) * 4),
+    )
+    discarded_execution_rescue_quality = _discarded_execution_rescue_quality(
+        records,
+        limit=max(3, int(sample_per_lane or 0) * 4),
+    )
     platform_surface_quality = _platform_surface_quality(
         platform_summary=platform_summary,
         platform_category_summary=platform_category_summary,
@@ -11373,8 +15033,12 @@ def summarize_viral_handoff_quality(
         engagement_hook_quality=engagement_hook_quality,
         treatment_signature_quality=treatment_signature_quality,
         treatment_signal_diversity_quality=treatment_signal_diversity_quality,
+        treatment_subintent_diversity_quality=treatment_subintent_diversity_quality,
+        clinic_modality_quality=clinic_modality_quality,
+        decision_window_quality=decision_window_quality,
         seed_candidate_alignment_quality=seed_candidate_alignment_quality,
         local_intent_quality=local_intent_quality,
+        local_area_diversity_quality=local_area_diversity_quality,
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
@@ -11382,6 +15046,9 @@ def summarize_viral_handoff_quality(
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
+        source_lineage_quality=source_lineage_quality,
+        reanalysis_rescue_quality=reanalysis_rescue_quality,
+        discarded_execution_rescue_quality=discarded_execution_rescue_quality,
     )
     recommendations = _recommendations(
         row_count=len(rows),
@@ -11399,8 +15066,12 @@ def summarize_viral_handoff_quality(
         engagement_hook_quality=engagement_hook_quality,
         treatment_signature_quality=treatment_signature_quality,
         treatment_signal_diversity_quality=treatment_signal_diversity_quality,
+        treatment_subintent_diversity_quality=treatment_subintent_diversity_quality,
+        clinic_modality_quality=clinic_modality_quality,
+        decision_window_quality=decision_window_quality,
         seed_candidate_alignment_quality=seed_candidate_alignment_quality,
         local_intent_quality=local_intent_quality,
+        local_area_diversity_quality=local_area_diversity_quality,
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
@@ -11408,6 +15079,9 @@ def summarize_viral_handoff_quality(
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
+        source_lineage_quality=source_lineage_quality,
+        reanalysis_rescue_quality=reanalysis_rescue_quality,
+        discarded_execution_rescue_quality=discarded_execution_rescue_quality,
     )
     next_run_playbook = _next_run_playbook(
         source_scan_run_id=source_scan_run_id,
@@ -11426,8 +15100,12 @@ def summarize_viral_handoff_quality(
         engagement_hook_quality=engagement_hook_quality,
         treatment_signature_quality=treatment_signature_quality,
         treatment_signal_diversity_quality=treatment_signal_diversity_quality,
+        treatment_subintent_diversity_quality=treatment_subintent_diversity_quality,
+        clinic_modality_quality=clinic_modality_quality,
+        decision_window_quality=decision_window_quality,
         seed_candidate_alignment_quality=seed_candidate_alignment_quality,
         local_intent_quality=local_intent_quality,
+        local_area_diversity_quality=local_area_diversity_quality,
         patient_surface_quality=patient_surface_quality,
         viral_action_route_quality=viral_action_route_quality,
         reply_workability_quality=reply_workability_quality,
@@ -11435,6 +15113,9 @@ def summarize_viral_handoff_quality(
         execution_readiness_quality=execution_readiness_quality,
         execution_priority_alignment_quality=execution_priority_alignment_quality,
         platform_surface_quality=platform_surface_quality,
+        source_lineage_quality=source_lineage_quality,
+        reanalysis_rescue_quality=reanalysis_rescue_quality,
+        discarded_execution_rescue_quality=discarded_execution_rescue_quality,
     )
 
     return {
@@ -11475,8 +15156,13 @@ def summarize_viral_handoff_quality(
         "engagement_hook_quality": engagement_hook_quality,
         "treatment_signature_quality": treatment_signature_quality,
         "treatment_signal_diversity_quality": treatment_signal_diversity_quality,
+        "treatment_subintent_diversity_quality": treatment_subintent_diversity_quality,
+        "clinic_modality_quality": clinic_modality_quality,
+        "decision_window_quality": decision_window_quality,
         "seed_candidate_alignment_quality": seed_candidate_alignment_quality,
+        "source_lineage_quality": source_lineage_quality,
         "local_intent_quality": local_intent_quality,
+        "local_area_diversity_quality": local_area_diversity_quality,
         "patient_surface_quality": patient_surface_quality,
         "viral_action_route_quality": viral_action_route_quality,
         "reply_workability_quality": reply_workability_quality,
@@ -11484,6 +15170,8 @@ def summarize_viral_handoff_quality(
         "execution_readiness_quality": execution_readiness_quality,
         "execution_priority_alignment_quality": execution_priority_alignment_quality,
         "platform_surface_quality": platform_surface_quality,
+        "reanalysis_rescue_quality": reanalysis_rescue_quality,
+        "discarded_execution_rescue_quality": discarded_execution_rescue_quality,
         "weak_source_seeds": weak_source_seeds,
         "source_seed_feedback": source_seed_feedback,
         "variant_quality_feedback": variant_quality_feedback,
@@ -11501,6 +15189,7 @@ def summarize_viral_handoff_quality(
             engagement_hook_quality=engagement_hook_quality,
             treatment_signature_quality=treatment_signature_quality,
             treatment_signal_diversity_quality=treatment_signal_diversity_quality,
+            treatment_subintent_diversity_quality=treatment_subintent_diversity_quality,
             seed_candidate_alignment_quality=seed_candidate_alignment_quality,
             local_intent_quality=local_intent_quality,
             patient_surface_quality=patient_surface_quality,

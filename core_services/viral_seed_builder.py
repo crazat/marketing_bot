@@ -130,6 +130,57 @@ DIET_HANBANG_SEED_RESCUE_PATTERNS = (
 DEFAULT_MAX_PER_INTENT_PER_CATEGORY = 4
 DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY = 2
 DEFAULT_MAX_PER_REGION_PER_CATEGORY = 4
+DEFAULT_MAX_PER_SUBINTENT_SHARE_DIVISOR = 4
+
+SEED_TREATMENT_SUBINTENT_BUCKETS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "흉터/여드름흉터": {
+        "acne_scar": ("여드름흉터", "여드름자국", "패인흉터", "흉터치료"),
+        "regeneration_hanbang": ("새살침", "흉터새살침", "흉터 새살침", "피부재생"),
+        "pore_texture": ("모공흉터", "모공", "피부결"),
+        "pigmentation": ("색소침착", "붉은자국", "갈색자국", "착색"),
+        "surgery_wound": ("수술흉터", "상처흉터", "수두흉터", "켈로이드"),
+    },
+    "안면비대칭": {
+        "facial_asymmetry": ("안면비대칭", "얼굴비대칭", "얼굴좌우차이", "좌우비대칭"),
+        "jaw_tmj": ("턱비대칭", "턱관절", "턱", "교합"),
+        "cheekbone_head": ("광대비대칭", "광대좌우차이", "두상비대칭", "머리비대칭"),
+        "non_surgical_correction": ("비수술", "안면교정", "비대칭교정", "웨딩 안면비대칭"),
+    },
+    "피부/여드름": {
+        "acne_trouble": ("여드름", "성인여드름", "피부트러블", "트러블", "피지"),
+        "skin_condition": ("피부질환", "피부관리", "건선"),
+        "dermatitis": ("아토피", "지루성피부염", "습진", "두드러기"),
+        "redness_rosacea": ("홍조", "안면홍조", "열감"),
+        "wart_pigment": ("편평사마귀", "색소", "기미", "잡티"),
+    },
+    "다이어트": {
+        "diet_program": ("다이어트", "한방다이어트", "다이어트한약", "다이어트 한의원"),
+        "weight_loss": ("비만", "체중", "감량", "살빼", "체지방"),
+        "appetite_metabolism": ("식욕억제", "식욕", "대사", "요요"),
+        "body_part": ("뱃살", "허벅지살", "팔뚝살", "복부"),
+        "life_event": ("산후다이어트", "웨딩다이어트", "웨딩 다이어트"),
+    },
+    "체형교정": {
+        "posture_correction": ("체형교정", "자세교정", "추나"),
+        "pelvis_spine": ("골반교정", "골반틀어짐", "척추교정", "척추측만"),
+        "neck_shoulder": ("거북목", "라운드숄더", "목", "어깨"),
+        "leg_posture": ("휜다리", "오다리", "휜다리교정"),
+        "posture_pain": ("통증", "허리", "허리통증"),
+    },
+    "리프팅/탄력": {
+        "skin_aging": ("리프팅", "처짐", "노화", "얼굴라인"),
+        "thread_lifting": ("매선", "매선리프팅", "침리프팅", "한방리프팅", "동안침", "매선침"),
+        "elasticity_wrinkle": ("피부탄력", "탄력", "주름", "팔자주름"),
+        "jawline_doublechin": ("이중턱", "턱선", "얼굴라인"),
+    },
+    "교통사고": {
+        "accident_context": ("교통사고", "자동차사고", "추돌사고", "교통사고한의원", "교통사고 한의원"),
+        "insurance_admin": ("자동차보험", "자보", "보험", "합의"),
+        "neck_back_pain": ("목통증", "허리통증", "사고후통증", "통증", "두통"),
+        "hospitalization": ("입원", "교통사고입원", "자동차사고입원"),
+        "aftereffect": ("후유증", "교통사고후유증"),
+    },
+}
 
 # Live scan evidence (scan 67 era, 14d window): seeds shaped "neighborhood + service
 # + transactional suffix" discovered 7,734 posts but converted only 22 to pending
@@ -171,6 +222,11 @@ _COMPOUND_SUFFIX_SPLIT_TOKENS: Tuple[str, ...] = tuple(
 _COMPOUND_SUFFIX_SPLIT_ORDER: Tuple[str, ...] = tuple(
     sorted(_COMPOUND_SUFFIX_SPLIT_TOKENS, key=len, reverse=True)
 )
+_INTENT_DEDUPE_TOKEN_KEYS: Set[str] = {
+    re.sub(r"\s+", "", token.lower())
+    for token in _COMPOUND_SUFFIX_SPLIT_TOKENS
+    if token
+}
 
 
 def _region_tokens() -> Tuple[str, ...]:
@@ -248,6 +304,19 @@ def _strip_suffix_tokens(text: str) -> str:
     return " ".join(kept)
 
 
+def _dedupe_repeated_intent_tokens(text: str) -> str:
+    seen: Set[str] = set()
+    kept: List[str] = []
+    for token in (text or "").split():
+        key = re.sub(r"\s+", "", token.lower())
+        if key in _INTENT_DEDUPE_TOKEN_KEYS:
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(token)
+    return " ".join(kept)
+
+
 def strip_transactional_suffix(keyword: str) -> str:
     """Return a community-surface core query with transactional suffix tokens removed.
 
@@ -257,7 +326,7 @@ def strip_transactional_suffix(keyword: str) -> str:
     text = normalize_seed_keyword_text(keyword)
     if not text:
         return keyword or ""
-    stripped = _strip_suffix_tokens(text)
+    stripped = _dedupe_repeated_intent_tokens(_strip_suffix_tokens(text))
     if not stripped or stripped == text:
         return text
     region_tokens = _region_tokens()
@@ -314,7 +383,7 @@ def normalize_seed_keyword_text(keyword: str) -> str:
     split_tokens: List[str] = []
     for token in text.split():
         split_tokens.extend(_split_compound_suffix_token(token))
-    text = " ".join(split_tokens)
+    text = _dedupe_repeated_intent_tokens(" ".join(split_tokens))
 
     return re.sub(r"\s+", " ", text).strip()
 
@@ -905,6 +974,7 @@ class ViralSeedBuilder:
                 max_per_intent_per_category,
                 max_per_cluster_per_category,
                 max_per_region_per_category,
+                allow_subintent_fallback=not bool(fill_profile_gaps),
             )
             for item in category_rows:
                 row = item["row"]
@@ -1056,6 +1126,14 @@ class ViralSeedBuilder:
                 for seed in selected
                 if seed.category == category
             )
+            subintent_counts: Counter = Counter(
+                self._keyword_treatment_subintent_key(seed.keyword, seed.category)
+                for seed in selected
+                if seed.category == category
+                and self._keyword_treatment_subintent_key(seed.keyword, seed.category)
+            )
+            max_per_subintent = self._subintent_cap_for_quota(int(quota or 0))
+            subintent_deferred: List[dict] = []
 
             added = 0
             for row in candidates:
@@ -1070,9 +1148,13 @@ class ViralSeedBuilder:
 
                 cluster = self._keyword_cluster_key(keyword, category)
                 region = self._keyword_region_key(keyword)
+                subintent = self._keyword_treatment_subintent_key(keyword, category)
                 if cluster_counts[cluster] >= max(1, max_per_cluster_per_category):
                     continue
                 if region_counts[region] >= max(1, max_per_region_per_category):
+                    continue
+                if subintent and subintent_counts[subintent] >= max_per_subintent:
+                    subintent_deferred.append(row)
                     continue
 
                 selected.append(self._profile_gap_seed_from_row(row, scan_id))
@@ -1081,16 +1163,40 @@ class ViralSeedBuilder:
                 category_counts[category] += 1
                 cluster_counts[cluster] += 1
                 region_counts[region] += 1
+                if subintent:
+                    subintent_counts[subintent] += 1
                 added += 1
                 if added >= needed:
                     break
 
+            if added < needed and subintent_deferred:
+                for row in subintent_deferred:
+                    keyword = row["keyword"]
+                    normalized_keyword = self._keyword_feedback_key(keyword)
+                    if not keyword or normalized_keyword in normalized_seen:
+                        continue
+                    cluster = self._keyword_cluster_key(keyword, category)
+                    region = self._keyword_region_key(keyword)
+                    if cluster_counts[cluster] >= max(1, max_per_cluster_per_category):
+                        continue
+                    if region_counts[region] >= max(1, max_per_region_per_category):
+                        continue
+                    selected.append(self._profile_gap_seed_from_row(row, scan_id))
+                    normalized_seen.add(normalized_keyword)
+                    seen.add(keyword)
+                    category_counts[category] += 1
+                    cluster_counts[cluster] += 1
+                    region_counts[region] += 1
+                    added += 1
+                    if added >= needed:
+                        break
+
     def _profile_gap_seed_candidates(self, category: str, limit: int) -> List[dict]:
         raw_keywords = GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
             categories=[category],
-            max_terms_per_category=6,
+            max_terms_per_category=10,
             max_suffixes_per_category=6,
-            max_contexts_per_category=3,
+            max_contexts_per_category=6,
             max_neighborhoods_per_category=5,
         )
         rows: List[dict] = []
@@ -1109,7 +1215,56 @@ class ViralSeedBuilder:
                 len(str(row.get("keyword") or "")),
             )
         )
-        return rows[:limit]
+        return self._interleave_profile_gap_subintents(rows, category, limit)
+
+    @classmethod
+    def _interleave_profile_gap_subintents(
+        cls,
+        rows: List[dict],
+        category: str,
+        limit: int,
+    ) -> List[dict]:
+        if limit <= 0 or not rows:
+            return []
+
+        grouped: Dict[str, List[dict]] = {}
+        group_order: List[str] = []
+        generic_rows: List[dict] = []
+        for row in rows:
+            key = cls._keyword_treatment_subintent_key(str(row.get("keyword") or ""), category)
+            if not key:
+                generic_rows.append(row)
+                continue
+            if key not in grouped:
+                grouped[key] = []
+                group_order.append(key)
+            grouped[key].append(row)
+
+        if len(group_order) <= 1:
+            return rows[:limit]
+
+        ordered: List[dict] = []
+        active = list(group_order)
+        while active and len(ordered) < limit:
+            next_active: List[str] = []
+            for key in active:
+                bucket_rows = grouped.get(key) or []
+                if bucket_rows and len(ordered) < limit:
+                    ordered.append(bucket_rows.pop(0))
+                if bucket_rows:
+                    next_active.append(key)
+            active = next_active
+
+        if len(ordered) < limit:
+            used_ids = {id(row) for row in ordered}
+            for row in generic_rows + rows:
+                if id(row) in used_ids:
+                    continue
+                ordered.append(row)
+                used_ids.add(id(row))
+                if len(ordered) >= limit:
+                    break
+        return ordered[:limit]
 
     @staticmethod
     def _profile_gap_seed_row(keyword: str, category: str) -> dict:
@@ -1499,6 +1654,35 @@ class ViralSeedBuilder:
         return round(min(12.0, 6.0 + accept_rate * 12.0) * evidence_weight, 2)
 
     @staticmethod
+    def _source_seed_audit_counts(feedback: dict) -> Tuple[int, int, int]:
+        """Return (credit_total, primary_total, assist_total) for audit payloads.
+
+        Handles both raw audit-report items and normalized feedback buckets.
+        """
+        data = feedback or {}
+        credit_total = int(
+            data.get("source_seed_audit_credit_total")
+            or data.get("credit_total")
+            or 0
+        )
+        primary_total = int(
+            data.get("source_seed_audit_primary_total")
+            or data.get("primary_total")
+            or 0
+        )
+        assist_total = int(
+            data.get("source_seed_audit_assist_total")
+            or data.get("assist_total")
+            or 0
+        )
+        return credit_total, primary_total, assist_total
+
+    @staticmethod
+    def _source_seed_audit_is_assist_only(feedback: dict) -> bool:
+        _, primary_total, assist_total = ViralSeedBuilder._source_seed_audit_counts(feedback)
+        return primary_total == 0 and assist_total > 0
+
+    @staticmethod
     def _source_seed_audit_adjustment(feedback: dict, *, recategorized: bool = False) -> float:
         """Translate handoff audit source-seed actions into next-run seed ranking.
 
@@ -1511,7 +1695,7 @@ class ViralSeedBuilder:
         action = str((feedback or {}).get("source_seed_audit_action") or "").strip()
         if not action:
             return 0.0
-        total = int((feedback or {}).get("source_seed_audit_credit_total") or 0)
+        total, _, _ = ViralSeedBuilder._source_seed_audit_counts(feedback)
         strict_fit = int((feedback or {}).get("source_seed_audit_strict_fit") or 0)
         actionable = int((feedback or {}).get("source_seed_audit_actionable") or 0)
         survived = int((feedback or {}).get("source_seed_audit_survived") or 0)
@@ -1531,6 +1715,8 @@ class ViralSeedBuilder:
         if action == "retire_or_pause":
             return round(-58.0 * evidence_weight, 2)
         if action == "recategorize_or_quarantine":
+            if ViralSeedBuilder._source_seed_audit_is_assist_only(feedback):
+                return round(-18.0 * evidence_weight, 2)
             if recategorized:
                 return 0.0
             recat_weight = 1.0 if drift_rate >= 0.8 else evidence_weight
@@ -1547,6 +1733,8 @@ class ViralSeedBuilder:
         action = str((feedback or {}).get("source_seed_audit_action") or "").strip()
         if action != "recategorize_or_quarantine":
             return ""
+        if ViralSeedBuilder._source_seed_audit_is_assist_only(feedback):
+            return ""
         detected = GYULIM_KEYWORD_PROFILE.normalize_category(
             str((feedback or {}).get("source_seed_audit_detected_category") or "")
         )
@@ -1558,7 +1746,7 @@ class ViralSeedBuilder:
         if detected == current:
             return detected
 
-        credit_total = int((feedback or {}).get("source_seed_audit_credit_total") or 0)
+        credit_total, _, _ = ViralSeedBuilder._source_seed_audit_counts(feedback)
         drift_rate = ViralSeedBuilder._as_float((feedback or {}).get("source_seed_audit_category_drift_rate"))
         keyword_detected = GYULIM_KEYWORD_PROFILE.normalize_category(
             GYULIM_KEYWORD_PROFILE.detect_category(keyword or "", default="")
@@ -1639,11 +1827,18 @@ class ViralSeedBuilder:
                     if not norm:
                         continue
                     action = str(item.get("action") or default_action)
+                    item_severity = severity
+                    if (
+                        action == "recategorize_or_quarantine"
+                        and self._source_seed_audit_is_assist_only(item)
+                    ):
+                        action = "merge_or_keep_as_companion"
+                        item_severity = 3
                     existing = audit_actions.get(norm)
-                    if existing and int(existing.get("_severity") or 0) > severity:
+                    if existing and int(existing.get("_severity") or 0) > item_severity:
                         continue
                     audit_actions[norm] = {
-                        "_severity": severity,
+                        "_severity": item_severity,
                         "source_seed_audit_action": action,
                         "source_seed_audit_category": GYULIM_KEYWORD_PROFILE.normalize_category(
                             str(item.get("category") or "")
@@ -2557,6 +2752,7 @@ class ViralSeedBuilder:
         max_per_intent: int,
         max_per_cluster: int = DEFAULT_MAX_PER_CLUSTER_PER_CATEGORY,
         max_per_region: int = DEFAULT_MAX_PER_REGION_PER_CATEGORY,
+        allow_subintent_fallback: bool = True,
     ) -> List[dict]:
         if quota <= 0 or not items:
             return []
@@ -2564,10 +2760,13 @@ class ViralSeedBuilder:
         selected: List[dict] = []
         deferred: List[dict] = []
         lens_deferred: List[dict] = []
+        subintent_deferred: List[dict] = []
         intent_counts: Counter = Counter()
         cluster_counts: Counter = Counter()
         region_counts: Counter = Counter()
+        subintent_counts: Counter = Counter()
         execution_lens_counts: Counter = Counter()
+        max_per_subintent = ViralSeedBuilder._subintent_cap_for_quota(quota)
         available_execution_lenses = {
             ViralSeedBuilder._keyword_execution_lens(item.get("row", {}))
             for item in items
@@ -2581,12 +2780,14 @@ class ViralSeedBuilder:
             category = item["row"]["category"] or "기타"
             cluster = ViralSeedBuilder._keyword_cluster_key(keyword, category)
             region = ViralSeedBuilder._keyword_region_key(keyword)
+            subintent = ViralSeedBuilder._keyword_treatment_subintent_key(keyword, category)
             execution_lens = ViralSeedBuilder._keyword_execution_lens(item["row"])
             viable_execution_lens = ViralSeedBuilder._is_viable_execution_lens(item)
 
             within_intent_cap = intent_counts[intent] < max_per_intent
             within_cluster_cap = cluster_counts[cluster] < max_per_cluster
             within_region_cap = region == "unknown" or region_counts[region] < max_per_region
+            within_subintent_cap = not subintent or subintent_counts[subintent] < max_per_subintent
             needs_new_execution_lens = (
                 viable_execution_lens
                 and
@@ -2594,17 +2795,26 @@ class ViralSeedBuilder:
                 and execution_lens_counts[execution_lens] > 0
             )
 
-            within_portfolio_caps = within_intent_cap and within_cluster_cap and within_region_cap
+            within_non_subintent_caps = (
+                within_intent_cap
+                and within_cluster_cap
+                and within_region_cap
+            )
+            within_portfolio_caps = within_non_subintent_caps and within_subintent_cap
 
             if within_portfolio_caps and not needs_new_execution_lens:
                 selected.append(item)
                 intent_counts[intent] += 1
                 cluster_counts[cluster] += 1
+                if subintent:
+                    subintent_counts[subintent] += 1
                 execution_lens_counts[execution_lens] += 1
                 if region != "unknown":
                     region_counts[region] += 1
             elif within_portfolio_caps and needs_new_execution_lens:
                 lens_deferred.append(item)
+            elif within_non_subintent_caps and not within_subintent_cap:
+                subintent_deferred.append(item)
             else:
                 deferred.append(item)
 
@@ -2613,7 +2823,24 @@ class ViralSeedBuilder:
 
         if len(selected) < quota:
             fallback = lens_deferred + deferred
-            selected.extend(fallback[: quota - len(selected)])
+            if allow_subintent_fallback:
+                fallback += subintent_deferred
+            for item in fallback:
+                if len(selected) >= quota:
+                    break
+                row = item.get("row", {}) if isinstance(item, dict) else {}
+                keyword = row.get("keyword") or ""
+                category = row.get("category") or ""
+                subintent = ViralSeedBuilder._keyword_treatment_subintent_key(keyword, category)
+                if (
+                    subintent
+                    and not allow_subintent_fallback
+                    and subintent_counts[subintent] >= max_per_subintent
+                ):
+                    continue
+                selected.append(item)
+                if subintent:
+                    subintent_counts[subintent] += 1
 
         return selected[:quota]
 
@@ -2631,11 +2858,11 @@ class ViralSeedBuilder:
         if str(item.get("source_seed_audit_recategorized_category") or "").strip():
             return False
 
-        credit_total = int(feedback.get("source_seed_audit_credit_total") or 0)
-        primary_total = int(feedback.get("source_seed_audit_primary_total") or 0)
+        credit_total, primary_total, _ = ViralSeedBuilder._source_seed_audit_counts(feedback)
         actionable = int(feedback.get("source_seed_audit_actionable") or 0)
         survived = int(feedback.get("source_seed_audit_survived") or 0)
         strict_fit = int(feedback.get("source_seed_audit_strict_fit") or 0)
+        _, _, assist_total = ViralSeedBuilder._source_seed_audit_counts(feedback)
         survival_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_survival_rate"))
         strict_fit_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_strict_fit_rate"))
         drift_rate = ViralSeedBuilder._as_float(feedback.get("source_seed_audit_category_drift_rate"))
@@ -2647,6 +2874,12 @@ class ViralSeedBuilder:
             and survival_rate <= 0.0
             and strict_fit_rate <= 0.0
         )
+        if ViralSeedBuilder._source_seed_audit_is_assist_only(feedback):
+            return (
+                action == "merge_or_keep_as_companion"
+                and no_current_fit
+                and assist_total >= 8
+            )
         if not no_current_fit:
             return False
 
@@ -2801,6 +3034,32 @@ class ViralSeedBuilder:
             journey = "decision"
 
         return f"{normalized_category}:{core}:{journey}"
+
+    @staticmethod
+    def _keyword_treatment_subintent_key(keyword: str, category: str = "") -> str:
+        normalized_category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        buckets = SEED_TREATMENT_SUBINTENT_BUCKETS.get(normalized_category) or {}
+        if not buckets:
+            return ""
+        compact = re.sub(r"\s+", "", (keyword or "").lower())
+        if not compact:
+            return ""
+        for bucket, terms in buckets.items():
+            for term in terms:
+                token = re.sub(r"\s+", "", str(term or "").lower())
+                if token and token in compact:
+                    return f"{normalized_category}:{bucket}"
+        return ""
+
+    @staticmethod
+    def _subintent_cap_for_quota(quota: int) -> int:
+        quota_int = max(1, int(quota or 0))
+        effective_budget = min(quota_int, 20)
+        return max(
+            2,
+            (effective_budget + DEFAULT_MAX_PER_SUBINTENT_SHARE_DIVISOR - 1)
+            // DEFAULT_MAX_PER_SUBINTENT_SHARE_DIVISOR,
+        )
 
     @staticmethod
     def _keyword_execution_lens(row: dict) -> str:

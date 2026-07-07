@@ -1171,11 +1171,56 @@ class GyulimKeywordProfile:
     def profile_for(self, category: Optional[str]) -> Optional[TreatmentCategoryProfile]:
         return self._profile_by_category.get(self.normalize_category(category))
 
+    @staticmethod
+    def _category_term_weight(term: str, category: str) -> float:
+        compact = _compact(term)
+        if not compact:
+            return 0.0
+        generic_terms = {
+            "피부",
+            "피부과",
+            "치료",
+            "관리",
+            "교정",
+            "한의원",
+            "병원",
+            "상담",
+            "추천",
+        }
+        if compact in generic_terms:
+            return 0.75
+        weight = 1.0
+        if len(compact) >= 6:
+            weight += 3.0
+        elif len(compact) >= 4:
+            weight += 2.0
+        elif len(compact) >= 3:
+            weight += 1.0
+        if compact == _compact(category):
+            weight += 3.0
+        return weight
+
     def detect_category(self, keyword: str, default: str = "기타") -> str:
         kw = _compact(keyword)
-        for profile in self.profiles:
-            if any(_compact(term) in kw for term in profile.category_terms):
-                return profile.category
+        if not kw:
+            return default
+
+        scored: List[Tuple[float, int, int, str]] = []
+        for index, profile in enumerate(self.profiles):
+            score = 0.0
+            longest = 0
+            matched = 0
+            for term in profile.category_terms:
+                compact_term = _compact(term)
+                if not compact_term or compact_term not in kw:
+                    continue
+                matched += 1
+                longest = max(longest, len(compact_term))
+                score += self._category_term_weight(term, profile.category)
+            if matched:
+                scored.append((score, longest, -index, profile.category))
+        if scored:
+            return max(scored)[3]
         if any(_compact(term) in kw for term in self.hanbang_indicators):
             return "한의원일반"
         return default

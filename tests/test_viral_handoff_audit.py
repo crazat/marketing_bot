@@ -5,6 +5,10 @@ from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE
 from core_services.viral_handoff_audit import (
     ENGAGEMENT_HOOK_LENS_TERMS,
     VIRAL_ACTION_ROUTE_DEFINITIONS,
+    _category_subintent_buckets,
+    _category_signature_terms,
+    _clinic_modality_positive_terms,
+    _discarded_execution_rescue_quality,
     _next_run_playbook,
     _priority_focus_categories,
     _seed_target_coverage,
@@ -100,6 +104,76 @@ def _signature_terms_for(category, *, count=4):
             if len(terms) >= count:
                 return terms
     return terms
+
+
+def _compact_for_test(text):
+    return "".join(str(text or "").lower().split())
+
+
+def _non_modality_signature_terms_for(category, *, count=12):
+    positive_terms = [
+        _compact_for_test(term)
+        for term in _clinic_modality_positive_terms(category)
+    ]
+    selected = []
+    for term in _category_signature_terms(category):
+        compact = _compact_for_test(term)
+        if not compact:
+            continue
+        if any(
+            positive and (positive in compact or compact in positive)
+            for positive in positive_terms
+        ):
+            continue
+        if term not in selected:
+            selected.append(term)
+        if len(selected) >= count:
+            break
+    return selected or [str(category or "").split("/")[0]]
+
+
+def _single_subintent_signature_terms_for(category, *, count=4):
+    signature_compacts = {
+        _compact_for_test(term)
+        for term in _category_signature_terms(category)
+    }
+    for bucket, terms in _category_subintent_buckets(category).items():
+        selected = []
+        for term in terms:
+            if _compact_for_test(term) not in signature_compacts:
+                continue
+            candidate = selected + [term]
+            compact_candidate = _compact_for_test(" ".join(candidate))
+            matched_buckets = {
+                candidate_bucket
+                for candidate_bucket, candidate_terms in _category_subintent_buckets(category).items()
+                if any(
+                    _compact_for_test(candidate_term)
+                    and _compact_for_test(candidate_term) in compact_candidate
+                    for candidate_term in candidate_terms
+                )
+            }
+            if matched_buckets == {bucket}:
+                selected = candidate
+            if len(selected) >= count:
+                return bucket, selected[:count]
+    raise AssertionError(f"no subintent bucket with {count} signature terms for {category}")
+
+
+def _diverse_subintent_signature_terms_for(category, *, bucket_count=3):
+    signature_compacts = {
+        _compact_for_test(term)
+        for term in _category_signature_terms(category)
+    }
+    selected = []
+    for terms in _category_subintent_buckets(category).values():
+        for term in terms:
+            if _compact_for_test(term) in signature_compacts:
+                selected.append(term)
+                break
+        if len(selected) >= bucket_count:
+            return selected
+    return _signature_terms_for(category, count=bucket_count)
 
 
 def test_viral_handoff_audit_summarizes_grade_axis_lens_and_fit_rates(tmp_path):
@@ -381,12 +455,22 @@ def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
         "availability": "예약 주차",
         "safety": "부작용 회복",
     }
+    local_area_terms = (
+        list(getattr(ACTIVE_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+        + list(getattr(ACTIVE_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+        + [getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "청주")]
+    )
+    local_area_terms = [term for term in local_area_terms if str(term or "").strip()][:8]
     journey_idx = 1
     for category in _priority_focus_categories():
-        signature_terms = " ".join(_signature_terms_for(category, count=4))
+        signature_terms = " ".join(dict.fromkeys(
+            _signature_terms_for(category, count=4)
+            + _diverse_subintent_signature_terms_for(category, bucket_count=3)
+        ))
         for lens, terms in journey_terms.items():
             for copy_idx in range(2):
                 variant = f"{lens}:{terms}" if copy_idx == 0 else "patient_voice_question_kin"
+                local_area = local_area_terms[(journey_idx + copy_idx) % len(local_area_terms)]
                 _insert_target(
                     conn,
                     target_id=f"journey-strict-{journey_idx}-{copy_idx}",
@@ -396,10 +480,15 @@ def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
                     status="pending",
                     priority=135,
                     platform=("kin" if copy_idx == 0 else "cafe"),
-                    content_preview=f"journey strict distinct copy {journey_idx}-{copy_idx} {signature_terms}",
-                    title=f"청주 {category} {terms}",
+                    content_preview=(
+                        f"{local_area} journey strict distinct copy {journey_idx}-{copy_idx} "
+                        f"{signature_terms}"
+                    ),
+                    title=f"{local_area} {category} {terms}",
                     breakdown={
-                        "pathfinder_source_keyword": f"청주 {category} {terms} 독립시드 {copy_idx}",
+                        "pathfinder_source_keyword": (
+                            f"{local_area} {category} {terms} 독립시드 {copy_idx}"
+                        ),
                         "pathfinder_execution_lens": lens,
                         "pathfinder_query_variant": variant,
                         "pathfinder_axis_fit_score": 90,
@@ -438,6 +527,9 @@ def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
     assert quality_bar["engagement_hook"]["category_lens_hook_ready_rate"] == 1.0
     assert quality_bar["treatment_signature"]["category_lens_signature_ready_rate"] == 1.0
     assert quality_bar["treatment_signal_diversity"]["category_lens_treatment_signal_diverse_ready_rate"] == 1.0
+    assert quality_bar["treatment_subintent_diversity"]["category_lens_treatment_subintent_diverse_ready_rate"] == 1.0
+    assert quality_bar["clinic_modality_fit"]["category_lens_clinic_modality_fit_ready_rate"] == 1.0
+    assert quality_bar["decision_window"]["category_lens_active_decision_ready_rate"] == 1.0
     assert quality_bar["seed_candidate_alignment"]["category_lens_seed_alignment_ready_rate"] == 1.0
     assert quality_bar["local_intent"]["category_lens_local_ready_rate"] == 1.0
     assert quality_bar["patient_surface_authenticity"]["category_lens_patient_surface_ready_rate"] == 1.0
@@ -454,6 +546,250 @@ def test_viral_handoff_audit_quality_bar_and_variant_families(tmp_path):
         item["code"] == "handoff_quality_bar_not_world_class"
         for item in report["recommendations"]
     )
+
+
+def test_viral_handoff_audit_flags_high_fit_unexplained_filtered_reanalysis_backlog(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    conn.execute("ALTER TABLE viral_targets ADD COLUMN last_scanned_at TEXT")
+    _insert_target(
+        conn,
+        target_id="rescue-filtered",
+        scan_id=145,
+        category="흉터/여드름흉터",
+        grade="A",
+        status="filtered_out",
+        priority=145,
+        title="청주 여드름흉터 치료 추천 궁금해요",
+        content_preview="청주에서 여드름흉터 치료 받아보신 분 추천 부탁드려요",
+        discovered_at="2020-01-01 00:00:00",
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "patient_voice_question_kin",
+            "pathfinder_axis_fit_score": 96,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 90,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 93,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": "public_reply_surface,help_request_language,local_actionable",
+            "reply_risk_penalty": 0,
+            "reply_risk_flags": "",
+            "manual_review": 0,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="explicit-off-domain",
+        scan_id=145,
+        category="흉터/여드름흉터",
+        grade="A",
+        status="filtered_out",
+        priority=150,
+        title="청주 여드름흉터 치료 추천",
+        content_preview="오프도메인",
+        discovered_at="2020-01-01 00:00:00",
+        breakdown={
+            "pathfinder_execution_lens": "review",
+            "pathfinder_axis_fit_score": 98,
+            "pathfinder_lens_fit_score": 88,
+            "reply_opportunity_score": 95,
+            "final_reject_reason": "off_domain",
+        },
+    )
+    conn.execute(
+        "UPDATE viral_targets SET last_scanned_at = datetime('now') WHERE source_scan_run_id = 145"
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=145,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    rescue = report["reanalysis_rescue_quality"]
+    assert rescue["overall"]["candidate_count"] == 1
+    assert rescue["overall"]["priority_focus_candidate_count"] == 1
+    assert rescue["by_category"] == {"흉터/여드름흉터": 1}
+    assert rescue["samples"][0]["id"] == "rescue-filtered"
+    assert "reanalysis_rescue_backlog" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["quality_bar"]["reanalysis_rescue_backlog"]["candidate_count"] == 1
+    assert any(item["code"] == "reanalysis_rescue_backlog" for item in report["recommendations"])
+    playbook = report["next_run_playbook"]
+    assert playbook["reanalysis_rescue_required"] is True
+    assert playbook["reanalysis_rescue_candidate_count"] == 1
+    assert playbook["reanalysis_rescue_budget"] == 60
+    assert "--rescue-backlog 60" in playbook["suggested_commands"]["live_scan"]
+
+
+def test_viral_handoff_audit_flags_discarded_execution_ready_false_negative(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    category = _priority_focus_categories()[0]
+    signature_term = _signature_terms_for(category, count=1)[0]
+    _insert_target(
+        conn,
+        target_id="discarded-ready-ad-conflict",
+        scan_id=152,
+        category=category,
+        grade="A",
+        status="pending",
+        priority=145,
+        platform="kin",
+        title=f"청주 {signature_term} 한의원 추천 상담 어디가 좋을까요 ?",
+        content_preview=(
+            f"청주에서 {signature_term} 때문에 고민인데 한의원 치료 상담 가능한 곳 추천 부탁드립니다"
+        ),
+        breakdown={
+            "pathfinder_source_keyword": f"청주 {signature_term} 추천 상담",
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "patient_voice_question_kin",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 89,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 86,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": (
+                "public_reply_surface,help_request_language,decision_or_service_task,"
+                "local_actionable,unanswered_or_low_response"
+            ),
+            "reply_risk_penalty": 0,
+            "reply_risk_flags": "",
+            "manual_review": 0,
+            "final_reject_reason": "advertorial",
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="discarded-provider-noise",
+        scan_id=152,
+        category=category,
+        grade="A",
+        status="pending",
+        priority=150,
+        platform="kin",
+        title=f"청주 {signature_term} 한의원 추천 상담 홈페이지 문의전화 ?",
+        content_preview="홈페이지 문의전화 예약 이벤트 안내",
+        breakdown={
+            "pathfinder_source_keyword": f"청주 {signature_term} 추천 상담",
+            "pathfinder_execution_lens": "review",
+            "pathfinder_query_variant": "patient_voice_question_kin",
+            "pathfinder_axis_fit_score": 92,
+            "pathfinder_lens_fit_score": 89,
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "reply_opportunity_score": 86,
+            "reply_opportunity_tier": "assist_now",
+            "reply_opportunity_signals": (
+                "public_reply_surface,help_request_language,decision_or_service_task,"
+                "local_actionable,unanswered_or_low_response"
+            ),
+            "reply_risk_penalty": 0,
+            "reply_risk_flags": "",
+            "manual_review": 0,
+            "final_reject_reason": "advertorial",
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=152,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    assert report["reanalysis_rescue_quality"]["overall"]["candidate_count"] == 0
+    rescue = report["discarded_execution_rescue_quality"]
+    assert rescue["overall"]["candidate_count"] == 1
+    assert rescue["overall"]["priority_focus_candidate_count"] == 1
+    assert rescue["overall"]["auto_requeue_candidate_count"] == 1
+    assert rescue["overall"]["manual_review_candidate_count"] == 0
+    assert rescue["by_status"] == {"filtered_out_ad": 1}
+    assert rescue["by_rescue_mode"] == {"auto_requeue": 1}
+    assert rescue["by_reject_reason"] == {"advertorial": 1}
+    assert rescue["samples"][0]["id"] == "discarded-ready-ad-conflict"
+    assert rescue["samples"][0]["rescue_mode"] == "auto_requeue"
+    assert rescue["samples"][0]["current_reject_reason"] == "advertorial"
+    assert "discarded_execution_rescue_backlog" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["quality_bar"]["discarded_execution_rescue_backlog"]["candidate_count"] == 1
+    assert report["quality_bar"]["discarded_execution_rescue_backlog"]["auto_requeue_candidate_count"] == 1
+    assert report["quality_bar"]["discarded_execution_rescue_backlog"]["manual_review_candidate_count"] == 0
+    playbook = report["next_run_playbook"]
+    assert playbook["discarded_execution_rescue_required"] is True
+    assert playbook["discarded_execution_rescue_candidate_count"] == 1
+    assert playbook["discarded_execution_auto_requeue_candidate_count"] == 1
+    assert playbook["discarded_execution_manual_review_candidate_count"] == 0
+    assert playbook["discarded_execution_manual_review_required"] is False
+    assert playbook["discarded_execution_rescue_budget"] == 30
+    assert "--rescue-backlog 30" in playbook["suggested_commands"]["live_scan"]
+    assert any(
+        item["code"] == "discarded_execution_rescue_backlog"
+        for item in report["recommendations"]
+    )
+
+
+def test_discarded_execution_rescue_splits_auto_requeue_and_manual_review():
+    base = {
+        "metric_strict_fit": True,
+        "fresh_activity": True,
+        "priority": 140,
+        "reply_opportunity_score": 90,
+        "source_seed_lineage_present": True,
+        "query_variant_lineage_present": True,
+        "engagement_hook_matched": True,
+        "treatment_signature_matched": True,
+        "treatment_subintent_matched": True,
+        "clinic_modality_matched": True,
+        "decision_window_matched": True,
+        "local_intent_matched": True,
+        "seed_candidate_alignment_matched": True,
+        "patient_surface_matched": True,
+        "viral_action_route_matched": True,
+        "reply_workability_matched": True,
+        "patient_surface_provider_noise": False,
+        "viral_action_route_mismatch": False,
+        "reply_risk_blocked": False,
+        "reply_risk_flags": [],
+        "reply_manual_review": False,
+        "reply_risk_penalty": 0,
+        "category": "흉터/여드름흉터",
+        "lens": "review",
+        "platform": "kin",
+        "title": "청주 여드름흉터 한의원 추천",
+        "url": "https://example.com/rescue",
+        "source_seed": "청주 여드름흉터 한의원 추천",
+        "query_variant": "patient_voice_question_kin",
+    }
+    report = _discarded_execution_rescue_quality(
+        [
+            {
+                **base,
+                "id": "auto-filtered",
+                "status": "filtered_out_ai",
+                "current_reject_reason": "advertorial",
+            },
+            {
+                **base,
+                "id": "manual-skipped",
+                "status": "skipped",
+                "current_reject_reason": "",
+            },
+        ],
+        limit=5,
+    )
+
+    assert report["overall"]["candidate_count"] == 2
+    assert report["overall"]["auto_requeue_candidate_count"] == 1
+    assert report["overall"]["manual_review_candidate_count"] == 1
+    assert report["by_status"] == {"filtered_out_ai": 1, "skipped": 1}
+    assert report["by_rescue_mode"] == {"auto_requeue": 1, "manual_review": 1}
+    assert report["auto_requeue_samples"][0]["id"] == "auto-filtered"
+    assert report["manual_review_samples"][0]["id"] == "manual-skipped"
 
 
 def test_viral_handoff_audit_reports_query_variant_quality_feedback(tmp_path):
@@ -999,6 +1335,80 @@ def test_viral_handoff_audit_flags_source_seed_category_drift(tmp_path):
     )
 
 
+def test_viral_handoff_audit_flags_missing_pathfinder_source_lineage(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    category = _priority_focus_categories()[0]
+    source_breakdown = {
+        "pathfinder_source_keyword": "cheongju scar source seed",
+        "pathfinder_execution_lens": "review",
+        "pathfinder_query_variant": "patient_voice_question_kin",
+        "pathfinder_axis_fit_score": 90,
+        "pathfinder_lens_fit_score": 88,
+        "clinic_treatment_fit_score": 91,
+        "worksite_efficiency_score": 87,
+    }
+    missing_breakdown = {
+        "pathfinder_execution_lens": "review",
+        "pathfinder_query_variant": "patient_voice_question_kin",
+        "pathfinder_axis_fit_score": 90,
+        "pathfinder_lens_fit_score": 88,
+        "clinic_treatment_fit_score": 91,
+        "worksite_efficiency_score": 87,
+    }
+    _insert_target(
+        conn,
+        target_id="lineage-present",
+        scan_id=147,
+        category=category,
+        grade="A",
+        status="pending",
+        priority=121,
+        title="Cheongju scar review with explicit lineage",
+        breakdown=source_breakdown,
+    )
+    _insert_target(
+        conn,
+        target_id="lineage-missing",
+        scan_id=147,
+        category=category,
+        grade="A",
+        status="pending",
+        priority=139,
+        title="Cheongju scar review missing source lineage",
+        breakdown=missing_breakdown,
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=147,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    lineage = report["source_lineage_quality"]
+    assert lineage["overall"]["source_seed_present"] == 1
+    assert lineage["overall"]["source_seed_missing"] == 1
+    assert lineage["overall"]["source_seed_fallback_count"] == 1
+    assert lineage["overall"]["source_seed_coverage_rate"] == 0.5
+    assert lineage["overall"]["priority_focus_source_seed_coverage_rate"] == 0.5
+    assert lineage["overall"]["actionable_strict_source_seed_coverage_rate"] == 0.5
+    sample = lineage["missing_samples"][0]
+    assert sample["id"] == "lineage-missing"
+    assert "fallback_matched_keyword_used" in sample["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "source_lineage_coverage" in failed
+    assert "query_variant_lineage_coverage" not in failed
+    assert report["quality_bar"]["source_seed_integrity"]["source_seed_coverage_rate"] == 0.5
+    assert report["next_run_playbook"]["source_lineage_repair_required"] is True
+    assert report["next_run_playbook"]["source_lineage_missing_samples"][0]["id"] == "lineage-missing"
+    assert any(
+        item["code"] == "source_lineage_coverage_low"
+        for item in report["recommendations"]
+    )
+
+
 def test_viral_handoff_audit_flags_content_category_mismatch(tmp_path):
     db_path, conn = _make_db(tmp_path)
     _insert_target(
@@ -1140,6 +1550,129 @@ def test_viral_handoff_audit_flags_lens_surface_mismatch_and_bridge_match(tmp_pa
     lens_samples = report["review_samples"]["lens_surface_mismatch_samples"]
     assert lens_samples[0]["samples"][0]["id"] == "cost-lens-no-cost-surface"
     assert lens_samples[0]["mismatch_rate"] == 0.6667
+
+
+def test_viral_handoff_audit_treats_community_base_as_transactional_lens_bridge(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="cost-lens-community-base-bridge",
+        scan_id=180,
+        category="흉터/여드름흉터",
+        grade="A",
+        status="pending",
+        priority=125,
+        title="청주 여드름흉터 새살침 추천 부탁드려요",
+        content_preview="실제 경험이나 후기 있는 곳이 궁금합니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름흉터 비용",
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_axis_fit_score": 86,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 86,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=180,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    overall = report["overall"]
+    assert overall["lens_surface_checked"] == 1
+    assert overall["lens_surface_matched"] == 1
+    assert overall["lens_surface_mismatch"] == 0
+    sample = report["review_samples"]["top_strict_fit"][0]
+    assert sample["lens_surface_matched"] is True
+    assert sample["lens_surface_bridge_terms"]
+
+
+def test_viral_handoff_audit_averages_clinic_and_worksite_over_observed_scores(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="observed-worksite-fit",
+        scan_id=181,
+        category="흉터/여드름흉터",
+        grade="A",
+        status="pending",
+        priority=125,
+        title="청주 여드름흉터 새살침 상담 궁금합니다",
+        content_preview="후기 보고 치료 상담을 받아볼지 고민 중입니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름흉터 상담",
+            "pathfinder_execution_lens": "consultation",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_axis_fit_score": 86,
+            "pathfinder_lens_fit_score": 84,
+            "clinic_treatment_fit_score": 88,
+            "worksite_efficiency_score": 86,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="early-filter-no-worksite-score",
+        scan_id=181,
+        category="흉터/여드름흉터",
+        grade="A",
+        status="filtered_out_ad",
+        priority=80,
+        title="청주 여드름흉터 광고 안내",
+        content_preview="병원 이벤트 안내 글입니다.",
+        breakdown={
+            "pathfinder_source_keyword": "청주 여드름흉터 상담",
+            "pathfinder_execution_lens": "consultation",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_axis_fit_score": 82,
+            "pathfinder_lens_fit_score": 70,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=181,
+        include_seed_baseline=False,
+        min_lane_total=1,
+    )
+
+    overall = report["overall"]
+    assert overall["avg_clinic_fit"] == 88.0
+    assert overall["avg_worksite_efficiency"] == 86.0
+    assert overall["clinic_fit_observed"] == 1
+    assert overall["worksite_efficiency_observed"] == 1
+    assert overall["clinic_fit_coverage_rate"] == 0.5
+    assert overall["worksite_efficiency_coverage_rate"] == 0.5
+    quality_bar = report["quality_bar"]
+    assert quality_bar["metric_coverage"]["minimum_rate"] == 0.5
+    assert quality_bar["metric_coverage"]["clinic_fit_coverage_rate"] == 0.5
+    assert quality_bar["metric_coverage"]["worksite_efficiency_coverage_rate"] == 0.5
+    assert "metric_coverage" in quality_bar["failed_required_gates"]
+    playbook = report["next_run_playbook"]
+    assert playbook["metric_backfill_required"] is True
+    assert {
+        "clinic_fit_metric_coverage_low",
+        "worksite_efficiency_metric_coverage_low",
+    }.issubset({item["code"] for item in playbook["metric_backfill_gaps"]})
+    assert any(
+        item["code"] == "clinic_fit_metric_coverage_low"
+        for item in report["recommendations"]
+    )
+    assert any(
+        item["code"] == "worksite_efficiency_metric_coverage_low"
+        for item in report["recommendations"]
+    )
+    assert all(
+        "low_worksite_efficiency" not in item["reasons"]
+        for item in report["weak_lanes"]
+    )
 
 
 def test_mismatch_playbook_prioritizes_gyulim_focus_axes(tmp_path):
@@ -1959,6 +2492,84 @@ def test_local_intent_quality_flags_nonlocal_patient_inventory(tmp_path):
     )
 
 
+def test_local_area_diversity_flags_single_area_dependency(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "청주")
+    idx = 1
+    for category in _priority_focus_categories():
+        for lens in ("review", "community", "cost", "consultation", "availability", "safety"):
+            terms = " ".join(ENGAGEMENT_HOOK_LENS_TERMS[lens][:2])
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                variant = (
+                    f"axis_generic:specific_lane_{idx}"
+                    if copy_idx == 0
+                    else f"colloquial:lane_{idx}"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-single-local-area-{idx}-{copy_idx}",
+                    scan_id=148,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"{primary_region} patient local area dependency {idx}-{copy_idx}",
+                    title=f"{primary_region} {category} {terms} patient question {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": (
+                            f"{primary_region} {category} {lens} single local area seed {idx}-{copy_idx}"
+                        ),
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": variant,
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=148,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    local_quality = report["local_intent_quality"]
+    area_quality = report["local_area_diversity_quality"]
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert local_quality["overall"]["fresh_category_lens_local_ready_rate"] == 1.0
+    assert area_quality["overall"]["category_lens_local_area_diversity_ready_rate"] == 0.0
+    assert area_quality["overall"]["fresh_category_lens_local_area_diversity_ready_rate"] == 0.0
+    first_gap = next(item for item in area_quality["priority_gaps"] if item["lane"] == expected_lane)
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["local_area_actionable_strict"] == 2
+    assert first_gap["local_area_count"] == 1
+    assert first_gap["min_local_areas"] == 2
+    assert "single_local_area_dependency" in first_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "local_intent_lens_coverage" not in failed
+    assert "local_area_diversity_lens_coverage" in failed
+    assert "fresh_local_area_diversity_lens_coverage" in failed
+    assert report["next_run_playbook"]["local_area_diversity_required"] is True
+    assert report["next_run_playbook"]["fresh_local_area_diversity_required"] is True
+    assert any(
+        item["lane"] == expected_lane
+        for item in report["next_run_playbook"]["local_area_diversity_gaps"]
+    )
+    assert any(
+        item["code"] == "local_area_diversity_gaps"
+        for item in report["recommendations"]
+    )
+
+
 def test_patient_surface_quality_flags_provider_promo_inventory(tmp_path):
     db_path, conn = _make_db(tmp_path)
     primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "청주")
@@ -2251,6 +2862,391 @@ def test_treatment_signal_diversity_flags_single_term_collapse(tmp_path):
     )
 
 
+def test_treatment_subintent_diversity_flags_single_subintent_collapse(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    route_terms = {
+        "review": "추천",
+        "community": "추천",
+        "cost": "비용",
+        "consultation": "상담",
+        "availability": "예약",
+        "safety": "회복 안전",
+    }
+    local_areas = ("청주", "흥덕구", "오창")
+    idx = 1
+    chosen_bucket_by_category = {}
+    for category in _priority_focus_categories():
+        bucket, signature_terms = _single_subintent_signature_terms_for(category, count=4)
+        chosen_bucket_by_category[category] = bucket
+        for lens_idx, (lens, route_term) in enumerate(route_terms.items()):
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                signature_term = signature_terms[
+                    (lens_idx * 2 + copy_idx) % len(signature_terms)
+                ]
+                local_area = local_areas[(lens_idx + copy_idx) % len(local_areas)]
+                target_text = (
+                    f"{local_area} {signature_term} {route_term} 궁금 추천 "
+                    f"어디 상담 가능 ?"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-single-subintent-{idx}-{copy_idx}",
+                    scan_id=151,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"{target_text} patient question {idx}-{copy_idx}",
+                    title=f"{target_text} {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": (
+                            f"{local_area} {signature_term} {route_term} 궁금 추천"
+                        ),
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_subintent:single_bucket_{idx}"
+                            if copy_idx == 0
+                            else f"colloquial:single_subintent_{idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=151,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    assert report["work_queue_readiness"]["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert report["opportunity_diversity"]["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert report["engagement_hook_quality"]["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert report["treatment_signature_quality"]["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert (
+        report["treatment_signal_diversity_quality"]["overall"][
+            "category_lens_treatment_signal_diverse_ready_rate"
+        ]
+        == 1.0
+    )
+    assert report["clinic_modality_quality"]["overall"]["category_lens_clinic_modality_fit_ready_rate"] == 1.0
+    assert report["decision_window_quality"]["overall"]["category_lens_active_decision_ready_rate"] == 1.0
+    assert report["local_intent_quality"]["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert report["local_area_diversity_quality"]["overall"]["category_lens_local_area_diversity_ready_rate"] == 1.0
+    assert report["patient_surface_quality"]["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert report["viral_action_route_quality"]["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert report["reply_workability_quality"]["overall"]["category_lens_reply_workable_ready_rate"] == 1.0
+    subintent = report["treatment_subintent_diversity_quality"]
+    assert subintent["overall"]["category_lens_treatment_subintent_diverse_ready_rate"] == 0.0
+    assert subintent["overall"]["fresh_category_lens_treatment_subintent_diverse_ready_rate"] == 0.0
+    category_gap = next(
+        item for item in subintent["priority_gaps"]
+        if item["lane"] == focus_category
+    )
+    lens_gap = next(
+        item for item in subintent["category_lens_gaps"]
+        if item["lane"] == expected_lane
+    )
+    assert category_gap["unique_actionable_strict"] == len(route_terms) * 2
+    assert category_gap["treatment_subintent_actionable_strict"] == len(route_terms) * 2
+    assert category_gap["distinct_treatment_subintent_buckets"] == 1
+    assert category_gap["min_distinct_treatment_subintent_buckets"] == 3
+    assert category_gap["treatment_subintent_buckets"] == [chosen_bucket_by_category[focus_category]]
+    assert lens_gap["unique_actionable_strict"] == 2
+    assert lens_gap["treatment_subintent_actionable_strict"] == 2
+    assert lens_gap["distinct_treatment_subintent_buckets"] == 1
+    assert lens_gap["min_distinct_treatment_subintent_buckets"] == 2
+    assert "narrow_treatment_subintent_diversity" in category_gap["reasons"]
+    assert "narrow_treatment_subintent_diversity" in lens_gap["reasons"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "treatment_signal_diversity_lens_coverage" not in failed
+    assert "treatment_subintent_diversity_lens_coverage" in failed
+    assert "fresh_treatment_subintent_diversity_lens_coverage" in failed
+    assert report["next_run_playbook"]["treatment_subintent_diversity_required"] is True
+    assert report["next_run_playbook"]["fresh_treatment_subintent_diversity_required"] is True
+    assert report["next_run_playbook"]["treatment_subintent_diversity_gaps"][0]["lane"] == focus_category
+    assert report["review_samples"]["treatment_subintent_diversity_gap_samples"][0]["lane"] == focus_category
+    assert (
+        report["review_samples"]["fresh_treatment_subintent_diversity_gap_samples"][0]["lane"]
+        == focus_category
+    )
+    assert any(
+        item["code"] == "treatment_subintent_diversity_gaps"
+        for item in report["recommendations"]
+    )
+
+
+def test_clinic_modality_quality_flags_offscope_modality_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    route_terms = {
+        "review": "추천",
+        "community": "추천",
+        "cost": "비용",
+        "consultation": "상담",
+        "availability": "예약",
+        "safety": "회복 안전",
+    }
+    local_areas = ("청주", "흥덕구", "오창")
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = _non_modality_signature_terms_for(category, count=12)
+        for lens_idx, (lens, route_term) in enumerate(route_terms.items()):
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                signature_term = signature_terms[
+                    (lens_idx * 2 + copy_idx) % len(signature_terms)
+                ]
+                local_area = local_areas[(lens_idx + copy_idx) % len(local_areas)]
+                target_text = (
+                    f"{local_area} {signature_term} {route_term} 궁금 추천 "
+                    f"피부과 레이저 위고비 마운자로 성형외과 양악 윤곽수술 ?"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-offscope-modality-{idx}-{copy_idx}",
+                    scan_id=149,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"{target_text} patient question {idx}-{copy_idx}",
+                    title=f"{target_text} {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": (
+                            f"{local_area} {signature_term} {route_term} "
+                            f"피부과 레이저 위고비"
+                        ),
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_generic:offscope_modality_{idx}"
+                            if copy_idx == 0
+                            else f"colloquial:offscope_modality_{idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=149,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    queue = report["work_queue_readiness"]
+    diversity = report["opportunity_diversity"]
+    hook_quality = report["engagement_hook_quality"]
+    signature_quality = report["treatment_signature_quality"]
+    signal_diversity = report["treatment_signal_diversity_quality"]
+    local_quality = report["local_intent_quality"]
+    area_quality = report["local_area_diversity_quality"]
+    patient_surface = report["patient_surface_quality"]
+    action_route = report["viral_action_route_quality"]
+    reply_workability = report["reply_workability_quality"]
+    clinic_modality = report["clinic_modality_quality"]
+    assert queue["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert diversity["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert hook_quality["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert signature_quality["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert signal_diversity["overall"]["category_lens_treatment_signal_diverse_ready_rate"] == 1.0
+    assert local_quality["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert area_quality["overall"]["category_lens_local_area_diversity_ready_rate"] == 1.0
+    assert patient_surface["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert action_route["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert reply_workability["overall"]["category_lens_reply_workable_ready_rate"] == 1.0
+    assert clinic_modality["overall"]["category_lens_clinic_modality_fit_ready_rate"] == 0.0
+    assert clinic_modality["overall"]["fresh_category_lens_clinic_modality_fit_ready_rate"] == 0.0
+    first_gap = next(
+        item for item in clinic_modality["priority_gaps"]
+        if item["lane"] == expected_lane
+    )
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["clinic_modality_fit_actionable_strict"] == 0
+    assert first_gap["offscope_modality_noise"] == 2
+    assert "offscope_modality_noise" in first_gap["reasons"]
+    assert {"피부과", "레이저", "위고비"}.issubset(
+        set(first_gap["clinic_modality_offscope_terms"])
+    )
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "clinic_modality_lens_coverage" in failed
+    assert "fresh_clinic_modality_lens_coverage" in failed
+    assert report["next_run_playbook"]["clinic_modality_required"] is True
+    assert report["next_run_playbook"]["fresh_clinic_modality_required"] is True
+    assert any(
+        item["lane"] == expected_lane
+        for item in report["next_run_playbook"]["clinic_modality_gaps"]
+    )
+    assert any(
+        item["code"] == "clinic_modality_fit_gaps"
+        for item in report["recommendations"]
+    )
+    assert any(
+        sample.get("clinic_modality_offscope_terms")
+        for sample in report["review_samples"]["top_strict_fit"]
+    )
+
+
+def test_decision_window_quality_flags_completed_or_booked_inventory(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    route_terms = {
+        "review": "추천",
+        "community": "추천",
+        "cost": "비용",
+        "consultation": "상담",
+        "availability": "예약",
+        "safety": "회복 안전",
+    }
+    local_areas = ("청주", "흥덕구", "오창")
+    idx = 1
+    for category in _priority_focus_categories():
+        signature_terms = _non_modality_signature_terms_for(category, count=12)
+        for lens_idx, (lens, route_term) in enumerate(route_terms.items()):
+            for copy_idx, platform in enumerate(("kin", "cafe")):
+                signature_term = signature_terms[
+                    (lens_idx * 2 + copy_idx) % len(signature_terms)
+                ]
+                local_area = local_areas[(lens_idx + copy_idx) % len(local_areas)]
+                target_text = (
+                    f"{local_area} {signature_term} {route_term} "
+                    f"예약완료 다녀왔습니다 받았습니다"
+                )
+                _insert_target(
+                    conn,
+                    target_id=f"queue-completed-window-{idx}-{copy_idx}",
+                    scan_id=150,
+                    category=category,
+                    grade="A",
+                    status="pending",
+                    priority=140,
+                    platform=platform,
+                    content_preview=f"{target_text} patient surface {idx}-{copy_idx}",
+                    title=f"{target_text} {idx}-{copy_idx}",
+                    breakdown={
+                        "pathfinder_source_keyword": (
+                            f"{local_area} {signature_term} {route_term} 예약완료"
+                        ),
+                        "pathfinder_execution_lens": lens,
+                        "pathfinder_query_variant": (
+                            f"axis_generic:completed_window_{idx}"
+                            if copy_idx == 0
+                            else f"colloquial:completed_window_{idx}"
+                        ),
+                        "pathfinder_axis_fit_score": 90,
+                        "pathfinder_lens_fit_score": 88,
+                        "clinic_treatment_fit_score": 91,
+                        "worksite_efficiency_score": 87,
+                        "reply_opportunity_score": 82,
+                        "reply_opportunity_tier": "assist_now",
+                        "reply_opportunity_signals": (
+                            "public_reply_surface,help_request_language,decision_or_service_task,"
+                            "local_actionable,unanswered_or_low_response"
+                        ),
+                        "reply_risk_penalty": 0,
+                        "reply_risk_flags": "",
+                        "manual_review": 0,
+                    },
+                )
+            idx += 1
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=150,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    focus_category = _priority_focus_categories()[0]
+    expected_lane = f"{focus_category}::review"
+    assert report["work_queue_readiness"]["overall"]["unique_category_lens_ready_rate"] == 1.0
+    assert report["opportunity_diversity"]["overall"]["category_lens_diversity_ready_rate"] == 1.0
+    assert report["engagement_hook_quality"]["overall"]["category_lens_hook_ready_rate"] == 1.0
+    assert report["treatment_signature_quality"]["overall"]["category_lens_signature_ready_rate"] == 1.0
+    assert (
+        report["treatment_signal_diversity_quality"]["overall"][
+            "category_lens_treatment_signal_diverse_ready_rate"
+        ]
+        == 1.0
+    )
+    assert report["clinic_modality_quality"]["overall"]["category_lens_clinic_modality_fit_ready_rate"] == 1.0
+    assert report["local_intent_quality"]["overall"]["category_lens_local_ready_rate"] == 1.0
+    assert report["local_area_diversity_quality"]["overall"]["category_lens_local_area_diversity_ready_rate"] == 1.0
+    assert report["patient_surface_quality"]["overall"]["category_lens_patient_surface_ready_rate"] == 1.0
+    assert report["viral_action_route_quality"]["overall"]["category_lens_route_ready_rate"] == 1.0
+    assert report["reply_workability_quality"]["overall"]["category_lens_reply_workable_ready_rate"] == 1.0
+    assert report["execution_readiness_quality"]["overall"]["category_lens_execution_ready_rate"] == 1.0
+    decision_window = report["decision_window_quality"]
+    assert decision_window["overall"]["category_lens_active_decision_ready_rate"] == 0.0
+    assert decision_window["overall"]["fresh_category_lens_active_decision_ready_rate"] == 0.0
+    first_gap = next(
+        item for item in decision_window["priority_gaps"]
+        if item["lane"] == expected_lane
+    )
+    assert first_gap["unique_actionable_strict"] == 2
+    assert first_gap["active_decision_actionable_strict"] == 0
+    assert first_gap["completed_decision_window_noise"] == 2
+    assert "completed_decision_window_noise" in first_gap["reasons"]
+    assert "already_committed_booking_noise" in first_gap["reasons"]
+    assert "예약완료" in first_gap["decision_window_completed_terms"]
+    failed = report["quality_bar"]["failed_advisory_gates"]
+    assert "execution_readiness_lens_coverage" not in failed
+    assert "decision_window_lens_coverage" in failed
+    assert "fresh_decision_window_lens_coverage" in failed
+    assert report["next_run_playbook"]["decision_window_required"] is True
+    assert report["next_run_playbook"]["fresh_decision_window_required"] is True
+    assert any(
+        item["lane"] == expected_lane
+        for item in report["next_run_playbook"]["decision_window_gaps"]
+    )
+    assert any(
+        item["code"] == "decision_window_gaps"
+        for item in report["recommendations"]
+    )
+    assert any(
+        sample.get("decision_window_completed_terms")
+        for sample in report["review_samples"]["top_strict_fit"]
+    )
+
+
 def test_reply_workability_quality_flags_risky_or_low_opportunity_inventory(tmp_path):
     db_path, conn = _make_db(tmp_path)
     primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
@@ -2361,6 +3357,90 @@ def test_reply_workability_quality_flags_risky_or_low_opportunity_inventory(tmp_
         item["code"] == "reply_workability_gaps"
         for item in report["recommendations"]
     )
+
+
+def test_reply_workability_derives_content_risk_flags_when_ai_flags_missing(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    category = _priority_focus_categories()[0]
+    primary_region = getattr(ACTIVE_KEYWORD_PROFILE, "primary_region", "cheongju")
+    signature_terms = _signature_terms_for(category, count=1)
+    signature_term = signature_terms[0] if signature_terms else category
+    route_term = ""
+    for definition in VIRAL_ACTION_ROUTE_DEFINITIONS:
+        if "review" in tuple(definition.get("lenses") or ()):
+            route_terms = tuple(definition.get("terms") or ())
+            if route_terms:
+                route_term = str(route_terms[0])
+                break
+    rows = (
+        ("urgent", "emergency urgent pain question"),
+        ("pregnant-medicine", "pregnant medication prescription dosage question"),
+    )
+    for idx, (suffix, risk_text) in enumerate(rows, start=1):
+        _insert_target(
+            conn,
+            target_id=f"content-risk-{suffix}",
+            scan_id=197,
+            category=category,
+            grade="A",
+            status="pending",
+            priority=150 - idx,
+            platform="kin" if idx == 1 else "cafe",
+            title=f"{primary_region} {signature_term} {route_term} {risk_text} ?",
+            content_preview=f"patient asks local review but includes {risk_text}",
+            breakdown={
+                "pathfinder_source_keyword": f"content-risk-seed-{idx}",
+                "pathfinder_execution_lens": "review",
+                "pathfinder_query_variant": f"axis_content_risk:specific_{idx}",
+                "pathfinder_axis_fit_score": 92,
+                "pathfinder_lens_fit_score": 90,
+                "clinic_treatment_fit_score": 91,
+                "worksite_efficiency_score": 88,
+                "reply_opportunity_score": 86,
+                "reply_opportunity_tier": "assist_now",
+                "reply_opportunity_signals": (
+                    "public_reply_surface,help_request_language,decision_or_service_task,"
+                    "local_actionable,unanswered_or_low_response"
+                ),
+                "reply_risk_penalty": 0,
+                "reply_risk_flags": "",
+                "manual_review": 0,
+            },
+        )
+    conn.commit()
+    conn.close()
+
+    report = summarize_viral_handoff_quality(
+        str(db_path),
+        source_scan_run_id=197,
+        include_seed_baseline=False,
+        min_lane_total=1,
+        sample_per_lane=1,
+    )
+
+    expected_lane = f"{category}::review"
+    reply = report["reply_workability_quality"]
+    reply_gap = next(item for item in reply["category_lens_gaps"] if item["lane"] == expected_lane)
+    assert reply_gap["unique_actionable_strict"] == 2
+    assert reply_gap["reply_workable_actionable_strict"] == 0
+    assert reply_gap["reply_risk_flagged"] == 2
+    assert "reply_risk_flags" in reply_gap["reasons"]
+
+    compliance = report["compliance_work_mode_quality"]
+    compliance_gap = next(
+        item for item in compliance["category_lens_gaps"] if item["lane"] == expected_lane
+    )
+    assert compliance_gap["auto_work_ready_actionable_strict"] == 0
+    assert compliance_gap["blocked_or_escalate_actionable_strict"] == 2
+    assert "urgent_medical" in compliance_gap["reply_risk_flags"]
+    assert "medication_advice_request" in compliance_gap["reply_risk_flags"]
+    assert "reply_workability_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert "compliance_work_mode_lens_coverage" in report["quality_bar"]["failed_advisory_gates"]
+    assert report["next_run_playbook"]["reply_workability_required"] is True
+    assert report["next_run_playbook"]["compliance_work_mode_required"] is True
+    sample = report["review_samples"]["top_strict_fit"][0]
+    assert sample["content_risk_flags"]
+    assert sample["content_risk_terms"]
 
 
 def test_compliance_work_mode_splits_auto_review_and_blocked_inventory(tmp_path):

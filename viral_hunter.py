@@ -173,6 +173,57 @@ PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX: Dict[str, str] = {
 }
 
 
+AI_TREATMENT_SUBINTENT_BUCKETS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "흉터/여드름흉터": {
+        "acne_scar": ("여드름흉터", "여드름자국", "패인흉터", "흉터치료"),
+        "regeneration_hanbang": ("새살침", "흉터새살침", "흉터 새살침", "피부재생"),
+        "pore_texture": ("모공흉터", "모공", "피부결"),
+        "pigmentation": ("색소침착", "붉은자국", "갈색자국", "착색"),
+        "surgery_wound": ("수술흉터", "상처흉터", "수두흉터", "켈로이드"),
+    },
+    "안면비대칭": {
+        "facial_asymmetry": ("안면비대칭", "얼굴비대칭", "얼굴좌우차이", "좌우비대칭"),
+        "jaw_tmj": ("턱비대칭", "턱관절", "턱", "교합"),
+        "cheekbone_head": ("광대비대칭", "광대좌우차이", "두상비대칭", "머리비대칭"),
+        "non_surgical_correction": ("비수술", "안면교정", "비대칭교정", "웨딩 안면비대칭"),
+    },
+    "피부/여드름": {
+        "acne_trouble": ("여드름", "성인여드름", "피부트러블", "트러블", "피지"),
+        "skin_condition": ("피부질환", "피부관리", "건선"),
+        "dermatitis": ("아토피", "지루성피부염", "습진", "두드러기"),
+        "redness_rosacea": ("홍조", "안면홍조", "열감"),
+        "wart_pigment": ("편평사마귀", "색소", "기미", "잡티"),
+    },
+    "다이어트": {
+        "diet_program": ("다이어트", "한방다이어트", "다이어트한약", "다이어트 한의원"),
+        "weight_loss": ("비만", "체중", "감량", "살빼", "체지방"),
+        "appetite_metabolism": ("식욕억제", "식욕", "대사", "요요"),
+        "body_part": ("뱃살", "허벅지살", "팔뚝살", "복부"),
+        "life_event": ("산후다이어트", "웨딩다이어트", "웨딩 다이어트"),
+    },
+    "체형교정": {
+        "posture_correction": ("체형교정", "자세교정", "추나"),
+        "pelvis_spine": ("골반교정", "골반틀어짐", "척추교정", "척추측만"),
+        "neck_shoulder": ("거북목", "라운드숄더", "목", "어깨"),
+        "leg_posture": ("휜다리", "오다리", "휜다리교정"),
+        "posture_pain": ("통증", "허리", "허리통증"),
+    },
+    "리프팅/탄력": {
+        "skin_aging": ("리프팅", "처짐", "노화", "얼굴라인"),
+        "thread_lifting": ("매선", "매선리프팅", "침리프팅", "한방리프팅", "동안침", "매선침"),
+        "elasticity_wrinkle": ("피부탄력", "탄력", "주름", "팔자주름"),
+        "jawline_doublechin": ("이중턱", "턱선", "얼굴라인"),
+    },
+    "교통사고": {
+        "accident_context": ("교통사고", "자동차사고", "추돌사고", "교통사고한의원", "교통사고 한의원"),
+        "insurance_admin": ("자동차보험", "자보", "보험", "합의"),
+        "neck_back_pain": ("목통증", "허리통증", "사고후통증", "통증", "두통"),
+        "hospitalization": ("입원", "교통사고입원", "자동차사고입원"),
+        "aftereffect": ("후유증", "교통사고후유증"),
+    },
+}
+
+
 def _compact_query_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").lower())
 
@@ -568,6 +619,45 @@ def _ai_target_treatment_signal_key(target: "ViralTarget") -> str:
     return f"{_ai_quota_category(target)}::{_compact_query_text(terms[0])}"
 
 
+def _ai_target_treatment_subintent_text(target: "ViralTarget") -> str:
+    parts = [_ai_target_content_text(target)]
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict):
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            parts.append(str(raw_source))
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, (list, tuple, set)):
+            parts.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            parts.append(str(raw_sources))
+    for key in ("treatment_signature_terms", "pathfinder_treatment_signature_terms"):
+        parts.extend(_ai_target_breakdown_terms(target, key))
+    return " ".join(part for part in parts if str(part or "").strip())
+
+
+def _ai_target_treatment_subintent_buckets(target: "ViralTarget") -> List[str]:
+    category = _ai_quota_category(target)
+    buckets = AI_TREATMENT_SUBINTENT_BUCKETS.get(category) or {}
+    if not buckets:
+        return []
+    compact_text = _compact_query_text(_ai_target_treatment_subintent_text(target))
+    if not compact_text:
+        return []
+    matched: List[str] = []
+    for bucket, terms in buckets.items():
+        if any(_compact_query_text(term) and _compact_query_text(term) in compact_text for term in terms):
+            matched.append(bucket)
+    return matched
+
+
+def _ai_target_treatment_subintent_key(target: "ViralTarget") -> str:
+    buckets = _ai_target_treatment_subintent_buckets(target)
+    if not buckets:
+        return ""
+    return f"{_ai_quota_category(target)}::{buckets[0]}"
+
+
 def _ai_target_treatment_signature_matched(target: "ViralTarget", compact_text: str) -> bool:
     return bool(_ai_target_treatment_signal_terms(target, compact_text))
 
@@ -845,6 +935,8 @@ def _select_category_floor_targets(
     venue_cap: Optional[int] = None,
     signal_counts: Optional[Dict[str, int]] = None,
     signal_cap: Optional[int] = None,
+    subintent_counts: Optional[Dict[str, int]] = None,
+    subintent_cap: Optional[int] = None,
 ) -> List["ViralTarget"]:
     """Pick a category floor while preserving Pathfinder execution-lens variety."""
     if quota <= 0:
@@ -867,6 +959,8 @@ def _select_category_floor_targets(
     effective_venue_cap = max(1, int(venue_cap or max(2, math.ceil(quota * 0.25))))
     signal_counts = signal_counts if signal_counts is not None else {}
     effective_signal_cap = max(1, int(signal_cap or max(2, math.ceil(quota * 0.25))))
+    subintent_counts = subintent_counts if subintent_counts is not None else {}
+    effective_subintent_cap = max(1, int(subintent_cap or max(2, math.ceil(quota * 0.25))))
     preferred_lens_order = [
         lens for lens in _normalized_ai_preferred_lenses(preferred_lenses)
         if lens != "service"
@@ -877,6 +971,7 @@ def _select_category_floor_targets(
         *,
         enforce_venue: bool = True,
         enforce_signal: bool = True,
+        enforce_subintent: bool = True,
     ) -> bool:
         url = target.url or target.id
         if url in local_urls:
@@ -888,6 +983,13 @@ def _select_category_floor_targets(
         if enforce_signal:
             signal_key = _ai_target_treatment_signal_key(target)
             if signal_key and int(signal_counts.get(signal_key, 0) or 0) >= effective_signal_cap:
+                return False
+        if enforce_subintent:
+            subintent_key = _ai_target_treatment_subintent_key(target)
+            if (
+                subintent_key
+                and int(subintent_counts.get(subintent_key, 0) or 0) >= effective_subintent_cap
+            ):
                 return False
         return True
 
@@ -901,6 +1003,9 @@ def _select_category_floor_targets(
         signal_key = _ai_target_treatment_signal_key(target)
         if signal_key:
             signal_counts[signal_key] = int(signal_counts.get(signal_key, 0) or 0) + 1
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key:
+            subintent_counts[subintent_key] = int(subintent_counts.get(subintent_key, 0) or 0) + 1
 
     for preferred_lens in preferred_lens_order:
         if len(picked) >= quota:
@@ -939,11 +1044,19 @@ def _select_category_floor_targets(
             continue
         pick(target)
 
-    if len(picked) < quota:
+    fallback_modes = (
+        {"enforce_venue": False, "enforce_signal": True, "enforce_subintent": True},
+        {"enforce_venue": False, "enforce_signal": True, "enforce_subintent": False},
+        {"enforce_venue": False, "enforce_signal": False, "enforce_subintent": True},
+        {"enforce_venue": False, "enforce_signal": False, "enforce_subintent": False},
+    )
+    for mode in fallback_modes:
+        if len(picked) >= quota:
+            break
         for target in candidates:
             if len(picked) >= quota:
                 break
-            if not can_pick(target, enforce_venue=False, enforce_signal=False):
+            if not can_pick(target, **mode):
                 continue
             pick(target)
 
@@ -981,6 +1094,8 @@ def split_ai_targets_with_category_floor(
     floor_venue_cap = max(2, math.ceil(top_n * 0.12))
     floor_signal_counts: Dict[str, int] = {}
     floor_signal_cap = max(2, math.ceil(top_n * 0.10))
+    floor_subintent_counts: Dict[str, int] = {}
+    floor_subintent_cap = max(2, math.ceil(top_n * 0.10))
 
     # First pass: when the AI budget is small, guarantee one candidate for each
     # available strategic axis before any high-volume category consumes its full
@@ -1001,6 +1116,8 @@ def split_ai_targets_with_category_floor(
                     venue_cap=floor_venue_cap,
                     signal_counts=floor_signal_counts,
                     signal_cap=floor_signal_cap,
+                    subintent_counts=floor_subintent_counts,
+                    subintent_cap=floor_subintent_cap,
                 )
             ),
             None,
@@ -1028,6 +1145,8 @@ def split_ai_targets_with_category_floor(
             venue_cap=floor_venue_cap,
             signal_counts=floor_signal_counts,
             signal_cap=floor_signal_cap,
+            subintent_counts=floor_subintent_counts,
+            subintent_cap=floor_subintent_cap,
         ):
             selected.append(target)
             selected_urls.add(target.url or target.id)
@@ -1054,6 +1173,12 @@ def split_ai_targets_with_category_floor(
         if signal_key:
             signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
     ai_signal_cap = max(3, math.ceil(top_n * 0.15))
+    subintent_counts: Dict[str, int] = {}
+    for target in selected:
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key:
+            subintent_counts[subintent_key] = subintent_counts.get(subintent_key, 0) + 1
+    ai_subintent_cap = max(3, math.ceil(top_n * 0.15))
     for target in ranked_rest:
         if len(selected) >= top_n:
             break
@@ -1066,12 +1191,17 @@ def split_ai_targets_with_category_floor(
         signal_key = _ai_target_treatment_signal_key(target)
         if signal_key and signal_counts.get(signal_key, 0) >= ai_signal_cap:
             continue
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key and subintent_counts.get(subintent_key, 0) >= ai_subintent_cap:
+            continue
         selected.append(target)
         selected_urls.add(url)
         if vk:
             venue_counts[vk] = venue_counts.get(vk, 0) + 1
         if signal_key:
             signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
+        if subintent_key:
+            subintent_counts[subintent_key] = subintent_counts.get(subintent_key, 0) + 1
     if len(selected) < top_n:
         for target in ranked_rest:
             if len(selected) >= top_n:
@@ -3482,7 +3612,8 @@ class CommentableFilter:
             or (
                 lens in {"cost", "consultation", "availability", "safety"}
                 and (
-                    query_variant.startswith("axis_")
+                    query_variant == "community_base"
+                    or query_variant.startswith("axis_")
                     or query_variant in {"patient_voice_kin", "patient_voice_question_kin"}
                 )
             )
@@ -4481,30 +4612,99 @@ class CommentableFilter:
         return re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", text or "").strip()
 
     @classmethod
+    def _kin_question_segment_body(cls, target: ViralTarget) -> str:
+        """Return likely asker-authored KIN body without appended answer snippets.
+
+        Search snippets often concatenate the original question and one or more
+        answers without the `[기존답변N]` labels added by our detail fetcher.  Local
+        gates should judge whether the question is worth sending to AI; planted
+        Q&A and competitor-answer handling remains the AI gate's job.
+        """
+        body = target.content_preview or ""
+        if (target.platform or "").lower() not in {"kin", "naver_kin"}:
+            return cls._strip_internal_labels(body)
+
+        hard_split_markers = [
+            "[기존답변",
+            "[기존 답변",
+            "기존답변",
+            "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
+            "안녕하세요, 닥톡", "안녕하세요. 닥톡",
+            "답변드립니다", "답변 드립니다",
+        ]
+        soft_split_markers = ["안녕하세요,", "안녕하세요."]
+        unlabeled_answer_markers = [
+            "질문자분",
+            "문의하신",
+            "말씀하신",
+            "가까운 한의원",
+            "가까운 병원",
+            "내원해",
+            "내원하",
+            "진료를 보는",
+            "진료를 받아",
+            "상담 한번",
+            "상담을 받아",
+            "권장해",
+            "추천드립니다",
+            "도움이 될 수",
+            "방치하면",
+            "초기에",
+            "받으시는 게 좋",
+            "성안길 쪽",
+            "규림한의원",
+            "치료를 적용",
+            "한방 다이어트는",
+            "여드름은 보통",
+            "여드름 흉터를 최소화",
+            "리프팅은 본인의",
+            "안면비대칭의 경우",
+            "추나요법이",
+        ]
+
+        raw_lc = body.lower()
+        cut_points = [raw_lc.find(marker.lower()) for marker in hard_split_markers]
+        cut_points = [idx for idx in cut_points if idx >= 0]
+
+        stripped = cls._strip_internal_labels(body)
+        stripped_lc = stripped.lower()
+        cut_points.extend(
+            idx for idx in (stripped_lc.find(marker.lower()) for marker in soft_split_markers)
+            if idx > 20
+        )
+
+        question_evidence_terms = (
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS
+        )
+        title_text = (target.title or "").lower()
+        for marker in unlabeled_answer_markers:
+            idx = stripped_lc.find(marker.lower())
+            if idx <= 24:
+                continue
+            prefix = f"{title_text} {stripped_lc[:idx]}"
+            if re.search(r"[?？]", prefix) or cls._contains_any(prefix, question_evidence_terms):
+                cut_points.append(idx)
+
+        if cut_points:
+            cut = min(cut_points)
+            if cut >= 0:
+                source = body if cut in [raw_lc.find(marker.lower()) for marker in hard_split_markers] else stripped
+                body = source[:cut]
+
+        return cls._strip_internal_labels(body)
+
+    @classmethod
     def _user_need_text(cls, target: ViralTarget) -> str:
         """Return the part most likely written by the person asking for help."""
-        body = target.content_preview or ""
         platform = (target.platform or "").lower()
         if platform in {"kin", "naver_kin"}:
-            hard_split_markers = [
-                "[기존답변",
-                "[기존 답변",
-                "기존답변",
-                "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
-                "안녕하세요, 닥톡", "안녕하세요. 닥톡",
-                "답변드립니다", "답변 드립니다",
-            ]
-            soft_split_markers = ["안녕하세요,", "안녕하세요."]
-            body_lc = body.lower()
-            cut_points = [body_lc.find(marker.lower()) for marker in hard_split_markers]
-            cut_points = [idx for idx in cut_points if idx >= 0]
-            cut_points.extend(
-                idx for idx in (body_lc.find(marker.lower()) for marker in soft_split_markers)
-                if idx > 20
-            )
-            if cut_points:
-                body = body[:min(cut_points)]
-        body = cls._strip_internal_labels(body)
+            body = cls._kin_question_segment_body(target)
+        else:
+            body = cls._strip_internal_labels(target.content_preview or "")
         return f"{target.title or ''} {body}".strip()
 
     @classmethod
@@ -5398,8 +5598,12 @@ class CommentableFilter:
         def matched(patterns: List[str]) -> List[str]:
             return [pattern for pattern in patterns if pattern and pattern.lower() in text]
 
-        clean_body = cls._strip_internal_labels(target.content_preview or "").lower()
         title_text = (target.title or "").lower()
+        if platform in {"kin", "naver_kin"}:
+            clean_body = cls._kin_question_segment_body(target).lower()
+            text = f"{title_text} {clean_body}"
+        else:
+            clean_body = cls._strip_internal_labels(target.content_preview or "").lower()
         strong_inquiry = matched(cls.STRONG_USER_INQUIRY_PATTERNS)
 
         kin_provider = matched(cls.KIN_PROVIDER_ANSWER_PATTERNS)
@@ -6215,14 +6419,17 @@ class CommentableFilter:
         # 업체/치과/광고 텍스트가 자연 질문을 오살하지 않도록 게이트는 질문 세그먼트만
         # 평가한다 — 하위 게이트 함수 다수가 target에서 텍스트를 재유도하므로 shallow
         # clone의 preview를 질문 세그먼트로 바꿔 모든 경로(레스큐/사전 게이트/정화
-        # 스크립트 포함)에서 일관되게 만든다. 라벨 없는 검색 snippet 연결(미보강)은
-        # 전체가 평가되고, planted Q&A·광고답변 판단은 AI 레이어가 담당한다.
+        # 스크립트 포함)에서 일관되게 만든다. 라벨 없는 검색 snippet 연결도 질문
+        # 세그먼트가 명확하면 로컬 게이트는 질문만 평가하고, planted Q&A·광고답변
+        # 판단은 AI 레이어가 원문을 보고 담당한다.
         preview = target.content_preview or ""
-        if (target.platform or "").lower() in {"kin", "naver_kin"} and "[기존답변" in preview:
-            question_segment = preview.split("[기존답변", 1)[0].strip()
-            import copy as _copy
-            target = _copy.copy(target)
-            target.content_preview = question_segment
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            question_segment = cls._kin_question_segment_body(target)
+            preview_without_labels = cls._strip_internal_labels(preview)
+            if question_segment and question_segment != preview_without_labels:
+                import copy as _copy
+                target = _copy.copy(target)
+                target.content_preview = question_segment
         title = (target.title or "").lower()
         body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
@@ -6474,7 +6681,17 @@ class CommentableFilter:
                 continue
 
             title_lower = (target.title or '').lower()
-            body_clean = self._strip_internal_labels(target.content_preview or '')
+            original_body_clean = self._strip_internal_labels(target.content_preview or '')
+            local_gate_text_mode = "full"
+            local_gate_preserved_answer_tail = False
+            if (target.platform or "").lower() in {"kin", "naver_kin"}:
+                body_clean = self._kin_question_segment_body(target)
+                local_gate_text_mode = "kin_question_segment"
+                local_gate_preserved_answer_tail = bool(
+                    body_clean and body_clean != original_body_clean
+                )
+            else:
+                body_clean = original_body_clean
             body_lower = body_clean.lower()
             text = f"{title_lower} {body_lower}"
             domain = self._target_domain(target)
@@ -6975,7 +7192,8 @@ class CommentableFilter:
             # 태그 정보 저장 (content_preview 앞에 추가)
             if tags:
                 tag_str = " ".join(tags)
-                target.content_preview = f"[{tag_str}] {body_clean}"
+                preview_body = original_body_clean if local_gate_preserved_answer_tail else body_clean
+                target.content_preview = f"[{tag_str}] {preview_body}"
 
             # Workability is the operational "can we comment here?" score.
             target.workability_score = max(0, min(score, 150))
@@ -7055,6 +7273,9 @@ class CommentableFilter:
                 "pathfinder_lens_adjustment": float(pathfinder_lens_adjustment),
                 "pathfinder_execution_adjustment": float(pathfinder_execution_adjustment),
                 "pathfinder_execution_signals": ",".join(pathfinder_execution_signals),
+                "local_gate_text_mode": local_gate_text_mode,
+                "local_gate_preserved_answer_tail": bool(local_gate_preserved_answer_tail),
+                "local_gate_question_segment": body_clean[:700] if local_gate_preserved_answer_tail else "",
                 "reply_risk_penalty": float(risk_penalty),
                 "manual_review": 1.0 if risk_flags else 0.0,
                 "reply_risk_flags": ",".join(risk_flags),
@@ -7243,6 +7464,16 @@ class AICommentGenerator:
 - 제목이 질문형이어도 본문 대부분이 매끄러운 병원 홍보, 후기 가장, 기존 답변 추천이면 promotion/review/other로 제외하세요.
 """
 
+    UNIFIED_AD_SAFETY_NOTE += """
+
+[USER_QUESTION_SEGMENT 우선 판정 원칙]
+- 포맷에 "사용자 질문 세그먼트:"가 있으면 그 문장을 작성자 본인의 질문/고민으로 보고 SUITABLE 판단의 1차 기준으로 사용하세요.
+- "내용:"에는 검색 스니펫이나 상세 수집 과정에서 붙은 기존 답변, 추천 댓글, 경쟁사/자기업체 언급이 함께 들어 있을 수 있습니다. 이 답변 꼬리만으로 자연스러운 질문글을 SUITABLE=false로 만들지 마세요.
+- 답변 꼬리에 병원 추천, 예약/위치/전화/상담 안내가 있으면 COMPETITOR/COMPETITOR_NAME, planted Q&A risk, advertorial evidence로 보고하되, 질문 세그먼트가 실제 환자 질문이면 SUITABLE=true를 유지할 수 있습니다.
+- 단, 질문 세그먼트 자체가 업체 칭찬/추천 유도문이거나 질문과 답변이 같은 업체를 짜맞춘 자문자답처럼 보이면 SUITABLE=false로 판정하세요.
+- KIN/naver_kin에서는 댓글 생성도 사용자 질문 세그먼트에만 답해야 하므로, 적합성 판단도 질문 세그먼트와 답변 꼬리를 분리해서 설명하세요.
+"""
+
     def __init__(self):
         self.cfg = ConfigManager()
         logger.info("✅ AI Client 초기화 완료 (centralized ai_client)")
@@ -7398,6 +7629,18 @@ class AICommentGenerator:
         body = CommentableFilter._strip_internal_labels(target.content_preview or "")
         body = re.sub(r"\s+", " ", body).strip()
         preview = body[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS] if body else "(없음)"
+        question_segment_line = ""
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            question_segment = (
+                str((target.score_breakdown or {}).get("local_gate_question_segment") or "").strip()
+                or CommentableFilter._kin_question_segment_body(target)
+            )
+            question_segment = re.sub(r"\s+", " ", question_segment).strip()
+            if question_segment and question_segment != body:
+                question_segment_line = (
+                    f"사용자 질문 세그먼트: "
+                    f"{question_segment[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS]}\n"
+                )
         breakdown = target.score_breakdown or {}
         pathfinder_lines = []
         if target.matched_keywords:
@@ -7493,6 +7736,7 @@ class AICommentGenerator:
         return (
             f"\n---\nPOST_ID: {post_id}\n플랫폼: {target.platform}\n"
             f"제목: {target.title}\n"
+            f"{question_segment_line}"
             f"내용: {preview}{pathfinder_context}\n---\n"
         )
 
@@ -7641,7 +7885,10 @@ class AICommentGenerator:
         적용해, 질문 세그먼트를 더 넉넉히(max_chars) 전달한다. `[기존답변]`이 없으면 전체
         preview를 사용하고, 세그먼트가 비정상적으로 짧으면 원본으로 폴백(fail-soft)."""
         preview = (getattr(target, "content_preview", "") or "")
-        question = preview.split("[기존답변", 1)[0].strip()
+        if (getattr(target, "platform", "") or "").lower() in {"kin", "naver_kin"}:
+            question = CommentableFilter._kin_question_segment_body(target).strip()
+        else:
+            question = preview.split("[기존답변", 1)[0].strip()
         if len(question) < 10:
             question = preview.strip()
         return question[:max_chars]
@@ -8552,6 +8799,22 @@ class ViralHunter:
         "retire_or_pause": 3,
         "retire_family_or_pause": 3,
     }
+    REDISCOVERED_RETRY_STATUSES = {
+        "filtered_out_stale_window",
+        "filtered_out",
+        "filtered_out_ai",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_unqualified_lead",
+        "filtered_out_journey_mismatch",
+    }
+    REDISCOVERED_RETRY_MAX_CANDIDATES = 12
+    REDISCOVERED_RETRY_MIN_PRIORITY = 115.0
+    REDISCOVERED_RETRY_MIN_SELECTION_SCORE = 120.0
+    REDISCOVERED_RETRY_MIN_AXIS_FIT = 80.0
+    REDISCOVERED_RETRY_MIN_LENS_FIT = 70.0
+    REDISCOVERED_RETRY_MIN_REPLY_SCORE = 75.0
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -9528,31 +9791,33 @@ class ViralHunter:
 
         feedback: Dict[str, Dict[str, Any]] = {}
         cfg = getattr(self, "cfg", None)
-        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
-        if not root_dir:
-            self._variant_quality_feedback_cache = feedback
-            return feedback
+        root_dir = str(
+            getattr(self, "_variant_feedback_reports_root", "")
+            or getattr(cfg, "root_dir", "")
+            or ""
+        ).strip()
 
         audit_payloads: List[Tuple[Dict[str, Any], str]] = []
-        reports_dir = os.path.join(root_dir, "reports")
-        try:
-            if os.path.isdir(reports_dir):
-                report_files = [
-                    os.path.join(reports_dir, name)
-                    for name in os.listdir(reports_dir)
-                    if name.startswith("viral_handoff_audit") and name.endswith(".json")
-                ]
-                report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-                for path in report_files[: max(1, int(max_audits))]:
-                    try:
-                        with open(path, "r", encoding="utf-8") as fh:
-                            payload = json.load(fh)
-                    except (OSError, json.JSONDecodeError):
-                        continue
-                    if isinstance(payload, dict):
-                        audit_payloads.append((payload, os.path.basename(path)))
-        except OSError:
-            pass
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
 
         db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
         if db_path and os.path.exists(db_path):
@@ -9707,7 +9972,7 @@ class ViralHunter:
             lane = feedback.get(cls._category_lens_variant_quality_key(category, lens, variant))
             if isinstance(lane, dict):
                 return lane
-        if variant in {"base", "community_base"}:
+        if variant == "base":
             return {}
         exact = feedback.get(variant)
         if isinstance(exact, dict):
@@ -9725,16 +9990,28 @@ class ViralHunter:
         variant: str,
     ) -> bool:
         entry = cls._variant_quality_feedback_for(feedback, category=category, lens=lens, variant=variant)
-        if not entry or entry.get("type") not in {"query_variant", "category_lens_query_variant"}:
-            return False
-        if str(entry.get("action") or "") != "retire_or_pause":
+        if not entry:
             return False
         if str(variant or "").strip() in {"", "base", "community_base"}:
+            return False
+        action = str(entry.get("action") or "")
+        entry_type = str(entry.get("type") or "")
+        if entry_type in {"query_variant", "category_lens_query_variant"}:
+            if action != "retire_or_pause":
+                return False
+        elif entry_type == "variant_family":
+            family = cls._query_variant_family(variant)
+            if family in {"base", "community_base", "patient_voice"}:
+                return False
+            if action != "retire_family_or_pause":
+                return False
+        else:
             return False
         total = cls._variant_feedback_int(entry, "total")
         survived = cls._variant_feedback_int(entry, "survived")
         strict_fit = cls._variant_feedback_int(entry, "strict_fit")
-        return total >= 20 and survived == 0 and strict_fit == 0
+        minimum_total = 60 if entry_type == "variant_family" else 20
+        return total >= minimum_total and survived == 0 and strict_fit == 0
 
     @classmethod
     def _variant_quality_budget_factor(
@@ -9750,16 +10027,26 @@ class ViralHunter:
             return 1.0
         action = str(entry.get("action") or "").strip()
         factor = cls.HANDOFF_VARIANT_QUALITY_ACTION_FACTORS.get(action, 1.0)
-        if str(variant or "").strip() in {"", "base", "community_base"}:
-            if entry.get("type") != "category_lens_query_variant":
+        variant_name = str(variant or "").strip()
+        if variant_name in {"", "base", "community_base"}:
+            entry_type = str(entry.get("type") or "")
+            if variant_name == "base" and entry_type != "category_lens_query_variant":
+                return 1.0
+            if variant_name == "community_base" and entry_type not in {
+                "category_lens_query_variant",
+                "query_variant",
+                "variant_family",
+            }:
                 return 1.0
             total = cls._variant_feedback_int(entry, "total")
             survived = cls._variant_feedback_int(entry, "survived")
             strict_fit = cls._variant_feedback_int(entry, "strict_fit")
             zero_survival_lane = total >= 80 and survived == 0 and strict_fit == 0
-            if action == "retire_or_pause":
-                return 0.0 if zero_survival_lane else 0.60
-            if action == "repair_query_shape":
+            if action in {"retire_or_pause", "retire_family_or_pause"}:
+                if variant_name == "base":
+                    return 0.0 if zero_survival_lane else 0.60
+                return 0.35 if zero_survival_lane else 0.60
+            if action in {"repair_query_shape", "repair_family_query_shape"}:
                 if zero_survival_lane and total >= 120:
                     return 0.40
                 return 0.55 if zero_survival_lane else 0.75
@@ -11361,20 +11648,122 @@ class ViralHunter:
                 break
         return loaded
 
+    BACKLOG_RESCUE_FILTERED_RETRY_STATUSES = {"filtered_out"}
+    BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES = {
+        "filtered_out_ad",
+        "filtered_out_ai",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_journey_mismatch",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_stale_window",
+        "filtered_out_unqualified_lead",
+    }
+    BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE = 55.0
+    BACKLOG_DISCARDED_RETRY_MIN_SELECTION_SCORE = 120.0
+
+    @staticmethod
+    def _rescue_prior_status(target: ViralTarget, default: str = "raw_backlog") -> str:
+        """Return the original stored status for backlog/rediscovery rescue lineage."""
+        breakdown = target.score_breakdown if isinstance(target.score_breakdown, dict) else {}
+        for key in ("backlog_rescue_prior_status", "rediscovered_prior_status"):
+            status = str(breakdown.get(key) or "").strip()
+            if status:
+                return status
+        status = str(getattr(target, "comment_status", "") or "").strip()
+        return status or default
+
+    @staticmethod
+    def _rescue_cleaned_breakdown(score_breakdown: object) -> Tuple[str, Dict[str, Any]]:
+        """Preserve stale reject lineage while letting the current gate re-evaluate."""
+        breakdown = dict(score_breakdown or {}) if isinstance(score_breakdown, dict) else {}
+        prior_reject = _audit_current_reject_reason(breakdown)
+        for key in (
+            "final_reject_reason",
+            "pathfinder_fit_reject_reason",
+            "ad_signal_score",
+            "ad_signals",
+        ):
+            breakdown.pop(key, None)
+        return prior_reject, breakdown
+
+    @classmethod
+    def _backlog_discarded_retry_candidate_ready(
+        cls,
+        target: ViralTarget,
+        prior_status: str,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Strictly revive execution-ready rows that were discarded by status."""
+        status = str(prior_status or "").strip().lower()
+        if status not in cls.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES:
+            return False, "", {}
+
+        prior_reject, cleaned_breakdown = cls._rescue_cleaned_breakdown(target.score_breakdown)
+        import copy as _copy
+
+        retry_target = _copy.copy(target)
+        retry_target.score_breakdown = cleaned_breakdown
+        if CommentableFilter.final_reject_reason(retry_target):
+            return False, prior_reject, cleaned_breakdown
+
+        if float(getattr(retry_target, "priority_score", 0.0) or 0.0) < cls.REDISCOVERED_RETRY_MIN_PRIORITY:
+            return False, prior_reject, cleaned_breakdown
+        if _ai_target_breakdown_float(retry_target, "pathfinder_axis_fit_score") < cls.REDISCOVERED_RETRY_MIN_AXIS_FIT:
+            return False, prior_reject, cleaned_breakdown
+        if _ai_target_breakdown_float(retry_target, "pathfinder_lens_fit_score") < cls.REDISCOVERED_RETRY_MIN_LENS_FIT:
+            return False, prior_reject, cleaned_breakdown
+        if (
+            _ai_target_breakdown_float(retry_target, "reply_opportunity_score")
+            < cls.BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE
+        ):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_breakdown_text(retry_target, "pathfinder_source_keyword"):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_breakdown_text(retry_target, "pathfinder_query_variant"):
+            return False, prior_reject, cleaned_breakdown
+
+        _reply_metric_present, reply_ready = _ai_target_reply_workability_ready(retry_target)
+        if not reply_ready:
+            return False, prior_reject, cleaned_breakdown
+
+        text = _ai_target_content_text(retry_target)
+        compact_text = _compact_query_text(text)
+        if not compact_text:
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_treatment_signature_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_local_intent_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_patient_surface_matched(retry_target, text, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_viral_action_route_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+
+        if _ai_target_selection_score(retry_target) < cls.BACKLOG_DISCARDED_RETRY_MIN_SELECTION_SCORE:
+            return False, prior_reject, cleaned_breakdown
+        return True, prior_reject, cleaned_breakdown
+
     def _load_backlog_rescue_targets(
         self,
         limit: int,
         exclude_urls: Optional[set] = None,
         days: int = 21,
         categories: Optional[Iterable[str]] = None,
+        source_scan_run_id: Optional[int] = None,
     ) -> List[ViralTarget]:
-        """최근 raw_backlog/needs_ai_retry 타겟을 AI 재심사 후보로 로드.
+        """최근 raw_backlog/needs_ai_retry/무사유 고점 filtered_out을 AI 재심사 후보로 로드.
 
         AI top-N 예산에 밀려 저장만 된 공급이 영구 사장되는 갭을 메운다. 점수순
         정렬 후 `split_ai_targets_with_category_floor`로 카테고리 균형을 강제해
         피부/교통사고 물량이 레스큐 예산까지 독식하지 못하게 한다. 재심사 결과는
         AI 적합 → pending 승격, 부적합 → filtered_out_ai 영속화로 끝나므로 같은
-        행이 매 런 재레스큐되는 루프는 생기지 않는다.
+        행이 매 런 재레스큐되는 루프는 생기지 않는다. 기존 URL은 discovered_at이
+        오래되어도 현재 scan에서 last_scanned_at/source_scan_run_id가 갱신될 수
+        있으므로 최신성은 last_scanned_at을 우선한다.
+
+        무사유 filtered_out은 Pathfinder/로컬 필터가 이미 높은 축·렌즈·댓글기회
+        점수를 준 경우만 `_rediscovered_retry_candidate_ready`로 한 번 더 검증해
+        포함한다. 명시적인 광고/지역/오프도메인 탈락은 계속 제외한다.
 
         ``categories`` 를 주면 해당 진료축으로 한정해 로드한다(시그니처 백로그 레인).
         category-blind 정렬에서는 피부/다이어트 물량에 밀려 굶는 희소 축을, 확장
@@ -11387,12 +11776,28 @@ class ViralHunter:
 
         cats = [str(c).strip() for c in (categories or ()) if str(c).strip()]
         cat_clause = ""
-        params: list = [f"-{int(days)} days"]
+        scan_clause = ""
+        discarded_retry_statuses = sorted(self.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES)
+        params: list = [
+            float(self.REDISCOVERED_RETRY_MIN_PRIORITY),
+            float(self.REDISCOVERED_RETRY_MIN_AXIS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_LENS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_REPLY_SCORE),
+            *discarded_retry_statuses,
+            float(self.REDISCOVERED_RETRY_MIN_PRIORITY),
+            float(self.REDISCOVERED_RETRY_MIN_AXIS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_LENS_FIT),
+            float(self.BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE),
+            f"-{int(days)} days",
+        ]
         if cats:
-            cat_clause = " AND COALESCE(matched_keyword_category, '') IN (%s)" % (
+            cat_clause = " AND COALESCE(NULLIF(matched_keyword_category, ''), NULLIF(category, ''), '') IN (%s)" % (
                 ",".join("?" * len(cats))
             )
             params.extend(cats)
+        if source_scan_run_id is not None:
+            scan_clause = " AND COALESCE(source_scan_run_id, 0) = ?"
+            params.append(int(source_scan_run_id or 0))
         params.append(max(int(limit) * 6, 200))
 
         rows = []
@@ -11403,9 +11808,74 @@ class ViralHunter:
                 f"""
                 SELECT *
                 FROM viral_targets
-                WHERE COALESCE(comment_status, 'pending') IN ('raw_backlog', 'needs_ai_retry')
-                  AND COALESCE(is_commentable, 1) = 1
-                  AND REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= datetime('now', ?){cat_clause}
+                WHERE (
+                    (
+                        COALESCE(comment_status, 'pending') IN ('raw_backlog', 'needs_ai_retry')
+                        AND COALESCE(is_commentable, 1) = 1
+                    )
+                    OR (
+                        COALESCE(comment_status, '') = 'filtered_out'
+                        AND COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.final_reject_reason')
+                            END,
+                            ''
+                        ) = ''
+                        AND COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_fit_reject_reason')
+                            END,
+                            ''
+                        ) = ''
+                        AND CAST(COALESCE(priority_score, 0) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_axis_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_lens_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.reply_opportunity_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                    )
+                    OR (
+                        COALESCE(comment_status, '') IN ({",".join("?" for _ in discarded_retry_statuses)})
+                        AND CAST(COALESCE(priority_score, 0) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_axis_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_lens_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.reply_opportunity_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                    )
+                )
+                  AND REPLACE(
+                        COALESCE(NULLIF(last_scanned_at, ''), NULLIF(discovered_at, ''), ''),
+                        'T',
+                        ' '
+                      ) >= datetime('now', ?){cat_clause}
+                  {scan_clause}
                 ORDER BY COALESCE(priority_score, 0) DESC
                 LIMIT ?
                 """,
@@ -11423,6 +11893,30 @@ class ViralHunter:
             target = self._viral_target_from_db_row(row)
             if not target.url:
                 continue
+            prior_status = str(row["comment_status"] or "").strip().lower()
+            if prior_status in self.BACKLOG_RESCUE_FILTERED_RETRY_STATUSES:
+                if not self._rediscovered_retry_candidate_ready(target, prior_status):
+                    continue
+                target.comment_status = "needs_ai_retry"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "backlog_filtered_retry_lane": True,
+                    "backlog_rescue_prior_status": prior_status,
+                }
+            elif prior_status in self.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES:
+                ready, prior_reject, cleaned_breakdown = self._backlog_discarded_retry_candidate_ready(
+                    target,
+                    prior_status,
+                )
+                if not ready:
+                    continue
+                target.comment_status = "needs_ai_retry"
+                target.score_breakdown = {
+                    **cleaned_breakdown,
+                    "backlog_discarded_retry_lane": True,
+                    "backlog_rescue_prior_status": prior_status,
+                    "backlog_rescue_prior_reject_reason": prior_reject,
+                }
             key = canonicalize_viral_url(target.url) or target.url
             if key in excluded or key in seen_keys:
                 continue
@@ -11779,6 +12273,140 @@ class ViralHunter:
                     urls.append(target.url)
         return urls
 
+    def _load_existing_viral_statuses_by_urls(self, urls: List[str]) -> Dict[str, str]:
+        """Return stored workflow status for input URLs matched by raw or canonical URL."""
+        compact_urls = [u for u in dict.fromkeys(urls) if u]
+        if not compact_urls:
+            return {}
+
+        url_to_canonical = {
+            url: canonicalize_viral_url(url)
+            for url in compact_urls
+        }
+        found_by_key: Dict[str, str] = {}
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if not db_path:
+            return {}
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                for start in range(0, len(compact_urls), 500):
+                    raw_chunk = compact_urls[start:start + 500]
+                    canonical_chunk = [
+                        value
+                        for value in dict.fromkeys(url_to_canonical.get(url) for url in raw_chunk)
+                        if value
+                    ]
+                    where_parts: List[str] = []
+                    params: List[str] = []
+                    if raw_chunk:
+                        where_parts.append(f"url IN ({','.join('?' for _ in raw_chunk)})")
+                        params.extend(raw_chunk)
+                    if canonical_chunk:
+                        where_parts.append(f"canonical_url IN ({','.join('?' for _ in canonical_chunk)})")
+                        params.extend(canonical_chunk)
+                    if not where_parts:
+                        continue
+                    rows = cur.execute(
+                        f"""
+                        SELECT url, canonical_url, comment_status
+                        FROM viral_targets
+                        WHERE {' OR '.join(where_parts)}
+                        """,
+                        params,
+                    ).fetchall()
+                    for row in rows:
+                        status = str(row["comment_status"] or "pending").strip() or "pending"
+                        raw_url = str(row["url"] or "").strip()
+                        canonical_url = str(row["canonical_url"] or "").strip()
+                        if raw_url:
+                            found_by_key[raw_url] = status
+                        if canonical_url:
+                            found_by_key[canonical_url] = status
+        except Exception as e:
+            logger.warning(f"Rediscovered status lookup failed: {e}")
+            return {}
+
+        return {
+            url: found_by_key.get(url) or found_by_key.get(url_to_canonical.get(url, "")) or ""
+            for url in compact_urls
+        }
+
+    @classmethod
+    def _rediscovered_retry_candidate_ready(cls, target: ViralTarget, prior_status: str) -> bool:
+        """Only revive high-confidence stale-window rediscoveries for another AI pass."""
+        status = str(prior_status or "").strip().lower()
+        if status not in cls.REDISCOVERED_RETRY_STATUSES:
+            return False
+
+        breakdown = target.score_breakdown or {}
+        if not isinstance(breakdown, dict):
+            breakdown = {}
+        prior_reject = str(
+            breakdown.get("final_reject_reason")
+            or breakdown.get("pathfinder_fit_reject_reason")
+            or ""
+        ).strip()
+        if prior_reject and prior_reject != "stale_window":
+            return False
+        if CommentableFilter.final_reject_reason(target):
+            return False
+        timing_tier = _ai_target_breakdown_text(target, "timing_window_tier").lower()
+        timing_signals = set(_ai_target_breakdown_terms(target, "timing_window_signals"))
+        timing_score_known = "timing_window_score" in breakdown
+        timing_score = _ai_target_breakdown_float(target, "timing_window_score")
+        if breakdown.get("timing_regated_after_date_enrichment") and (
+            timing_tier == "stale"
+            or (
+                timing_score_known
+                and timing_score < CommentableFilter.MIN_TIMING_WINDOW_SCORE
+            )
+        ):
+            return False
+        if "post_age_exceeds_ttl" in timing_signals:
+            return False
+
+        priority = float(getattr(target, "priority_score", 0.0) or 0.0)
+        if priority < cls.REDISCOVERED_RETRY_MIN_PRIORITY:
+            return False
+        if _ai_target_breakdown_float(target, "pathfinder_axis_fit_score") < cls.REDISCOVERED_RETRY_MIN_AXIS_FIT:
+            return False
+        if _ai_target_breakdown_float(target, "pathfinder_lens_fit_score") < cls.REDISCOVERED_RETRY_MIN_LENS_FIT:
+            return False
+        if _ai_target_breakdown_float(target, "reply_opportunity_score") < cls.REDISCOVERED_RETRY_MIN_REPLY_SCORE:
+            return False
+        if _ai_target_breakdown_terms(target, "reply_risk_flags"):
+            return False
+        if _ai_target_breakdown_float(target, "manual_review") > 0:
+            return False
+        if _ai_target_breakdown_float(target, "reply_risk_penalty") <= -40.0:
+            return False
+        return _ai_target_selection_score(target) >= cls.REDISCOVERED_RETRY_MIN_SELECTION_SCORE
+
+    def _select_rediscovered_retry_targets(self, duplicate_targets: List[ViralTarget]) -> List[ViralTarget]:
+        if not duplicate_targets:
+            return []
+
+        statuses = self._load_existing_viral_statuses_by_urls([t.url for t in duplicate_targets if t.url])
+        candidates: List[ViralTarget] = []
+        for target in duplicate_targets:
+            prior_status = statuses.get(target.url, "")
+            if not self._rediscovered_retry_candidate_ready(target, prior_status):
+                continue
+            target.comment_status = "pending"
+            target.score_breakdown = {
+                **(target.score_breakdown or {}),
+                "rediscovered_retry_lane": True,
+                "rediscovered_prior_status": prior_status,
+            }
+            candidates.append(target)
+
+        candidates.sort(key=_ai_target_sort_key, reverse=True)
+        return candidates[: self.REDISCOVERED_RETRY_MAX_CANDIDATES]
+
     def _exclude_existing_targets_before_ai(
         self,
         targets: List[ViralTarget],
@@ -11817,6 +12445,13 @@ class ViralHunter:
 
         duplicate_targets = [t for t in targets if t.url in existing_urls]
         fresh_targets = [t for t in targets if t.url not in existing_urls]
+        retry_targets = self._select_rediscovered_retry_targets(duplicate_targets)
+        if retry_targets:
+            fresh_targets = fresh_targets + retry_targets
+            print(
+                f"   Rediscovered retry lane: {len(retry_targets)} stale-window "
+                f"targets re-entered AI candidates"
+            )
 
         refreshed = 0
         try:
@@ -12600,11 +13235,20 @@ class ViralHunter:
                     if t.url
                 }
                 rescue_quota = min(int(rescue_backlog), int(top_n_for_ai))
-                rescue_candidates = self._load_backlog_rescue_targets(rescue_quota, run_urls)
+                rescue_candidates = self._load_backlog_rescue_targets(
+                    rescue_quota,
+                    run_urls,
+                    source_scan_run_id=source_scan_run_id,
+                )
                 rescue_gate_rejected = 0
                 rescue_kept: List[ViralTarget] = []
                 for t in rescue_candidates:
-                    prior_status = t.comment_status or "raw_backlog"
+                    prior_status = self._rescue_prior_status(t)
+                    breakdown = t.score_breakdown if isinstance(t.score_breakdown, dict) else {}
+                    t.score_breakdown = {
+                        **breakdown,
+                        "rescued_from": prior_status,
+                    }
                     reject_reason = CommentableFilter.apply_final_reject(t)
                     if reject_reason:
                         # 게이트가 진화했으므로 과거 backlog도 최신 게이트로 재탈락 영속화
@@ -12614,10 +13258,6 @@ class ViralHunter:
                         except Exception as e:
                             logger.warning(f"레스큐 게이트 제외 상태 저장 실패: {e}")
                         continue
-                    t.score_breakdown = {
-                        **(t.score_breakdown or {}),
-                        "rescued_from": prior_status,
-                    }
                     # AI 적합 판정 시 upsert CASE가 raw_backlog → pending 승격을 처리한다.
                     t.comment_status = "pending"
                     rescue_kept.append(t)
@@ -12651,11 +13291,18 @@ class ViralHunter:
                     exclude,
                     days=SIGNATURE_BACKLOG_RESCUE_DAYS,
                     categories=SIGNATURE_BACKLOG_AXES,
+                    source_scan_run_id=source_scan_run_id,
                 )
                 sig_gate_rejected = 0
                 sig_kept: List[ViralTarget] = []
                 for t in sig_candidates:
-                    prior_status = t.comment_status or "raw_backlog"
+                    prior_status = self._rescue_prior_status(t)
+                    breakdown = t.score_breakdown if isinstance(t.score_breakdown, dict) else {}
+                    t.score_breakdown = {
+                        **breakdown,
+                        "rescued_from": prior_status,
+                        "signature_backlog_lane": True,
+                    }
                     reject_reason = CommentableFilter.apply_final_reject(t)
                     if reject_reason:
                         sig_gate_rejected += 1
@@ -12664,11 +13311,6 @@ class ViralHunter:
                         except Exception as e:
                             logger.warning(f"시그니처 레스큐 게이트 제외 상태 저장 실패: {e}")
                         continue
-                    t.score_breakdown = {
-                        **(t.score_breakdown or {}),
-                        "rescued_from": prior_status,
-                        "signature_backlog_lane": True,
-                    }
                     t.comment_status = "pending"
                     sig_kept.append(t)
                 if sig_kept:

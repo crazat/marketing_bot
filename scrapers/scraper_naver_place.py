@@ -107,7 +107,8 @@ class BrowserPool:
         })
 
         driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
+        driver.set_script_timeout(15)
+        driver.implicitly_wait(5)
 
         return driver
 
@@ -268,7 +269,13 @@ def _scan_single_keyword(
 
                     if scroll_container:
                         no_change_count = 0
+                        scroll_deadline = time.monotonic() + 35
                         for scroll_attempt in range(50):
+                            if time.monotonic() > scroll_deadline:
+                                logger.warning(
+                                    f"      [{device_type}] Scroll deadline reached for {keyword}"
+                                )
+                                break
                             current_height = driver.execute_script("return arguments[0].scrollHeight", scroll_container)
                             driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop + 800;", scroll_container)
                             time.sleep(0.5)

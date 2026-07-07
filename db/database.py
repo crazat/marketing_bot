@@ -3370,8 +3370,36 @@ class DatabaseManager:
                         WHEN COALESCE(viral_targets.comment_status, 'pending') IN ('needs_ai_retry', 'raw_backlog')
                              AND COALESCE(excluded.comment_status, 'pending') = 'pending'
                             THEN 'pending'
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') IN (
+                                'filtered_out_stale_window',
+                                'filtered_out',
+                                'filtered_out_ai',
+                                'filtered_out_low_intent',
+                                'filtered_out_low_opportunity',
+                                'filtered_out_clinic_mismatch',
+                                'filtered_out_unqualified_lead',
+                                'filtered_out_journey_mismatch'
+                             )
+                             AND COALESCE(excluded.comment_status, 'pending') = 'pending'
+                             AND COALESCE(excluded.ai_reviewed, 0) = 1
+                            THEN 'pending'
                         WHEN COALESCE(excluded.comment_status, 'pending') != 'pending'
-                             AND COALESCE(viral_targets.comment_status, 'pending') IN ('pending', 'raw_backlog')
+                             AND (
+                                COALESCE(viral_targets.comment_status, 'pending') IN ('pending', 'raw_backlog')
+                                OR (
+                                    COALESCE(viral_targets.comment_status, 'pending') IN (
+                                        'filtered_out_stale_window',
+                                        'filtered_out',
+                                        'filtered_out_ai',
+                                        'filtered_out_low_intent',
+                                        'filtered_out_low_opportunity',
+                                        'filtered_out_clinic_mismatch',
+                                        'filtered_out_unqualified_lead',
+                                        'filtered_out_journey_mismatch'
+                                    )
+                                    AND COALESCE(excluded.ai_reviewed, 0) = 1
+                                )
+                             )
                             THEN excluded.comment_status
                         ELSE viral_targets.comment_status
                     END,
