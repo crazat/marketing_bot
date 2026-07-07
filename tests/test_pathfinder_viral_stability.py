@@ -4152,6 +4152,54 @@ def test_viral_hunter_consumes_latest_handoff_playbook_boosts_when_limited(tmp_p
     assert hunter._handoff_playbook_auto_boosts["lenses"] == ["cost", "review"]
 
 
+def test_viral_hunter_consumes_handoff_playbook_rescue_budget_by_default(tmp_path):
+    from types import SimpleNamespace
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "next_run_playbook": {
+                "reanalysis_rescue_required": True,
+                "reanalysis_rescue_budget": 180,
+                "discarded_execution_rescue_required": True,
+                "discarded_execution_rescue_budget": 55,
+            }
+        },
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.cfg = SimpleNamespace(root_dir=str(tmp_path))
+    hunter.db = SimpleNamespace(db_path=str(tmp_path / "missing.db"))
+
+    assert hunter._effective_rescue_backlog(None) == 180
+    assert hunter._handoff_playbook_auto_rescue["applied"] is True
+    assert hunter._handoff_playbook_auto_rescue["effective"] == 180
+    assert hunter._handoff_playbook_auto_rescue["sources"] == ["viral_handoff_audit_test.json"]
+
+
+def test_viral_hunter_respects_explicit_rescue_backlog_over_playbook(tmp_path):
+    from types import SimpleNamespace
+
+    _write_variant_feedback_report(
+        tmp_path,
+        {
+            "next_run_playbook": {
+                "reanalysis_rescue_required": True,
+                "reanalysis_rescue_budget": 180,
+            }
+        },
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.cfg = SimpleNamespace(root_dir=str(tmp_path))
+    hunter.db = SimpleNamespace(db_path=str(tmp_path / "missing.db"))
+
+    assert hunter._effective_rescue_backlog(30) == 30
+    assert hunter._handoff_playbook_auto_rescue["applied"] is False
+    assert hunter._handoff_playbook_auto_rescue["configured"] == 30
+    assert hunter._handoff_playbook_auto_rescue["effective"] == 30
+
+
 def test_viral_hunter_consumes_handoff_quality_gap_lanes_when_limited(tmp_path):
     class CapturingSearcher:
         def __init__(self):

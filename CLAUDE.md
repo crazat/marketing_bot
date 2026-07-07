@@ -761,3 +761,27 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m py_compile core_services\viral_seed_builder.py tests\test_pathfinder_viral_stability.py`
   - `pytest tests/test_pathfinder_viral_stability.py::test_viral_seed_builder_diversifies_treatment_subintent_inside_category tests/test_pathfinder_viral_stability.py::test_profile_gap_seed_candidates_interleave_treatment_subintents -q` -> `2 passed`.
   - `pytest -q` -> `675 passed, 1 skipped`.
+
+## 2026-07-07 Memory: Pathfinder #102 + Viral Hunter rescue playbook auto-budget
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `102`: completed, target `500`, total keywords `9107`, S `80`, A `1866`, S/A total `1946` (500+ satisfied).
+  - Viral Hunter scan from source scan `102`: audit `31`, keyword_count `90`, discovered `3021`, fresh_discovered `402`, pending/actionable `10`, open_pending `8`, fresh_pending `2`, ad_filtered `794`, rediscovered `2619`.
+- Handoff audit:
+  - Report: `reports/viral_handoff_audit_scan102_2026_07_07_16_23_28.json`.
+  - Quality tier `critical`, score `28.77`.
+  - Required failures: `metric_coverage`, `overall_survival`, `overall_strict_fit`, `focus_strict_coverage`.
+  - Overall survival `0.46%`, actionable `0.33%`, strict-fit `0.40%`.
+  - Rescue backlog flagged: `reanalysis_rescue_required=True`, `discarded_execution_rescue_required=True`, discarded candidates `80` (`auto_requeue=46`, `manual_review=34`).
+- Improvement applied:
+  - `viral_hunter.py`: latest handoff-audit `next_run_playbook` rescue budgets are now consumed automatically by default.
+  - `--rescue-backlog` explicit CLI value still wins; when omitted, Viral Hunter uses `max(DEFAULT_RESCUE_BACKLOG=60, latest_playbook_budget)` capped by `MAX_AUTO_RESCUE_BACKLOG=300`.
+  - CLI `--rescue-backlog` default changed from `60` to `None` so the code can distinguish omitted vs explicit.
+  - Current scan102 playbook recommends `reanalysis_rescue_budget=60` and `discarded_execution_rescue_budget=55`, so default behavior already satisfies the recommendation; future higher playbook budgets will auto-apply.
+  - DB probe for scan102 selected `60` rescue candidates for the next run (`filtered_out_ai=21`, `filtered_out_ad=19`, `filtered_out_stale_window=13`, `filtered_out=5`, `filtered_out_journey_mismatch=1`, `raw_backlog=1`).
+- Verification completed:
+  - `python -m py_compile viral_hunter.py`.
+  - `pytest -q tests\test_pathfinder_viral_stability.py -k "handoff_playbook or backlog_rescue or rescue_prior_status"` -> `7 passed`.
+  - `pytest -q tests\test_viral_handoff_audit.py -k "reanalysis_rescue or discarded_execution_rescue"` -> `1 passed`.
+  - `git diff --check -- viral_hunter.py tests\test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).

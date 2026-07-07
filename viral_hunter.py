@@ -8815,6 +8815,8 @@ class ViralHunter:
     REDISCOVERED_RETRY_MIN_AXIS_FIT = 80.0
     REDISCOVERED_RETRY_MIN_LENS_FIT = 70.0
     REDISCOVERED_RETRY_MIN_REPLY_SCORE = 75.0
+    DEFAULT_RESCUE_BACKLOG = 60
+    MAX_AUTO_RESCUE_BACKLOG = 300
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -9307,6 +9309,129 @@ class ViralHunter:
             merge(explicit_lenses, auto_lenses),
             merge(explicit_category_lenses, auto_category_lenses),
         )
+
+    def _load_handoff_playbook_rescue_controls(self, max_audits: int = 6) -> Dict[str, Any]:
+        """Load latest handoff-audit rescue budget recommendations."""
+        cached = getattr(self, "_handoff_playbook_rescue_cache", None)
+        if cached is not None:
+            return cached
+
+        controls: Dict[str, Any] = {
+            "rescue_backlog": 0,
+            "sources": [],
+            "reanalysis_required": False,
+            "discarded_execution_required": False,
+        }
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def positive_int(value: Any) -> int:
+            try:
+                return max(0, int(float(value or 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        for payload, source_name in audit_payloads:
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if not isinstance(playbook, dict):
+                continue
+
+            reanalysis_required = bool(playbook.get("reanalysis_rescue_required"))
+            discarded_required = bool(playbook.get("discarded_execution_rescue_required"))
+            budgets: List[int] = []
+            if reanalysis_required:
+                budgets.append(positive_int(playbook.get("reanalysis_rescue_budget")))
+            if discarded_required:
+                budgets.append(positive_int(playbook.get("discarded_execution_rescue_budget")))
+
+            budget = max(budgets or [0])
+            if budget <= 0:
+                continue
+
+            controls = {
+                "rescue_backlog": min(int(self.MAX_AUTO_RESCUE_BACKLOG), budget),
+                "sources": [source_name],
+                "reanalysis_required": reanalysis_required,
+                "discarded_execution_required": discarded_required,
+            }
+            break
+
+        self._handoff_playbook_rescue_cache = controls
+        return controls
+
+    def _effective_rescue_backlog(self, configured: Optional[int]) -> int:
+        """Resolve explicit CLI value vs. automatic handoff-audit rescue budget."""
+        controls = self._load_handoff_playbook_rescue_controls()
+        suggested = int(controls.get("rescue_backlog") or 0)
+
+        if configured is not None:
+            try:
+                explicit = max(0, int(configured))
+            except (TypeError, ValueError):
+                explicit = int(self.DEFAULT_RESCUE_BACKLOG)
+            self._handoff_playbook_auto_rescue = {
+                **controls,
+                "configured": explicit,
+                "effective": explicit,
+                "applied": False,
+            }
+            return explicit
+
+        effective = max(int(self.DEFAULT_RESCUE_BACKLOG), suggested)
+        self._handoff_playbook_auto_rescue = {
+            **controls,
+            "configured": None,
+            "effective": effective,
+            "applied": suggested > int(self.DEFAULT_RESCUE_BACKLOG),
+        }
+        return effective
 
     @staticmethod
     def _checkpoint_boost_categories(categories: Optional[Iterable[str]]) -> List[str]:
@@ -12879,7 +13004,7 @@ class ViralHunter:
              boost_categories: Optional[Iterable[str]] = None,
              boost_lenses: Optional[Iterable[str]] = None,
              boost_category_lenses: Optional[Iterable[str]] = None,
-             rescue_backlog: int = 60,
+             rescue_backlog: Optional[int] = None,
              rescue_signature: int = 40,
              enrich_bodies: int = 120,
              expire_pending: bool = True) -> List[ViralTarget]:
@@ -12927,7 +13052,15 @@ class ViralHunter:
         self._platform_surface_feedback_cache = None
         self._platform_surface_budget_scale_counts = {}
         self._handoff_playbook_boost_cache = None
+        self._handoff_playbook_rescue_cache = None
         self._handoff_playbook_auto_boosts = {"categories": [], "lenses": [], "category_lenses": [], "sources": []}
+        self._handoff_playbook_auto_rescue = {
+            "rescue_backlog": 0,
+            "sources": [],
+            "configured": None,
+            "effective": int(self.DEFAULT_RESCUE_BACKLOG),
+            "applied": False,
+        }
 
         if keywords is None:
             keywords = self._load_keywords(
@@ -12945,6 +13078,7 @@ class ViralHunter:
                 boost_category_lenses=boost_category_lenses,
             )
         )
+        rescue_backlog = self._effective_rescue_backlog(rescue_backlog)
         keywords = self._order_keywords_for_handoff_coverage(
             keywords,
             boost_categories=effective_boost_categories,
@@ -13778,7 +13912,7 @@ def main():
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
     parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
-    parser.add_argument('--rescue-backlog', type=int, default=60,
+    parser.add_argument('--rescue-backlog', type=int, default=None,
                         help='최근 raw_backlog/needs_ai_retry 타겟을 추가로 AI 재심사할 최대 수 (0=비활성, 기본 60)')
     parser.add_argument('--rescue-signature', type=int, default=40,
                         help='시그니처 축(흉터/안면비대칭) raw_backlog를 확장 윈도우(180일)+카테고리 우선으로 재심사할 최대 수 (0=비활성, 기본 40)')
