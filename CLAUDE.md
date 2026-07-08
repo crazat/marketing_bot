@@ -24,6 +24,7 @@
 - `competitors.json` 단일 소스 — 로랑/데이릴 포함 (직접 수정 시 prompts.json과 동기화 필요)
 - 의미기반 발견은 `.env MARKETING_BOT_SEMANTIC_DISCOVERY=1`로 **프로덕션 ON**(2026-06-21, 실측 net-positive). 테스트는 `tests/conftest.py` autouse fixture로 격리(기본-off 계약 검증) — 이 격리 제거 금지. 끄려면 `.env` line만 삭제
 - `SIGNATURE_BACKLOG_AXES`(viral_hunter)는 `routers/viral.py SIGNATURE_ROUTING_AXES`와 **동일 집합 유지**(수정 시 양쪽 동기화). 시그니처 백로그 레인(`--rescue-signature`)은 raw_backlog만 대상(이미 게이트 통과분) — 자동 승격 없음
+- Viral Hunter post-enrichment 보충(`_refill_ai_targets_from_discarded_after_enrichment`)은 AI 예산 고갈 방지용이지 필터 완화가 아니다. 기존 final gate와 timing regate를 유지하고, enrichment에서 탈락한 원래 URL과 `filtered_out_stale_window`/게시일 확인 만료 글을 다시 AI 큐로 올리면 안 된다. (2026-07-08 scan 103)
 - Q&A 적재(`scripts/seed_signature_qa.py`)는 DML이므로 **반드시 마이그레이션 스크립트로만**(백업+멱등). 적재 후 `QASearchEngine.index_all()` RAG 재인덱스 필수(안 하면 드래프터가 못 찾음)
 - `viral_scan_audits.pending_count`/`summary.pending`은 과거 posted/generated/manual_review 포함 **actionable 누계**임 — 실제 열린 대기열은 `open_pending`, 신규 수율은 `fresh_pending`으로 판단. Pathfinder zero-yield/blind-spot 판정은 `fresh_discovered >= 25 && fresh_pending == 0` 기준 유지
 - `reply_risk_flags` 또는 `score_breakdown.manual_review`가 있는 Viral target은 자동 `pending`에 남기면 안 된다. AI가 `SUITABLE=true`를 반환해도 `comment_status='manual_review'`로 격리한다. (2026-07-01 scan 95)
@@ -784,4 +785,27 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `python -m py_compile viral_hunter.py`.
   - `pytest -q tests\test_pathfinder_viral_stability.py -k "handoff_playbook or backlog_rescue or rescue_prior_status"` -> `7 passed`.
   - `pytest -q tests\test_viral_handoff_audit.py -k "reanalysis_rescue or discarded_execution_rescue"` -> `1 passed`.
+  - `git diff --check -- viral_hunter.py tests\test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).
+
+## 2026-07-08 Memory: Pathfinder #103 + Viral Hunter post-enrichment rescue refill
+
+- Branch: `codex/pathfinder-discovery-audit`.
+- Completed required sequential run:
+  - Pathfinder Legion scan_run `103`: completed, target `500`, total keywords `9306`, new `260`, updated `9046`, S `82`, A `2001`, S/A total `2083` (500+ satisfied), execution `10541s`.
+  - Viral Hunter from source scan `103`: discovered audit total `2276`, fresh `132`, actionable `17`, open_pending `8`, fresh_pending `3`, AI-filtered `200`, ad rate `21%`.
+  - Runtime bottleneck: filtered `1428 -> 688`, duplicate existing `659` removed, AI candidates `679 -> 32`; backlog rescue added `60`, then enrichment fetched `91`, enriched `77`, restored dates `50`, regate rejected `10`, timing expired `68`, so AI candidates collapsed `92 -> 14`.
+- Handoff audit:
+  - Report: `reports/viral_handoff_audit_scan103_2026_07_08_13_07_46.json`.
+  - Overall survival `0.79%`, actionable `0.75%`, strict-fit `0.48%`, actionable-strict `0.44%`, loss `99.21%`.
+  - Work queue readiness stayed `0/7` categories and `0/42` category-lenses ready.
+  - Missing priority axes after scan: `흉터/여드름흉터`, `안면비대칭`, `리프팅/탄력`.
+- Improvement applied:
+  - `viral_hunter.py`: added `_refill_ai_targets_from_discarded_after_enrichment()` and wired it after normal enrichment/rest-target refill.
+  - Refill first tries signature axes with `SIGNATURE_BACKLOG_RESCUE_DAYS` and `SIGNATURE_BACKLOG_AXES`, then general backlog/discarded retry candidates scoped to `source_scan_run_id`.
+  - This is not a gate relaxation: every candidate still passes `CommentableFilter.apply_final_reject()`, known post dates run `_timing_regate_keep()`, stale-window prior rows must pass timing again, and pre-enrichment losers are excluded to prevent loops.
+  - Read-only DB projection for scan `103` showed refillable strict candidates exist: signature `7` (`안면비대칭 1`, `흉터/여드름흉터 6`) and general `62` across core categories.
+- Verification completed:
+  - `python -m py_compile viral_hunter.py`.
+  - `pytest tests\test_pathfinder_viral_stability.py -k "refills_ai_budget_after_enrichment_reject or refills_ai_budget_from_discarded_after_enrichment or discarded_refill_does_not_requeue_known_stale_posts or backlog_rescue or rescues_execution_ready_discarded_statuses or signature_backlog_rescue"` -> `8 passed`.
+  - `pytest tests\test_pathfinder_viral_stability.py -k "enriches_and_regates_ai_targets or enrichment_regate_expires_stale_dated_post or refills_ai_budget"` -> `4 passed`.
   - `git diff --check -- viral_hunter.py tests\test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).

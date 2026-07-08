@@ -14465,6 +14465,172 @@ def test_viral_hunter_refills_ai_budget_after_enrichment_reject(monkeypatch):
     assert hunter.db.saved and hunter.db.saved[0]["url"] == rejected_ai.url
 
 
+def test_viral_hunter_refills_ai_budget_from_discarded_after_enrichment(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    signature_category = viral_hunter.SIGNATURE_BACKLOG_AXES[0]
+
+    def mk(url, category, score=130):
+        return ViralTarget(
+            platform="kin",
+            url=url,
+            title="청주 치료 질문",
+            content_preview="청주에서 치료 받아본 분 추천 부탁드려요.",
+            matched_keywords=["청주 치료 추천"],
+            category=category,
+            matched_keyword_category=category,
+            priority_score=score,
+            score_breakdown={"backlog_rescue_prior_status": "filtered_out_ad"},
+        )
+
+    existing = mk("https://kin.naver.com/qna/detail.naver?docId=existing", "다이어트", 160)
+    pre_enrich_rejected = mk(
+        "https://kin.naver.com/qna/detail.naver?docId=pre-enrich-rejected",
+        signature_category,
+        150,
+    )
+    signature_reject = mk(
+        "https://kin.naver.com/qna/detail.naver?docId=signature-reject",
+        signature_category,
+        145,
+    )
+    signature_keep = mk(
+        "https://kin.naver.com/qna/detail.naver?docId=signature-keep",
+        signature_category,
+        140,
+    )
+    general_keep = mk(
+        "https://kin.naver.com/qna/detail.naver?docId=general-keep",
+        "통증/디스크",
+        135,
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = FakeDB()
+    load_calls = []
+
+    def fake_load(limit, exclude_urls=None, days=21, categories=None, source_scan_run_id=None):
+        load_calls.append(
+            {
+                "limit": limit,
+                "exclude_urls": set(exclude_urls or set()),
+                "days": days,
+                "categories": tuple(categories or ()),
+                "source_scan_run_id": source_scan_run_id,
+            }
+        )
+        if categories:
+            # Even if the loader returns a pre-enrichment loser, the late refill must
+            # skip it through exclude_urls so stale/ad-revealed rows do not loop.
+            return [pre_enrich_rejected, signature_reject, signature_keep]
+        return [general_keep]
+
+    hunter._load_backlog_rescue_targets = fake_load
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "apply_final_reject",
+        staticmethod(lambda t: "ad_detected" if "signature-reject" in (t.url or "") else None),
+    )
+
+    pre_rejected_key = (
+        canonicalize_viral_url(pre_enrich_rejected.url) or pre_enrich_rejected.url
+    )
+    ai_targets, stats = hunter._refill_ai_targets_from_discarded_after_enrichment(
+        [existing],
+        target_count=3,
+        source_scan_run_id=103,
+        exclude_urls={pre_rejected_key},
+        max_fetch=0,
+    )
+
+    urls = {target.url for target in ai_targets}
+    assert urls == {existing.url, signature_keep.url, general_keep.url}
+    assert pre_enrich_rejected.url not in urls
+    assert stats["attempted"] == 3
+    assert stats["kept"] == 2
+    assert stats["rejected"] == 1
+    assert stats["gate_rejected"] == 1
+    assert stats["signature_attempted"] == 2
+    assert stats["signature_kept"] == 1
+    assert stats["general_kept"] == 1
+    assert signature_keep.comment_status == "pending"
+    assert general_keep.comment_status == "pending"
+    assert signature_keep.score_breakdown["post_enrichment_rescue_lane"] is True
+    assert signature_keep.score_breakdown["signature_backlog_lane"] is True
+    assert general_keep.score_breakdown["post_enrichment_rescue_lane"] is True
+    assert "signature_backlog_lane" not in general_keep.score_breakdown
+    assert hunter.db.saved and hunter.db.saved[0]["url"] == signature_reject.url
+    assert load_calls[0]["source_scan_run_id"] == 103
+    assert set(load_calls[0]["categories"]) == set(viral_hunter.SIGNATURE_BACKLOG_AXES)
+    assert pre_rejected_key in load_calls[0]["exclude_urls"]
+    assert load_calls[1]["source_scan_run_id"] == 103
+
+
+def test_viral_hunter_discarded_refill_does_not_requeue_known_stale_posts(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    existing = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=existing-fresh",
+        title="existing",
+        content_preview="청주 치료 추천 부탁드려요.",
+        category="통증/디스크",
+        priority_score=150,
+    )
+    stale_retry = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=stale-retry",
+        title="청주 오래된 치료 질문",
+        content_preview="청주에서 치료 잘하는 곳 추천 부탁드려요.",
+        matched_keywords=["청주 치료 추천"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        priority_score=145,
+        date_str="20150108",
+        score_breakdown={
+            "backlog_rescue_prior_status": "filtered_out_stale_window",
+            "viral_need_signals": "recommendation_request,ready_to_act",
+            "reply_opportunity_signals": "clear_question_shape",
+        },
+    )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = FakeDB()
+    hunter._load_backlog_rescue_targets = lambda *args, **kwargs: [stale_retry]
+
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "apply_final_reject",
+        staticmethod(lambda t: None),
+    )
+
+    ai_targets, stats = hunter._refill_ai_targets_from_discarded_after_enrichment(
+        [existing],
+        target_count=2,
+        source_scan_run_id=103,
+    )
+
+    assert {target.url for target in ai_targets} == {existing.url}
+    assert stats["attempted"] == 1
+    assert stats["kept"] == 0
+    assert stats["timing_rejected"] == 1
+    assert stale_retry.comment_status == "filtered_out_stale_window"
+    assert hunter.db.saved and hunter.db.saved[0]["url"] == stale_retry.url
+
+
 def test_cafe_article_api_url_conversion():
     convert = viral_hunter.cafe_article_api_url
 

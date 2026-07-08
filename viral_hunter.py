@@ -12234,6 +12234,139 @@ class ViralHunter:
         ai_targets.sort(key=_ai_target_sort_key, reverse=True)
         return ai_targets, remaining_rest, stats
 
+    def _refill_ai_targets_from_discarded_after_enrichment(
+        self,
+        ai_targets: List[ViralTarget],
+        *,
+        target_count: int,
+        source_scan_run_id: Optional[int] = None,
+        exclude_urls: Optional[set] = None,
+        max_fetch: int = 0,
+        fetcher=None,
+    ) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """Refill depleted AI budget from strict backlog/discarded retry lanes.
+
+        Enrichment can reveal stale dates or full-body ad signals after the normal
+        top-N/backlog lanes have already spent their supply. This late refill keeps
+        the same final gates, but gives execution-ready discarded rows one more
+        chance to consume the AI budget that would otherwise go unused.
+        """
+        stats = {
+            "attempted": 0, "kept": 0, "rejected": 0, "gate_rejected": 0, "timing_rejected": 0,
+            "signature_attempted": 0, "signature_kept": 0, "signature_rejected": 0,
+            "general_attempted": 0, "general_kept": 0, "general_rejected": 0,
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
+        if target_count <= 0 or len(ai_targets) >= target_count:
+            return ai_targets, stats
+
+        selected_keys = {
+            canonicalize_viral_url(target.url) or target.url or target.id
+            for target in ai_targets
+        }
+        selected_keys.update(str(url) for url in (exclude_urls or set()) if str(url))
+        fetch_budget = max(0, int(max_fetch or 0))
+
+        def _try_add(candidates: List[ViralTarget], lane: str) -> None:
+            nonlocal fetch_budget
+            for candidate in candidates:
+                if len(ai_targets) >= target_count:
+                    break
+                key = canonicalize_viral_url(candidate.url) or candidate.url or candidate.id
+                if not key or key in selected_keys:
+                    continue
+                selected_keys.add(key)
+                stats["attempted"] += 1
+                stats[f"{lane}_attempted"] += 1
+
+                prior_status = self._rescue_prior_status(candidate)
+                breakdown = candidate.score_breakdown if isinstance(candidate.score_breakdown, dict) else {}
+                candidate.score_breakdown = {
+                    **breakdown,
+                    "rescued_from": prior_status,
+                    "post_enrichment_rescue_lane": True,
+                }
+                if lane == "signature":
+                    candidate.score_breakdown["signature_backlog_lane"] = True
+
+                reject_reason = CommentableFilter.apply_final_reject(candidate)
+                if reject_reason:
+                    stats["gate_rejected"] += 1
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(candidate.to_dict())
+                    except Exception as e:
+                        logger.warning(f"post-enrichment 레스큐 게이트 제외 상태 저장 실패: {e}")
+                    continue
+
+                has_known_post_date = bool(
+                    getattr(candidate, "date_str", "") or getattr(candidate, "posted_at", "")
+                )
+                if (prior_status == "filtered_out_stale_window" or has_known_post_date) and not (
+                    self._timing_regate_keep(candidate)
+                ):
+                    stats["timing_rejected"] += 1
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(candidate.to_dict())
+                    except Exception as e:
+                        logger.warning(f"post-enrichment 레스큐 타이밍 제외 상태 저장 실패: {e}")
+                    continue
+
+                candidate.comment_status = "pending"
+                batch = [candidate]
+                if fetch_budget > 0:
+                    kept_batch, enrich_stats = self._enrich_and_regate_ai_targets(
+                        batch,
+                        max_fetch=fetch_budget,
+                        fetcher=fetcher,
+                        sleep_sec=0.0 if fetcher is not None else 0.35,
+                    )
+                    for stat_key in ("fetched", "enriched", "dated", "regate_rejected", "stale_rejected"):
+                        value = int(enrich_stats.get(stat_key, 0) or 0)
+                        stats[stat_key] += value
+                    fetch_budget = max(0, fetch_budget - int(enrich_stats.get("fetched", 0) or 0))
+                else:
+                    kept_batch = batch
+
+                if kept_batch:
+                    ai_targets.append(kept_batch[0])
+                    stats["kept"] += 1
+                    stats[f"{lane}_kept"] += 1
+                else:
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+
+        deficit = target_count - len(ai_targets)
+        try:
+            signature_candidates = self._load_backlog_rescue_targets(
+                deficit,
+                selected_keys,
+                days=SIGNATURE_BACKLOG_RESCUE_DAYS,
+                categories=SIGNATURE_BACKLOG_AXES,
+                source_scan_run_id=source_scan_run_id,
+            )
+            _try_add(signature_candidates, "signature")
+        except Exception as e:
+            logger.warning(f"post-enrichment 시그니처 레스큐 후보 로드 실패: {e}")
+
+        if len(ai_targets) < target_count:
+            try:
+                general_candidates = self._load_backlog_rescue_targets(
+                    target_count - len(ai_targets),
+                    selected_keys,
+                    source_scan_run_id=source_scan_run_id,
+                )
+                _try_add(general_candidates, "general")
+            except Exception as e:
+                logger.warning(f"post-enrichment 일반 레스큐 후보 로드 실패: {e}")
+
+        ai_targets.sort(key=_ai_target_sort_key, reverse=True)
+        return ai_targets, stats
+
     @staticmethod
     def _resaturate_worksite_after_enrichment(target: ViralTarget) -> bool:
         """enrichment 으로 실제 comment_count/view_count 가 밝혀진 뒤, 선택 시점엔 0으로
@@ -13466,6 +13599,11 @@ class ViralHunter:
         if ai_targets and enrich_bodies:
             try:
                 before_enrich = len(ai_targets)
+                pre_enrich_ai_keys = {
+                    canonicalize_viral_url(t.url) or t.url or t.id
+                    for t in ai_targets
+                    if t.url or t.id
+                }
                 ai_targets, enrich_stats = self._enrich_and_regate_ai_targets(
                     ai_targets,
                     max_fetch=int(enrich_bodies),
@@ -13478,6 +13616,7 @@ class ViralHunter:
                         f"타이밍 만료 {enrich_stats['stale_rejected']}건 "
                         f"(AI 후보 {before_enrich} → {len(ai_targets)})"
                     )
+                refill_stats: Dict[str, int] = {}
                 if len(ai_targets) < before_enrich and rest_targets:
                     refill_fetch_budget = max(
                         0,
@@ -13494,6 +13633,38 @@ class ViralHunter:
                             f"   🔁 AI 후보 보충: 후보 {refill_stats['attempted']}개 검토 → "
                             f"{refill_stats['kept']}개 보충, 재탈락 {refill_stats['rejected']}개 "
                             f"(fetch {refill_stats['fetched']}건, 보강 {refill_stats['enriched']}건)"
+                        )
+                if len(ai_targets) < before_enrich:
+                    discarded_fetch_budget = max(
+                        0,
+                        int(enrich_bodies)
+                        - int(enrich_stats.get("fetched", 0) or 0)
+                        - int(refill_stats.get("fetched", 0) or 0),
+                    )
+                    post_enrich_exclude = set(pre_enrich_ai_keys)
+                    post_enrich_exclude.update(
+                        canonicalize_viral_url(t.url) or t.url or t.id
+                        for t in rest_targets
+                        if t.url or t.id
+                    )
+                    ai_targets, discarded_refill_stats = (
+                        self._refill_ai_targets_from_discarded_after_enrichment(
+                            ai_targets,
+                            target_count=before_enrich,
+                            source_scan_run_id=source_scan_run_id,
+                            exclude_urls=post_enrich_exclude,
+                            max_fetch=discarded_fetch_budget,
+                        )
+                    )
+                    if discarded_refill_stats["attempted"]:
+                        print(
+                            f"   🔁 폐기 후보 보충: 후보 {discarded_refill_stats['attempted']}개 검토 → "
+                            f"{discarded_refill_stats['kept']}개 보충 "
+                            f"(시그니처 {discarded_refill_stats['signature_kept']}개, "
+                            f"일반 {discarded_refill_stats['general_kept']}개, "
+                            f"게이트/재검증 탈락 {discarded_refill_stats['rejected']}개, "
+                            f"타이밍 제외 {discarded_refill_stats['timing_rejected']}개, "
+                            f"fetch {discarded_refill_stats['fetched']}건)"
                         )
             except Exception as e:
                 logger.warning(f"본문 enrichment 실패 (계속 진행): {e}")
