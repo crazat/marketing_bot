@@ -503,26 +503,42 @@ AI_EXECUTION_PROVIDER_SURFACE_TERMS = (
 AI_EXECUTION_LENS_ROUTE_TERMS: Dict[str, Tuple[str, ...]] = {
     "review": (
         "추천", "후기", "잘하는", "괜찮", "어디", "경험", "가본", "가보신",
-        "해보신", "받아보신", "다녀보신", "아시는", "리뷰",
+        "해보신", "받아보신", "다녀보신", "아시는", "아시는분",
+        "추천요", "추천주세요", "추천해주세요", "추천요청", "찾고있",
+        "찾아보고", "리뷰",
     ),
     "community": (
         "추천", "후기", "어디", "경험", "가본", "가보신", "해보신",
-        "받아보신", "아시는", "궁금", "부탁", "괜찮", "잘하는",
+        "받아보신", "아시는", "아시는분", "궁금", "부탁", "괜찮",
+        "잘하는", "추천요", "추천주세요", "추천해주세요", "찾고있",
+        "찾아보고",
     ),
-    "cost": ("비용", "가격", "얼마", "실비", "보험", "자보", "치료비", "부담"),
+    "cost": (
+        "비용", "가격", "가격대", "금액", "얼마", "실비", "보험", "자보",
+        "치료비", "총비용", "부담", "부담되", "견적", "비싸", "저렴",
+    ),
     "consultation": (
         "상담", "문의", "처방", "진단", "상담받", "치료받", "검사받",
-        "궁금", "알고싶",
+        "궁금", "알고싶", "관리방법", "관리 방법", "치료방법",
+        "치료 방법", "도움될까요", "가능한곳", "가능한 곳",
     ),
     "availability": (
         "예약", "예약가능", "야간", "주말", "진료시간", "당일진료",
-        "오늘", "당일", "위치", "주차", "근처", "가까운",
+        "오늘", "당일", "당일예약", "위치", "주차", "근처", "가까운",
+        "입원실", "야간진료", "가능한곳", "가능한 곳",
     ),
     "safety": (
         "부작용", "주의", "치료기간", "기간", "통증", "회복", "재발",
         "안전", "효과", "걱정", "괜찮",
     ),
 }
+AI_EXECUTION_ROUTE_BRIDGE_LENSES = {"cost", "consultation", "availability", "safety"}
+AI_EXECUTION_ROUTE_BRIDGE_TERMS: Tuple[str, ...] = (
+    "추천", "추천요", "추천주세요", "추천해주세요", "추천요청", "후기",
+    "잘하는", "괜찮은곳", "아시는", "아시는분", "찾고있", "찾아보고",
+    "관리방법", "관리 방법", "치료방법", "치료 방법", "도움될까요",
+    "가능한곳", "가능한 곳", "입원실", "야간진료", "얼마나", "횟수",
+)
 
 
 def _ai_target_breakdown_text(target: "ViralTarget", key: str) -> str:
@@ -696,11 +712,64 @@ def _ai_target_patient_surface_matched(target: "ViralTarget", text: str, compact
     return bool("?" in text or "？" in text or _ai_text_has_any(compact_text, AI_EXECUTION_PATIENT_SURFACE_TERMS))
 
 
+def _ai_target_route_bridge_variant(target: "ViralTarget", lens: str) -> bool:
+    variant = _ai_target_breakdown_text(target, "pathfinder_query_variant").lower()
+    expected_lens = str(lens or "").strip().lower()
+    if not variant:
+        return False
+    return bool(
+        variant == "community_base"
+        or variant.startswith(f"{expected_lens}_community:")
+        or variant.startswith("community")
+        or variant.startswith("patient_voice")
+        or variant.startswith("axis_")
+    )
+
+
+def _ai_target_route_source_lens_matched(target: "ViralTarget", lens: str) -> bool:
+    terms = AI_EXECUTION_LENS_ROUTE_TERMS.get(str(lens or "").strip().lower(), ())
+    if not terms:
+        return False
+
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    source_parts: List[str] = []
+    if isinstance(breakdown, dict):
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            source_parts.append(str(raw_source))
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, (list, tuple, set)):
+            source_parts.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            source_parts.append(str(raw_sources))
+    for attr in ("matched_keyword", "keyword"):
+        value = getattr(target, attr, "")
+        if value:
+            source_parts.append(str(value))
+    raw_keywords = getattr(target, "matched_keywords", None)
+    if isinstance(raw_keywords, (list, tuple, set)):
+        source_parts.extend(str(item) for item in raw_keywords if str(item or "").strip())
+    elif raw_keywords:
+        source_parts.append(str(raw_keywords))
+
+    compact_source = _compact_query_text(" ".join(source_parts))
+    return bool(compact_source and _ai_text_has_any(compact_source, terms))
+
+
 def _ai_target_viral_action_route_matched(target: "ViralTarget", compact_text: str) -> bool:
     lens = _ai_target_execution_lens(target)
     if lens == "service":
         return True
-    return _ai_text_has_any(compact_text, AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ()))
+    if _ai_text_has_any(compact_text, AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ())):
+        return True
+    if lens not in AI_EXECUTION_ROUTE_BRIDGE_LENSES:
+        return False
+    if not _ai_text_has_any(compact_text, AI_EXECUTION_ROUTE_BRIDGE_TERMS):
+        return False
+    return bool(
+        _ai_target_route_bridge_variant(target, lens)
+        or _ai_target_route_source_lens_matched(target, lens)
+    )
 
 
 def _ai_target_reply_workability_ready(target: "ViralTarget") -> Tuple[bool, bool]:
@@ -1220,6 +1289,37 @@ def split_ai_targets_with_category_floor(
 # ============================================
 # 데이터 클래스
 # ============================================
+def _canonical_viral_target_category(
+    raw_category: Optional[str],
+    *,
+    title: str = "",
+    content_preview: str = "",
+    matched_keywords: Optional[Iterable[str]] = None,
+) -> str:
+    """Normalize ViralTarget categories to the current Pathfinder taxonomy."""
+    raw = str(raw_category or "").strip()
+    focus_categories = set(getattr(GYULIM_KEYWORD_PROFILE, "focus_categories", ()) or ())
+    if raw in focus_categories or raw == "경쟁사_역공략":
+        return raw
+
+    text_parts = [
+        str(title or ""),
+        str(content_preview or ""),
+        *[str(keyword or "") for keyword in (matched_keywords or [])],
+    ]
+    text = " ".join(part for part in text_parts if part.strip())
+    detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+        GYULIM_KEYWORD_PROFILE.detect_category(text, default="") if text else ""
+    )
+    if detected in focus_categories or GYULIM_KEYWORD_PROFILE.profile_for(detected):
+        return detected
+
+    normalized = GYULIM_KEYWORD_PROFILE.normalize_category(raw)
+    if normalized in focus_categories or GYULIM_KEYWORD_PROFILE.profile_for(normalized):
+        return normalized
+    return GYULIM_KEYWORD_PROFILE.normalize_category("기타")
+
+
 @dataclass
 class ViralTarget:
     """바이럴 마케팅 타겟"""
@@ -1264,35 +1364,12 @@ class ViralTarget:
     canonical_url: str = ""
 
     def __post_init__(self):
-        # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
-        # 시드 키워드만 보면 "산후조리원/지역명"이 모두 "기타"로 떨어지는 문제 해결.
-        try:
-            from services.category_normalizer import normalize_category, STANDARD_CATEGORIES
-        except ImportError:
-            return
-
-        if self.category and self.category != "기타" and self.category in STANDARD_CATEGORIES:
-            return  # 명시적 표준 카테고리 그대로
-
-        # 비표준 값이면 정규화
-        if self.category and self.category != "기타":
-            self.category = normalize_category(self.category)
-            if self.category in STANDARD_CATEGORIES and self.category != "기타":
-                return
-
-        # "기타" 폴백 — title + matched_keywords[0] 둘 다 시도, 미용 카테고리 우선
-        candidates = []
-        if self.title:
-            candidates.append(self.title)
-        if self.matched_keywords:
-            candidates.append(self.matched_keywords[0])
-
-        for raw in candidates:
-            cat = normalize_category(raw)
-            if cat != "기타":
-                self.category = cat
-                return
-        self.category = "기타"
+        self.category = _canonical_viral_target_category(
+            self.category,
+            title=self.title,
+            content_preview=self.content_preview,
+            matched_keywords=self.matched_keywords,
+        )
 
     @property
     def id(self) -> str:
@@ -2783,6 +2860,20 @@ class CommentableFilter:
         "closed_review_surface": "filtered_out",
         "self_target": "filtered_out",
     }
+    FILTER_PASS_RESET_STATUSES = {
+        "filtered_out",
+        "filtered_out_ad",
+        "filtered_out_stale_window",
+        "filtered_out_journey_mismatch",
+        "filtered_out_unqualified_lead",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_low_worksite_efficiency",
+        "skipped",
+        "raw_backlog",
+    }
+    FILTER_PASS_REJECT_KEYS = ("final_reject_reason", "pathfinder_fit_reject_reason")
 
     INTERROGATIVE_PATTERNS = [
         "?", "어디", "어떻게", "어떤", "뭐", "무엇", "왜", "언제", "얼마",
@@ -3188,6 +3279,15 @@ class CommentableFilter:
         "효과는 무엇일까", "통증을 사로잡는다", "차이점", "필요할까",
         "어떤 상황에서", " - ",
     ]
+    PROVIDER_EDUCATIONAL_TITLE_PATTERNS = (
+        "확인하세요", "확인하기", "체크하기", "체크하세요", "알아보기",
+        "접근법", "주의사항", "전 확인", "먼저 확인", "함께 알아",
+        "정리", "원인과", "치료 방법", "관리 방법",
+    )
+    PROVIDER_EDUCATIONAL_TITLE_RESCUE_PATTERNS = (
+        "추천 부탁", "추천부탁", "추천해", "추천 해", "어디", "괜찮은곳",
+        "괜찮은 곳", "궁금", "아시는", "있을까요", "될까요", "어떨까요",
+    )
     PROVIDER_BODY_AUTHOR_PATTERNS = [
         "본원", "본 한의원", "저희 병원", "저희 한의원", "저희 의원",
         "저희 클리닉", "청주점에서는", "한의원입니다", "한의사입니다",
@@ -5813,6 +5913,15 @@ class CommentableFilter:
         "고민", "할지", "싶어서", "싶은데", "싶어요", "추천", "후기", "어떡", "어쩌",
         "방법", "알려주", "찾고", "찾아보", "스트레스", "자신감",
     ]
+    TMJ_PATIENT_CARE_PATTERNS = (
+        "턱관절", "턱 관절", "턱관절통증", "턱관절 통증", "턱통증", "턱 통증",
+        "악관절", "입이 안벌", "입이 안 벌", "입벌릴", "입 벌릴", "입 벌리",
+        "턱에서 소리", "턱 소리", "귀에서 소리", "딱딱 소리",
+    )
+    TMJ_DENTAL_ONLY_PATTERNS = (
+        "치아교정", "치열교정", "교정치과", "덧니", "충치", "임플란트",
+        "신경치료", "사랑니", "치아", "치열", "브라켓", "인비절라인",
+    )
 
     @classmethod
     def _is_scar_patient_exploration(cls, text: str, title: str = "") -> bool:
@@ -5834,9 +5943,74 @@ class CommentableFilter:
         )
 
     @classmethod
-    def _is_off_domain(cls, domain: str, text: str, title: str = "") -> bool:
+    def _is_tmj_patient_care_question(
+        cls,
+        target: Optional[ViralTarget],
+        text: str,
+        title: str = "",
+    ) -> bool:
+        """Allow TMJ care questions even when KIN answers mention dental terms."""
+        if target is None:
+            return False
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "asymmetry" and category != "안면비대칭":
+            return False
+
+        title_lc = (title or getattr(target, "title", "") or "").lower()
+        if cls._contains_any(title_lc, cls.TMJ_DENTAL_ONLY_PATTERNS) and not cls._contains_any(
+            title_lc,
+            cls.TMJ_PATIENT_CARE_PATTERNS,
+        ):
+            return False
+
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            body_segment = cls._kin_question_segment_body(target)
+        else:
+            body_segment = cls._strip_internal_labels(target.content_preview or "")
+        opening_evidence = f"{title or ''} {body_segment[:90] or ''}".lower()
+        if not cls._contains_any(opening_evidence, cls.TMJ_PATIENT_CARE_PATTERNS):
+            return False
+
+        evidence = f"{title or ''} {body_segment[:220] or ''}".lower()
+        direct_ask_patterns = (
+            tuple(cls.RECOMMENDATION_REQUEST_PATTERNS)
+            + tuple(cls.HELP_REQUEST_PATTERNS)
+            + tuple(cls.READY_TO_ACT_PATTERNS)
+            + tuple(cls.INTERROGATIVE_PATTERNS)
+            + (
+                "치료", "병원", "한의원", "의원", "추천", "어디", "괜찮",
+                "잘하는", "상담", "문의", "통증", "소리", "입이 안", "입벌",
+            )
+        )
+        if not (re.search(r"[?？]", evidence) or cls._contains_any(evidence, direct_ask_patterns)):
+            return False
+
+        has_dental_only_noise = cls._contains_any(evidence, cls.TMJ_DENTAL_ONLY_PATTERNS)
+        has_explicit_tmj_symptom = cls._contains_any(
+            evidence,
+            (
+                "턱관절", "턱 관절", "턱통증", "턱 통증", "악관절",
+                "입이 안벌", "입이 안 벌", "입벌릴", "입 벌릴",
+                "턱에서 소리", "귀에서 소리", "딱딱 소리",
+            ),
+        )
+        return bool(not has_dental_only_noise or has_explicit_tmj_symptom)
+
+    @classmethod
+    def _is_off_domain(
+        cls,
+        domain: str,
+        text: str,
+        title: str = "",
+        target: Optional[ViralTarget] = None,
+    ) -> bool:
         """핵심 키워드와 무관한 업종/시술 글을 저장 전 제외한다."""
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["dental"]):
+            if cls._is_tmj_patient_care_question(target, text, title=title):
+                return False
             return domain in {"asymmetry", "body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["golf"]):
             return domain in {"body", "general"}
@@ -6138,6 +6312,19 @@ class CommentableFilter:
         if has_provider_cta_body:
             return True
 
+        has_educational_title = cls._contains_any(title, cls.PROVIDER_EDUCATIONAL_TITLE_PATTERNS)
+        if has_educational_title:
+            title_has_real_request = bool(re.search(r"[?？]", title)) or cls._contains_any(
+                title,
+                cls.PROVIDER_EDUCATIONAL_TITLE_RESCUE_PATTERNS,
+            )
+            user_text_has_real_request = cls._contains_any(
+                user_text,
+                cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS,
+            )
+            if not (title_has_real_request or user_text_has_real_request):
+                return True
+
         has_provider_info = cls._contains_any(text, cls.PROVIDER_INFO_POST_PATTERNS)
         has_info_title = cls._contains_any(title, cls.PROVIDER_INFO_TITLE_PATTERNS)
         if not (has_provider_info or has_info_title):
@@ -6222,6 +6409,126 @@ class CommentableFilter:
             return True
         return False
 
+    PATHFINDER_SOURCE_CONTEXT_RESCUE_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "안면비대칭",
+    }
+
+    @classmethod
+    def _pathfinder_source_context_rescue_allowed(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        category: str,
+        text: str,
+        axis_fit_score: float,
+        lens_fit_score: float,
+        lens_fit_tier: str = "",
+        is_advertorial: bool = False,
+        viral_need_score: Optional[float] = None,
+        reply_opportunity_score: Optional[float] = None,
+        timing_window_score: Optional[float] = None,
+        journey_fit_score: Optional[float] = None,
+        qualification_fit_score: Optional[float] = None,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
+    ) -> bool:
+        """Rescue strong patient asks when source-specific seed terms are too narrow."""
+        if is_advertorial:
+            return False
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        if category not in cls.PATHFINDER_SOURCE_CONTEXT_RESCUE_CATEGORIES and domain not in {
+            "scar_skin",
+            "asymmetry",
+        }:
+            return False
+
+        platform = (target.platform or "").lower()
+        if platform not in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            return False
+
+        def metric(value: Optional[float], key: str, default: float = 0.0) -> float:
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+            return cls._score_breakdown_float(target, key, default)
+
+        axis_score = float(axis_fit_score or 0.0)
+        lens_score = float(lens_fit_score or 0.0)
+        viral_score = metric(viral_need_score, "viral_need_score")
+        reply_score = metric(reply_opportunity_score, "reply_opportunity_score")
+        timing_score = metric(timing_window_score, "timing_window_score")
+        journey_score = metric(journey_fit_score, "journey_fit_score")
+        qualification_score = metric(qualification_fit_score, "qualification_fit_score")
+        clinic_score = metric(clinic_treatment_fit_score, "clinic_treatment_fit_score")
+        worksite_score = metric(worksite_efficiency_score, "worksite_efficiency_score")
+
+        if axis_score < 92.0:
+            return False
+        if viral_score < 65.0 or reply_score < 88.0:
+            return False
+        if timing_score and timing_score < 50.0:
+            return False
+        if journey_score and journey_score < 58.0:
+            return False
+        if qualification_score and qualification_score < 55.0:
+            return False
+        if clinic_score < 80.0 or worksite_score < 85.0:
+            return False
+
+        lens = str(cls._pathfinder_execution_context(target).get("execution_lens") or "").strip().lower()
+        if str(lens_fit_tier or "") == "mismatch" and lens_score and lens_score < 50.0:
+            if lens in {"cost", "availability", "safety"}:
+                return False
+
+        user_text = cls._user_need_text(target).lower()
+        user_axis_text = cls._axis_user_segment_text(target, max_body_chars=260).lower()
+        evidence = f"{target.title or ''} {user_axis_text}".lower()
+        if not cls._has_active_region_anchor(target, evidence):
+            return False
+        if not cls._has_domain_anchor(domain, evidence):
+            return False
+        if not cls._has_user_axis_anchor(target, domain=domain, category=category):
+            return False
+
+        direct_ask_patterns = (
+            tuple(cls.RECOMMENDATION_REQUEST_PATTERNS)
+            + tuple(cls.HELP_REQUEST_PATTERNS)
+            + tuple(cls.READY_TO_ACT_PATTERNS)
+            + tuple(cls.COST_DECISION_PATTERNS)
+            + tuple(cls.INTERROGATIVE_PATTERNS)
+            + tuple(cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+            + (
+                "궁금", "고민", "문의", "알려주", "찾고", "찾아보",
+                "어디", "괜찮", "잘하는", "받고 싶", "치료받고",
+            )
+        )
+        if not (re.search(r"[?？]", evidence) or cls._contains_any(evidence, direct_ask_patterns)):
+            return False
+
+        provider_noise_patterns = (
+            tuple(cls.PROVIDER_INFO_POST_PATTERNS)
+            + tuple(cls.PROVIDER_BODY_AUTHOR_PATTERNS)
+            + tuple(cls.COMMERCIAL_CTA_PATTERNS)
+            + tuple(cls.BLOG_AD_STRUCTURAL_PATTERNS)
+        )
+        if platform in {"cafe", "naver_cafe"} and cls._contains_any(user_text, provider_noise_patterns):
+            return False
+        if cls._is_closed_review_surface_without_user_ask(target, text):
+            return False
+        if cls._is_provider_case_story_without_user_ask(target, text):
+            return False
+
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "pathfinder_source_context_rescue": True,
+        }
+        return True
+
     @classmethod
     def _semantic_axis_rescue(cls, target: ViralTarget, *, text: str, category: str, domain: str) -> bool:
         """어휘로는 진료축 mismatch 인 글을 의미 유사도(BGE-M3)로 구제할지 판정.
@@ -6272,6 +6579,13 @@ class CommentableFilter:
         axis_fit_tier: str = "",
         lens_fit_score: Optional[float] = None,
         lens_fit_tier: str = "",
+        viral_need_score: Optional[float] = None,
+        reply_opportunity_score: Optional[float] = None,
+        timing_window_score: Optional[float] = None,
+        journey_fit_score: Optional[float] = None,
+        qualification_fit_score: Optional[float] = None,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
     ) -> Optional[str]:
         """Final Pathfinder axis/lens fit gate for lanes that historically over-collect noise."""
         if cls._is_asymmetry_axis_noise(target, text):
@@ -6333,7 +6647,24 @@ class CommentableFilter:
             compact_text=source_compact_text,
             )
         ):
-            return "source_context_mismatch"
+            if not cls._pathfinder_source_context_rescue_allowed(
+                target,
+                domain=domain,
+                category=category,
+                text=text,
+                axis_fit_score=axis_score,
+                lens_fit_score=lens_score,
+                lens_fit_tier=lens_tier,
+                is_advertorial=is_advertorial,
+                viral_need_score=viral_need_score,
+                reply_opportunity_score=reply_opportunity_score,
+                timing_window_score=timing_window_score,
+                journey_fit_score=journey_fit_score,
+                qualification_fit_score=qualification_fit_score,
+                clinic_treatment_fit_score=clinic_treatment_fit_score,
+                worksite_efficiency_score=worksite_efficiency_score,
+            ):
+                return "source_context_mismatch"
 
         # 의미기반 진료축 구제(BGE-M3): 어휘로는 mismatch 여도 글이 해당 축과 의미적으로
         # 가까우면 구어/패러프레이즈 환자글('얼굴 짝짝이'=안면비대칭, '팬자국'=흉터)을 회수.
@@ -6412,6 +6743,39 @@ class CommentableFilter:
         ])
         return bool(route_terms and route_shape and not accident_or_health_context)
 
+    HARD_OFF_DOMAIN_LEGAL_SERVICE_PATTERNS = (
+        "행정사", "법무사", "변호사", "노무사", "손해사정", "손해사정사",
+        "형사합의", "민사소송", "고소장", "탄원서", "내용증명",
+    )
+    HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS = (
+        "출장마사지", "출장 마사지", "마사지샵", "마사지 샵", "스웨디시",
+        "타이마사지", "타이 마사지", "아로마마사지", "아로마 마사지",
+        "왁싱샵", "왁싱 샵", "네일샵", "네일 샵", "에스테틱",
+        "피부관리실", "피부 관리실", "마사지",
+    )
+    HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS = (
+        "한의원", "한방", "추나", "침", "약침", "한약", "치료",
+        "진료", "병원", "의원", "입원", "통증", "후유증", "교통사고",
+        "디스크", "턱관절", "피부과",
+    )
+
+    @classmethod
+    def _is_hard_off_domain_service_target(cls, target: ViralTarget, text: str, title: str = "") -> bool:
+        """Reject non-clinic local/legal service requests that broad recommendation queries can pull in."""
+        haystack = f"{title or ''} {text or ''}".lower()
+        if cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LEGAL_SERVICE_PATTERNS):
+            return True
+
+        title_lc = (title or "").lower()
+        if cls._contains_any(title_lc, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS):
+            return not cls._contains_any(title_lc, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS)
+
+        if cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS):
+            domain = cls._target_domain(target)
+            if domain in {"traffic", "general", "body", "diet", "scar_skin", "asymmetry", "lifting"}:
+                return not cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS)
+        return False
+
     @classmethod
     def final_reject_reason(cls, target: ViralTarget) -> Optional[str]:
         """AI 적합 판정 이후 DB 저장 직전의 마지막 품질 게이트."""
@@ -6439,13 +6803,15 @@ class CommentableFilter:
             return "self_target"
         if cls._is_marketplace_sale(text):
             return "marketplace_sale"
+        if cls._is_hard_off_domain_service_target(target, text, title=title):
+            return "off_domain"
         if cls._is_title_non_service_beauty_target(title):
             return "off_domain"
         if cls._is_non_hanbang_fertility_target(text):
             return "off_domain"
         if cls._is_provider_case_story_without_user_ask(target, text):
             return "advertorial"
-        if cls._is_off_domain(domain, text, title=title):
+        if cls._is_off_domain(domain, text, title=title, target=target):
             return "off_domain"
         if cls._is_non_service_beauty_target(domain, text):
             return "off_domain"
@@ -6467,6 +6833,13 @@ class CommentableFilter:
             axis_fit_tier=cls._score_breakdown_text(target, "pathfinder_axis_fit_tier", ""),
             lens_fit_score=cls._score_breakdown_float(target, "pathfinder_lens_fit_score", 0.0),
             lens_fit_tier=cls._score_breakdown_text(target, "pathfinder_lens_fit_tier", ""),
+            viral_need_score=cls._score_breakdown_float(target, "viral_need_score", 0.0),
+            reply_opportunity_score=cls._score_breakdown_float(target, "reply_opportunity_score", 0.0),
+            timing_window_score=cls._score_breakdown_float(target, "timing_window_score", 0.0),
+            journey_fit_score=cls._score_breakdown_float(target, "journey_fit_score", 0.0),
+            qualification_fit_score=cls._score_breakdown_float(target, "qualification_fit_score", 0.0),
+            clinic_treatment_fit_score=cls._score_breakdown_float(target, "clinic_treatment_fit_score", 0.0),
+            worksite_efficiency_score=cls._score_breakdown_float(target, "worksite_efficiency_score", 0.0),
         )
         if pathfinder_reason:
             return pathfinder_reason
@@ -6707,6 +7080,16 @@ class CommentableFilter:
                 }
                 continue
 
+            if self._is_hard_off_domain_service_target(target, text, title=title_lower):
+                stats['off_domain'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("off_domain", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "off_domain",
+                }
+                continue
+
             if self._is_title_non_service_beauty_target(title_lower):
                 stats['off_domain'] += 1
                 continue
@@ -6741,7 +7124,7 @@ class CommentableFilter:
             if any(ad in text for ad in self._non_relevant_exclude_terms(text)):
                 stats['non_relevant'] += 1
                 continue
-            if self._is_off_domain(domain, text, title=(target.title or "").lower()):
+            if self._is_off_domain(domain, text, title=(target.title or "").lower(), target=target):
                 stats['off_domain'] += 1
                 continue
             if self._is_non_service_beauty_target(domain, text):
@@ -7147,6 +7530,13 @@ class CommentableFilter:
                 axis_fit_tier=pathfinder_axis_fit_tier,
                 lens_fit_score=pathfinder_lens_fit_score,
                 lens_fit_tier=pathfinder_lens_fit_tier,
+                viral_need_score=viral_need_score,
+                reply_opportunity_score=reply_opportunity_score,
+                timing_window_score=timing_window_score,
+                journey_fit_score=journey_fit_score,
+                qualification_fit_score=qualification_fit_score,
+                clinic_treatment_fit_score=clinic_treatment_fit_score,
+                worksite_efficiency_score=worksite_efficiency_score,
             )
             if pathfinder_fit_reject_reason:
                 stats['pathfinder_mismatch'] += 1
@@ -7349,6 +7739,14 @@ class CommentableFilter:
             target.score_breakdown["execution_readiness_priority_adjustment"] = float(
                 execution_readiness_priority_adjustment
             )
+            current_status = str(target.comment_status or "").strip().lower()
+            if current_status in self.FILTER_PASS_RESET_STATUSES:
+                target.comment_status = "pending"
+            target.score_breakdown = {
+                key: value
+                for key, value in (target.score_breakdown or {}).items()
+                if key not in self.FILTER_PASS_REJECT_KEYS
+            }
             target.is_commentable = True
             filtered.append(target)
 
@@ -10166,19 +10564,161 @@ class ViralHunter:
             total = cls._variant_feedback_int(entry, "total")
             survived = cls._variant_feedback_int(entry, "survived")
             strict_fit = cls._variant_feedback_int(entry, "strict_fit")
-            zero_survival_lane = total >= 80 and survived == 0 and strict_fit == 0
+            zero_survival_lane = total >= 50 and survived == 0 and strict_fit == 0
             if action in {"retire_or_pause", "retire_family_or_pause"}:
                 if variant_name == "base":
-                    return 0.0 if zero_survival_lane else 0.60
-                return 0.35 if zero_survival_lane else 0.60
+                    if zero_survival_lane and total >= 80:
+                        return 0.0
+                    return 0.35 if zero_survival_lane else 0.60
+                return 0.25 if zero_survival_lane else 0.60
             if action in {"repair_query_shape", "repair_family_query_shape"}:
+                if zero_survival_lane and total >= 180:
+                    return 0.25
                 if zero_survival_lane and total >= 120:
                     return 0.40
-                return 0.55 if zero_survival_lane else 0.75
+                return 0.50 if zero_survival_lane else 0.70
             return 1.0
         if action in {"scale_or_keep", "scale_family_or_keep"} and not cls._variant_quality_scale_supported(entry):
             return 1.0
         return max(0.0, min(1.25, float(factor or 1.0)))
+
+    @classmethod
+    def _variant_quality_entry_is_scale_signal(cls, entry: Dict[str, Any]) -> bool:
+        if not entry:
+            return False
+        action = str(entry.get("action") or "").strip().lower()
+        if action not in {"scale_or_keep", "scale_family_or_keep"}:
+            return False
+        return cls._variant_quality_scale_supported(entry)
+
+    @classmethod
+    def _variant_quality_entry_is_repair_signal(cls, entry: Dict[str, Any]) -> bool:
+        if not entry:
+            return False
+        action = str(entry.get("action") or "").strip().lower()
+        return action.startswith("repair") or action.startswith("retire")
+
+    def _variant_quality_has_scale_signal(
+        self,
+        quality_feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> bool:
+        entries = [
+            self._variant_quality_feedback_for(
+                quality_feedback,
+                category=category,
+                lens=lens,
+                variant=variant,
+            ),
+            self._variant_quality_feedback_for(quality_feedback, variant=variant),
+            quality_feedback.get(f"family:{self._query_variant_family(variant)}") or {},
+        ]
+        return any(self._variant_quality_entry_is_scale_signal(entry) for entry in entries)
+
+    def _handoff_repair_companion_query_variants(
+        self,
+        *,
+        keyword: Keyword,
+        category: str,
+        execution_lens: str,
+        core_query: str,
+        quality_feedback: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not quality_feedback:
+            return []
+
+        has_repair_signal = any(
+            self._variant_quality_entry_is_repair_signal(
+                self._variant_quality_feedback_for(
+                    quality_feedback,
+                    category=category,
+                    lens=execution_lens,
+                    variant=variant,
+                )
+            )
+            for variant in ("base", "community_base")
+        )
+        if not has_repair_signal:
+            return []
+
+        companions: List[Dict[str, Any]] = []
+        compact_core = self._compact_query_text(core_query)
+        community_surface = {"blog": 0, "cafe": 24, "kin": 42}
+
+        community_lane_entry = quality_feedback.get(
+            self._category_lens_variant_quality_key(category, execution_lens, "community:추천")
+        ) or {}
+        community_lane_blocked = self._variant_quality_entry_is_repair_signal(community_lane_entry)
+        community_companion_allowed = (
+            not community_lane_blocked
+            and (
+                self._variant_quality_entry_is_scale_signal(community_lane_entry)
+                or (
+                    execution_lens == "community"
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant="community:추천",
+                    )
+                )
+            )
+        )
+
+        if community_companion_allowed and "추천" not in compact_core:
+            companions.append(
+                {
+                    "query": f"{core_query} 추천",
+                    "variant": "community:추천",
+                    "source_keyword": keyword,
+                    "surface_override": dict(community_surface),
+                    "handoff_companion": True,
+                }
+            )
+
+        traffic_lane_entry = quality_feedback.get(
+            self._category_lens_variant_quality_key(
+                category,
+                execution_lens,
+                "axis_traffic:specific_후유증",
+            )
+        ) or {}
+        traffic_lane_blocked = self._variant_quality_entry_is_repair_signal(traffic_lane_entry)
+        traffic_companion_allowed = (
+            not traffic_lane_blocked
+            and (
+                self._variant_quality_entry_is_scale_signal(traffic_lane_entry)
+                or (
+                    execution_lens == "community"
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant="axis_traffic:specific_후유증",
+                    )
+                )
+            )
+        )
+
+        if (
+            category == "교통사고"
+            and traffic_companion_allowed
+            and "후유증" not in compact_core
+        ):
+            companions.append(
+                {
+                    "query": f"{core_query} 후유증 추천",
+                    "variant": "axis_traffic:specific_후유증",
+                    "source_keyword": keyword,
+                    "surface_override": dict(community_surface),
+                    "handoff_companion": True,
+                }
+            )
+
+        return companions
 
     @classmethod
     def _variant_gate_should_drop(
@@ -10904,7 +11444,55 @@ class ViralHunter:
                     })
                     break
 
+        quality_feedback = self._load_variant_quality_feedback()
+        handoff_companion_count = 0
+        for companion in self._handoff_repair_companion_query_variants(
+            keyword=keyword,
+            category=category,
+            execution_lens=execution_lens,
+            core_query=core_query,
+            quality_feedback=quality_feedback,
+        ):
+            query_compact = self._compact_query_text(companion["query"])
+            if not query_compact:
+                continue
+            duplicate_index = next(
+                (
+                    idx
+                    for idx, item in enumerate(variants)
+                    if query_compact == self._compact_query_text(item["query"])
+                ),
+                None,
+            )
+            if duplicate_index is None:
+                variants.append(companion)
+            else:
+                current_variant = str(variants[duplicate_index].get("variant") or "")
+                if current_variant == str(companion.get("variant") or ""):
+                    if not companion.get("surface_override"):
+                        continue
+                    variants[duplicate_index] = {
+                        **variants[duplicate_index],
+                        "surface_override": companion.get("surface_override"),
+                        "handoff_companion": True,
+                    }
+                else:
+                    variants[duplicate_index] = {
+                        **variants[duplicate_index],
+                        **companion,
+                        "source_keyword": variants[duplicate_index].get("source_keyword") or keyword,
+                    }
+            handoff_companion_count += 1
+            companion_counts = getattr(self, "_handoff_repair_companion_counts", None)
+            if companion_counts is None:
+                companion_counts = {}
+                self._handoff_repair_companion_counts = companion_counts
+            companion_name = str(companion.get("variant") or "")
+            companion_counts[companion_name] = companion_counts.get(companion_name, 0) + 1
+
         max_variants = 3 if category in self.AXIS_COMPANION_EXPANDED_CATEGORIES else 2
+        if handoff_companion_count:
+            max_variants += min(1, handoff_companion_count)
         for variant in self._axis_companion_query_variants(keyword, category):
             if len(variants) >= max_variants:
                 break
@@ -10937,6 +11525,22 @@ class ViralHunter:
             kept = [variants[0]]
             for variant in variants[1:]:
                 name = str(variant.get("variant") or "")
+                lane_quality_entry = quality_feedback.get(
+                    self._category_lens_variant_quality_key(category, execution_lens, name)
+                ) if quality_feedback else {}
+                exact_scale_override = (
+                    execution_lens == "community"
+                    and not self._variant_quality_entry_is_repair_signal(lane_quality_entry or {})
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant=name,
+                    )
+                ) if quality_feedback else False
+                if self._variant_quality_entry_is_scale_signal(lane_quality_entry or {}) or exact_scale_override:
+                    kept.append(variant)
+                    continue
                 if self._variant_gate_should_drop(
                     history,
                     category=category,
@@ -13018,6 +13622,10 @@ class ViralHunter:
                     k: int(v)
                     for k, v in (getattr(self, "_variant_quality_budget_scale_counts", {}) or {}).items()
                 },
+                'handoff_repair_companions': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_handoff_repair_companion_counts", {}) or {}).items()
+                },
                 'base_variant_budget_scales': {
                     k: int(v)
                     for k, v in (getattr(self, "_base_variant_budget_scale_counts", {}) or {}).items()
@@ -13180,6 +13788,7 @@ class ViralHunter:
         self._variant_drop_counts = {}
         self._variant_quality_drop_counts = {}
         self._variant_quality_budget_scale_counts = {}
+        self._handoff_repair_companion_counts = {}
         self._platform_yield_cache = None
         self._platform_drop_counts = {}
         self._platform_surface_feedback_cache = None
@@ -13239,6 +13848,7 @@ class ViralHunter:
         self._variant_drop_counts = {}
         self._variant_quality_drop_counts = {}
         self._variant_quality_budget_scale_counts = {}
+        self._handoff_repair_companion_counts = {}
         self._platform_drop_counts = {}
         self._platform_surface_budget_scale_counts = {}
         # 퍼널 거절 누적도 런 단위로 리셋 (같은 헌터 객체 재사용 시 직전 런 누수 방지).

@@ -12,6 +12,7 @@ from core_services.viral_handoff_audit import (
     _next_run_playbook,
     _priority_focus_categories,
     _seed_target_coverage,
+    _viral_action_route_evidence,
     latest_viral_source_scan_id,
     summarize_viral_handoff_quality,
 )
@@ -630,11 +631,11 @@ def test_viral_handoff_audit_flags_discarded_execution_ready_false_negative(tmp_
     signature_term = _signature_terms_for(category, count=1)[0]
     _insert_target(
         conn,
-        target_id="discarded-ready-ad-conflict",
+        target_id="discarded-ready-stale-status",
         scan_id=152,
         category=category,
         grade="A",
-        status="pending",
+        status="filtered_out_ad",
         priority=145,
         platform="kin",
         title=f"청주 {signature_term} 한의원 추천 상담 어디가 좋을까요 ?",
@@ -658,20 +659,21 @@ def test_viral_handoff_audit_flags_discarded_execution_ready_false_negative(tmp_
             "reply_risk_penalty": 0,
             "reply_risk_flags": "",
             "manual_review": 0,
-            "final_reject_reason": "advertorial",
         },
     )
     _insert_target(
         conn,
-        target_id="discarded-provider-noise",
+        target_id="discarded-current-reject-conflict",
         scan_id=152,
         category=category,
         grade="A",
         status="pending",
         priority=150,
         platform="kin",
-        title=f"청주 {signature_term} 한의원 추천 상담 홈페이지 문의전화 ?",
-        content_preview="홈페이지 문의전화 예약 이벤트 안내",
+        title=f"청주 {signature_term} 한의원 추천 상담 어디가 좋을까요 ?",
+        content_preview=(
+            f"청주에서 {signature_term} 때문에 고민인데 한의원 치료 상담 가능한 곳 추천 부탁드립니다"
+        ),
         breakdown={
             "pathfinder_source_keyword": f"청주 {signature_term} 추천 상담",
             "pathfinder_execution_lens": "review",
@@ -711,10 +713,10 @@ def test_viral_handoff_audit_flags_discarded_execution_ready_false_negative(tmp_
     assert rescue["overall"]["manual_review_candidate_count"] == 0
     assert rescue["by_status"] == {"filtered_out_ad": 1}
     assert rescue["by_rescue_mode"] == {"auto_requeue": 1}
-    assert rescue["by_reject_reason"] == {"advertorial": 1}
-    assert rescue["samples"][0]["id"] == "discarded-ready-ad-conflict"
+    assert rescue["by_reject_reason"] == {"(none)": 1}
+    assert rescue["samples"][0]["id"] == "discarded-ready-stale-status"
     assert rescue["samples"][0]["rescue_mode"] == "auto_requeue"
-    assert rescue["samples"][0]["current_reject_reason"] == "advertorial"
+    assert rescue["samples"][0]["current_reject_reason"] == ""
     assert "discarded_execution_rescue_backlog" in report["quality_bar"]["failed_advisory_gates"]
     assert report["quality_bar"]["discarded_execution_rescue_backlog"]["candidate_count"] == 1
     assert report["quality_bar"]["discarded_execution_rescue_backlog"]["auto_requeue_candidate_count"] == 1
@@ -770,8 +772,20 @@ def test_discarded_execution_rescue_splits_auto_requeue_and_manual_review():
             {
                 **base,
                 "id": "auto-filtered",
+                "status": "filtered_out_ad",
+                "current_reject_reason": "",
+            },
+            {
+                **base,
+                "id": "ai-rejected",
                 "status": "filtered_out_ai",
-                "current_reject_reason": "advertorial",
+                "current_reject_reason": "",
+            },
+            {
+                **base,
+                "id": "current-reject-conflict",
+                "status": "filtered_out",
+                "current_reject_reason": "off_domain",
             },
             {
                 **base,
@@ -786,7 +800,7 @@ def test_discarded_execution_rescue_splits_auto_requeue_and_manual_review():
     assert report["overall"]["candidate_count"] == 2
     assert report["overall"]["auto_requeue_candidate_count"] == 1
     assert report["overall"]["manual_review_candidate_count"] == 1
-    assert report["by_status"] == {"filtered_out_ai": 1, "skipped": 1}
+    assert report["by_status"] == {"filtered_out_ad": 1, "skipped": 1}
     assert report["by_rescue_mode"] == {"auto_requeue": 1, "manual_review": 1}
     assert report["auto_requeue_samples"][0]["id"] == "auto-filtered"
     assert report["manual_review_samples"][0]["id"] == "manual-skipped"
@@ -2741,6 +2755,102 @@ def test_viral_action_route_quality_flags_generic_patient_inventory(tmp_path):
         item["code"] == "viral_action_route_gaps"
         for item in report["recommendations"]
     )
+
+
+def test_viral_action_route_bridges_community_entry_to_conversion_lens(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="cost-community-bridge",
+        scan_id=152,
+        category="다이어트",
+        grade="A",
+        status="pending",
+        priority=150,
+        title="청주 다이어트한약 체중감량하려구요",
+        content_preview="청주쪽으로 다이어트한약 찾아보고 있습니다. 괜찮은곳 추천해주세요",
+        breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost_community:추천",
+            "pathfinder_source_keyword": "청주 다이어트 한약 비용",
+            "pathfinder_axis_fit_score": 95,
+            "pathfinder_lens_fit_score": 70,
+            "clinic_treatment_fit_score": 95,
+            "worksite_efficiency_score": 95,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="consultation-community-bridge",
+        scan_id=152,
+        category="교통사고",
+        grade="A",
+        status="pending",
+        priority=150,
+        title="교통사고입원실 있는 한의원 추천해주세요",
+        content_preview="사창동 근처 교통사고 잘해주시는 한의원 추천주세요",
+        breakdown={
+            "pathfinder_execution_lens": "consultation",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_source_keyword": "사창동 교통사고 한의원 상담 가능한곳",
+            "pathfinder_axis_fit_score": 95,
+            "pathfinder_lens_fit_score": 70,
+            "clinic_treatment_fit_score": 95,
+            "worksite_efficiency_score": 95,
+        },
+    )
+    _insert_target(
+        conn,
+        target_id="cost-generic-question",
+        scan_id=152,
+        category="다이어트",
+        grade="A",
+        status="pending",
+        priority=150,
+        title="청주 다이어트 궁금해요 알려주세요?",
+        content_preview="generic patient surface without concrete route",
+        breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_source_keyword": "청주 다이어트 한약 비용",
+            "pathfinder_axis_fit_score": 95,
+            "pathfinder_lens_fit_score": 70,
+            "clinic_treatment_fit_score": 95,
+            "worksite_efficiency_score": 95,
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    read_conn = sqlite3.connect(db_path)
+    read_conn.row_factory = sqlite3.Row
+    rows = {
+        row["id"]: row
+        for row in read_conn.execute(
+            "SELECT * FROM viral_targets WHERE source_scan_run_id = 152"
+        )
+    }
+    read_conn.close()
+
+    cost_route = _viral_action_route_evidence(rows["cost-community-bridge"], "cost")
+    assert cost_route["matched"] is True
+    assert cost_route["route_bridge"] is True
+    assert cost_route["route"] == "recommendation_request"
+    assert cost_route["route_mismatch"] is False
+
+    consultation_route = _viral_action_route_evidence(
+        rows["consultation-community-bridge"],
+        "consultation",
+    )
+    assert consultation_route["matched"] is True
+    assert consultation_route["route_bridge"] is True
+    assert consultation_route["route"] == "recommendation_request"
+    assert consultation_route["route_mismatch"] is False
+
+    generic_route = _viral_action_route_evidence(rows["cost-generic-question"], "cost")
+    assert generic_route["matched"] is False
+    assert generic_route["route_bridge"] is False
+    assert generic_route["route_mismatch"] is False
 
 
 def test_treatment_signal_diversity_flags_single_term_collapse(tmp_path):

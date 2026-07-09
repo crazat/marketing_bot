@@ -543,6 +543,10 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
         "lenses": ("review", "community"),
         "terms": (
             "추천",
+            "추천요",
+            "추천주세요",
+            "추천해주세요",
+            "추천요청",
             "어디",
             "어떤",
             "잘하는",
@@ -552,6 +556,10 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
             "한의원추천",
             "가볼만",
             "다녀보신",
+            "아시는분",
+            "아시는 분",
+            "찾고있",
+            "찾아보고",
         ),
     },
     {
@@ -578,15 +586,21 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
         "terms": (
             "비용",
             "가격",
+            "가격대",
+            "금액",
             "얼마",
             "치료비",
             "시술비",
+            "총비용",
             "실비",
             "보험",
             "자보",
             "부담",
+            "부담되",
             "견적",
             "가격표",
+            "비싸",
+            "저렴",
         ),
     },
     {
@@ -599,7 +613,15 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
             "처방",
             "검사",
             "치료가능",
+            "치료 가능",
+            "치료방법",
+            "치료 방법",
+            "관리방법",
+            "관리 방법",
             "가능할",
+            "가능한곳",
+            "가능한 곳",
+            "도움될까요",
             "받아보",
             "알아보",
             "예약상담",
@@ -616,9 +638,15 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
             "오늘",
             "주말",
             "야간",
+            "야간진료",
             "시간",
             "진료시간",
             "당일",
+            "당일진료",
+            "당일예약",
+            "입원실",
+            "가능한곳",
+            "가능한 곳",
             "위치",
         ),
     },
@@ -656,6 +684,35 @@ VIRAL_ACTION_ROUTE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
         ),
     },
 )
+
+VIRAL_ACTION_ROUTE_BRIDGE_BY_LENS: Dict[str, tuple[str, ...]] = {
+    "cost": (
+        "recommendation_request",
+        "experience_request",
+        "consultation_question",
+        "access_booking_question",
+        "comparison_decision",
+    ),
+    "consultation": (
+        "recommendation_request",
+        "experience_request",
+        "cost_question",
+        "access_booking_question",
+        "safety_recovery_question",
+        "comparison_decision",
+    ),
+    "availability": (
+        "recommendation_request",
+        "experience_request",
+        "consultation_question",
+        "comparison_decision",
+    ),
+    "safety": (
+        "experience_request",
+        "consultation_question",
+        "comparison_decision",
+    ),
+}
 
 
 def _loss_reason_for_status(status: str) -> str:
@@ -1160,11 +1217,81 @@ def _expected_viral_action_routes(lens: str) -> List[str]:
     return routes
 
 
+def _viral_action_route_score_breakdown(row: sqlite3.Row) -> Dict[str, Any]:
+    parsed = _parse_json(_row_value(row, "score_breakdown"), {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _viral_action_route_bridge_variant(score_breakdown: Dict[str, Any], lens: str) -> bool:
+    variant = str(score_breakdown.get("pathfinder_query_variant") or "").strip().lower()
+    expected_lens = str(lens or "").strip().lower()
+    if not variant:
+        return False
+    return bool(
+        variant == "community_base"
+        or variant.startswith(f"{expected_lens}_community:")
+        or variant.startswith("community")
+        or variant.startswith("patient_voice")
+        or variant.startswith("axis_")
+    )
+
+
+def _viral_action_route_source_lens_matched(
+    row: sqlite3.Row,
+    lens: str,
+    score_breakdown: Dict[str, Any],
+) -> bool:
+    expected_lens = str(lens or "").strip().lower()
+    terms = LENS_SURFACE_TERMS.get(expected_lens)
+    if not terms:
+        return False
+
+    source_parts: List[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, (list, tuple, set)):
+            for nested in value:
+                add(nested)
+            return
+        text = str(value or "").strip()
+        if text:
+            source_parts.append(text)
+
+    add(score_breakdown.get("pathfinder_source_keyword"))
+    add(score_breakdown.get("pathfinder_source_keywords"))
+    add(_row_value(row, "matched_keyword"))
+    add(_matched_keyword_candidates(row))
+    compact_source = _compact_text(" ".join(source_parts))
+    if not compact_source:
+        return False
+    return any(
+        _compact_text(term) and _compact_text(term) in compact_source
+        for term in terms
+    )
+
+
+def _viral_action_route_bridge_allowed(
+    row: sqlite3.Row,
+    lens: str,
+    matched_route: Dict[str, Any],
+    score_breakdown: Dict[str, Any],
+) -> bool:
+    expected_lens = str(lens or "").strip().lower()
+    route = str(matched_route.get("route") or "").strip()
+    if route not in VIRAL_ACTION_ROUTE_BRIDGE_BY_LENS.get(expected_lens, ()):
+        return False
+    return bool(
+        _viral_action_route_bridge_variant(score_breakdown, expected_lens)
+        or _viral_action_route_source_lens_matched(row, expected_lens, score_breakdown)
+    )
+
+
 def _viral_action_route_evidence(row: sqlite3.Row, lens: str) -> Dict[str, Any]:
     """Classify the concrete viral entry route exposed by a patient post."""
     compact = _compact_text(_content_text(row))
     expected_lens = str(lens or "").strip().lower()
     expected_routes = _expected_viral_action_routes(expected_lens)
+    score_breakdown = _viral_action_route_score_breakdown(row)
     if not compact or not expected_routes:
         return {
             "checked": bool(compact),
@@ -1173,6 +1300,7 @@ def _viral_action_route_evidence(row: sqlite3.Row, lens: str) -> Dict[str, Any]:
             "terms": [],
             "routes": [],
             "observed_routes": [],
+            "route_bridge": False,
             "route_mismatch": False,
             "expected_routes": expected_routes,
         }
@@ -1197,6 +1325,13 @@ def _viral_action_route_evidence(row: sqlite3.Row, lens: str) -> Dict[str, Any]:
         route for route in matched_routes
         if expected_lens in tuple(route.get("lenses") or ())
     ]
+    bridge_routes = [
+        route for route in matched_routes
+        if route not in accepted_routes
+        and _viral_action_route_bridge_allowed(row, expected_lens, route, score_breakdown)
+    ]
+    if not accepted_routes:
+        accepted_routes = bridge_routes
     primary = accepted_routes[0] if accepted_routes else {}
     observed_route_names = []
     for route in matched_routes:
@@ -1211,6 +1346,7 @@ def _viral_action_route_evidence(row: sqlite3.Row, lens: str) -> Dict[str, Any]:
         "terms": list(primary.get("terms") or []),
         "routes": [str(route.get("route") or "") for route in accepted_routes if route.get("route")][:4],
         "observed_routes": observed_route_names[:6],
+        "route_bridge": bool(bridge_routes and accepted_routes == bridge_routes),
         "route_mismatch": bool(matched_routes and not accepted_routes),
         "expected_routes": expected_routes,
     }
@@ -2308,8 +2444,13 @@ def _discarded_execution_rescue_quality(records: List[Dict[str, Any]], *, limit:
     def missing_reasons(record: Dict[str, Any]) -> List[str]:
         reasons: List[str] = []
         status = str(record.get("status") or "")
+        current_reject_reason = str(record.get("current_reject_reason") or "").strip()
         if status in ACTIONABLE_STATUSES:
             reasons.append("already_actionable")
+        if current_reject_reason:
+            reasons.append("current_reject_reason")
+        if status == "filtered_out_ai":
+            reasons.append("ai_rejected")
         if not bool(record.get("metric_strict_fit")):
             reasons.append("metric_fit_below_strict")
         if not bool(record.get("fresh_activity")):

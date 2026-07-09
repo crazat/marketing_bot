@@ -5889,6 +5889,47 @@ def test_ai_target_split_prefers_execution_ready_target_over_reply_metric_gap():
     assert rest == [non_ready_high_priority]
 
 
+def test_ai_target_viral_action_route_accepts_conversion_community_bridge():
+    bridge_target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/diet/cost-community-bridge",
+        title="청주 다이어트한약 체중감량하려구요",
+        content_preview="청주쪽으로 다이어트한약 찾아보고 있습니다. 괜찮은곳 추천해주세요",
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "cost_community:추천",
+            "pathfinder_source_keyword": "청주 다이어트 한약 비용",
+        },
+    )
+    generic_target = ViralTarget(
+        platform="cafe",
+        url="https://example.com/diet/cost-generic-question",
+        title="청주 다이어트 궁금해요 알려주세요?",
+        content_preview="generic patient surface without concrete route",
+        category="다이어트",
+        matched_keyword_category="다이어트",
+        priority_score=150,
+        score_breakdown={
+            "pathfinder_execution_lens": "cost",
+            "pathfinder_query_variant": "community_base",
+            "pathfinder_source_keyword": "청주 다이어트 한약 비용",
+        },
+    )
+
+    bridge_compact = viral_hunter._compact_query_text(
+        viral_hunter._ai_target_content_text(bridge_target)
+    )
+    generic_compact = viral_hunter._compact_query_text(
+        viral_hunter._ai_target_content_text(generic_target)
+    )
+
+    assert viral_hunter._ai_target_viral_action_route_matched(bridge_target, bridge_compact)
+    assert not viral_hunter._ai_target_viral_action_route_matched(generic_target, generic_compact)
+
+
 def test_ai_target_split_demotes_compliance_review_only_targets():
     risky_high_priority = ViralTarget(
         platform="kin",
@@ -13422,10 +13463,10 @@ def test_viral_hunter_scales_lane_base_repair_without_global_base_drop(tmp_path)
 
     assert plans[0]["variant"] == "base"
     assert plans[0]["handoff_variant_quality_action"] == "repair_query_shape"
-    assert plans[0]["handoff_variant_quality_factor"] == 0.75
+    assert plans[0]["handoff_variant_quality_factor"] == 0.70
     assert plans[0]["platform_limits"]["cafe"] < base["platform_limits"]["cafe"]
     assert getattr(hunter, "_variant_quality_drop_counts", {}) == {}
-    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.75": 1}
+    assert hunter._variant_quality_budget_scale_counts == {"base:repair_query_shape:0.70": 1}
 
 
 def test_viral_hunter_pauses_zero_survival_lane_base_retire_feedback(tmp_path):
@@ -13537,10 +13578,10 @@ def test_viral_hunter_scales_community_base_family_feedback(tmp_path, monkeypatc
 
     assert plans[0]["variant"] == "community_base"
     assert plans[0]["handoff_variant_quality_action"] == "repair_family_query_shape"
-    assert plans[0]["handoff_variant_quality_factor"] == 0.40
+    assert plans[0]["handoff_variant_quality_factor"] == 0.25
     assert plans[0]["platform_limits"]["cafe"] < community_base["platform_limits"]["cafe"]
     assert hunter._variant_quality_budget_scale_counts == {
-        "community_base:repair_family_query_shape:0.40": 1
+        "community_base:repair_family_query_shape:0.25": 1
     }
 
 
