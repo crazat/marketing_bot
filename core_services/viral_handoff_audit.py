@@ -84,7 +84,6 @@ DISCARDED_EXECUTION_AUTO_REQUEUE_STATUSES = {
     "filtered_out_journey_mismatch",
     "filtered_out_low_intent",
     "filtered_out_low_opportunity",
-    "filtered_out_stale_window",
     "filtered_out_unqualified_lead",
 }
 DISCARDED_EXECUTION_MANUAL_REVIEW_STATUSES = {"deleted", "skipped"}
@@ -2440,6 +2439,7 @@ def _discarded_execution_rescue_quality(records: List[Dict[str, Any]], *, limit:
     by_reject_reason: Counter = Counter()
     by_rescue_mode: Counter = Counter()
     priority_focus = set(_priority_focus_categories())
+    stale_window_safety_excluded_count = 0
 
     def missing_reasons(record: Dict[str, Any]) -> List[str]:
         reasons: List[str] = []
@@ -2488,6 +2488,11 @@ def _discarded_execution_rescue_quality(records: List[Dict[str, Any]], *, limit:
         return reasons
 
     for record in records:
+        # Timing-gate expiry is terminal.  Do not let the audit manufacture an
+        # auto-requeue instruction for a post that Viral Hunter must keep stale.
+        if str(record.get("status") or "") == "filtered_out_stale_window":
+            stale_window_safety_excluded_count += 1
+            continue
         reasons = missing_reasons(record)
         if reasons:
             continue
@@ -2576,12 +2581,14 @@ def _discarded_execution_rescue_quality(records: List[Dict[str, Any]], *, limit:
             "manual_review_priority_focus_candidate_count": (
                 manual_review_priority_focus_candidate_count
             ),
+            "stale_window_safety_excluded_count": stale_window_safety_excluded_count,
             "thresholds": {
                 "min_priority": DISCARDED_EXECUTION_RESCUE_MIN_PRIORITY,
                 "min_reply_opportunity": DISCARDED_EXECUTION_RESCUE_MIN_REPLY_SCORE,
             },
             "auto_requeue_statuses": sorted(DISCARDED_EXECUTION_AUTO_REQUEUE_STATUSES),
             "manual_review_statuses": sorted(DISCARDED_EXECUTION_MANUAL_REVIEW_STATUSES),
+            "safety_excluded_statuses": ["filtered_out_stale_window"],
         },
         "by_category": dict(by_category.most_common()),
         "by_lens": dict(by_lens.most_common()),

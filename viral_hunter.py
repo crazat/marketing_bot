@@ -7024,6 +7024,54 @@ class CommentableFilter:
             2,
         )
 
+    @classmethod
+    def _execution_data_quality(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Assess whether a discovered row has enough evidence for an execution queue."""
+        breakdown = target.score_breakdown or {}
+        body = cls._strip_internal_labels(target.content_preview or "")
+        has_substantive_body = len(body) >= cls.MIN_CONTENT_LENGTH
+        posted_value = str(
+            target.date_str or breakdown.get("post_date_enriched") or ""
+        ).strip()
+        has_posted_date = bool(cls._parse_datetime(posted_value, datetime.now()))
+        has_author = bool(str(target.author or "").strip())
+        ai_reviewed = bool(getattr(target, "ai_reviewed", False))
+        has_activity_metadata = bool(
+            int(getattr(target, "search_rank", 0) or 0) > 0
+            or int(getattr(target, "view_count", 0) or 0) > 0
+            or int(getattr(target, "comment_count", 0) or 0) > 0
+        )
+
+        missing: List[str] = []
+        if not has_substantive_body:
+            missing.append("content")
+        if not has_posted_date:
+            missing.append("posted_at")
+        if not has_author:
+            missing.append("author")
+        if not ai_reviewed:
+            missing.append("ai_review")
+        if not has_activity_metadata:
+            missing.append("activity_metadata")
+
+        score = (
+            (45.0 if has_substantive_body else 0.0)
+            + (25.0 if has_posted_date else 0.0)
+            + (10.0 if has_author else 0.0)
+            + (15.0 if ai_reviewed else 0.0)
+            + (5.0 if has_activity_metadata else 0.0)
+        )
+        auto_ready = has_substantive_body and has_posted_date and ai_reviewed
+        tier = "verified" if auto_ready and score >= 85.0 else (
+            "partial" if score >= 50.0 else "insufficient"
+        )
+        return {
+            "score": round(score, 1),
+            "tier": tier,
+            "missing": missing,
+            "auto_ready": auto_ready,
+        }
+
     def filter(self, targets: List[ViralTarget]) -> List[ViralTarget]:
         """
         타겟 필터링 및 우선순위 점수 계산
@@ -7729,6 +7777,24 @@ class CommentableFilter:
                 ),
                 2,
             )
+            data_quality = self._execution_data_quality(target)
+            data_quality_score = float(data_quality["score"])
+            # Search snippets are valid discovery signals, but missing date/body/AI
+            # evidence must not tie verified posts at the priority ceiling.
+            data_quality_adjustment = -min(16.0, max(0.0, 85.0 - data_quality_score) * 0.22)
+            data_quality_cap = 150.0
+            if "content" in data_quality["missing"]:
+                # Explicit short question forms are valid discovery leads, but
+                # remain below fully evidenced execution candidates.
+                data_quality_cap = min(data_quality_cap, 120.0)
+            if "posted_at" in data_quality["missing"]:
+                data_quality_cap = min(data_quality_cap, 138.0)
+            if "ai_review" in data_quality["missing"]:
+                data_quality_cap = min(data_quality_cap, 142.0)
+            target.priority_score = round(
+                max(0.0, min(data_quality_cap, target.priority_score + data_quality_adjustment)),
+                2,
+            )
             target.score_breakdown["timing_priority_adjustment"] = float(timing_priority_adjustment)
             target.score_breakdown["journey_priority_adjustment"] = float(journey_priority_adjustment)
             target.score_breakdown["qualification_priority_adjustment"] = float(qualification_priority_adjustment)
@@ -7739,6 +7805,12 @@ class CommentableFilter:
             target.score_breakdown["execution_readiness_priority_adjustment"] = float(
                 execution_readiness_priority_adjustment
             )
+            target.score_breakdown["execution_data_quality_score"] = data_quality_score
+            target.score_breakdown["execution_data_quality_tier"] = data_quality["tier"]
+            target.score_breakdown["execution_data_quality_missing"] = ",".join(data_quality["missing"])
+            target.score_breakdown["execution_auto_ready"] = bool(data_quality["auto_ready"] and not risk_flags)
+            target.score_breakdown["execution_data_quality_adjustment"] = float(data_quality_adjustment)
+            target.score_breakdown["execution_data_quality_cap"] = float(data_quality_cap)
             current_status = str(target.comment_status or "").strip().lower()
             if current_status in self.FILTER_PASS_RESET_STATUSES:
                 target.comment_status = "pending"
@@ -9198,7 +9270,6 @@ class ViralHunter:
         "retire_family_or_pause": 3,
     }
     REDISCOVERED_RETRY_STATUSES = {
-        "filtered_out_stale_window",
         "filtered_out",
         "filtered_out_ai",
         "filtered_out_low_intent",
@@ -9925,6 +9996,41 @@ class ViralHunter:
             clone.sort_appearances = list(target.sort_appearances or [])
             clones.append(clone)
         return clones
+
+    @staticmethod
+    def _is_manual_review_target(target: ViralTarget) -> bool:
+        breakdown = target.score_breakdown or {}
+        try:
+            manual_review = float(breakdown.get("manual_review") or 0.0) > 0.0
+        except (TypeError, ValueError):
+            manual_review = bool(breakdown.get("manual_review"))
+        return (
+            str(getattr(target, "comment_status", "") or "").strip().lower() == "manual_review"
+            or manual_review
+            or bool(str(breakdown.get("reply_risk_flags") or "").strip())
+        )
+
+    @classmethod
+    def _execution_export_bucket(cls, target: ViralTarget) -> str:
+        if cls._is_manual_review_target(target):
+            return "manual_review"
+        if bool((target.score_breakdown or {}).get("execution_auto_ready")):
+            return "auto_ready"
+        return "needs_enrichment"
+
+    @classmethod
+    def _partition_execution_export_targets(
+        cls,
+        targets: List[ViralTarget],
+    ) -> Dict[str, List[ViralTarget]]:
+        buckets = {
+            "auto_ready": [],
+            "manual_review": [],
+            "needs_enrichment": [],
+        }
+        for target in targets or []:
+            buckets[cls._execution_export_bucket(target)].append(target)
+        return buckets
 
     @staticmethod
     def _context_float(ctx: Dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -13199,7 +13305,11 @@ class ViralHunter:
 
     @classmethod
     def _rediscovered_retry_candidate_ready(cls, target: ViralTarget, prior_status: str) -> bool:
-        """Only revive high-confidence stale-window rediscoveries for another AI pass."""
+        """Only revive eligible generic rediscoveries for another AI pass.
+
+        A stale-window decision is terminal for the same URL.  A new SERP
+        observation must not silently turn it into a fresh AI candidate.
+        """
         status = str(prior_status or "").strip().lower()
         if status not in cls.REDISCOVERED_RETRY_STATUSES:
             return False
@@ -13212,7 +13322,7 @@ class ViralHunter:
             or breakdown.get("pathfinder_fit_reject_reason")
             or ""
         ).strip()
-        if prior_reject and prior_reject != "stale_window":
+        if prior_reject:
             return False
         if CommentableFilter.final_reject_reason(target):
             return False
@@ -13311,8 +13421,8 @@ class ViralHunter:
         if retry_targets:
             fresh_targets = fresh_targets + retry_targets
             print(
-                f"   Rediscovered retry lane: {len(retry_targets)} stale-window "
-                f"targets re-entered AI candidates"
+                f"   Rediscovered retry lane: {len(retry_targets)} eligible "
+                f"generic-filter targets re-entered AI candidates"
             )
 
         refreshed = 0
@@ -13653,8 +13763,13 @@ class ViralHunter:
                     'fresh_discovered': fresh_total,
                     'pending': pending_total,
                     'actionable': pending_total,
+                    # Legacy aliases above are kept for DB compatibility.  New
+                    # consumers must use these explicit queue semantics.
+                    'actionable_cumulative': pending_total,
                     'fresh_pending': fresh_pending_total,
                     'open_pending': open_pending_total,
+                    'open_execution_queue': open_pending_total,
+                    'fresh_open_queue': fresh_pending_total,
                     'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
                     'actionable_rate': (pending_total / discovered_total) if discovered_total else 0.0,
                     'fresh_pending_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
@@ -14446,57 +14561,80 @@ class ViralHunter:
 
         # CSV 자동 저장
         csv_path = None
+        manual_review_csv_path = None
+        enrichment_csv_path = None
         if filtered:
             import csv
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             csv_path = os.path.join(self.cfg.root_dir, 'reports', f'viral_targets_{timestamp}.csv')
             os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            export_buckets = self._partition_execution_export_targets(filtered)
+            csv_headers = [
+                'rank', 'execution_bucket', 'comment_status', 'platform', 'title', 'priority_score',
+                'exposure_score', 'workability_score', 'conversion_fit_score',
+                'execution_data_quality_score', 'execution_data_quality_tier',
+                'execution_data_quality_missing', 'execution_auto_ready', 'viral_need_score',
+                'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
+                'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
+                'timing_window_tier', 'timing_window_signals', 'journey_fit_score', 'journey_stage',
+                'journey_signals', 'qualification_fit_score', 'qualification_tier',
+                'qualification_signals', 'manual_review', 'reply_risk_flags', 'search_sort',
+                'search_rank', 'keyword', 'url'
+            ]
 
-            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'rank', 'platform', 'title', 'priority_score', 'exposure_score',
-                    'workability_score', 'conversion_fit_score', 'viral_need_score',
-                    'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
-                    'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
-                    'timing_window_tier', 'timing_window_signals', 'journey_fit_score',
-                    'journey_stage', 'journey_signals', 'qualification_fit_score',
-                    'qualification_tier', 'qualification_signals', 'manual_review',
-                    'reply_risk_flags', 'search_sort', 'search_rank', 'keyword', 'url'
-                ])
-                for i, t in enumerate(filtered, 1):
-                    breakdown = t.score_breakdown or {}
-                    writer.writerow([
-                        i,
-                        t.platform,
-                        t.title,
-                        t.priority_score,
-                        t.exposure_score,
-                        t.workability_score,
-                        t.conversion_fit_score,
-                        breakdown.get('viral_need_score', 0),
-                        breakdown.get('viral_need_tier', ''),
-                        breakdown.get('viral_need_signals', ''),
-                        breakdown.get('reply_opportunity_score', 0),
-                        breakdown.get('reply_opportunity_tier', ''),
-                        breakdown.get('reply_opportunity_signals', ''),
-                        breakdown.get('timing_window_score', 0),
-                        breakdown.get('timing_window_tier', ''),
-                        breakdown.get('timing_window_signals', ''),
-                        breakdown.get('journey_fit_score', 0),
-                        breakdown.get('journey_stage', ''),
-                        breakdown.get('journey_signals', ''),
-                        breakdown.get('qualification_fit_score', 0),
-                        breakdown.get('qualification_tier', ''),
-                        breakdown.get('qualification_signals', ''),
-                        breakdown.get('manual_review', 0),
-                        breakdown.get('reply_risk_flags', ''),
-                        t.search_sort,
-                        t.search_rank,
-                        ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '',
-                        t.url
-                    ])
+            def write_export(path: str, rows: List[ViralTarget], bucket: str) -> None:
+                with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(csv_headers)
+                    for i, t in enumerate(rows, 1):
+                        breakdown = t.score_breakdown or {}
+                        writer.writerow([
+                            i, bucket, t.comment_status, t.platform, t.title, t.priority_score,
+                            t.exposure_score, t.workability_score, t.conversion_fit_score,
+                            breakdown.get('execution_data_quality_score', 0),
+                            breakdown.get('execution_data_quality_tier', ''),
+                            breakdown.get('execution_data_quality_missing', ''),
+                            breakdown.get('execution_auto_ready', False),
+                            breakdown.get('viral_need_score', 0),
+                            breakdown.get('viral_need_tier', ''),
+                            breakdown.get('viral_need_signals', ''),
+                            breakdown.get('reply_opportunity_score', 0),
+                            breakdown.get('reply_opportunity_tier', ''),
+                            breakdown.get('reply_opportunity_signals', ''),
+                            breakdown.get('timing_window_score', 0),
+                            breakdown.get('timing_window_tier', ''),
+                            breakdown.get('timing_window_signals', ''),
+                            breakdown.get('journey_fit_score', 0),
+                            breakdown.get('journey_stage', ''),
+                            breakdown.get('journey_signals', ''),
+                            breakdown.get('qualification_fit_score', 0),
+                            breakdown.get('qualification_tier', ''),
+                            breakdown.get('qualification_signals', ''),
+                            breakdown.get('manual_review', 0),
+                            breakdown.get('reply_risk_flags', ''),
+                            t.search_sort, t.search_rank,
+                            ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '', t.url,
+                        ])
+
+            # The legacy-named CSV is now safe for downstream execution: it only
+            # contains verified, non-review candidates. Other candidates remain
+            # visible, but cannot be mistaken for automatic work.
+            write_export(csv_path, export_buckets['auto_ready'], 'auto_ready')
+            manual_review_csv_path = os.path.join(
+                self.cfg.root_dir, 'reports', f'viral_targets_manual_review_{timestamp}.csv'
+            )
+            enrichment_csv_path = os.path.join(
+                self.cfg.root_dir, 'reports', f'viral_targets_needs_enrichment_{timestamp}.csv'
+            )
+            write_export(manual_review_csv_path, export_buckets['manual_review'], 'manual_review')
+            write_export(enrichment_csv_path, export_buckets['needs_enrichment'], 'needs_enrichment')
+            print(
+                "   CSV 큐 분리: "
+                f"자동실행 {len(export_buckets['auto_ready'])}건 · "
+                f"검수 {len(export_buckets['manual_review'])}건 · "
+                f"보강필요 {len(export_buckets['needs_enrichment'])}건"
+            )
 
         # 디스커버리 감사: 이번 런의 카테고리/쿼리구조별 수율을 영속화
         audit_summary = None

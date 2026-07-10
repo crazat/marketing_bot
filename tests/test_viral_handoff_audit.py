@@ -793,6 +793,12 @@ def test_discarded_execution_rescue_splits_auto_requeue_and_manual_review():
                 "status": "skipped",
                 "current_reject_reason": "",
             },
+            {
+                **base,
+                "id": "stale-never-requeue",
+                "status": "filtered_out_stale_window",
+                "current_reject_reason": "",
+            },
         ],
         limit=5,
     )
@@ -800,6 +806,7 @@ def test_discarded_execution_rescue_splits_auto_requeue_and_manual_review():
     assert report["overall"]["candidate_count"] == 2
     assert report["overall"]["auto_requeue_candidate_count"] == 1
     assert report["overall"]["manual_review_candidate_count"] == 1
+    assert report["overall"]["stale_window_safety_excluded_count"] == 1
     assert report["by_status"] == {"filtered_out_ad": 1, "skipped": 1}
     assert report["by_rescue_mode"] == {"auto_requeue": 1, "manual_review": 1}
     assert report["auto_requeue_samples"][0]["id"] == "auto-filtered"

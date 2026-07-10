@@ -812,3 +812,23 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `pytest tests\test_pathfinder_viral_stability.py -k "refills_ai_budget_after_enrichment_reject or refills_ai_budget_from_discarded_after_enrichment or discarded_refill_does_not_requeue_known_stale_posts or backlog_rescue or rescues_execution_ready_discarded_statuses or signature_backlog_rescue"` -> `8 passed`.
   - `pytest tests\test_pathfinder_viral_stability.py -k "enriches_and_regates_ai_targets or enrichment_regate_expires_stale_dated_post or refills_ai_budget"` -> `4 passed`.
   - `git diff --check -- viral_hunter.py tests\test_pathfinder_viral_stability.py` -> no errors (LF/CRLF warnings only).
+
+## 2026-07-10 Memory: Pathfinder #105 Viral execution-queue safety hardening
+
+- Completed sequential run context:
+  - Pathfinder Legion `scan_run_id=105`: completed with `8,841` keywords and S+A `1,639` (target 500+ satisfied).
+  - Viral Hunter audit `38`: source scan `105`, discovered `3,909`, fresh discovered `251`, actionable cumulative `53`, actual open queue `37`, fresh open queue `6`, rediscovered `3,658` (`93.6%`).
+  - Handoff audit remained `critical` at `34.1`; the bottleneck is viral freshness/evidence quality rather than Pathfinder keyword supply.
+- Queue and scoring safeguards applied:
+  - `viral_hunter.py`: execution exports are split into `auto_ready`, `manual_review`, and `needs_enrichment`. The legacy-named execution CSV only includes verified, non-review rows.
+  - Execution readiness now records body/date/author/AI/activity evidence quality. Missing body, post date, or AI review lowers/caps priority so low-evidence snippets cannot saturate the top score band.
+  - `manual_review` or `reply_risk_flags` always route to a separate review export, never the automatic execution export.
+  - `viral_scan_audits` summary retains legacy `pending`/`actionable` fields but now adds explicit `actionable_cumulative`, `open_execution_queue`, and `fresh_open_queue` aliases for new consumers.
+- Rediscovery and rescue safety:
+  - `filtered_out_stale_window` is no longer eligible for rediscovered AI retry.
+  - `core_services/viral_handoff_audit.py` excludes stale-window rows from discarded-execution auto-requeue recommendations and reports `stale_window_safety_excluded_count`.
+  - Re-audit: `259` stale-window rows excluded; stale auto-requeue candidates `0`.
+- Verification completed:
+  - `pytest -q tests/test_pathfinder_viral_stability.py` -> `412 passed`.
+  - `pytest -q tests/test_viral_handoff_audit.py` -> `50 passed`.
+  - Re-audit report: `reports/viral_handoff_audit_scan105_2026_07_10_15_01_29_after_fixes.json`.

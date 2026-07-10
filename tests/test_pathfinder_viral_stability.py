@@ -10066,7 +10066,7 @@ def test_viral_hunter_excludes_existing_urls_before_ai_but_refreshes_metadata(tm
     assert merged_breakdown["pathfinder_axis_fit_score"] == 77
 
 
-def test_viral_hunter_retries_high_fit_stale_rediscovered_urls_before_ai(tmp_path, monkeypatch):
+def test_viral_hunter_does_not_retry_stale_rediscovered_urls_before_ai(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "viral_stale_retry_before_ai.db"))
     stale_url = "https://example.com/stale-retry"
     posted_url = "https://example.com/posted"
@@ -10140,14 +10140,7 @@ def test_viral_hunter_retries_high_fit_stale_rediscovered_urls_before_ai(tmp_pat
     fresh_targets, duplicate_count = hunter._exclude_existing_targets_before_ai(targets)
 
     assert duplicate_count == 2
-    assert [target.url for target in fresh_targets] == [
-        "https://example.com/fresh-retry",
-        stale_url,
-    ]
-    retried = fresh_targets[1]
-    assert retried.comment_status == "pending"
-    assert retried.score_breakdown["rediscovered_retry_lane"] is True
-    assert retried.score_breakdown["rediscovered_prior_status"] == "filtered_out_stale_window"
+    assert [target.url for target in fresh_targets] == ["https://example.com/fresh-retry"]
 
     with sqlite3.connect(db.db_path) as conn:
         rows = dict(conn.execute(
@@ -10251,6 +10244,49 @@ def test_viral_hunter_does_not_retry_date_enriched_stale_rediscovery(monkeypatch
         target,
         "filtered_out_stale_window",
     )
+
+
+def test_viral_hunter_execution_exports_require_verified_evidence():
+    verified = ViralTarget(
+        platform="kin",
+        url="https://example.com/verified-evidence",
+        title="verified",
+        content_preview="x" * 140,
+        author="writer",
+        date_str="20260710",
+        search_rank=3,
+        ai_reviewed=True,
+    )
+    partial = ViralTarget(
+        platform="kin",
+        url="https://example.com/partial-evidence",
+        title="partial",
+        content_preview="x" * 140,
+        search_rank=3,
+        ai_reviewed=True,
+    )
+    manual = ViralTarget(
+        platform="kin",
+        url="https://example.com/manual-evidence",
+        title="manual",
+        content_preview="x" * 140,
+        date_str="20260710",
+        ai_reviewed=True,
+        comment_status="manual_review",
+        score_breakdown={"manual_review": 1, "reply_risk_flags": "sensitive_medical"},
+    )
+
+    verified_quality = viral_hunter.CommentableFilter._execution_data_quality(verified)
+    partial_quality = viral_hunter.CommentableFilter._execution_data_quality(partial)
+    verified.score_breakdown["execution_auto_ready"] = verified_quality["auto_ready"]
+    partial.score_breakdown["execution_auto_ready"] = partial_quality["auto_ready"]
+
+    assert verified_quality["tier"] == "verified"
+    assert partial_quality["auto_ready"] is False
+    assert "posted_at" in partial_quality["missing"]
+    assert viral_hunter.ViralHunter._execution_export_bucket(verified) == "auto_ready"
+    assert viral_hunter.ViralHunter._execution_export_bucket(partial) == "needs_enrichment"
+    assert viral_hunter.ViralHunter._execution_export_bucket(manual) == "manual_review"
 
 
 def test_existing_url_refresh_is_deduped_and_does_not_zero_out_priority(tmp_path):
