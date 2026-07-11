@@ -244,12 +244,17 @@ from google import genai              # X - 직접 호출 금지
 from openai import OpenAI             # X - 사용 안 함
 ```
 
+**2026-07-11 GPT-5.6 재분배**: Sol=frontier(고위험 컴플라이언스/전략/댓글, 5.5 동일가 무료
+업그레이드) · Terra=균형 production(일반/한국어/비전) · Luna=대량 정형($1/$6, 판정/분류/추출/배치).
+`TASK_MODEL_DEFAULTS` + `.env` `CODEX_CLI_MODEL_<TASK>`로 적용. structured(바이럴 판정)→Luna는
+라이브 판정 품질 검증 후 확정 권장.
+
 | 함수 | 모델 (task 기준) | 용도 |
 |------|-----------------|------|
-| `ai_generate()` | fast_json/structured → gpt-5.4-mini | 분류·판단·요약 |
-| `ai_generate_json()` | fast_json → gpt-5.4-mini | 구조화 JSON |
-| `ai_generate_korean(task="viral_comment")` | viral_comment → gpt-5.5 | 바이럴 댓글 (footer 없음, 1인칭 보존) |
-| `ai_generate_korean()` | gpt-5.4 | 일반 한국어 콘텐츠 |
+| `ai_generate()` | fast_json/structured → gpt-5.6-luna | 분류·판단·요약 |
+| `ai_generate_json()` | fast_json → gpt-5.6-luna | 구조화 JSON |
+| `ai_generate_korean(task="viral_comment")` | viral_comment → gpt-5.6-sol | 바이럴 댓글 (footer 없음, 1인칭 보존) |
+| `ai_generate_korean()` | general → gpt-5.6-terra | 일반 한국어 콘텐츠 |
 
 **예외**: `vision_analyst.py`만 Codex CLI Vision 직접 사용
 

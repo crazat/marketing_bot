@@ -33,7 +33,7 @@ def test_codex_exec_uses_stdin_prompt_and_final_output_file(monkeypatch, tmp_pat
     assert "--sandbox" not in calls["args"]
     assert 'approval_policy="never"' not in calls["args"]
     assert "--model" in calls["args"]
-    assert "gpt-5.4" in calls["args"]
+    assert "gpt-5.6-terra" in calls["args"]
     assert 'model_reasoning_effort="medium"' in calls["args"]
     assert 'model_verbosity="medium"' in calls["args"]
     assert "--ephemeral" in calls["args"]
@@ -59,7 +59,7 @@ def test_task_model_routing_uses_fast_json_defaults(monkeypatch, tmp_path):
     result = codex.generate_json("Return ok")
 
     assert result == {"ok": True}
-    assert calls["args"][calls["args"].index("--model") + 1] == "gpt-5.4-mini"
+    assert calls["args"][calls["args"].index("--model") + 1] == "gpt-5.6-luna"
     assert 'model_reasoning_effort="low"' in calls["args"]
     assert 'model_verbosity="low"' in calls["args"]
 
@@ -149,9 +149,9 @@ def test_ai_provider_status_reports_codex(monkeypatch, tmp_path):
 
     assert status["provider"] == "codex_cli"
     assert status["available"] is True
-    assert status["model"] == "gpt-5.4"
-    assert status["task_models"]["fast_json"]["model"] == "gpt-5.4-mini"
-    assert status["task_models"]["viral_comment"]["model"] == "gpt-5.5"
+    assert status["model"] == "gpt-5.6-terra"
+    assert status["task_models"]["fast_json"]["model"] == "gpt-5.6-luna"
+    assert status["task_models"]["viral_comment"]["model"] == "gpt-5.6-sol"
     assert status["task_models"]["viral_comment"]["reasoning_effort"] == "high"
     assert status["task_models"]["compliance"]["reasoning_effort"] == "high"
     assert status["task_models"]["strategy"]["reasoning_effort"] == "xhigh"
