@@ -10289,6 +10289,145 @@ def test_viral_hunter_execution_exports_require_verified_evidence():
     assert viral_hunter.ViralHunter._execution_export_bucket(manual) == "manual_review"
 
 
+def test_final_execution_queue_repairs_unscored_hot_target_before_export_or_alert():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/unscored-hot",
+        title="unscored hot candidate",
+        priority_score=150,
+        score_breakdown={},
+    )
+
+    targets, stats = viral_hunter.ViralHunter._finalize_execution_queue([target])
+
+    assert targets == [target]
+    assert stats["needs_enrichment"] == 1
+    assert target.score_breakdown["execution_quality_contract"] == "final_queue_v2"
+    assert target.score_breakdown["execution_data_quality_score"] == 0.0
+    assert "content" in target.score_breakdown["execution_data_quality_missing"]
+    assert target.score_breakdown["execution_auto_ready"] is False
+    assert target.priority_score <= viral_hunter.ViralHunter.EXECUTION_PRIORITY_CAPS["insufficient"]
+    assert viral_hunter.ViralHunter._execution_export_bucket(target) == "needs_enrichment"
+
+
+def test_final_execution_queue_preserves_verified_execution_ready_target():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/verified-hot",
+        title="verified hot candidate",
+        content_preview="x" * 140,
+        author="writer",
+        date_str="20260710",
+        search_rank=3,
+        ai_reviewed=True,
+        priority_score=140,
+    )
+
+    _, stats = viral_hunter.ViralHunter._finalize_execution_queue([target])
+
+    assert stats["auto_ready"] == 1
+    assert target.score_breakdown["execution_data_quality_tier"] == "verified"
+    assert target.score_breakdown["execution_auto_ready"] is True
+    assert target.priority_score == 140
+    assert viral_hunter.ViralHunter._execution_export_bucket(target) == "auto_ready"
+
+
+def test_execution_export_bucket_rejects_stale_auto_ready_flag():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/stale-auto-ready",
+        title="stale flag",
+        content_preview="x" * 140,
+        ai_reviewed=True,
+        score_breakdown={"execution_auto_ready": True},
+    )
+
+    assert viral_hunter.ViralHunter._execution_export_bucket(target) == "needs_enrichment"
+
+
+def test_execution_queue_blocks_verified_evidence_when_workflow_status_is_not_actionable():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/stale-verified",
+        title="stale verified",
+        content_preview="x" * 140,
+        author="writer",
+        date_str="20260710",
+        search_rank=3,
+        ai_reviewed=True,
+        comment_status="filtered_out_stale_window",
+        priority_score=150,
+    )
+
+    _, stats = viral_hunter.ViralHunter._finalize_execution_queue([target])
+
+    assert stats["auto_ready"] == 0
+    assert target.score_breakdown["execution_data_quality_tier"] == "blocked_status"
+    assert target.score_breakdown["execution_auto_ready"] is False
+    assert target.priority_score <= viral_hunter.ViralHunter.EXECUTION_PRIORITY_CAPS["blocked_status"]
+    assert viral_hunter.ViralHunter._execution_export_bucket(target) == "needs_enrichment"
+
+
+def test_google_autocomplete_circuit_breaker_pauses_after_repeated_transport_failures():
+    collector = LegionCollector(delay=0.0, use_google=True)
+
+    class FailingGoogle:
+        last_request_success = False
+
+        def get_suggestions(self, keyword):
+            self.last_request_success = False
+            return []
+
+    collector.google = FailingGoogle()
+    collector._google_circuit_seconds = 60.0
+
+    for _ in range(collector._google_failure_threshold):
+        assert collector._get_google_suggestions_with_circuit("청주 테스트") == []
+
+    assert collector.source_health["google_circuit_opens"] == 1
+    assert collector._get_google_suggestions_with_circuit("청주 테스트") == []
+    assert collector.source_health["google_circuit_skips"] == 1
+
+
+def test_execution_queue_update_does_not_inflate_scan_count(tmp_path):
+    db = DatabaseManager(str(tmp_path / "execution_queue.db"))
+    payload = {
+        "id": "execution-target",
+        "platform": "kin",
+        "url": "https://example.com/execution-target",
+        "title": "target",
+        "matched_keywords": ["청주 테스트"],
+        "priority_score": 150,
+        "workability_score": 145,
+        "conversion_fit_score": 145,
+        "score_breakdown": {},
+    }
+    assert db.insert_viral_target(payload)
+
+    updated = db.update_viral_execution_queue([
+        {
+            **payload,
+            "priority_score": 88,
+            "workability_score": 90,
+            "conversion_fit_score": 91,
+            "score_breakdown": {
+                "execution_quality_contract": "final_queue_v2",
+                "execution_data_quality_score": 0,
+            },
+        }
+    ])
+
+    assert updated == 1
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            "SELECT scan_count, priority_score, score_breakdown FROM viral_targets WHERE id = ?",
+            ("execution-target",),
+        ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 88.0
+    assert "final_queue_v2" in row[2]
+
+
 def test_existing_url_refresh_is_deduped_and_does_not_zero_out_priority(tmp_path):
     db = DatabaseManager(str(tmp_path / "viral_refresh.db"))
     existing = {

@@ -3722,6 +3722,73 @@ class DatabaseManager:
             logger.error(f"refresh_existing_viral_targets error: {e}")
             return 0
 
+    def update_viral_execution_queue(self, targets_data: list[dict]) -> int:
+        """Persist final execution-quality fields without counting a rediscovery.
+
+        The normal Viral upsert advances scan metadata.  Final queue calibration
+        happens after AI, resume, and enrichment paths converge, so it needs a
+        narrow update that cannot inflate scan_count or freshness analytics.
+        """
+        if not targets_data:
+            return 0
+
+        try:
+            import json
+
+            updated = 0
+            for target_data in targets_data:
+                url = target_data.get("url")
+                if not url:
+                    continue
+                canonical_url = target_data.get("canonical_url") or canonicalize_viral_url(url)
+                existing_identity = self._find_existing_viral_target_identity(url, canonical_url)
+                if not existing_identity:
+                    continue
+                target_id, _ = existing_identity
+                row = self.cursor.execute(
+                    "SELECT score_breakdown FROM viral_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                existing_breakdown = row[0] if row else "{}"
+                merged_breakdown = self._merge_score_breakdown(
+                    existing_breakdown,
+                    target_data.get("score_breakdown") or {},
+                )
+                self.cursor.execute(
+                    """
+                    UPDATE viral_targets
+                    SET priority_score = ?,
+                        workability_score = ?,
+                        conversion_fit_score = ?,
+                        score_breakdown = ?,
+                        comment_status = CASE
+                            WHEN ? = 'manual_review' THEN 'manual_review'
+                            ELSE comment_status
+                        END,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        target_data.get("priority_score", 0) or 0,
+                        target_data.get("workability_score", 0) or 0,
+                        target_data.get("conversion_fit_score", 0) or 0,
+                        json.dumps(merged_breakdown, ensure_ascii=False),
+                        target_data.get("comment_status") or "",
+                        datetime.now().isoformat(),
+                        target_id,
+                    ),
+                )
+                updated += max(0, int(self.cursor.rowcount or 0))
+            self.conn.commit()
+            return updated
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"update_viral_execution_queue error: {e}")
+            return 0
+
     def get_viral_targets(self, status: str = None, platform: str = None,
                           category: str = None, date_filter: str = None,
                           platforms: list = None, comment_status: str = None,

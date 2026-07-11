@@ -934,6 +934,7 @@ class GoogleAutocomplete:
         self.delay = delay
         self.base_url = "https://suggestqueries.google.com/complete/search"
         self._last_call = 0
+        self.last_request_success: Optional[bool] = None
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
@@ -946,6 +947,7 @@ class GoogleAutocomplete:
 
     def get_suggestions(self, keyword: str, max_retries: int = 2) -> List[str]:
         """Google 자동완성 제안 가져오기"""
+        self.last_request_success = False
         params = {
             "client": "firefox",  # JSON 응답
             "q": keyword,
@@ -963,6 +965,7 @@ class GoogleAutocomplete:
                 )
 
                 if response.status_code == 200:
+                    self.last_request_success = True
                     data = response.json()
                     # 응답 형식: [검색어, [제안목록], ...]
                     if len(data) > 1 and isinstance(data[1], list):
@@ -1008,6 +1011,11 @@ class LegionCollector:
 
         # Google 자동완성 (다중 소스)
         self.use_google = use_google
+        self.source_health: Dict[str, int] = defaultdict(int)
+        self._google_failure_streak = 0
+        self._google_circuit_open_until = 0.0
+        self._google_circuit_seconds = 90.0
+        self._google_failure_threshold = 3
         if use_google:
             self.google = GoogleAutocomplete(delay=0.5)
         else:
@@ -1355,13 +1363,15 @@ class LegionCollector:
         results = set()
 
         # 1. Naver 자동완성
+        self.source_health["naver_calls"] += 1
         naver_results = self.get_autocomplete(keyword)
         if naver_results:
             results.update(naver_results)
+            self.source_health["naver_result_keywords"] += len(naver_results)
 
         # 2. Google 자동완성 (활성화된 경우)
         if self.use_google and self.google:
-            google_results = self.google.get_suggestions(keyword)
+            google_results = self._get_google_suggestions_with_circuit(keyword)
             if google_results:
                 # Google 결과 중 유효한 것만 추가 (블랙리스트 필터 적용)
                 filtered_google = self._filter_blacklist(google_results)
@@ -1370,6 +1380,34 @@ class LegionCollector:
                         results.add(kw)
 
         return results
+
+    def _get_google_suggestions_with_circuit(self, keyword: str) -> List[str]:
+        """Use Google when healthy; pause it briefly after repeated transport failures."""
+        if not self.google:
+            return []
+        now = time.time()
+        if now < self._google_circuit_open_until:
+            self.source_health["google_circuit_skips"] += 1
+            return []
+
+        self.source_health["google_calls"] += 1
+        results = self.google.get_suggestions(keyword)
+        if self.google.last_request_success:
+            self._google_failure_streak = 0
+            self.source_health["google_successes"] += 1
+        else:
+            self._google_failure_streak += 1
+            self.source_health["google_failures"] += 1
+            if self._google_failure_streak >= self._google_failure_threshold:
+                self._google_circuit_open_until = now + self._google_circuit_seconds
+                self.source_health["google_circuit_opens"] += 1
+                print(
+                    "   Google autocomplete circuit paused for "
+                    f"{int(self._google_circuit_seconds)}s after "
+                    f"{self._google_failure_streak} failed requests"
+                )
+        self.source_health["google_raw_keywords"] += len(results or [])
+        return results or []
 
     def get_related_keywords(self, keyword: str, max_retries: int = 3) -> List[str]:
         """Naver 검색 결과의 연관검색어 가져오기 (재시도 로직 포함)"""
@@ -7657,6 +7695,14 @@ class PathfinderLegion:
             "verified_rate": round(verified_count / max(1, total), 4),
             "multi_source_verified_rate": round(multi_source_count / max(1, total), 4),
             "quality_flag_rate": round(risk_flag_count / max(1, total), 4),
+            "source_health": dict(
+                getattr(getattr(self, "collector", None), "source_health", {}) or {}
+            ),
+            "source_diversity_guard": {
+                "min_source_entropy": 0.45,
+                "source_entropy_healthy": self._entropy_norm(source_counts) >= 0.45,
+                "multi_source_verified_healthy": (multi_source_count / max(1, total)) >= 0.20,
+            },
             "category_counts": dict(category_counts),
             "source_counts": dict(source_counts),
             "intent_counts": dict(intent_counts),
@@ -8611,6 +8657,29 @@ def main():
         # DB 저장 (기본값: True, --no-db로 비활성화)
         if not args.no_db:
             save_stats = legion.save_to_db(results, scan_run_id=scan_run_id)
+            inserted = int(save_stats.get("inserted", 0) or 0)
+            updated = int(save_stats.get("updated", 0) or 0)
+            persistence_metrics = {
+                "inserted": inserted,
+                "updated": updated,
+                "new_keyword_rate": round(inserted / max(1, len(results)), 4),
+                "revisited_keyword_rate": round(updated / max(1, len(results)), 4),
+            }
+            legion.diversity_metrics = {
+                **(getattr(legion, "diversity_metrics", {}) or {}),
+                "persistence": persistence_metrics,
+                "run_sources": {
+                    "google_enabled": bool(getattr(legion.collector, "use_google", False)),
+                    "source_health": dict(getattr(legion.collector, "source_health", {}) or {}),
+                },
+            }
+            print(
+                "   Persistence: "
+                f"new {inserted} ({persistence_metrics['new_keyword_rate']:.1%}) · "
+                f"updated {updated} ({persistence_metrics['revisited_keyword_rate']:.1%})"
+            )
+            if not args.no_csv:
+                legion.export_metrics()
 
             # 스캔 완료 통계 계산
             s_count = sum(1 for r in results if r.grade == 'S')
@@ -8637,8 +8706,8 @@ def main():
                 run_id=scan_run_id,
                 status="completed",
                 total_keywords=len(results),
-                new_keywords=save_stats.get("inserted", 0),
-                updated_keywords=save_stats.get("updated", 0),
+                new_keywords=inserted,
+                updated_keywords=updated,
                 s_count=s_count,
                 a_count=a_count,
                 b_count=b_count,

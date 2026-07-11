@@ -126,7 +126,15 @@ def test_quality_metric_backfill_default_skips_existing_metrics(tmp_path):
     _insert_target(
         conn,
         target_id="existing",
-        breakdown={"clinic_treatment_fit_score": 91, "worksite_efficiency_score": 88},
+        breakdown={
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "execution_data_quality_score": 60,
+            "execution_data_quality_tier": "partial",
+            "execution_data_quality_missing": "ai_review",
+            "execution_auto_ready": False,
+            "execution_quality_contract": "final_queue_v2",
+        },
     )
     conn.commit()
 

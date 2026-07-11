@@ -6993,6 +6993,18 @@ class CommentableFilter:
         return round(min(150.0, platform_base + engagement), 2)
 
     @staticmethod
+    def _compress_operational_score(raw_score: float, *, softness: float = 110.0) -> float:
+        """Map additive evidence onto a usable 0-150 range without ceiling pileups.
+
+        The discovery filter collects many partially-correlated positive signals.
+        A simple hard cap made nearly every viable post look equally perfect, which
+        hid the evidence differences that matter for staff prioritisation.
+        """
+        raw = max(0.0, float(raw_score or 0.0))
+        scale = max(1.0, float(softness or 1.0))
+        return round(min(150.0, 150.0 * (1.0 - math.exp(-raw / scale))), 2)
+
+    @staticmethod
     def _compose_priority_score(
         exposure_score: float,
         workability_score: float,
@@ -7634,7 +7646,10 @@ class CommentableFilter:
                 target.content_preview = f"[{tag_str}] {preview_body}"
 
             # Workability is the operational "can we comment here?" score.
-            target.workability_score = max(0, min(score, 150))
+            workability_raw_score = max(0.0, float(score or 0.0))
+            target.workability_score = self._compress_operational_score(
+                workability_raw_score,
+            )
             if not target.exposure_score:
                 target.exposure_score = self._fallback_exposure_score(target)
 
@@ -7663,13 +7678,19 @@ class CommentableFilter:
                 conversion_fit += max(-18, min(18, (pathfinder_axis_fit_score - 55) * 0.22))
             if pathfinder_lens_fit_tier != "neutral":
                 conversion_fit += max(-18, min(18, (pathfinder_lens_fit_score - 55) * 0.24))
-            target.conversion_fit_score = max(0, min(conversion_fit, 150))
+            conversion_fit_raw_score = max(0.0, float(conversion_fit or 0.0))
+            target.conversion_fit_score = self._compress_operational_score(
+                conversion_fit_raw_score,
+            )
 
             target.score_breakdown = {
                 **(target.score_breakdown or {}),
                 "exposure": target.exposure_score,
                 "workability": target.workability_score,
+                "workability_raw_score": workability_raw_score,
                 "conversion_fit": target.conversion_fit_score,
+                "conversion_fit_raw_score": conversion_fit_raw_score,
+                "operational_score_calibration": "exp_v1",
                 "keyword_bonus": float(keyword_bonus),
                 "soft_ad_penalty": float(soft_ad_penalty),
                 "ad_signal_score": float(ad_signal_score),
@@ -8912,6 +8933,7 @@ POST_ID: {i}
                 newly_saved = 0
                 if db is not None:
                     for t in suitable:
+                        ViralHunter._sync_execution_quality(t)
                         try:
                             if db.insert_viral_target(t.to_dict()):
                                 newly_saved += 1
@@ -9286,6 +9308,27 @@ class ViralHunter:
     REDISCOVERED_RETRY_MIN_REPLY_SCORE = 75.0
     DEFAULT_RESCUE_BACKLOG = 60
     MAX_AUTO_RESCUE_BACKLOG = 300
+    EXECUTION_QUALITY_KEYS = (
+        "execution_data_quality_score",
+        "execution_data_quality_tier",
+        "execution_data_quality_missing",
+        "execution_auto_ready",
+    )
+    # A discovery candidate can still be useful without complete evidence, but
+    # it must not outrank a verified, execution-safe target.
+    EXECUTION_PRIORITY_CAPS = {
+        "verified": 150.0,
+        "partial": 128.0,
+        "insufficient": 100.0,
+        "manual_review": 112.0,
+        "blocked_status": 75.0,
+    }
+    EXECUTION_ACTIONABLE_STATUSES = {
+        "pending",
+        "generated",
+        "approved",
+        "ai_approved",
+    }
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -9295,6 +9338,102 @@ class ViralHunter:
         self.generator = AICommentGenerator()
         self.seed_builder = ViralSeedBuilder()
         self.keyword_context: Dict[str, dict] = {}
+
+    @classmethod
+    def _sync_execution_quality(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Recompute execution evidence after every merge, rescue, or AI pass.
+
+        AI enrichment and database-resume paths may construct a new target object
+        after the initial filter ran.  The final queue therefore cannot trust a
+        previously stored quality field.  This method is the single contract used
+        by persistence, exports, and alerts.
+        """
+        breakdown = dict(target.score_breakdown or {})
+        quality = CommentableFilter._execution_data_quality(target)
+        manual_review = cls._is_manual_review_target(target)
+        risk_flags = str(breakdown.get("reply_risk_flags") or "").strip()
+        status = str(getattr(target, "comment_status", "") or "pending").strip().lower() or "pending"
+        status_actionable = status in cls.EXECUTION_ACTIONABLE_STATUSES
+        auto_ready = bool(
+            quality["auto_ready"]
+            and status_actionable
+            and not manual_review
+            and not risk_flags
+        )
+        tier = "verified" if auto_ready else str(quality["tier"] or "insufficient")
+        if manual_review:
+            tier = "manual_review"
+        elif not status_actionable:
+            tier = "blocked_status"
+
+        quality_score = float(quality["score"] or 0.0)
+        priority_before = max(0.0, float(getattr(target, "priority_score", 0.0) or 0.0))
+        cap = float(cls.EXECUTION_PRIORITY_CAPS.get(tier, cls.EXECUTION_PRIORITY_CAPS["insufficient"]))
+        # Preserve score ordering while allowing evidence quality to be a hard,
+        # visible limiter.  At zero evidence, even a high AI score cannot exceed
+        # the enrichment queue band.
+        evidence_multiplier = 0.50 + (0.50 * min(100.0, quality_score) / 100.0)
+        priority_after = min(cap, priority_before * evidence_multiplier)
+        if auto_ready:
+            priority_after = min(cap, priority_before)
+        if manual_review:
+            priority_after = min(cap, priority_after)
+
+        missing = list(quality.get("missing") or [])
+        breakdown.update({
+            "execution_data_quality_score": round(quality_score, 1),
+            "execution_data_quality_tier": tier,
+            "execution_data_quality_missing": ",".join(missing),
+            "execution_auto_ready": auto_ready,
+            "execution_quality_checked": True,
+            "execution_quality_contract": "final_queue_v2",
+            "execution_queue_status": status,
+            "execution_queue_status_actionable": status_actionable,
+            "execution_priority_before_quality_cap": round(priority_before, 2),
+            "execution_priority_after_quality_cap": round(priority_after, 2),
+            "execution_priority_cap": cap,
+        })
+        target.score_breakdown = breakdown
+        target.priority_score = round(max(0.0, priority_after), 2)
+        return {
+            "tier": tier,
+            "score": quality_score,
+            "auto_ready": auto_ready,
+            "manual_review": manual_review,
+            "missing": missing,
+            "priority_before": priority_before,
+            "priority_after": target.priority_score,
+        }
+
+    @classmethod
+    def _finalize_execution_queue(cls, targets: List[ViralTarget]) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """Apply the final evidence contract before alerts, storage, and exports."""
+        stats = {
+            "total": 0,
+            "auto_ready": 0,
+            "manual_review": 0,
+            "needs_enrichment": 0,
+            "quality_recomputed": 0,
+            "quality_missing": 0,
+        }
+        final_targets: List[ViralTarget] = []
+        for target in targets or []:
+            before = target.score_breakdown or {}
+            had_contract = all(key in before for key in cls.EXECUTION_QUALITY_KEYS)
+            quality = cls._sync_execution_quality(target)
+            stats["total"] += 1
+            stats["quality_recomputed"] += 1
+            stats["quality_missing"] += int(bool(quality["missing"]))
+            bucket = cls._execution_export_bucket(target)
+            stats[bucket] = stats.get(bucket, 0) + 1
+            if not had_contract:
+                logger.warning(
+                    "Final execution-quality contract repaired for target %s",
+                    (target.url or target.id or "unknown")[:120],
+                )
+            final_targets.append(target)
+        final_targets.sort(key=lambda item: item.priority_score or 0.0, reverse=True)
+        return final_targets, stats
 
     def _load_keywords(
         self,
@@ -10014,7 +10153,13 @@ class ViralHunter:
     def _execution_export_bucket(cls, target: ViralTarget) -> str:
         if cls._is_manual_review_target(target):
             return "manual_review"
-        if bool((target.score_breakdown or {}).get("execution_auto_ready")):
+        status = str(getattr(target, "comment_status", "") or "pending").strip().lower() or "pending"
+        if status not in cls.EXECUTION_ACTIONABLE_STATUSES:
+            return "needs_enrichment"
+        # Never rely on a stale stored flag: body/date/AI state can change when a
+        # target is resumed, deduplicated, or enriched after filtering.
+        quality = CommentableFilter._execution_data_quality(target)
+        if bool((target.score_breakdown or {}).get("execution_auto_ready")) and quality["auto_ready"]:
             return "auto_ready"
         return "needs_enrichment"
 
@@ -13446,6 +13591,7 @@ class ViralHunter:
         *,
         source_scan_run_id: Optional[int] = None,
         keyword_count: int = 0,
+        execution_queue_stats: Optional[Dict[str, int]] = None,
         db_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Persist this run's funnel yield by axis, query variant, and query structure.
@@ -13798,6 +13944,7 @@ class ViralHunter:
                 'per_category_reject_reason': per_category_reject_reason,
                 'zero_yield_seeds': zero_yield_seeds,
                 'focus_axis_coverage': focus_axis_coverage,
+                'execution_queue': dict(execution_queue_stats or {}),
                 'category_demand': {
                     'adjustments': getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {},
                     'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
@@ -14510,6 +14657,23 @@ class ViralHunter:
         # 총 저장 수: raw + AI로 분석되어 이미 저장된 것
         saved = raw_saved + len(analyzed_targets)
         filtered = analyzed_targets + rest_targets  # 리포팅용 (정렬 순서 유지 안 됨)
+        filtered, execution_queue_stats = self._finalize_execution_queue(filtered)
+        execution_queue_updated = 0
+        if filtered:
+            try:
+                execution_queue_updated = self.db.update_viral_execution_queue(
+                    [target.to_dict() for target in filtered]
+                )
+            except Exception as e:
+                logger.warning(f"Final execution queue persistence failed: {e}")
+        print(
+            "   Final execution queue: "
+            f"auto-ready {execution_queue_stats['auto_ready']} · "
+            f"manual-review {execution_queue_stats['manual_review']} · "
+            f"needs-enrichment {execution_queue_stats['needs_enrichment']} · "
+            f"quality-missing {execution_queue_stats['quality_missing']} · "
+            f"persisted {execution_queue_updated}"
+        )
 
         # HOT LEAD 즉시 알림 (Telegram) — Tier 구분
         # Tier 1 (점수 120+ 또는 경쟁사 탐지): 즉시 상위 10건 푸시
@@ -14518,7 +14682,8 @@ class ViralHunter:
         if analyzed_targets:
             tier1 = [
                 t for t in analyzed_targets
-                if (t.priority_score or 0) >= 120 or getattr(t, 'category', '') == '경쟁사_역공략'
+                if self._execution_export_bucket(t) == "auto_ready"
+                and (t.priority_score or 0) >= 120
             ]
             if tier1:
                 try:
@@ -14575,6 +14740,7 @@ class ViralHunter:
                 'exposure_score', 'workability_score', 'conversion_fit_score',
                 'execution_data_quality_score', 'execution_data_quality_tier',
                 'execution_data_quality_missing', 'execution_auto_ready', 'viral_need_score',
+                'execution_quality_contract', 'execution_priority_cap',
                 'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
                 'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
                 'timing_window_tier', 'timing_window_signals', 'journey_fit_score', 'journey_stage',
@@ -14597,6 +14763,8 @@ class ViralHunter:
                             breakdown.get('execution_data_quality_missing', ''),
                             breakdown.get('execution_auto_ready', False),
                             breakdown.get('viral_need_score', 0),
+                            breakdown.get('execution_quality_contract', ''),
+                            breakdown.get('execution_priority_cap', 0),
                             breakdown.get('viral_need_tier', ''),
                             breakdown.get('viral_need_signals', ''),
                             breakdown.get('reply_opportunity_score', 0),
@@ -14643,6 +14811,7 @@ class ViralHunter:
                 run_started_at,
                 source_scan_run_id=source_scan_run_id,
                 keyword_count=len(keywords),
+                execution_queue_stats=execution_queue_stats,
             )
         except Exception as e:
             logger.warning(f"디스커버리 감사 저장 실패: {e}")

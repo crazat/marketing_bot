@@ -15,10 +15,18 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from viral_hunter import CommentableFilter, ViralTarget
+from viral_hunter import CommentableFilter, ViralHunter, ViralTarget
 
 
-COVERAGE_KEYS = ("clinic_treatment_fit_score", "worksite_efficiency_score")
+COVERAGE_KEYS = (
+    "clinic_treatment_fit_score",
+    "worksite_efficiency_score",
+    "execution_data_quality_score",
+    "execution_data_quality_tier",
+    "execution_data_quality_missing",
+    "execution_auto_ready",
+    "execution_quality_contract",
+)
 QUALITY_METRIC_KEYS = (
     "viral_need_score",
     "viral_need_tier",
@@ -44,6 +52,15 @@ QUALITY_METRIC_KEYS = (
     "worksite_efficiency_score",
     "worksite_efficiency_tier",
     "worksite_efficiency_signals",
+    "execution_data_quality_score",
+    "execution_data_quality_tier",
+    "execution_data_quality_missing",
+    "execution_auto_ready",
+    "execution_quality_checked",
+    "execution_quality_contract",
+    "execution_priority_before_quality_cap",
+    "execution_priority_after_quality_cap",
+    "execution_priority_cap",
 )
 
 
@@ -228,7 +245,10 @@ def _target_from_row(row: sqlite3.Row) -> MetricBackfillCandidate:
 
 
 def _needs_backfill(score_breakdown: Dict[str, Any]) -> bool:
-    return not all(key in score_breakdown for key in COVERAGE_KEYS)
+    return (
+        not all(key in score_breakdown for key in COVERAGE_KEYS)
+        or score_breakdown.get("execution_quality_contract") != "final_queue_v2"
+    )
 
 
 def _quality_metric_breakdown(candidate: MetricBackfillCandidate) -> Dict[str, Any]:
@@ -310,7 +330,7 @@ def _quality_metric_breakdown(candidate: MetricBackfillCandidate) -> Dict[str, A
         risk_flags,
     )
 
-    return {
+    computed = {
         "viral_need_score": float(viral_score),
         "viral_need_tier": viral_tier,
         "viral_need_signals": ",".join(viral_signals),
@@ -337,6 +357,16 @@ def _quality_metric_breakdown(candidate: MetricBackfillCandidate) -> Dict[str, A
         "worksite_efficiency_signals": ",".join(worksite_signals),
         "quality_metric_backfilled": True,
     }
+    target.score_breakdown = {**breakdown, **computed}
+    ViralHunter._sync_execution_quality(target)
+    return {
+        **computed,
+        **{
+            key: target.score_breakdown.get(key)
+            for key in QUALITY_METRIC_KEYS
+            if key in target.score_breakdown
+        },
+    }
 
 
 def _changed_keys(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
@@ -351,7 +381,17 @@ def _merge_metrics(
 ) -> Dict[str, Any]:
     merged = dict(old)
     for key, value in computed.items():
-        if only_missing and key in QUALITY_METRIC_KEYS and key in merged and merged.get(key) not in (None, ""):
+        execution_contract_missing = (
+            key in QUALITY_METRIC_KEYS
+            and merged.get("execution_quality_contract") != "final_queue_v2"
+        )
+        if (
+            only_missing
+            and key in QUALITY_METRIC_KEYS
+            and not execution_contract_missing
+            and key in merged
+            and merged.get(key) not in (None, "")
+        ):
             continue
         merged[key] = value
     return merged
@@ -419,6 +459,7 @@ def _load_candidates(
                 OR score_breakdown = '{}'
                 OR score_breakdown NOT LIKE '%clinic_treatment_fit_score%'
                 OR score_breakdown NOT LIKE '%worksite_efficiency_score%'
+                OR score_breakdown NOT LIKE '%final_queue_v2%'
             )"""
         )
     order_clause = "ORDER BY discovered_at DESC" if "discovered_at" in columns else "ORDER BY id"
@@ -450,6 +491,9 @@ def _update_candidate(
 ) -> None:
     assignments = ["score_breakdown = ?"]
     params: List[Any] = [json.dumps(new_breakdown, ensure_ascii=False, sort_keys=True)]
+    if "priority_score" in columns:
+        assignments.append("priority_score = ?")
+        params.append(float(candidate.target.priority_score or 0.0))
     if "updated_at" in columns:
         assignments.append("updated_at = CURRENT_TIMESTAMP")
     params.append(candidate.row_id)

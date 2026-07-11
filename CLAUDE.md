@@ -832,3 +832,23 @@ sqlite3 db/marketing_data.db "SELECT id, status, new_keywords, created_at FROM s
   - `pytest -q tests/test_pathfinder_viral_stability.py` -> `412 passed`.
   - `pytest -q tests/test_viral_handoff_audit.py` -> `50 passed`.
   - Re-audit report: `reports/viral_handoff_audit_scan105_2026_07_10_15_01_29_after_fixes.json`.
+
+## 2026-07-11 Memory: Pathfinder #108 + Viral Hunter final execution contract
+
+- Completed sequential run:
+  - Pathfinder Legion `scan_run_id=108`: target `500`, total keywords `9,171`, new `310`, updated `8,861`, S `98`, A `1,669` (S+A `1,767`; target satisfied).
+  - Viral Hunter audit `39`: source scan `108`, discovered `2,282`, fresh discovered `398`; the principal remaining constraint is fresh, execution-grade evidence rather than keyword volume.
+- Execution queue contract (`final_queue_v2`):
+  - Every final target is re-evaluated for body/date/author/AI evidence, review risk, and whether its current status is actionable.
+  - Only `pending`, `generated`, `approved`, or `ai_approved` targets with verified evidence may be `auto_ready`; manual-review, filtered, skipped, deleted, and posted rows must never enter the auto queue or Tier-1 alert list.
+  - Priority now uses compressed operational scores and evidence-based caps, preventing missing-data targets from saturating at `150`.
+  - DB persistence uses `DatabaseManager.update_viral_execution_queue()` so queue updates do not increment scan counts or rewrite discovery lineage.
+- Existing scan reconciliation:
+  - `python scripts/viral_quality_metric_backfill.py --scan-id 108 --apply` migrated `779/779` source rows to `final_queue_v2`.
+  - Verified result: `auto_ready=2`, unsafe auto-ready rows `0`, and zero-quality rows at priority `150` `0`.
+  - Future backfills must treat an old/missing execution contract as incomplete even when all legacy metric keys exist.
+- Discovery resilience and coverage:
+  - Pathfinder Google autocomplete now opens a 90-second circuit after three failed requests while Naver collection continues; run metrics include source health, source diversity, and new-vs-revisited persistence.
+  - `scripts/viral_hunter_curated.py` fills profile-category seed gaps by default (minimum two seeds per category); pass `--curated-only` to retain static curated seeds only.
+- Verification:
+  - `python -m pytest tests/test_pathfinder_viral_stability.py tests/test_viral_target_repo.py tests/test_viral_quality_metric_backfill.py -q` -> `433 passed`.
