@@ -29,6 +29,7 @@ def _make_db(tmp_path):
             matched_keyword_category TEXT,
             posted_at TEXT,
             discovered_at TEXT,
+            last_scanned_at TEXT,
             updated_at TEXT,
             comment_count INTEGER,
             view_count INTEGER
@@ -149,3 +150,30 @@ def test_quality_metric_backfill_default_skips_existing_metrics(tmp_path):
     breakdown = _breakdown(conn, "existing")
     assert breakdown["clinic_treatment_fit_score"] == 91
     assert breakdown["worksite_efficiency_score"] == 88
+
+
+def test_quality_metric_backfill_scopes_to_recent_scan_timestamp(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(conn, target_id="recent")
+    _insert_target(conn, target_id="historical")
+    conn.execute(
+        "UPDATE viral_targets SET last_scanned_at = ? WHERE id = ?",
+        ("2026-07-12T14:30:00", "recent"),
+    )
+    conn.execute(
+        "UPDATE viral_targets SET last_scanned_at = ? WHERE id = ?",
+        ("2026-07-11T14:30:00", "historical"),
+    )
+    conn.commit()
+
+    report = backfill_quality_metrics(
+        db_path=str(db_path),
+        last_scanned_since="2026-07-12T14:17:00",
+        apply=True,
+    )
+
+    assert report["candidate_count"] == 1
+    assert report["updated"] == 1
+    assert report["last_scanned_since"] == "2026-07-12T14:17:00"
+    assert "clinic_treatment_fit_score" in _breakdown(conn, "recent")
+    assert "clinic_treatment_fit_score" not in _breakdown(conn, "historical")

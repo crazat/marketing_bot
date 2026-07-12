@@ -24,6 +24,7 @@ def _print_summary(report: dict) -> None:
     print(f"  mode: {mode}")
     print(f"  db: {report.get('db_path')}")
     print(f"  source_scan_run_id: {report.get('source_scan_run_id')}")
+    print(f"  last_scanned_since: {report.get('last_scanned_since')}")
     print(f"  candidates: {report.get('candidate_count', 0)}")
     print(f"  would_update: {report.get('would_update', 0)}")
     print(f"  updated: {report.get('updated', 0)}")
@@ -51,6 +52,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill Viral Hunter quality metrics for stored targets.")
     parser.add_argument("--db", default=default_db_path(), help="SQLite DB path")
     parser.add_argument("--scan-id", type=int, default=None, help="source_scan_run_id to backfill")
+    parser.add_argument(
+        "--scanned-since",
+        default=None,
+        help="last_scanned_at 기준 범위 시작 (예: 2026-07-12T14:17:00)",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Max candidates to inspect")
     parser.add_argument("--apply", action="store_true", help="Persist updates. Omit for dry-run.")
     parser.add_argument("--include-all", action="store_true", help="Recompute even if quality metrics already exist")
@@ -62,6 +68,7 @@ def main() -> int:
     report = backfill_quality_metrics(
         db_path=args.db,
         source_scan_run_id=args.scan_id,
+        last_scanned_since=args.scanned_since,
         limit=args.limit,
         apply=args.apply,
         statuses=args.status,

@@ -48,7 +48,13 @@ def backup_db(db_path: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--days', type=int, default=14, help='discovered_at 윈도우 (기본 14일)')
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=14,
+        help='최근 스캔일(last_scanned_at, 없으면 discovered_at) 기준 일수 (기본 14일)',
+    )
+    parser.add_argument('--scan-id', type=int, help='특정 source_scan_run_id로 범위를 추가 제한 (선택)')
     parser.add_argument('--limit', type=int, default=200, help='최대 fetch 수 (기본 200)')
     parser.add_argument('--min-preview', type=int, default=300,
                         help='이 길이 미만 content_preview만 대상 (기본 300)')
@@ -61,29 +67,32 @@ def main() -> int:
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
+    query = """
         SELECT platform, url, title, content_preview, category, matched_keywords,
                score_breakdown, discovered_at, first_seen_at, last_scanned_at,
                scan_count, comment_count, view_count, posted_at
           FROM viral_targets
          WHERE comment_status = 'pending'
            AND platform IN ('kin', 'blog', 'cafe', 'naver_cafe')
-           AND discovered_at >= datetime('now', ?)
+           AND COALESCE(NULLIF(last_scanned_at, ''), discovered_at) >= datetime('now', ?)
            AND LENGTH(COALESCE(content_preview, '')) < ?
            AND url LIKE 'http%'
-         ORDER BY priority_score DESC
-         LIMIT ?
-        """,
-        (f'-{int(args.days)} days', int(args.min_preview), int(args.limit)),
-    ).fetchall()
+    """
+    params = [f'-{int(args.days)} days', int(args.min_preview)]
+    if args.scan_id is not None:
+        query += ' AND COALESCE(source_scan_run_id, 0) = ?'
+        params.append(int(args.scan_id))
+    query += ' ORDER BY priority_score DESC LIMIT ?'
+    params.append(int(args.limit))
+    rows = conn.execute(query, params).fetchall()
     conn.close()
 
     if not rows:
         print('대상 없음 (pending KIN/blog 중 snippet-only 행이 없습니다).')
         return 0
 
-    print(f'대상: {len(rows)}건 (days={args.days}, preview<{args.min_preview}자)')
+    scope = f', scan_id={args.scan_id}' if args.scan_id is not None else ''
+    print(f'대상: {len(rows)}건 (recent_scan_days={args.days}{scope}, preview<{args.min_preview}자)')
     if args.dry_run:
         for r in rows[:10]:
             print(f"  [{r['platform']}] {(r['title'] or '')[:50]}")

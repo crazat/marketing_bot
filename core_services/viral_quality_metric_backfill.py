@@ -433,6 +433,7 @@ def _load_candidates(
     conn: sqlite3.Connection,
     *,
     source_scan_run_id: Optional[int],
+    last_scanned_since: Optional[str],
     statuses: Optional[Iterable[str]],
     only_missing: bool,
     limit: Optional[int],
@@ -445,6 +446,9 @@ def _load_candidates(
     if source_scan_run_id is not None and "source_scan_run_id" in columns:
         scope_where.append("COALESCE(source_scan_run_id, 0) = ?")
         params.append(source_scan_run_id)
+    if last_scanned_since and "last_scanned_at" in columns:
+        scope_where.append("COALESCE(last_scanned_at, '') >= ?")
+        params.append(last_scanned_since)
     status_list = [status for status in (statuses or ()) if status]
     if status_list and "comment_status" in columns:
         placeholders = ",".join("?" for _ in status_list)
@@ -507,6 +511,7 @@ def backfill_quality_metrics(
     *,
     db_path: Optional[str] = None,
     source_scan_run_id: Optional[int] = None,
+    last_scanned_since: Optional[str] = None,
     limit: Optional[int] = None,
     apply: bool = False,
     statuses: Optional[Iterable[str]] = None,
@@ -518,6 +523,7 @@ def backfill_quality_metrics(
     report: Dict[str, Any] = {
         "db_path": db_path,
         "source_scan_run_id": source_scan_run_id,
+        "last_scanned_since": last_scanned_since,
         "apply": bool(apply),
         "only_missing": bool(only_missing),
         "candidate_count": 0,
@@ -537,6 +543,7 @@ def backfill_quality_metrics(
         candidates, where_sql, params = _load_candidates(
             conn,
             source_scan_run_id=source_scan_run_id,
+            last_scanned_since=last_scanned_since,
             statuses=statuses,
             only_missing=only_missing,
             limit=limit,

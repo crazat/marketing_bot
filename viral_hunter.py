@@ -14666,6 +14666,43 @@ class ViralHunter:
                 )
             except Exception as e:
                 logger.warning(f"Final execution queue persistence failed: {e}")
+
+            # A rediscovered URL can collide with an existing target that the
+            # AI/final gate has already rejected.  The in-memory candidate may
+            # still look pending, so reload its authoritative DB state before
+            # sending alerts or building execution CSV files.
+            persisted_targets = self._load_existing_targets_by_urls(
+                [target.url for target in filtered if target.url]
+            )
+            if persisted_targets:
+                reconciled_targets = [
+                    target
+                    for target in persisted_targets
+                    if (
+                        str(getattr(target, "comment_status", "") or "").strip().lower()
+                        in self.EXECUTION_ACTIONABLE_STATUSES
+                        or self._is_manual_review_target(target)
+                    )
+                ]
+                suppressed_after_persistence = len(persisted_targets) - len(reconciled_targets)
+                if suppressed_after_persistence:
+                    logger.info(
+                        "Final execution queue reconciliation removed %s DB-rejected targets "
+                        "from alerts and CSV exports",
+                        suppressed_after_persistence,
+                    )
+                filtered, execution_queue_stats = self._finalize_execution_queue(
+                    reconciled_targets
+                )
+                if filtered:
+                    try:
+                        execution_queue_updated = self.db.update_viral_execution_queue(
+                            [target.to_dict() for target in filtered]
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Reconciled execution queue persistence failed: {e}"
+                        )
         print(
             "   Final execution queue: "
             f"auto-ready {execution_queue_stats['auto_ready']} · "
@@ -14679,9 +14716,9 @@ class ViralHunter:
         # Tier 1 (점수 120+ 또는 경쟁사 탐지): 즉시 상위 10건 푸시
         # Tier 2 (100~119): daily_brief.py가 오전 09:00 요약
         # Tier 3 (그 외): 대시보드에서만 확인
-        if analyzed_targets:
+        if filtered:
             tier1 = [
-                t for t in analyzed_targets
+                t for t in filtered
                 if self._execution_export_bucket(t) == "auto_ready"
                 and (t.priority_score or 0) >= 120
             ]
@@ -14703,7 +14740,7 @@ class ViralHunter:
                         message += f"   {lead.title[:60]}\n"
                         message += f"   {lead.url}\n\n"
 
-                    total_rest = len(analyzed_targets) - len(tier1)
+                    total_rest = len(filtered) - len(tier1)
                     if total_rest > 0:
                         message += f"ℹ️ Tier 2/3 {total_rest}건은 오전 Daily Brief로 요약 전송됩니다."
 
