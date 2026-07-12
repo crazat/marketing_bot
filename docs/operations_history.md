@@ -3,6 +3,9 @@
 > 상세 JSON 감사 리포트는 `reports/`, 세부 대화 메모는 사용자별 Claude memory에 보관한다.
 > 여기에는 현재 운영 판단에 다시 쓰일 수 있는 변화만 압축 기록한다.
 
+> 현재 작업의 안정적인 규칙은 [CLAUDE.md](../CLAUDE.md)와
+> [운영 계약](OPERATING_CONTRACTS.md)을 기준으로 한다. 아래 내용은 이력·결과 요약이다.
+
 ## 2026-04 ~ 06 초반: 기반 정비
 
 - AI 호출을 `ai_client.py` 단일 진입점으로 통합하고, Camoufox·RAG·관측성 기반을 구축했다.
