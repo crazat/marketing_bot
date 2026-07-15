@@ -3450,7 +3450,7 @@ class CommentableFilter:
     ))
     AMBIGUOUS_CHEONGJU_REGION_STEMS = {"상당", "서원", "청원"}
     DISTANT_REGION_KEYWORDS = [
-        "서울", "부산", "대구", "인천", "대전", "대전광역시", "광주", "광주광역시", "울산",
+        "서울", "부산", "대구", "인천", "대전", "대전광역시", "세종", "세종특별자치시", "광주", "광주광역시", "울산",
         "수원", "천안", "전주", "강남", "분당", "판교", "유성", "도안", "둔산", "노은",
         "평택", "성남", "용인", "화성", "안산", "안양", "부천", "고양", "의정부",
         "파주", "김포", "남양주", "하남", "의왕", "군포", "시흥", "오산", "광명",
@@ -7945,6 +7945,16 @@ class AICommentGenerator:
     """
 
     UNIFIED_ANALYSIS_PREVIEW_CHARS = 700
+    # An AI "unsuitable" result with no stated rationale is not a reliable
+    # enough reason to permanently discard a locally relevant, high-intent
+    # post.  These thresholds deliberately route only strong deterministic
+    # candidates to human review; they never make a target auto-executable.
+    AI_UNCERTAIN_REVIEW_MIN_PRIORITY = 85.0
+    AI_UNCERTAIN_REVIEW_MIN_AXIS_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_LENS_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_CLINIC_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_REPLY_SCORE = 75.0
+    AI_UNCERTAIN_REVIEW_MIN_QUALIFICATION_FIT = 75.0
     UNIFIED_AD_SAFETY_NOTE = """
 
 [추가 제외 기준]
@@ -7976,6 +7986,53 @@ class AICommentGenerator:
             return prompts.get('viral_hunter', {})
         except Exception:
             return {}
+
+    @classmethod
+    def _should_route_uncertain_ai_rejection_to_manual_review(
+        cls,
+        target: ViralTarget,
+    ) -> bool:
+        """Keep an unexplained AI rejection from silently losing a strong lead.
+
+        This is intentionally a manual-review route, not an acceptance route.
+        Explicit final rejection reasons (advertorial, wrong region, restricted
+        surface, and so on) always remain terminal.
+        """
+        breakdown = target.score_breakdown or {}
+        if str(breakdown.get("ai_verdict") or "").strip().lower() != "unsuitable":
+            return False
+        if str(breakdown.get("ai_rejection_reason") or "").strip():
+            return False
+        if CommentableFilter.final_reject_reason(target):
+            return False
+
+        return (
+            float(target.priority_score or 0.0) >= cls.AI_UNCERTAIN_REVIEW_MIN_PRIORITY
+            and _ai_target_breakdown_float(target, "pathfinder_axis_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_AXIS_FIT
+            and _ai_target_breakdown_float(target, "pathfinder_lens_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_LENS_FIT
+            and _ai_target_breakdown_float(target, "clinic_treatment_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_CLINIC_FIT
+            and _ai_target_breakdown_float(target, "reply_opportunity_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_REPLY_SCORE
+            and _ai_target_breakdown_float(target, "qualification_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_QUALIFICATION_FIT
+        )
+
+    @staticmethod
+    def _mark_uncertain_ai_rejection_for_manual_review(target: ViralTarget) -> None:
+        """Apply an auditable, non-executable manual-review state."""
+        target.ai_reviewed = True
+        target.is_commentable = True
+        target.comment_status = "manual_review"
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "manual_review": 1.0,
+            "reply_risk_flags": "ai_rejection_without_reason",
+            "ai_review_escalation": "high_signal_rejection_without_reason",
+            "execution_auto_ready": False,
+        }
 
     # 경쟁사 탐지 참조는 단일 소스(config/competitors.json)에서 로드한다. 과거에는
     # 프롬프트에 하드코딩된 stale 목록(로랑·데이릴 누락)을 AI에 줘서, 사용자의 #1
@@ -8893,10 +8950,33 @@ POST_ID: {i}
                 # 구조/시드 수율 피드백의 분모와 디스커버리 감사가 왜곡되고,
                 # 레스큐된 raw_backlog 행은 매 런 재레스큐되는 루프가 생긴다.
                 ai_unsuitable_saved = 0
+                ai_retry_saved = 0
+                ai_manual_review_saved = 0
                 if db is not None and batch_targets:
                     parsed_suitable_keys = {(t.url or t.id) for t in suitable}
                     for t in batch_targets:
                         if (t.url or t.id) in parsed_suitable_keys:
+                            continue
+                        verdict = str((t.score_breakdown or {}).get("ai_verdict") or "").strip().lower()
+                        if verdict == "unparsed":
+                            # An incomplete model response must be retried, not
+                            # persisted as a permanent AI rejection.
+                            t.ai_reviewed = False
+                            t.is_commentable = True
+                            t.comment_status = "needs_ai_retry"
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    ai_retry_saved += 1
+                            except Exception as e:
+                                logger.warning(f"AI parse-retry status persistence failed: {e}")
+                            continue
+                        if self._should_route_uncertain_ai_rejection_to_manual_review(t):
+                            self._mark_uncertain_ai_rejection_for_manual_review(t)
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    ai_manual_review_saved += 1
+                            except Exception as e:
+                                logger.warning(f"AI uncertain-review persistence failed: {e}")
                             continue
                         t.ai_reviewed = True
                         t.is_commentable = False
@@ -9018,7 +9098,17 @@ POST_ID: {i}
 
             # SUITABLE 추출
             suitable_match = re.search(r'SUITABLE:\s*(true|false)', post_result, re.IGNORECASE)
-            is_suitable = suitable_match.group(1).lower() == 'true' if suitable_match else False
+            if not suitable_match:
+                # POST_ID alone is not a model decision. Keep the row retriable
+                # while retaining the existing fail-closed return behaviour.
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unparsed",
+                    "ai_parse_error": "missing_suitable_verdict",
+                }
+                unsuitable_count += 1
+                continue
+            is_suitable = suitable_match.group(1).lower() == 'true'
 
             # SCORE 추출
             score_match = re.search(r'SCORE:\s*(\d+)', post_result)
@@ -9051,6 +9141,11 @@ POST_ID: {i}
             counter_match = re.search(r'COUNTER_SCORE:\s*(\d+)', post_result)
             counter_score = int(counter_match.group(1)) if counter_match else 0
 
+            # Preserve the model's rationale. Without it, an AI false result is
+            # indistinguishable from an incomplete response during later audits.
+            reason_match = re.search(r'REASON:\s*(.+?)(?:\n|$)', post_result)
+            ai_reason = reason_match.group(1).strip() if reason_match else ""
+
             if is_suitable:
                 target.ai_reviewed = True
                 target.ai_infiltration_score = infiltration_score
@@ -9063,6 +9158,8 @@ POST_ID: {i}
                 target.priority_score = min((target.priority_score or 0) + bonus, 150)
                 target.score_breakdown = {
                     **(target.score_breakdown or {}),
+                    "ai_verdict": "suitable",
+                    "ai_infiltration_reason": ai_reason,
                     "ai_infiltration_bonus": float(bonus),
                     "ai_infiltration_score": float(infiltration_score),
                 }
@@ -9109,11 +9206,21 @@ POST_ID: {i}
 
                 suitable.append(target)
             else:
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unsuitable",
+                    "ai_rejection_reason": ai_reason,
+                }
                 unsuitable_count += 1
 
         # 파싱되지 않은 타겟은 pending에 넣지 않는다.
         for i, target in enumerate(targets):
             if i not in processed_ids:
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unparsed",
+                    "ai_parse_error": "missing_or_invalid_post_result",
+                }
                 unsuitable_count += 1
 
         return suitable, unsuitable_count, competitor_count

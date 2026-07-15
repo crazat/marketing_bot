@@ -7853,6 +7853,22 @@ def test_viral_final_gate_rejects_distant_region_title():
     assert viral_hunter.CommentableFilter.final_reject_reason(target) == "region_mismatch"
 
 
+def test_viral_final_gate_rejects_sejong_region_title():
+    """세종은 청주 생활권 외부이므로 제목만으로도 지역 불일치여야 한다."""
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/sejong-scar",
+        title="세종 얼굴흉터제거 병원 추천해주세요",
+        content_preview="얼굴 흉터 치료를 받을 병원을 찾고 있습니다.",
+        matched_keywords=["청주 흉터 제거"],
+        category="흉터/여드름흉터",
+        matched_keyword_category="흉터/여드름흉터",
+        matched_keyword_grade="A",
+    )
+
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "region_mismatch"
+
+
 def test_local_venue_anchor_detection():
     """청주 로컬 카페명은 지역 앵커, 인접/타지역/빈값/블로그는 아님."""
     F = viral_hunter.CommentableFilter
@@ -13003,6 +13019,93 @@ def test_unified_analysis_parallel_persists_ai_unsuitable(monkeypatch):
     assert unsuitable_target.ai_reviewed is True
     assert unsuitable_target.is_commentable is False
     assert (unsuitable_target.score_breakdown or {}).get("ai_verdict") == "unsuitable"
+
+
+def test_unified_analysis_parallel_retries_unparsed_model_output(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    monkeypatch.setattr(
+        AICommentGenerator,
+        "_load_prompts",
+        lambda self: {"unified_analysis": {"template": "{posts_formatted}", "batch_size": 25}},
+    )
+    monkeypatch.setattr(
+        viral_hunter,
+        "ai_generate",
+        lambda *args, **kwargs: "POST_ID: 1\nSCORE: 90\nTYPE: consultation\n---",
+    )
+
+    target = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/retry/1",
+        title="unparsed output target",
+        content_preview="A local user question that needs a retriable AI decision.",
+    )
+
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    saved = FakeDB()
+    assert generator.unified_analysis_parallel([target], max_workers=1, db=saved) == []
+    assert target.comment_status == "needs_ai_retry"
+    assert target.is_commentable is True
+    assert target.ai_reviewed is False
+    assert target.score_breakdown["ai_verdict"] == "unparsed"
+    assert saved.saved[-1]["comment_status"] == "needs_ai_retry"
+
+
+def test_unified_analysis_parallel_routes_unexplained_high_signal_rejection_to_manual_review(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    monkeypatch.setattr(
+        AICommentGenerator,
+        "_load_prompts",
+        lambda self: {"unified_analysis": {"template": "{posts_formatted}", "batch_size": 25}},
+    )
+    monkeypatch.setattr(
+        viral_hunter,
+        "ai_generate",
+        lambda *args, **kwargs: "POST_ID: 1\nSUITABLE: false\nSCORE: 10\nTYPE: other\n---",
+    )
+    monkeypatch.setattr(
+        viral_hunter.CommentableFilter,
+        "final_reject_reason",
+        classmethod(lambda cls, target: None),
+    )
+
+    target = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/manual/1",
+        title="high-signal local question",
+        content_preview="A current local treatment question with no hard rejection reason.",
+        priority_score=100,
+        score_breakdown={
+            "pathfinder_axis_fit_score": 80,
+            "pathfinder_lens_fit_score": 80,
+            "clinic_treatment_fit_score": 80,
+            "reply_opportunity_score": 90,
+            "qualification_fit_score": 90,
+        },
+    )
+
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    saved = FakeDB()
+    assert generator.unified_analysis_parallel([target], max_workers=1, db=saved) == []
+    assert target.comment_status == "manual_review"
+    assert target.is_commentable is True
+    assert target.score_breakdown["ai_verdict"] == "unsuitable"
+    assert target.score_breakdown["ai_review_escalation"] == "high_signal_rejection_without_reason"
+    assert saved.saved[-1]["comment_status"] == "manual_review"
 
 
 def test_unified_analysis_parallel_persists_manual_review_risk_separately(monkeypatch):

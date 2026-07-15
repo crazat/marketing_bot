@@ -34,6 +34,12 @@
   남기고 `failed`로 정리한다.
 - 기본 검증: `python -m pytest -q`, `git diff --check`.
 - 새 Viral 결과는 audit → metric backfill → body enrichment → export reconciliation 순으로 점검한다.
+- `scripts/viral_hunter_curated.py` 실행은 completed Legion scan을 `--source-scan-id`로 명시한다.
+  기본값은 S/A seed 우선이며, B 등급은 해당 치료축에 S/A seed가 없을 때만 보완 용도로 쓴다.
+- AI 응답에 `SUITABLE` 판정이 없으면 영구 제외하지 않고 `needs_ai_retry`로 남긴다. 근거 없는
+  AI 제외라도 결정론적 점수가 높은 후보는 자동 실행하지 않고 `manual_review`로 보낸다.
+- 청주 타깃의 제목·본문 지역 게이트는 세종을 타지역으로 취급한다. 지역 불일치 후보는
+  `filtered_out` 상태를 유지하며 실행 큐에 되돌리지 않는다.
 - 주요 명령은 [터미널 실행 가이드](docs/TERMINAL_GUIDE.md)를 복사해 사용한다.
 
 ## DB 및 변경 안전
