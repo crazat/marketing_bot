@@ -6380,7 +6380,7 @@ class CommentableFilter:
 
     @classmethod
     def _is_traffic_axis_noise(cls, target: ViralTarget, text: str) -> bool:
-        """Reject accident seeds that are about vehicle repair, property damage, or legal settlement."""
+        """Reject accident seeds that are about unrelated care, repair, property, or legal issues."""
         domain = cls._target_domain(target)
         category = GYULIM_KEYWORD_PROFILE.normalize_category(
             getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
@@ -6390,6 +6390,28 @@ class CommentableFilter:
 
         title_text = (target.title or "").lower()
         user_text = cls._axis_user_segment_text(target)
+        source_text = " ".join(getattr(target, "matched_keywords", ()) or ()).lower()
+        traffic_context_patterns = (
+            "교통사고",
+            "자동차사고",
+            "후유증",
+            "자보",
+            "자동차보험",
+            "교통사고보험",
+            "추돌",
+            "사고후통증",
+        )
+        # Pathfinder may classify a bare "입원 병원" query as traffic because
+        # admission is a traffic-care term.  Do not let that broad query turn
+        # unrelated psychiatric, rehabilitation, or nursing-hospital threads
+        # into high-fit traffic candidates.  A genuine accident post remains
+        # eligible when the post itself carries a traffic-specific anchor.
+        if (
+            source_text
+            and not cls._contains_any(source_text, traffic_context_patterns)
+            and not cls._contains_any(f"{title_text} {user_text}", traffic_context_patterns)
+        ):
+            return True
         if cls._contains_any(f"{title_text} {user_text}", cls.TRAFFIC_ANIMAL_OR_VET_NOISE_PATTERNS):
             return True
         if cls._contains_any(title_text, cls.TRAFFIC_TITLE_HARD_NOISE_PATTERNS) and not cls._contains_any(

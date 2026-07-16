@@ -3366,7 +3366,48 @@ class DatabaseManager:
                     last_scanned_at = excluded.last_scanned_at,
                     scan_count = COALESCE(viral_targets.scan_count, 0) + 1,
                     content_hash = excluded.content_hash,
+                    is_commentable = CASE
+                        -- A successful retry must be allowed to replace its
+                        -- temporary needs_ai_retry workflow state.
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') = 'needs_ai_retry'
+                             AND (
+                                COALESCE(excluded.comment_status, 'pending') = 'pending'
+                                OR COALESCE(excluded.ai_reviewed, 0) = 1
+                                OR COALESCE(
+                                    CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                         THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                    END,
+                                    ''
+                                ) != ''
+                             )
+                            THEN excluded.is_commentable
+                        WHEN COALESCE(excluded.ai_reviewed, 0) = 1
+                             OR COALESCE(
+                                CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                     THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                END,
+                                ''
+                             ) != ''
+                            THEN excluded.is_commentable
+                        ELSE viral_targets.is_commentable
+                    END,
                     comment_status = CASE
+                        -- needs_ai_retry is a temporary parse/transport state,
+                        -- not a terminal status.  Persist a later AI verdict
+                        -- or a final-gate rejection, while still preserving it
+                        -- against an ordinary rediscovery update.
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') = 'needs_ai_retry'
+                             AND COALESCE(excluded.comment_status, 'pending') != 'pending'
+                             AND (
+                                COALESCE(excluded.ai_reviewed, 0) = 1
+                                OR COALESCE(
+                                    CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                         THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                    END,
+                                    ''
+                                ) != ''
+                             )
+                            THEN excluded.comment_status
                         WHEN COALESCE(viral_targets.comment_status, 'pending') IN ('needs_ai_retry', 'raw_backlog')
                              AND COALESCE(excluded.comment_status, 'pending') = 'pending'
                             THEN 'pending'

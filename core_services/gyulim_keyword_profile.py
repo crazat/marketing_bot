@@ -1287,6 +1287,22 @@ class GyulimKeywordProfile:
             return False
 
         kw = _compact(keyword)
+        if category == "교통사고":
+            # "입원" alone is too ambiguous: it retrieves psychiatric,
+            # nursing-home, and general-hospital posts as readily as accident
+            # care.  Keep admission-focused traffic queries only when they
+            # retain an accident-specific anchor.
+            traffic_context_terms = (
+                "교통사고",
+                "자동차사고",
+                "후유증",
+                "자보",
+                "자동차보험",
+                "교통사고보험",
+                "추돌",
+                "사고후통증",
+            )
+            return any(_compact(term) in kw for term in traffic_context_terms)
         if category == "통증/디스크":
             # Keep pain broad enough for discovery, but block bare technique terms
             # such as "청주 추나" unless an actual pain/problem token is present.

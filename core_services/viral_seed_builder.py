@@ -807,6 +807,17 @@ class ViralSeedBuilder:
                 keyword,
                 row_data.get("category") or "기타",
             )
+            # The persisted business_core flag is intentionally broad.  Apply
+            # the live profile guard as well for the accident axis, where a
+            # bare "입원" query otherwise has no accident context.
+            if (
+                row_data["category"] == "교통사고"
+                and not GYULIM_KEYWORD_PROFILE.is_focus_candidate(
+                    keyword,
+                    row_data["category"],
+                )
+            ):
+                continue
             if self._is_non_hanbang_diet_seed(row_data):
                 continue
             fb = self._feedback_for_keyword(feedback, keyword)
