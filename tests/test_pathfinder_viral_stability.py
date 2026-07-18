@@ -11765,10 +11765,29 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
 
     audit = hunter._persist_viral_discovery_audit(
         "2026-06-12 00:00:00",
+        run_funnel={
+            "search_collected": 180,
+            "filter_input": 100,
+            "filter_survivors": 30,
+            "existing_url_excluded": 24,
+            "auto_ready": 2,
+        },
         db_path=str(db_path),
     )
 
     cb = audit["coverage_bounds"]
+    assert audit["metric_scopes"] == {
+        "summary": "persisted_target_snapshot",
+        "run_funnel": "immutable_in_memory_run_counts",
+    }
+    assert audit["summary"]["discovered"] == 1
+    assert audit["run_funnel"] == {
+        "search_collected": 180,
+        "filter_input": 100,
+        "filter_survivors": 30,
+        "existing_url_excluded": 24,
+        "auto_ready": 2,
+    }
     # 0 인 사유는 노출하지 않는다 (title_only 제외 확인).
     assert cb["funnel_rejections"] == {"advertorial": 12, "no_region": 5}
     assert cb["funnel_rejected_total"] == 17
@@ -11787,6 +11806,8 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
             "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT 1"
         ).fetchone()[0]
     persisted = json.loads(stored)
+    assert persisted["run_funnel"]["search_collected"] == 180
+    assert persisted["run_funnel"]["auto_ready"] == 2
     assert persisted["coverage_bounds"]["funnel_rejected_total"] == 17
     assert persisted["coverage_bounds"]["platform_yield_drops"]["blog"] == 7
     assert persisted["coverage_bounds"]["platform_surface_budget_scales"]["kin::test-axis:0.50"] == 2

@@ -48,6 +48,8 @@
 - `enrich_pending_bodies.py`는 짧은 본문을 보강할 수 있지만, 게시일·작성자 등 필수 메타데이터가 복원되지 않으면
   자동 실행으로 승격하지 않는다.
 - 실행 export는 메모리의 중간 상태가 아니라 최종 DB 상태로 재조정한다.
+- `viral_scan_audits.summary`는 재발견 및 사전 게이트 저장 행을 포함할 수 있는 영속 DB 스냅샷이다. 검색 수집량이나 실행 수율의 분모로 사용하지 않는다.
+- 런 단위 수율 분석은 `audit_json.run_funnel`의 불변 단계 카운트(검색 → 게이트 → 필터 → 중복 제거 → 보강 → AI → 최종 큐)를 우선한다. 기존 감사에 `run_funnel`이 없으면 `coverage_bounds`와 완료 로그를 별도 범위로 교차 확인하며, 서로 다른 스코프의 수치를 하나의 분모로 섞지 않는다.
 - `viral_handoff_audit.py`가 저장한 `variant_quality_feedback`은 다음 Viral 계획의 입력이다.
   충분한 표본에서 생존·엄격 적합이 모두 0인 `retire_or_pause` 변형은 다음 계획에서 제외되어야 하며,
   재실행 전에는 해당 게이트의 표적 테스트로 이를 확인한다.

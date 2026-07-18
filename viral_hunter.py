@@ -13721,6 +13721,7 @@ class ViralHunter:
         source_scan_run_id: Optional[int] = None,
         keyword_count: int = 0,
         execution_queue_stats: Optional[Dict[str, int]] = None,
+        run_funnel: Optional[Dict[str, int]] = None,
         db_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Persist this run's funnel yield by axis, query variant, and query structure.
@@ -14032,7 +14033,26 @@ class ViralHunter:
                 'keyword_limit_dropped': int(getattr(self, "_keyword_limit_dropped", 0) or 0),
             }
 
+            # `summary` below is intentionally a DB-state snapshot: it includes
+            # rediscovered records whose source_scan_run_id was refreshed during
+            # this run.  That makes it valuable for queue health and historical
+            # query feedback, but it is not a faithful denominator for the
+            # current run's search funnel.  Persist the in-memory stage counts
+            # separately while they are still immutable, so operators never
+            # mistake a refreshed DB population for newly searched candidates.
+            run_funnel_snapshot: Dict[str, int] = {}
+            for key, value in (run_funnel or {}).items():
+                try:
+                    run_funnel_snapshot[str(key)] = max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    continue
+
             audit: Dict[str, Any] = {
+                'metric_scopes': {
+                    'summary': 'persisted_target_snapshot',
+                    'run_funnel': 'immutable_in_memory_run_counts',
+                },
+                'run_funnel': run_funnel_snapshot,
                 'summary': {
                     'discovered': discovered_total,
                     'fresh_discovered': fresh_total,
@@ -14386,23 +14406,27 @@ class ViralHunter:
         )
 
         # 재발견된 기존 pending 광고글도 상태가 갱신되도록 강한 최종 게이트를 먼저 적용한다.
+        search_collected_count = len(all_targets)
+        pre_gate_removed = 0
+        pre_gate_saved = 0
         if all_targets:
             gate_keep: List[ViralTarget] = []
-            gate_removed = 0
-            gate_saved = 0
             for target in all_targets:
                 reject_reason = CommentableFilter.apply_final_reject(target)
                 if reject_reason:
-                    gate_removed += 1
+                    pre_gate_removed += 1
                     try:
                         if self.db.insert_viral_target(target.to_dict()):
-                            gate_saved += 1
+                            pre_gate_saved += 1
                     except Exception as e:
                         logger.warning(f"사전 최종 게이트 제외 상태 저장 실패: {e}")
                     continue
                 gate_keep.append(target)
-            if gate_removed:
-                print(f"   🧹 사전 광고/노이즈 게이트: {gate_removed}개 제외 (상태 저장 {gate_saved}개)")
+            if pre_gate_removed:
+                print(
+                    f"   🧹 사전 광고/노이즈 게이트: {pre_gate_removed}개 제외 "
+                    f"(상태 저장 {pre_gate_saved}개)"
+                )
             all_targets = gate_keep
 
         # 필터링
@@ -14411,14 +14435,18 @@ class ViralHunter:
             progress_callback("필터링중", len(keywords), len(keywords), f"{len(all_targets)}개 타겟 필터링 중...")
         filtered = self.filter.filter(all_targets)
         filtered = self._apply_batch_quality_gate(filtered)
+        filter_input_count = len(all_targets)
+        filter_survivor_count = len(filtered)
+        existing_before_ai = 0
 
         # 기존 URL은 scan_count/source_scan_run_id만 갱신하고 AI 판별 전 제외한다.
         if filtered:
             print(f"\n🔄 중복 체크 중...")
             try:
-                filtered, _existing_before_ai = self._exclude_existing_targets_before_ai(filtered)
+                filtered, existing_before_ai = self._exclude_existing_targets_before_ai(filtered)
             except Exception as e:
                 logger.warning(f"중복 체크 실패 (계속 진행): {e}")
+        discovery_candidates_after_dedup = len(filtered)
 
         # [D2] Adaptive penalty 적용 — 반복 skip된 도메인/작성자 감점
         if filtered:
@@ -14597,6 +14625,10 @@ class ViralHunter:
 
         # 본문 enrichment — AI가 snippet(~150자)이 아닌 실제 본문/답변을 보고
         # 판정하도록 KIN/blog 공개 표면을 보강하고, 드러난 광고는 즉시 재탈락.
+        ai_candidates_before_enrichment = len(ai_targets)
+        enrichment_fetched = 0
+        enrichment_regate_rejected = 0
+        enrichment_stale_rejected = 0
         if ai_targets and enrich_bodies:
             try:
                 before_enrich = len(ai_targets)
@@ -14609,6 +14641,9 @@ class ViralHunter:
                     ai_targets,
                     max_fetch=int(enrich_bodies),
                 )
+                enrichment_fetched = int(enrich_stats.get("fetched", 0) or 0)
+                enrichment_regate_rejected = int(enrich_stats.get("regate_rejected", 0) or 0)
+                enrichment_stale_rejected = int(enrich_stats.get("stale_rejected", 0) or 0)
                 if enrich_stats["fetched"]:
                     print(
                         f"   📄 본문 enrichment: fetch {enrich_stats['fetched']}건 → "
@@ -14669,6 +14704,7 @@ class ViralHunter:
                         )
             except Exception as e:
                 logger.warning(f"본문 enrichment 실패 (계속 진행): {e}")
+        ai_candidates_after_enrichment = len(ai_targets)
 
         if ai_targets:
             ai_category_counts: Dict[str, int] = {}
@@ -14788,6 +14824,7 @@ class ViralHunter:
         filtered = analyzed_targets + rest_targets  # 리포팅용 (정렬 순서 유지 안 됨)
         filtered, execution_queue_stats = self._finalize_execution_queue(filtered)
         execution_queue_updated = 0
+        suppressed_after_persistence = 0
         if filtered:
             try:
                 execution_queue_updated = self.db.update_viral_execution_queue(
@@ -14978,6 +15015,30 @@ class ViralHunter:
                 source_scan_run_id=source_scan_run_id,
                 keyword_count=len(keywords),
                 execution_queue_stats=execution_queue_stats,
+                run_funnel={
+                    'search_collected': search_collected_count,
+                    'pre_gate_rejected': pre_gate_removed,
+                    'pre_gate_persisted': pre_gate_saved,
+                    'filter_input': filter_input_count,
+                    'filter_survivors': filter_survivor_count,
+                    'existing_url_excluded': existing_before_ai,
+                    'discovery_candidates_after_dedup': discovery_candidates_after_dedup,
+                    'backlog_rescued': rescued_count,
+                    'signature_backlog_rescued': sig_rescued_count,
+                    'ai_candidates_before_enrichment': ai_candidates_before_enrichment,
+                    'enrichment_fetched': enrichment_fetched,
+                    'enrichment_regate_rejected': enrichment_regate_rejected,
+                    'enrichment_stale_rejected': enrichment_stale_rejected,
+                    'ai_candidates_after_enrichment': ai_candidates_after_enrichment,
+                    'ai_suitable': len(analyzed_targets),
+                    'raw_backlog_saved': raw_saved,
+                    'db_saved_total': saved,
+                    'db_rejected_during_reconciliation': suppressed_after_persistence,
+                    'final_execution_candidates': len(filtered),
+                    'auto_ready': int(execution_queue_stats.get('auto_ready', 0) or 0),
+                    'manual_review': int(execution_queue_stats.get('manual_review', 0) or 0),
+                    'needs_enrichment': int(execution_queue_stats.get('needs_enrichment', 0) or 0),
+                },
             )
         except Exception as e:
             logger.warning(f"디스커버리 감사 저장 실패: {e}")
