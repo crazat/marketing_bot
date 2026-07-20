@@ -15,12 +15,15 @@
 - 운영 DB는 `db/marketing_data.db`다. 바이럴 후보의 최종 상태와 점수 근거는
   `viral_targets`와 `score_breakdown`을 기준으로 확인한다.
 
-## Operational Memory — 2026-07-19
+## Operational Memory — 2026-07-20
 
 - Legion scan `117` completed with 9,279 processed keywords and 2,060 S/A-grade keywords (78 S, 1,982 A). The source-diversity guard was below target for the full discovery set (`0.421 < 0.45`), but the S/A candidate pool was led by post-seed expansion sources; do not impose a blind source cap that would discard viable category coverage.
 - Viral Hunter scan `117` persisted 910 discovered targets. Quality-metric backfill updated the 646 incomplete rows after a verified SQLite backup; clinic and worksite fit coverage is now 910/910. This is evidence completeness only, not an eligibility promotion.
 - Pending-body enrichment and final export reconciliation were completed without requeueing protected statuses. The final handoff audit remains `critical` (score `37.96`): 0.55% survival/strict-fit, 27.03% content-category mismatch, and 34.62% lens-surface mismatch. Preserve every exclusion and use the audit feedback to reshape the next run.
 - Next runs must consume `variant_quality_feedback`: suppress sufficiently evidenced zero-yield query variants, repair weak category/lens shapes (including `axis_traffic:specific_입원`), and improve content coherence before increasing scan volume. Never relax medical, locality, AI, or final execution gates to improve reported yield.
+- Legion scan `118` completed with 9,257 processed keywords (92 S and 1,934 A). Its Viral Hunter run used 47 seeds; analyze its yield only through immutable `audit_json.run_funnel`: 2,247 raw results → 471 rule/batch survivors → 13 final execution candidates (2 auto-ready, 6 manual review, 5 needs enrichment). With 433 of 471 survivors already known URLs, improve discovery breadth rather than relax eligibility gates.
+- The scan-118 handoff audit remains `critical` (score `30.48`). Region ambiguity and Pathfinder mismatch were the main detailed rule-rejection causes, while feedback produced 4 general retire and 9 general repair controls. Preserve medical, locality, AI, freshness, and final execution gates while applying those controls.
+- `ViralHunter._load_variant_quality_feedback` must keep only the newest handoff-audit file for each `source_scan_run_id`. This prevents initial/backfill/final snapshots of one scan from crowding out evidence from distinct completed scans; retain the lineage-aware behavior and its regression test.
 
 ## 운영 계약
 

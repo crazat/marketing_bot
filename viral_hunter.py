@@ -10701,6 +10701,7 @@ class ViralHunter:
         ).strip()
 
         audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+        audit_limit = max(1, int(max_audits))
         if root_dir:
             reports_dir = os.path.join(root_dir, "reports")
             try:
@@ -10711,14 +10712,28 @@ class ViralHunter:
                         if name.startswith("viral_handoff_audit") and name.endswith(".json")
                     ]
                     report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-                    for path in report_files[: max(1, int(max_audits))]:
+                    # A scan can produce multiple audit snapshots (initial,
+                    # backfilled, final).  Only the newest snapshot for that
+                    # lineage should consume one feedback-history slot; otherwise
+                    # repeated files from the latest scan crowd out distinct,
+                    # older scan evidence.
+                    loaded_report_scan_ids: set[str] = set()
+                    for path in report_files:
                         try:
                             with open(path, "r", encoding="utf-8") as fh:
                                 payload = json.load(fh)
                         except (OSError, json.JSONDecodeError):
                             continue
-                        if isinstance(payload, dict):
-                            audit_payloads.append((payload, os.path.basename(path)))
+                        if not isinstance(payload, dict):
+                            continue
+                        source_scan_run_id = str(payload.get("source_scan_run_id") or "").strip()
+                        if source_scan_run_id and source_scan_run_id in loaded_report_scan_ids:
+                            continue
+                        audit_payloads.append((payload, os.path.basename(path)))
+                        if source_scan_run_id:
+                            loaded_report_scan_ids.add(source_scan_run_id)
+                        if len(audit_payloads) >= audit_limit:
+                            break
             except OSError:
                 pass
 
@@ -10732,7 +10747,7 @@ class ViralHunter:
                 if table_exists:
                     rows = conn.execute(
                         "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
-                        (max(1, int(max_audits)),),
+                        (audit_limit,),
                     ).fetchall()
                 else:
                     rows = []

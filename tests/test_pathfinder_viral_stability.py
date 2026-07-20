@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sqlite3
 from collections import Counter
@@ -13674,6 +13675,48 @@ def test_viral_hunter_loads_variant_quality_feedback_from_explicit_reports_root(
 
     assert feedback["review:test"]["action"] == "retire_or_pause"
     assert feedback["review:test"]["_source"] == "viral_handoff_audit_test.json"
+
+
+def test_viral_hunter_uses_distinct_scan_reports_for_feedback_history(tmp_path):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report_specs = [
+        ("viral_handoff_audit_scan118.json", 118, "review:latest", 40),
+        ("viral_handoff_audit_scan117_final.json", 117, "review:scan117", 30),
+        ("viral_handoff_audit_scan117_initial.json", 117, "review:duplicate", 20),
+        ("viral_handoff_audit_scan116.json", 116, "review:scan116", 10),
+    ]
+    for name, scan_id, variant, modified_at in report_specs:
+        path = reports_dir / name
+        path.write_text(
+            json.dumps(
+                {
+                    "source_scan_run_id": scan_id,
+                    "variant_quality_feedback": {
+                        "retire_variants": [
+                            {
+                                "variant": variant,
+                                "total": 20,
+                                "survived": 0,
+                                "strict_fit": 0,
+                                "action": "retire_or_pause",
+                            }
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.utime(path, (modified_at, modified_at))
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.db = type("DB", (), {"db_path": str(tmp_path / "missing.db")})()
+    hunter._variant_feedback_reports_root = str(tmp_path)
+
+    feedback = hunter._load_variant_quality_feedback(max_audits=3)
+
+    assert set(feedback) == {"review:latest", "review:scan117", "review:scan116"}
+    assert "review:duplicate" not in feedback
 
 
 def test_viral_hunter_drops_zero_survival_variant_family_feedback():
