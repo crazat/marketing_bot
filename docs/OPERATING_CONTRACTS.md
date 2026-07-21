@@ -18,6 +18,8 @@
 
 - `SIGNATURE_ROUTING_AXES`와 `SIGNATURE_BACKLOG_AXES`는 같은 집합을 유지한다.
 - 교통사고 축은 고LTV 전략 판단 없이 자동 게이트로 차단하지 않는다.
+- 교통사고 후보는 `교통사고`, `자동차사고`, 과실, 보험, 충돌 등 사고 고유 의도가 있는 시드만 허용한다.
+  단순 `입원`, `병원` 등의 모호한 시드는 Pathfinder와 Viral 최종 게이트에서 차단한다.
 - KIN은 provider-venue-author 게이트에서 제외한다. 질문자 author를 업체 author로 오인하지 않는다.
 - 지역 판정은 substring-only가 아니라 `_has_active_region_anchor()`를 사용한다.
 - `competitors.json`이 경쟁사 단일 소스다. 직접 수정하면 `prompts.json`과 동기화한다.
@@ -32,6 +34,7 @@
 - post-enrichment refill은 AI 예산 보충 장치이며 final gate·timing gate를 완화하지 않는다.
 - `base`/`community_base` 및 query variant의 retire/repair 피드백은 실제 검색 예산에 반영한다.
   high-volume zero-yield lane을 최소 probe floor로 되살리지 않는다.
+- curated Viral 실행은 기본적으로 S/A seed를 우선하고, 같은 카테고리에 S/A seed가 없을 때만 B 등급을 보완한다.
 
 ## 바이럴 실행 큐 계약
 
@@ -51,11 +54,18 @@ python scripts/reconcile_viral_execution_exports.py --timestamp <YYYYMMDD_HHMMSS
 
 - `viral_scan_audits.pending_count`는 historical actionable 누계일 수 있다. 실제 작업량은
   `open_pending`/`open_execution_queue`, 신규 전환은 `fresh_pending`/`fresh_open_queue`로 판단한다.
+- `viral_scan_audits.summary`의 discovered/pending 수에는 재발견과 과거 pending 행이 포함될 수 있다.
+  신규 기회는 `fresh_discovered`/`fresh_pending`으로 분리하고, 실행 수율의 분모로 persisted snapshot을 사용하지 않는다.
+- 런 단위 수율은 `audit_json.run_funnel`의 불변 단계 카운트를 사용한다. enrichment 이후 AI 후보가
+  줄어들면 first-pass 생존자, 일반 backlog refill, discarded-backlog refill을 별도 지표로 유지한다.
 - `metric_coverage` 부족은 먼저 backfill로 해소한다. backfill은 quality metric만 갱신하고
   `comment_status`를 바꾸지 않는다.
 - 재발견 최신성은 `COALESCE(last_scanned_at, discovered_at)` 기준이며 본문 보강도 같은 기준을 사용한다.
 - source-seed·variant feedback은 다음 실행에 반영한다. 낮은 survival을 감추기 위해 필터를 완화하거나
   차단 상태를 `pending`으로 되돌리지 않는다.
+- handoff audit 파일이 여러 개면 `source_scan_run_id`별 최신 snapshot만 variant feedback 입력으로 사용한다.
+- 콘텐츠 카테고리 detector가 빈 값을 반환하면 `기타`로 간주하지 않는다. 관측된 두 카테고리가 있고
+  profile이 유효할 때만 category drift mismatch를 계산한다.
 - 시드 quota는 카테고리와 치료 세부의도(`SEED_TREATMENT_SUBINTENT_BUCKETS`)를 분산한다.
   좁은 lane은 viable 후보가 하나일 때만 soft fallback을 허용한다.
 
