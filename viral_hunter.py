@@ -14644,6 +14644,13 @@ class ViralHunter:
         enrichment_fetched = 0
         enrichment_regate_rejected = 0
         enrichment_stale_rejected = 0
+        # Keep the first enrichment pass separate from refill attempts.  The
+        # final count can legitimately be higher than a simple subtraction
+        # because both normal and discarded-backlog candidates may replenish
+        # the AI queue after the initial pass.
+        enrichment_initial_survivors = ai_candidates_before_enrichment
+        enrichment_refill_stats: Dict[str, int] = {}
+        discarded_refill_stats: Dict[str, int] = {}
         if ai_targets and enrich_bodies:
             try:
                 before_enrich = len(ai_targets)
@@ -14659,6 +14666,7 @@ class ViralHunter:
                 enrichment_fetched = int(enrich_stats.get("fetched", 0) or 0)
                 enrichment_regate_rejected = int(enrich_stats.get("regate_rejected", 0) or 0)
                 enrichment_stale_rejected = int(enrich_stats.get("stale_rejected", 0) or 0)
+                enrichment_initial_survivors = len(ai_targets)
                 if enrich_stats["fetched"]:
                     print(
                         f"   📄 본문 enrichment: fetch {enrich_stats['fetched']}건 → "
@@ -14667,30 +14675,29 @@ class ViralHunter:
                         f"타이밍 만료 {enrich_stats['stale_rejected']}건 "
                         f"(AI 후보 {before_enrich} → {len(ai_targets)})"
                     )
-                refill_stats: Dict[str, int] = {}
                 if len(ai_targets) < before_enrich and rest_targets:
                     refill_fetch_budget = max(
                         0,
                         int(enrich_bodies) - int(enrich_stats.get("fetched", 0) or 0),
                     )
-                    ai_targets, rest_targets, refill_stats = self._refill_ai_targets_after_enrichment(
+                    ai_targets, rest_targets, enrichment_refill_stats = self._refill_ai_targets_after_enrichment(
                         ai_targets,
                         rest_targets,
                         target_count=before_enrich,
                         max_fetch=refill_fetch_budget,
                     )
-                    if refill_stats["attempted"]:
+                    if enrichment_refill_stats["attempted"]:
                         print(
-                            f"   🔁 AI 후보 보충: 후보 {refill_stats['attempted']}개 검토 → "
-                            f"{refill_stats['kept']}개 보충, 재탈락 {refill_stats['rejected']}개 "
-                            f"(fetch {refill_stats['fetched']}건, 보강 {refill_stats['enriched']}건)"
+                            f"   🔁 AI 후보 보충: 후보 {enrichment_refill_stats['attempted']}개 검토 → "
+                            f"{enrichment_refill_stats['kept']}개 보충, 재탈락 {enrichment_refill_stats['rejected']}개 "
+                            f"(fetch {enrichment_refill_stats['fetched']}건, 보강 {enrichment_refill_stats['enriched']}건)"
                         )
                 if len(ai_targets) < before_enrich:
                     discarded_fetch_budget = max(
                         0,
                         int(enrich_bodies)
                         - int(enrich_stats.get("fetched", 0) or 0)
-                        - int(refill_stats.get("fetched", 0) or 0),
+                        - int(enrichment_refill_stats.get("fetched", 0) or 0),
                     )
                     post_enrich_exclude = set(pre_enrich_ai_keys)
                     post_enrich_exclude.update(
@@ -15044,6 +15051,16 @@ class ViralHunter:
                     'enrichment_fetched': enrichment_fetched,
                     'enrichment_regate_rejected': enrichment_regate_rejected,
                     'enrichment_stale_rejected': enrichment_stale_rejected,
+                    'enrichment_initial_survivors': enrichment_initial_survivors,
+                    'enrichment_refill_attempted': int(enrichment_refill_stats.get('attempted', 0) or 0),
+                    'enrichment_refill_kept': int(enrichment_refill_stats.get('kept', 0) or 0),
+                    'enrichment_refill_rejected': int(enrichment_refill_stats.get('rejected', 0) or 0),
+                    'enrichment_refill_fetched': int(enrichment_refill_stats.get('fetched', 0) or 0),
+                    'discarded_refill_attempted': int(discarded_refill_stats.get('attempted', 0) or 0),
+                    'discarded_refill_kept': int(discarded_refill_stats.get('kept', 0) or 0),
+                    'discarded_refill_rejected': int(discarded_refill_stats.get('rejected', 0) or 0),
+                    'discarded_refill_timing_rejected': int(discarded_refill_stats.get('timing_rejected', 0) or 0),
+                    'discarded_refill_fetched': int(discarded_refill_stats.get('fetched', 0) or 0),
                     'ai_candidates_after_enrichment': ai_candidates_after_enrichment,
                     'ai_suitable': len(analyzed_targets),
                     'raw_backlog_saved': raw_saved,

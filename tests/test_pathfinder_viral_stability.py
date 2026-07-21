@@ -11771,6 +11771,9 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
             "filter_input": 100,
             "filter_survivors": 30,
             "existing_url_excluded": 24,
+            "enrichment_initial_survivors": 7,
+            "enrichment_refill_kept": 2,
+            "discarded_refill_kept": 1,
             "auto_ready": 2,
         },
         db_path=str(db_path),
@@ -11787,6 +11790,9 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
         "filter_input": 100,
         "filter_survivors": 30,
         "existing_url_excluded": 24,
+        "enrichment_initial_survivors": 7,
+        "enrichment_refill_kept": 2,
+        "discarded_refill_kept": 1,
         "auto_ready": 2,
     }
     # 0 인 사유는 노출하지 않는다 (title_only 제외 확인).
@@ -11808,6 +11814,9 @@ def test_viral_hunter_discovery_audit_surfaces_coverage_bounds(tmp_path):
         ).fetchone()[0]
     persisted = json.loads(stored)
     assert persisted["run_funnel"]["search_collected"] == 180
+    assert persisted["run_funnel"]["enrichment_initial_survivors"] == 7
+    assert persisted["run_funnel"]["enrichment_refill_kept"] == 2
+    assert persisted["run_funnel"]["discarded_refill_kept"] == 1
     assert persisted["run_funnel"]["auto_ready"] == 2
     assert persisted["coverage_bounds"]["funnel_rejected_total"] == 17
     assert persisted["coverage_bounds"]["platform_yield_drops"]["blog"] == 7

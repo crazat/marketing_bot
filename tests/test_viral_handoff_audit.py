@@ -5,6 +5,7 @@ from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE
 from core_services.viral_handoff_audit import (
     ENGAGEMENT_HOOK_LENS_TERMS,
     VIRAL_ACTION_ROUTE_DEFINITIONS,
+    _category_drift_detected,
     _category_subintent_buckets,
     _category_signature_terms,
     _clinic_modality_positive_terms,
@@ -1477,6 +1478,12 @@ def test_viral_handoff_audit_flags_content_category_mismatch(tmp_path):
     sample = report["review_samples"]["top_strict_fit"][0]
     assert sample["content_detected_category"] == "다이어트"
     assert sample["content_category_mismatch"] is True
+
+
+def test_category_drift_requires_an_observed_detected_category():
+    """An absent detector result is unknown, not the fallback ``기타`` bucket."""
+    assert _category_drift_detected("피부/여드름", "") is False
+    assert _category_drift_detected("피부/여드름", "다이어트") is True
 
 
 def test_viral_handoff_audit_flags_lens_surface_mismatch_and_bridge_match(tmp_path):

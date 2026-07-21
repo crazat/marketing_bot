@@ -25,6 +25,12 @@
 - The scan-118 handoff audit remains `critical` (score `30.48`). Region ambiguity and Pathfinder mismatch were the main detailed rule-rejection causes, while feedback produced 4 general retire and 9 general repair controls. Preserve medical, locality, AI, freshness, and final execution gates while applying those controls.
 - `ViralHunter._load_variant_quality_feedback` must keep only the newest handoff-audit file for each `source_scan_run_id`. This prevents initial/backfill/final snapshots of one scan from crowding out evidence from distinct completed scans; retain the lineage-aware behavior and its regression test.
 
+## Operational Memory — 2026-07-21
+
+- Treat a blank content-category detector result as unknown, never as the profile fallback category (`기타`). Content-category drift requires two observed, supported categories; otherwise mismatch rates can exceed the population they claim to measure.
+- For enriched Viral runs, retain the immutable `run_funnel` split between first-pass enrichment survivors, normal backlog refill, and discarded-backlog refill. The final AI pool is not necessarily a simple post-enrichment subtraction, so these streams must not be collapsed when diagnosing yield.
+- Separate persisted discovery snapshots from net-new opportunity: `viral_scan_audits.summary` may include rediscoveries and historical pending rows. Use fresh-discovered and fresh-pending counts alongside the funnel to decide whether discovery breadth, rather than eligibility gates, needs improvement.
+
 ## 운영 계약
 
 - 자동 게시·자동 답글 생성은 구현하지 않는다. 게시와 최종 확인은 Web UI 또는 Telegram HITL에서만 수행한다.

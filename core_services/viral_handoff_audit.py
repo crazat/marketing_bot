@@ -1979,9 +1979,22 @@ def _seed_candidate_alignment_evidence(
 
 
 def _category_drift_detected(assigned_category: str, detected_category: str) -> bool:
-    assigned = ACTIVE_KEYWORD_PROFILE.normalize_category(assigned_category or "")
-    detected = ACTIVE_KEYWORD_PROFILE.normalize_category(detected_category or "")
-    if not assigned or not detected or assigned == detected:
+    # ``normalize_category("")`` intentionally returns the fallback bucket
+    # ("기타").  A missing detector result, however, is *unknown*, not an
+    # observed "기타" post; treating it as the latter inflated mismatch counts
+    # and could even make a lane's mismatch rate exceed its observed count.
+    raw_assigned = str(assigned_category or "").strip()
+    raw_detected = str(detected_category or "").strip()
+    if not raw_assigned or not raw_detected:
+        return False
+
+    assigned = ACTIVE_KEYWORD_PROFILE.normalize_category(raw_assigned)
+    detected = ACTIVE_KEYWORD_PROFILE.normalize_category(raw_detected)
+    if (
+        not ACTIVE_KEYWORD_PROFILE.profile_for(assigned)
+        or not ACTIVE_KEYWORD_PROFILE.profile_for(detected)
+        or assigned == detected
+    ):
         return False
 
     compatible_families = (
