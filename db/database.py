@@ -3764,11 +3764,12 @@ class DatabaseManager:
             return 0
 
     def update_viral_execution_queue(self, targets_data: list[dict]) -> int:
-        """Persist final execution-quality fields without counting a rediscovery.
+        """Persist final execution-quality fields or final-gate rejections without a rediscovery.
 
         The normal Viral upsert advances scan metadata.  Final queue calibration
-        happens after AI, resume, and enrichment paths converge, so it needs a
-        narrow update that cannot inflate scan_count or freshness analytics.
+        happens after AI, resume, and enrichment paths converge. The same narrow
+        update can quarantine a pending item when post-run QA finds a deterministic
+        final-gate rejection. Neither path may inflate freshness analytics.
         """
         if not targets_data:
             return 0
@@ -3795,6 +3796,8 @@ class DatabaseManager:
                     existing_breakdown,
                     target_data.get("score_breakdown") or {},
                 )
+                final_reject = bool(merged_breakdown.get("final_reject_reason"))
+                final_status = target_data.get("comment_status") or "filtered_out"
                 self.cursor.execute(
                     """
                     UPDATE viral_targets
@@ -3802,7 +3805,14 @@ class DatabaseManager:
                         workability_score = ?,
                         conversion_fit_score = ?,
                         score_breakdown = ?,
+                        is_commentable = CASE
+                            WHEN ? THEN 0
+                            ELSE is_commentable
+                        END,
                         comment_status = CASE
+                            WHEN ?
+                             AND comment_status IN ('pending', 'raw_backlog', 'needs_ai_retry')
+                                THEN ?
                             WHEN ? = 'manual_review' THEN 'manual_review'
                             ELSE comment_status
                         END,
@@ -3814,6 +3824,9 @@ class DatabaseManager:
                         target_data.get("workability_score", 0) or 0,
                         target_data.get("conversion_fit_score", 0) or 0,
                         json.dumps(merged_breakdown, ensure_ascii=False),
+                        final_reject,
+                        final_reject,
+                        final_status,
                         target_data.get("comment_status") or "",
                         datetime.now().isoformat(),
                         target_id,

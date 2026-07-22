@@ -1,5 +1,22 @@
 # Marketing Bot 작업 맥락
 
+## Persistent Memory — 2026-07-22 Scan #123
+
+- Legion scan #123 satisfied the 500+ operational target with 645 S/A keywords
+  (47 S, 598 A; 2,521 total). Interpret current-run performance from immutable
+  `viral_scan_audits.run_funnel`, not the rediscovery-inclusive snapshot.
+- Viral Hunter #123 ended at 12 execution candidates. Post-run QA quarantined
+  one stale `pending` item whose `여성/산후` lineage did not match its knee-care
+  question; the current queue is 11 (3 auto-ready, 8 needs enrichment).
+- The profile-axis mismatch safeguard applies only to seed categories that map
+  to the broad `general` domain. Focused domains keep cross-axis rescue; scar
+  and skin remain compatible.
+- `DatabaseManager.update_viral_execution_queue()` can persist a deterministic
+  final-gate rejection without increasing `scan_count` or freshness metrics.
+- Remaining operating risk: multi-source verification was 12.26%, below the
+  20% source-health guard. Treat this as upstream source-yield work, not a
+  missed Legion target.
+
 > 이 파일은 모든 작업에서 먼저 읽을 최소 운영 맥락만 담는다. 상세 계약·명령·실행 이력은 아래 문서를 기준으로 한다.
 
 ## 문서 기준

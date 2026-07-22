@@ -4239,6 +4239,95 @@ class CommentableFilter:
         return detected
 
     @classmethod
+    def _seed_profile_category(cls, target: ViralTarget) -> str:
+        """Return the concrete Pathfinder profile category attached to a target."""
+        raw_category = (
+            getattr(target, "matched_keyword_category", "")
+            or getattr(target, "category", "")
+            or ""
+        )
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        return category if category and GYULIM_KEYWORD_PROFILE.profile_for(category) else ""
+
+    USER_AXIS_FALLBACK_TERMS: Dict[str, Tuple[str, ...]] = {
+        # Naver Kin askers often say "무릎 잘 보는 병원" rather than the
+        # profile token "무릎통증". Keep these symptom stems narrow so a generic
+        # recommendation request is still routed to enrichment, not rejected.
+        "통증/디스크": (
+            "무릎", "허리", "목", "어깨", "관절", "디스크", "좌골", "손목",
+            "족저", "오십견", "테니스엘보", "통증",
+        ),
+    }
+
+    @classmethod
+    def _user_profile_axis_category(cls, target: ViralTarget) -> str:
+        """Detect a concrete profile axis from asker-facing wording only."""
+        user_text = cls._user_need_text(target).lower()
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(user_text, default="")
+        )
+        if detected and GYULIM_KEYWORD_PROFILE.profile_for(detected):
+            return detected
+
+        compact_user_text = _compact_query_text(user_text)
+        for category, terms in cls.USER_AXIS_FALLBACK_TERMS.items():
+            if any(
+                _compact_query_text(term) in compact_user_text
+                for term in terms
+                if term
+            ):
+                return category
+        return ""
+
+    @classmethod
+    def _has_seed_profile_axis_anchor(cls, target: ViralTarget, category: str) -> bool:
+        """Check the asker-facing text for a concrete seed category anchor.
+
+        Generic service terms such as ``한의원`` and ``상담`` deliberately do
+        not count here. They describe a reply surface, not the treatment axis.
+        """
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return False
+        axis_terms = list(getattr(profile, "core_tokens", ()) or ()) + list(
+            getattr(profile, "category_terms", ()) or ()
+        )
+        user_text = cls._user_need_text(target).lower()
+        compact_user_text = _compact_query_text(user_text)
+        return cls._contains_any(user_text, axis_terms) or any(
+            _compact_query_text(term) in compact_user_text
+            for term in axis_terms
+            if term
+        )
+
+    @classmethod
+    def _has_incompatible_profile_axis(cls, target: ViralTarget) -> bool:
+        """Detect a concrete content axis that conflicts with the seed lineage.
+
+        This closes the gap for profile categories that historically mapped to
+        the broad ``general`` domain. A mismatch is returned only when the
+        asker-facing text has no seed-category anchor and another concrete
+        profile category is detected.
+        """
+        seed_category = cls._seed_profile_category(target)
+        own_category = cls._user_profile_axis_category(target)
+        if not seed_category or not own_category or seed_category == own_category:
+            return False
+
+        # Focused domains already pass through the established cross-axis rescue
+        # path below. This safeguard closes only the historical blind spot where
+        # a concrete profile category was collapsed into the broad general domain.
+        if cls._keyword_domain([], category=seed_category) != "general":
+            return False
+
+        # Skin and scar content share a care pathway, so profile-detector
+        # differences between the two must not reject a candidate.
+        if {seed_category, own_category} <= {"흉터/여드름흉터", "피부/여드름"}:
+            return False
+
+        return not cls._has_seed_profile_axis_anchor(target, seed_category)
+
+    @classmethod
     def _cross_axis_reject_reason(cls, target: ViralTarget, *, seed_domain: str) -> Optional[str]:
         """교차축 후보를 자기 축 기준으로 1회 재귀 평가.
 
@@ -6876,6 +6965,8 @@ class CommentableFilter:
             return "advertorial"
         if cls._is_closed_review_surface_without_user_ask(target, text):
             return "closed_review_surface"
+        if cls._has_incompatible_profile_axis(target):
+            return "domain_mismatch"
         if not cls._has_domain_anchor(domain, text):
             # 교차축 발견 구제 — 시드 축과 다르더라도 글 자체가 다른 핵심 진료축의
             # 글이면 유효한 발견이다 (라이브: 다이어트 시드가 찾은 청주 추나/자세

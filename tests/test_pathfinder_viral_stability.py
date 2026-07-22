@@ -10083,6 +10083,71 @@ def test_viral_hunter_excludes_existing_urls_before_ai_but_refreshes_metadata(tm
     assert merged_breakdown["pathfinder_axis_fit_score"] == 77
 
 
+def test_final_gate_rejects_concrete_profile_mismatch_hidden_by_general_domain():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/postpartum-query-knee-question",
+        title="청주 무릎 잘 보는 병원",
+        content_preview="무릎이 너무 심해서 청주에서 진료 잘 보는 병원 추천 부탁드려요.",
+        matched_keywords=["청주 산후보약"],
+        matched_keyword_category="여성/산후",
+        category="여성/산후",
+    )
+
+    assert viral_hunter.CommentableFilter._user_profile_axis_category(target) == "통증/디스크"
+    assert not viral_hunter.CommentableFilter._has_seed_profile_axis_anchor(target, "여성/산후")
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "domain_mismatch"
+
+
+def test_final_gate_keeps_profile_target_when_seed_axis_is_present_with_another_symptom():
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/postpartum-knee-question",
+        title="출산 후 무릎 통증과 산후보약 상담",
+        content_preview="출산 후 무릎 통증도 있고 산후보약 상담을 받고 싶어요.",
+        matched_keywords=["청주 산후보약"],
+        matched_keyword_category="여성/산후",
+        category="여성/산후",
+    )
+
+    assert viral_hunter.CommentableFilter._has_seed_profile_axis_anchor(target, "여성/산후")
+    assert viral_hunter.CommentableFilter._has_incompatible_profile_axis(target) is False
+
+
+def test_execution_queue_final_reject_quarantines_pending_without_inflating_scan_count(tmp_path):
+    db = DatabaseManager(str(tmp_path / "execution_queue_final_reject.db"))
+    payload = {
+        "id": "pending-axis-mismatch",
+        "platform": "kin",
+        "url": "https://example.com/pending-axis-mismatch",
+        "title": "old pending target",
+        "matched_keywords": ["청주 산후보약"],
+        "comment_status": "pending",
+        "priority_score": 150,
+        "score_breakdown": {},
+    }
+    assert db.insert_viral_target(payload)
+
+    updated = db.update_viral_execution_queue([
+        {
+            **payload,
+            "comment_status": "filtered_out",
+            "score_breakdown": {"final_reject_reason": "domain_mismatch"},
+        }
+    ])
+
+    assert updated == 1
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            "SELECT comment_status, is_commentable, scan_count, score_breakdown "
+            "FROM viral_targets WHERE url = ?",
+            (payload["url"],),
+        ).fetchone()
+
+    assert row[:3] == ("filtered_out", 0, 1)
+    assert json.loads(row[3])["final_reject_reason"] == "domain_mismatch"
+
+
 def test_viral_hunter_does_not_retry_stale_rediscovered_urls_before_ai(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "viral_stale_retry_before_ai.db"))
     stale_url = "https://example.com/stale-retry"
