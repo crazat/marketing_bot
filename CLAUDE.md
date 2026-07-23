@@ -1,3 +1,18 @@
+# Persistent Memory — 2026-07-23 Scan #124 hardening
+
+- Legion #124 completed the bounded 500+ pipeline (2,619 total; 59 S / 736 A).
+  Viral Hunter must consume the fixed completed source scan and never publish or
+  generate comments automatically.
+- A rediscovered URL with no usable current SERP date must reuse a valid stored
+  `viral_targets.posted_at` before the final timing gate. Expired posts must be
+  persisted as `filtered_out_stale_window`, without inflating scan/freshness
+  counters.
+- Source-seed audit reports are deduplicated by `source_scan_run_id`. Aggregate
+  only zero-fit negative evidence from distinct scans; a prior confirmed fit
+  keeps the seed as a ranked repair candidate and prevents automatic retirement.
+- Validate this handoff with `python -m pytest tests/test_pathfinder_viral_stability.py -q`
+  and inspect the staged allowlist before publishing in a mixed worktree.
+
 # Marketing Bot 작업 맥락
 
 ## Persistent Memory — 2026-07-22 Scan #123

@@ -1412,6 +1412,7 @@ def test_viral_seed_builder_keeps_latest_source_seed_audit_feedback(tmp_path):
             """
         )
         older_audit = {
+            "source_scan_run_id": 100,
             "source_seed_feedback": {
                 "scale_candidates": [
                     {
@@ -1427,6 +1428,7 @@ def test_viral_seed_builder_keeps_latest_source_seed_audit_feedback(tmp_path):
             }
         }
         newer_audit = {
+            "source_scan_run_id": 101,
             "source_seed_feedback": {
                 "retire_candidates": [
                     {
@@ -1455,6 +1457,78 @@ def test_viral_seed_builder_keeps_latest_source_seed_audit_feedback(tmp_path):
 
     assert feedback[key]["source_seed_audit_action"] == "retire_or_pause"
     assert feedback[key]["source_seed_audit_credit_total"] == 180
+    assert feedback[key]["source_seed_audit_historical_fit"] is True
+    assert not ViralSeedBuilder._should_suppress_source_seed_audit({"feedback": feedback[key]})
+
+
+def test_viral_seed_builder_aggregates_distinct_zero_fit_source_scan_audits(tmp_path):
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = db_dir / "seed_builder_distinct_source_seed_audits.db"
+    seed = "청주 흉터 제거"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE viral_scan_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audit_json TEXT
+            );
+            """
+        )
+        older_audit = {
+            "source_scan_run_id": 100,
+            "source_seed_feedback": {
+                "retire_candidates": [
+                    {
+                        "seed": seed,
+                        "action": "retire_or_pause",
+                        "credit_total": 32,
+                        "primary_total": 27,
+                        "actionable": 0,
+                        "survived": 0,
+                        "strict_fit": 0,
+                    }
+                ]
+            },
+        }
+        newer_audit = {
+            "source_scan_run_id": 101,
+            "source_seed_feedback": {
+                "repair_candidates": [
+                    {
+                        "seed": seed,
+                        "action": "repair_query_shape",
+                        "credit_total": 24,
+                        "primary_total": 23,
+                        "actionable": 0,
+                        "survived": 0,
+                        "strict_fit": 0,
+                    }
+                ]
+            },
+        }
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(older_audit, ensure_ascii=False),),
+        )
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(newer_audit, ensure_ascii=False),),
+        )
+        # A regenerated report for the same source scan must not count as a
+        # third independent failure window.
+        conn.execute(
+            "INSERT INTO viral_scan_audits(audit_json) VALUES (?)",
+            (json.dumps(newer_audit, ensure_ascii=False),),
+        )
+
+    feedback = ViralSeedBuilder(str(db_path))._load_source_seed_audit_feedback(max_audits=2)
+    key = f"norm:{ViralSeedBuilder._keyword_feedback_key(seed)}"
+
+    assert feedback[key]["source_seed_audit_action"] == "retire_or_pause"
+    assert feedback[key]["source_seed_audit_credit_total"] == 56
+    assert feedback[key]["source_seed_audit_primary_total"] == 50
+    assert ViralSeedBuilder._should_suppress_source_seed_audit({"feedback": feedback[key]})
 
 
 def test_viral_seed_builder_treats_already_canonicalized_audit_drift_as_repaired():
@@ -15338,6 +15412,63 @@ def test_timing_window_hard_fails_posts_older_than_post_age_ttl():
     _, _, sig_nodate = f(mk(""), [], [], now)
     assert "post_age_exceeds_ttl" not in sig_nodate
     assert "no_post_date" in sig_nodate
+
+
+def test_rediscovered_target_reuses_known_post_date_before_timing_gate(tmp_path):
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = db_dir / "marketing_data.db"
+    url = "https://kin.naver.com/qna/detail.naver?docId=old-post"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE viral_targets (url TEXT, canonical_url TEXT, posted_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO viral_targets (url, canonical_url, posted_at) VALUES (?, ?, ?)",
+            (url, canonicalize_viral_url(url), "20180427"),
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    target = ViralTarget(
+        platform="kin",
+        url=url,
+        title="청주 통증 치료 문의",
+        content_preview="청주 통증 치료 방법을 알고 싶습니다.",
+        matched_keywords=["청주 통증 치료"],
+        category="통증/디스크",
+        date_str="",
+    )
+    current_date_target = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/qna/detail.naver?docId=current-post",
+        title="청주 통증 치료 문의",
+        content_preview="청주 통증 치료 방법을 알고 싶습니다.",
+        matched_keywords=["청주 통증 치료"],
+        category="통증/디스크",
+        date_str="20260722",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO viral_targets (url, canonical_url, posted_at) VALUES (?, ?, ?)",
+            (
+                current_date_target.url,
+                canonicalize_viral_url(current_date_target.url),
+                "20180427",
+            ),
+        )
+
+    assert hunter._hydrate_known_post_dates([target, current_date_target]) == 1
+    assert target.date_str == "20180427"
+    assert current_date_target.date_str == "20260722"
+    assert viral_hunter.CommentableFilter.final_reject_reason(target) == "stale_window"
+
+    score, tier, signals = viral_hunter.CommentableFilter._assess_timing_window(
+        target, [], [], now=__import__("datetime").datetime(2026, 7, 23)
+    )
+    assert score == 0
+    assert tier == "stale"
+    assert "post_age_exceeds_ttl" in signals
 
 
 def _create_pending_ttl_table(conn):

@@ -2848,6 +2848,7 @@ class CommentableFilter:
     FINAL_REJECT_STATUSES = {
         "advertorial": "filtered_out_ad",
         "medical_promo": "filtered_out_ad",
+        "stale_window": "filtered_out_stale_window",
         "non_relevant": "filtered_out",
         "off_domain": "filtered_out",
         "route_navigation": "filtered_out",
@@ -6912,6 +6913,15 @@ class CommentableFilter:
 
         if cls._is_self_target(target):
             return "self_target"
+        posted_at = cls._parse_datetime(
+            getattr(target, "date_str", "") or getattr(target, "posted_at", ""),
+            datetime.now(),
+        )
+        if (
+            posted_at is not None
+            and (datetime.now() - posted_at).total_seconds() > PENDING_POST_AGE_TTL_DAYS * 86400
+        ):
+            return "stale_window"
         if cls._is_marketplace_sale(text):
             return "marketplace_sale"
         if cls._is_hard_off_domain_service_target(target, text, title=title):
@@ -13239,7 +13249,10 @@ class ViralHunter:
             if breakdown.get("body_enriched"):
                 reject_reason = CommentableFilter.apply_final_reject(target)
                 if reject_reason:
-                    stats["regate_rejected"] += 1
+                    if reject_reason == "stale_window":
+                        stats["stale_rejected"] += 1
+                    else:
+                        stats["regate_rejected"] += 1
                     try:
                         self.db.insert_viral_target(target.to_dict())
                     except Exception as e:
@@ -13758,6 +13771,97 @@ class ViralHunter:
 
         candidates.sort(key=_ai_target_sort_key, reverse=True)
         return candidates[: self.REDISCOVERED_RETRY_MAX_CANDIDATES]
+
+    def _hydrate_known_post_dates(self, targets: List[ViralTarget]) -> int:
+        """Reuse a valid stored post date when the current SERP result omits one.
+
+        Rediscovered URLs are deliberately evaluated again before their existing
+        workflow state is refreshed.  The search API often omits a KIN/cafe post
+        date, though, which used to make a previously dated old post look like a
+        newly discovered no-date post at the timing gate.  Only fill a missing or
+        unparseable incoming value; a valid current search date remains primary.
+        """
+        if not targets:
+            return 0
+
+        target_by_key: Dict[str, List[ViralTarget]] = {}
+        for target in targets:
+            for key in (target.url, canonicalize_viral_url(target.url)):
+                if key:
+                    target_by_key.setdefault(key, []).append(target)
+        if not target_by_key:
+            return 0
+
+        db_path = os.path.join(self.cfg.root_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return 0
+
+        known_dates: Dict[str, str] = {}
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            if not {"url", "posted_at"}.issubset(columns):
+                conn.close()
+                return 0
+
+            keys = list(target_by_key)
+            has_canonical_url = "canonical_url" in columns
+            for start in range(0, len(keys), 400):
+                chunk = keys[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                where = [f"url IN ({placeholders})"]
+                params: List[str] = list(chunk)
+                if has_canonical_url:
+                    where.append(f"canonical_url IN ({placeholders})")
+                    params.extend(chunk)
+                rows = conn.execute(
+                    "SELECT url, "
+                    + ("canonical_url, " if has_canonical_url else "")
+                    + "posted_at FROM viral_targets WHERE "
+                    + " OR ".join(where),
+                    params,
+                ).fetchall()
+                for row in rows:
+                    posted_at = str(row["posted_at"] or "").strip()
+                    if not CommentableFilter._parse_datetime(posted_at, datetime.now()):
+                        continue
+                    for key in (row["url"], row["canonical_url"] if has_canonical_url else ""):
+                        if key:
+                            known_dates[key] = posted_at
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Known post-date hydration skipped: {e}")
+            return 0
+
+        hydrated = 0
+        now = datetime.now()
+        updated_ids: set[str] = set()
+        for key, targets_for_key in target_by_key.items():
+            stored_date = known_dates.get(key)
+            if not stored_date:
+                continue
+            for target in targets_for_key:
+                if target.id in updated_ids:
+                    continue
+                incoming_date = str(target.date_str or "").strip()
+                if CommentableFilter._parse_datetime(incoming_date, now):
+                    continue
+                target.date_str = stored_date
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "post_date_reused_from_db": stored_date,
+                }
+                updated_ids.add(target.id)
+                hydrated += 1
+        if hydrated:
+            logger.info("Hydrated stored post dates for %s rediscovered targets", hydrated)
+        return hydrated
 
     def _exclude_existing_targets_before_ai(
         self,
@@ -14516,6 +14620,9 @@ class ViralHunter:
         pre_gate_removed = 0
         pre_gate_saved = 0
         if all_targets:
+            hydrated_post_dates = self._hydrate_known_post_dates(all_targets)
+            if hydrated_post_dates:
+                print(f"   \U0001f4c5 기존 게시일 복원: {hydrated_post_dates}개 (타이밍 게이트 적용)")
             gate_keep: List[ViralTarget] = []
             for target in all_targets:
                 reject_reason = CommentableFilter.apply_final_reject(target)

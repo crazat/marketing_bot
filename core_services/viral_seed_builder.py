@@ -11,10 +11,10 @@ import os
 import re
 import json
 import sqlite3
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass, asdict
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
@@ -1770,8 +1770,35 @@ class ViralSeedBuilder:
         return detected if high_confidence else ""
 
     def _load_source_seed_audit_feedback(self, max_audits: int = 6) -> Dict[str, dict]:
-        """Load latest handoff-audit source-seed actions keyed by normalized seed."""
-        audit_payloads: List[dict] = []
+        """Load recent handoff-audit source-seed actions keyed by normalized seed.
+
+        A handoff report can be regenerated several times for the same source
+        scan while it is being reviewed.  Those copies are not independent
+        evidence.  Conversely, the same seed failing in separate completed
+        scans is useful evidence, so zero-fit negative actions from distinct
+        source scans are combined below before deciding whether a seed should
+        be suppressed.
+        """
+        audit_limit = max(1, int(max_audits))
+        audit_payloads: List[Tuple[Optional[str], dict]] = []
+        seen_source_scans: Set[str] = set()
+
+        def _source_scan_key(audit: dict) -> Optional[str]:
+            raw_source_scan_id = audit.get("source_scan_run_id") if isinstance(audit, dict) else None
+            if raw_source_scan_id in (None, ""):
+                return None
+            return str(raw_source_scan_id).strip() or None
+
+        def _append_audit(audit: dict) -> bool:
+            """Append one recent, distinct audit; returns whether it was kept."""
+            source_scan_key = _source_scan_key(audit)
+            if source_scan_key and source_scan_key in seen_source_scans:
+                return False
+            if source_scan_key:
+                seen_source_scans.add(source_scan_key)
+            audit_payloads.append((source_scan_key, audit))
+            return True
+
         reports_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(self.db_path))), "reports")
         try:
             if os.path.isdir(reports_dir):
@@ -1781,14 +1808,16 @@ class ViralSeedBuilder:
                     if name.startswith("viral_handoff_audit") and name.endswith(".json")
                 ]
                 report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-                for path in report_files[: max(1, int(max_audits))]:
+                for path in report_files:
+                    if len(audit_payloads) >= audit_limit:
+                        break
                     try:
                         with open(path, "r", encoding="utf-8") as fh:
                             payload = json.load(fh)
                     except (OSError, json.JSONDecodeError):
                         continue
                     if isinstance(payload, dict):
-                        audit_payloads.append(payload)
+                        _append_audit(payload)
         except OSError:
             pass
 
@@ -1800,18 +1829,23 @@ class ViralSeedBuilder:
                 else:
                     rows = conn.execute(
                         "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
-                        (int(max_audits),),
+                        # Regenerated audits can occupy several latest rows.
+                        # Fetch a small multiple so the distinct-scan window is
+                        # still populated without loading unbounded history.
+                        (max(24, audit_limit * 6),),
                     ).fetchall()
         except sqlite3.Error:
             rows = []
 
         for row in rows:
+            if len(audit_payloads) >= audit_limit:
+                break
             try:
                 audit = json.loads(row["audit_json"] or "{}")
             except (TypeError, json.JSONDecodeError):
                 continue
             if isinstance(audit, dict):
-                audit_payloads.append(audit)
+                _append_audit(audit)
 
         action_specs: Tuple[Tuple[str, str, int], ...] = (
             ("recategorize_candidates", "recategorize_or_quarantine", 5),
@@ -1820,8 +1854,8 @@ class ViralSeedBuilder:
             ("assist_only_candidates", "merge_or_keep_as_companion", 3),
             ("scale_candidates", "scale_or_keep", 1),
         )
-        latest: Dict[str, dict] = {}
-        for audit in audit_payloads:
+        history: Dict[str, List[Tuple[Optional[str], dict]]] = defaultdict(list)
+        for source_scan_key, audit in audit_payloads:
             feedback = audit.get("source_seed_feedback") if isinstance(audit, dict) else None
             if not isinstance(feedback, dict):
                 continue
@@ -1870,11 +1904,111 @@ class ViralSeedBuilder:
                         ),
                     }
             for norm, payload in audit_actions.items():
-                latest_key = f"norm:{norm}"
-                if latest_key in latest:
-                    continue
-                payload.pop("_severity", None)
-                latest[latest_key] = payload
+                history[f"norm:{norm}"].append((source_scan_key, payload))
+
+        negative_actions = {
+            "recategorize_or_quarantine",
+            "retire_or_pause",
+            "repair_query_shape",
+            "merge_or_keep_as_companion",
+        }
+
+        def _has_fit(payload: dict) -> bool:
+            return (
+                int(payload.get("source_seed_audit_actionable") or 0) > 0
+                or int(payload.get("source_seed_audit_survived") or 0) > 0
+                or int(payload.get("source_seed_audit_strict_fit") or 0) > 0
+                or ViralSeedBuilder._as_float(payload.get("source_seed_audit_survival_rate")) > 0.0
+                or ViralSeedBuilder._as_float(payload.get("source_seed_audit_strict_fit_rate")) > 0.0
+            )
+
+        latest: Dict[str, dict] = {}
+        for latest_key, events in history.items():
+            # Events retain newest-to-oldest order from the report/DB sources.
+            latest_source_scan, latest_payload = events[0]
+            current = dict(latest_payload)
+            prior_fit = any(_has_fit(payload) for _, payload in events[1:])
+            if prior_fit:
+                # Retain the current diagnosis (and its bounded rank penalty),
+                # while explicitly protecting a prior proven success from an
+                # automatic hard stop.
+                current["source_seed_audit_historical_fit"] = True
+            if (
+                latest_source_scan
+                and current.get("source_seed_audit_action") in negative_actions
+                and not _has_fit(current)
+                # A prior real success is deliberately not outweighed by a
+                # later dry spell.  It remains eligible for one current-cycle
+                # repair rather than being retired automatically.
+                and not prior_fit
+            ):
+                repeat_failures = [
+                    payload
+                    for source_scan_key, payload in events
+                    if (
+                        source_scan_key
+                        and payload.get("source_seed_audit_action") in negative_actions
+                        and not _has_fit(payload)
+                    )
+                ]
+                if len(repeat_failures) >= 2:
+                    strongest = max(
+                        repeat_failures,
+                        key=lambda payload: int(payload.get("_severity") or 0),
+                    )
+                    credit_total = sum(
+                        int(payload.get("source_seed_audit_credit_total") or 0)
+                        for payload in repeat_failures
+                    )
+                    primary_total = sum(
+                        int(payload.get("source_seed_audit_primary_total") or 0)
+                        for payload in repeat_failures
+                    )
+                    assist_total = sum(
+                        int(payload.get("source_seed_audit_assist_total") or 0)
+                        for payload in repeat_failures
+                    )
+                    actionable = sum(
+                        int(payload.get("source_seed_audit_actionable") or 0)
+                        for payload in repeat_failures
+                    )
+                    survived = sum(
+                        int(payload.get("source_seed_audit_survived") or 0)
+                        for payload in repeat_failures
+                    )
+                    strict_fit = sum(
+                        int(payload.get("source_seed_audit_strict_fit") or 0)
+                        for payload in repeat_failures
+                    )
+                    current.update(
+                        {
+                            "_severity": int(strongest.get("_severity") or 0),
+                            "source_seed_audit_action": strongest.get("source_seed_audit_action"),
+                            "source_seed_audit_credit_total": credit_total,
+                            "source_seed_audit_primary_total": primary_total,
+                            "source_seed_audit_assist_total": assist_total,
+                            "source_seed_audit_actionable": actionable,
+                            "source_seed_audit_survived": survived,
+                            "source_seed_audit_strict_fit": strict_fit,
+                            "source_seed_audit_survival_rate": (
+                                survived / credit_total if credit_total else 0.0
+                            ),
+                            "source_seed_audit_strict_fit_rate": (
+                                strict_fit / credit_total if credit_total else 0.0
+                            ),
+                            "source_seed_audit_category_drift_rate": max(
+                                (
+                                    ViralSeedBuilder._as_float(
+                                        payload.get("source_seed_audit_category_drift_rate")
+                                    )
+                                    for payload in repeat_failures
+                                ),
+                                default=0.0,
+                            ),
+                        }
+                    )
+            current.pop("_severity", None)
+            latest[latest_key] = current
         return latest
 
     @staticmethod
@@ -2859,6 +2993,10 @@ class ViralSeedBuilder:
     def _should_suppress_source_seed_audit(item: dict) -> bool:
         """Drop source seeds that handoff audit says are proven non-workable."""
         feedback = item.get("feedback", {}) if isinstance(item, dict) else {}
+        if bool(feedback.get("source_seed_audit_historical_fit")):
+            # Keep a recent negative diagnosis as a ranking penalty, but do
+            # not auto-retire a seed that has worked in a prior distinct scan.
+            return False
         action = str(
             feedback.get("source_seed_audit_action")
             or item.get("source_seed_audit_action")
