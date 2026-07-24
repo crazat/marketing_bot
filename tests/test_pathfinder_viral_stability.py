@@ -13423,6 +13423,19 @@ def test_patient_voice_gate_drops_massive_single_run_zero_yield():
             "fresh_pending": 0,
         },
     )
+    # A single, broad patient-voice run can distribute its evidence across many
+    # categories.  #115 produced this exact shape (543 discovered, 149 fresh,
+    # no pending); it must be enough to prevent another full zero-yield pass.
+    assert gate(
+        "patient_voice_question_kin",
+        {
+            "runs": 1,
+            "discovered": 543,
+            "fresh_discovered": 149,
+            "pending": 0,
+            "fresh_pending": 0,
+        },
+    )
 
 
 def test_specific_axis_gate_drops_high_volume_single_run_zero_yield():

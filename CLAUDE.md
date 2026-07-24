@@ -13,6 +13,26 @@
 - Validate this handoff with `python -m pytest tests/test_pathfinder_viral_stability.py -q`
   and inspect the staged allowlist before publishing in a mixed worktree.
 
+# Persistent Memory — 2026-07-24 Scan #125 zero-yield patient-voice gate
+
+- Legion #125 completed the bounded 500+ pipeline with 869 S/A results.
+  Viral Hunter must keep the completed source scan fixed, and its immutable
+  `viral_scan_audits.run_funnel` is the only current-run conversion record.
+  Do not evaluate the run from a rediscovery-inclusive `viral_targets` snapshot.
+- The #125 Viral funnel was 5,263 collected, 581 post-filter, 45 after existing
+  URL deduplication, 22 after enrichment, 1 AI-suitable, and 0 auto-ready.
+  Treat this as a seed-quality and deduplication bottleneck, not a reason to
+  weaken final execution gates or authorize posting/comments.
+- A patient-voice variant with one completed run, at least 500 discovered and
+  120 genuinely fresh rows, and no pending/fresh-pending survivor is proven
+  zero-yield for the gate. Block it before it consumes a second full run; the
+  #115 profile (543 discovered, 149 fresh, zero survivors) otherwise repeated
+  as #125's 1,217 discoveries with zero strict fits.
+- Validate this behavior with `python -m pytest tests/test_pathfinder_viral_stability.py -q`,
+  `python -m py_compile viral_hunter.py`, and a scoped `git diff --check`.
+  Re-measure the change only on the next fresh completed Legion source scan,
+  not by re-running the rediscovery-biased #125 input.
+
 # Marketing Bot 작업 맥락
 
 ## Persistent Memory — 2026-07-22 Scan #123

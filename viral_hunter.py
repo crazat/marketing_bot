@@ -11388,6 +11388,18 @@ class ViralHunter:
             if variant in cls.PATIENT_VOICE_VARIANTS and (
                 (fresh_discovered >= 500 and fresh_pending == 0)
                 or (discovered >= 900 and pending == 0)
+                # Patient-voice queries are deliberately category-agnostic, so
+                # one run can spread evidence across many category/lens lanes.
+                # A run with this much genuinely new coverage and no survivor
+                # has already cleared the exploratory cold-start bar; waiting
+                # for 900 total results allowed the same zero-yield surface to
+                # consume another full run (#115 -> #125).
+                or (
+                    discovered >= 500
+                    and fresh_discovered >= 120
+                    and pending == 0
+                    and fresh_pending == 0
+                )
             ):
                 return True
             if ":specific_" in str(variant or "") and (
