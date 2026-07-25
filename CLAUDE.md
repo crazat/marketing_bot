@@ -33,6 +33,28 @@
   Re-measure the change only on the next fresh completed Legion source scan,
   not by re-running the rediscovery-biased #125 input.
 
+# Persistent Memory — 2026-07-25 Scan #126 execution-context and priority-stability gate
+
+- After a completed Legion run, keep the fixed `--source-scan-id`; #126 produced
+  2,670 keywords (45 S / 783 A), and Viral audit #55 recorded
+  `2,603 collected -> 426 filtered -> 54 novel after URL dedup -> 12 AI-suitable
+  -> 10 final`. Analyze this immutable funnel, not `viral_targets` refresh
+  totals. A 90.1% existing-URL exclusion rate is a novelty/query-surface
+  bottleneck, not justification to weaken gates.
+- Final `auto_ready` requires full evidence plus both
+  `clinic_treatment_fit_score >= 55` and `journey_fit_score >= 55`. Discovery
+  can retain weaker matches for review, but they must be `context_review` /
+  `needs_enrichment`, never automatic execution. #126's scan-time 4/2/4 queue
+  became current 3 auto-ready / 2 manual-review / 5 needs-enrichment after this
+  safe reconciliation; the original audit remains immutable.
+- `_sync_execution_quality()` can run during persistence/reload reconciliation.
+  Use stored pre-quality priority only when current priority still equals the
+  recorded post-quality value, so evidence multipliers are idempotent; a true
+  upstream re-score remains a new baseline. Validate a repeat replay leaves
+  priorities unchanged, use `DatabaseManager.update_viral_execution_queue()`
+  only for the exact queue scope, make an SQLite online backup first, and run
+  `PRAGMA integrity_check`.
+
 # Marketing Bot 작업 맥락
 
 ## Persistent Memory — 2026-07-22 Scan #123

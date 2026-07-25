@@ -9543,13 +9543,24 @@ class ViralHunter:
         "execution_data_quality_tier",
         "execution_data_quality_missing",
         "execution_auto_ready",
+        "execution_contextual_fit_ready",
+        "execution_contextual_fit_hold_reasons",
     )
+    # A row is only auto-ready when its final evidence is complete *and* the
+    # contextual fit already cleared the stronger operational floor.  Discovery
+    # filtering intentionally uses lower floors to retain reviewable leads;
+    # those lower floors must not promote a weak-fit row into an execution CSV.
+    AUTO_READY_CONTEXTUAL_FIT_FLOORS = {
+        "clinic_treatment_fit_score": 55.0,
+        "journey_fit_score": 55.0,
+    }
     # A discovery candidate can still be useful without complete evidence, but
     # it must not outrank a verified, execution-safe target.
     EXECUTION_PRIORITY_CAPS = {
         "verified": 150.0,
         "partial": 128.0,
         "insufficient": 100.0,
+        "context_review": 112.0,
         "manual_review": 112.0,
         "blocked_status": 75.0,
     }
@@ -9570,6 +9581,29 @@ class ViralHunter:
         self.keyword_context: Dict[str, dict] = {}
 
     @classmethod
+    def _execution_contextual_fit_hold_reasons(cls, target: ViralTarget) -> List[str]:
+        """Return explicit final-queue holds for weak but filter-surviving fit.
+
+        Historical rows without the newer contextual scores remain compatible.
+        Newly filtered targets carry both scores, so a complete body/date/AI
+        record cannot become auto-ready when its treatment or journey fit is
+        only high enough for review rather than execution.
+        """
+        breakdown = target.score_breakdown or {}
+        reasons: List[str] = []
+        for metric, floor in cls.AUTO_READY_CONTEXTUAL_FIT_FLOORS.items():
+            if metric not in breakdown:
+                continue
+            try:
+                value = float(breakdown.get(metric))
+            except (TypeError, ValueError):
+                reasons.append(f"{metric}_missing")
+                continue
+            if value < floor:
+                reasons.append(f"{metric}_below_auto_ready_floor")
+        return reasons
+
+    @classmethod
     def _sync_execution_quality(cls, target: ViralTarget) -> Dict[str, Any]:
         """Recompute execution evidence after every merge, rescue, or AI pass.
 
@@ -9584,20 +9618,43 @@ class ViralHunter:
         risk_flags = str(breakdown.get("reply_risk_flags") or "").strip()
         status = str(getattr(target, "comment_status", "") or "pending").strip().lower() or "pending"
         status_actionable = status in cls.EXECUTION_ACTIONABLE_STATUSES
+        contextual_fit_hold_reasons = cls._execution_contextual_fit_hold_reasons(target)
+        contextual_fit_ready = not contextual_fit_hold_reasons
         auto_ready = bool(
             quality["auto_ready"]
             and status_actionable
             and not manual_review
             and not risk_flags
+            and contextual_fit_ready
         )
         tier = "verified" if auto_ready else str(quality["tier"] or "insufficient")
         if manual_review:
             tier = "manual_review"
         elif not status_actionable:
             tier = "blocked_status"
+        elif contextual_fit_hold_reasons:
+            tier = "context_review"
 
         quality_score = float(quality["score"] or 0.0)
-        priority_before = max(0.0, float(getattr(target, "priority_score", 0.0) or 0.0))
+        current_priority = max(0.0, float(getattr(target, "priority_score", 0.0) or 0.0))
+        # This final gate is intentionally invoked again after DB reconciliation.
+        # Reusing the already-capped score as the next base would compound the
+        # evidence multiplier every time a queue is reloaded.  Reuse the stored
+        # pre-quality score only when the target still carries the exact prior
+        # final value; a genuine upstream re-score remains a new base value.
+        priority_before = current_priority
+        try:
+            prior_before = float(breakdown.get("execution_priority_before_quality_cap"))
+            prior_after = float(breakdown.get("execution_priority_after_quality_cap"))
+            if (
+                math.isfinite(prior_before)
+                and math.isfinite(prior_after)
+                and prior_before >= 0.0
+                and abs(current_priority - prior_after) <= 0.01
+            ):
+                priority_before = prior_before
+        except (TypeError, ValueError):
+            pass
         cap = float(cls.EXECUTION_PRIORITY_CAPS.get(tier, cls.EXECUTION_PRIORITY_CAPS["insufficient"]))
         # Preserve score ordering while allowing evidence quality to be a hard,
         # visible limiter.  At zero evidence, even a high AI score cannot exceed
@@ -9615,6 +9672,8 @@ class ViralHunter:
             "execution_data_quality_tier": tier,
             "execution_data_quality_missing": ",".join(missing),
             "execution_auto_ready": auto_ready,
+            "execution_contextual_fit_ready": contextual_fit_ready,
+            "execution_contextual_fit_hold_reasons": ",".join(contextual_fit_hold_reasons),
             "execution_quality_checked": True,
             "execution_quality_contract": "final_queue_v2",
             "execution_queue_status": status,
@@ -10389,7 +10448,11 @@ class ViralHunter:
         # Never rely on a stale stored flag: body/date/AI state can change when a
         # target is resumed, deduplicated, or enriched after filtering.
         quality = CommentableFilter._execution_data_quality(target)
-        if bool((target.score_breakdown or {}).get("execution_auto_ready")) and quality["auto_ready"]:
+        if (
+            bool((target.score_breakdown or {}).get("execution_auto_ready"))
+            and quality["auto_ready"]
+            and not cls._execution_contextual_fit_hold_reasons(target)
+        ):
             return "auto_ready"
         return "needs_enrichment"
 

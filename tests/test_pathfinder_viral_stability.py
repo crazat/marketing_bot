@@ -10477,6 +10477,10 @@ def test_final_execution_queue_preserves_verified_execution_ready_target():
         search_rank=3,
         ai_reviewed=True,
         priority_score=140,
+        score_breakdown={
+            "clinic_treatment_fit_score": 80,
+            "journey_fit_score": 85,
+        },
     )
 
     _, stats = viral_hunter.ViralHunter._finalize_execution_queue([target])
@@ -10486,6 +10490,65 @@ def test_final_execution_queue_preserves_verified_execution_ready_target():
     assert target.score_breakdown["execution_auto_ready"] is True
     assert target.priority_score == 140
     assert viral_hunter.ViralHunter._execution_export_bucket(target) == "auto_ready"
+
+
+def test_final_execution_queue_holds_verified_evidence_with_weak_contextual_fit():
+    """Complete evidence cannot bypass the stronger auto-ready fit floors."""
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/weak-context-fit",
+        title="weak contextual fit",
+        content_preview="x" * 140,
+        author="writer",
+        date_str="20260710",
+        search_rank=3,
+        ai_reviewed=True,
+        priority_score=140,
+        score_breakdown={
+            "clinic_treatment_fit_score": 47,
+            "journey_fit_score": 36,
+        },
+    )
+
+    _, stats = viral_hunter.ViralHunter._finalize_execution_queue([target])
+
+    assert stats["auto_ready"] == 0
+    assert stats["needs_enrichment"] == 1
+    assert target.score_breakdown["execution_auto_ready"] is False
+    assert target.score_breakdown["execution_data_quality_tier"] == "context_review"
+    assert target.score_breakdown["execution_contextual_fit_ready"] is False
+    assert target.score_breakdown["execution_contextual_fit_hold_reasons"] == (
+        "clinic_treatment_fit_score_below_auto_ready_floor,"
+        "journey_fit_score_below_auto_ready_floor"
+    )
+    assert target.priority_score <= viral_hunter.ViralHunter.EXECUTION_PRIORITY_CAPS["context_review"]
+    assert viral_hunter.ViralHunter._execution_export_bucket(target) == "needs_enrichment"
+
+
+def test_final_execution_quality_is_idempotent_after_queue_reconciliation():
+    """Reloading a persisted partial lead must not repeatedly lower its score."""
+    target = ViralTarget(
+        platform="kin",
+        url="https://example.com/idempotent-final-queue",
+        title="idempotent final queue",
+        content_preview="x" * 140,
+        ai_reviewed=True,
+        priority_score=140,
+        score_breakdown={
+            "clinic_treatment_fit_score": 80,
+            "journey_fit_score": 80,
+        },
+    )
+
+    viral_hunter.ViralHunter._finalize_execution_queue([target])
+    first_priority = target.priority_score
+    first_base = target.score_breakdown["execution_priority_before_quality_cap"]
+
+    viral_hunter.ViralHunter._finalize_execution_queue([target])
+
+    assert target.score_breakdown["execution_data_quality_tier"] == "partial"
+    assert target.priority_score == first_priority
+    assert target.score_breakdown["execution_priority_before_quality_cap"] == first_base == 140
 
 
 def test_execution_export_bucket_rejects_stale_auto_ready_flag():
