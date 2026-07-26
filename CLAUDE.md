@@ -55,6 +55,31 @@
   only for the exact queue scope, make an SQLite online backup first, and run
   `PRAGMA integrity_check`.
 
+# Persistent Memory — 2026-07-26 Scan #128 quality-backfill execution contract
+
+- Legion #128 completed the bounded 500+ handoff with 2,643 total keywords
+  (52 S / 786 A; 838 S/A). Viral audit #56's immutable funnel was
+  `2,836 collected -> 394 filter survivors -> 52 novel after URL dedup ->
+  20 AI-suitable -> 17 final` (4 auto-ready / 4 manual-review / 9 needs-
+  enrichment). Compare this audit payload with the same-scope #126 funnel;
+  never infer run conversion from the 2,162-row rediscovery-inclusive target
+  snapshot.
+- Run `quality metric backfill` after the handoff audit. On #128 it raised
+  clinic/worksite score coverage from 18.22% to 100% without changing any
+  `comment_status` or generating/posting comments. Persist the full execution
+  contract: contextual-fit fields, queue status and actionable flag, quality
+  fields, and priority-cap fields.
+- A final contract can be stale even when all old score keys exist. The
+  backfill must load the intended scope then use the exact Python predicate:
+  recompute when stored `execution_queue_status` or its actionable flag differs
+  from the persisted target state. When repair is needed, force the complete
+  execution-quality merge so a filtered row cannot retain `auto_ready=true`.
+  Make an SQLite backup, dry-run first, verify `PRAGMA integrity_check`, status
+  counts, zero queue-status mismatches, and zero non-actionable auto-ready rows.
+  Validate with `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q` and stage only source, test, and this
+  memory file in the mixed worktree.
+
 # Marketing Bot 작업 맥락
 
 ## Persistent Memory — 2026-07-22 Scan #123

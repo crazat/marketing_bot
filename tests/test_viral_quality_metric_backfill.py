@@ -134,7 +134,15 @@ def test_quality_metric_backfill_default_skips_existing_metrics(tmp_path):
             "execution_data_quality_tier": "partial",
             "execution_data_quality_missing": "ai_review",
             "execution_auto_ready": False,
+            "execution_contextual_fit_ready": True,
+            "execution_contextual_fit_hold_reasons": "",
+            "execution_quality_checked": True,
             "execution_quality_contract": "final_queue_v2",
+            "execution_queue_status": "filtered_out",
+            "execution_queue_status_actionable": False,
+            "execution_priority_before_quality_cap": 120,
+            "execution_priority_after_quality_cap": 100,
+            "execution_priority_cap": 100,
         },
     )
     conn.commit()
@@ -150,6 +158,51 @@ def test_quality_metric_backfill_default_skips_existing_metrics(tmp_path):
     breakdown = _breakdown(conn, "existing")
     assert breakdown["clinic_treatment_fit_score"] == 91
     assert breakdown["worksite_efficiency_score"] == 88
+
+
+def test_quality_metric_backfill_repairs_contract_stale_after_status_change(tmp_path):
+    db_path, conn = _make_db(tmp_path)
+    _insert_target(
+        conn,
+        target_id="stale-status-contract",
+        status="filtered_out_ad",
+        breakdown={
+            "clinic_treatment_fit_score": 91,
+            "worksite_efficiency_score": 88,
+            "execution_data_quality_score": 100,
+            "execution_data_quality_tier": "verified",
+            "execution_data_quality_missing": "",
+            "execution_auto_ready": True,
+            "execution_contextual_fit_ready": True,
+            "execution_contextual_fit_hold_reasons": "",
+            "execution_quality_checked": True,
+            "execution_quality_contract": "final_queue_v2",
+            "execution_queue_status": "pending",
+            "execution_queue_status_actionable": True,
+            "execution_priority_before_quality_cap": 120,
+            "execution_priority_after_quality_cap": 120,
+            "execution_priority_cap": 150,
+        },
+    )
+    conn.commit()
+
+    report = backfill_quality_metrics(
+        db_path=str(db_path),
+        source_scan_run_id=104,
+        apply=True,
+    )
+
+    assert report["candidate_count"] == 1
+    assert report["updated"] == 1
+    assert conn.execute(
+        "SELECT comment_status FROM viral_targets WHERE id = ?",
+        ("stale-status-contract",),
+    ).fetchone()[0] == "filtered_out_ad"
+    breakdown = _breakdown(conn, "stale-status-contract")
+    assert breakdown["execution_queue_status"] == "filtered_out_ad"
+    assert breakdown["execution_queue_status_actionable"] is False
+    assert breakdown["execution_auto_ready"] is False
+    assert breakdown["execution_data_quality_tier"] == "blocked_status"
 
 
 def test_quality_metric_backfill_scopes_to_recent_scan_timestamp(tmp_path):

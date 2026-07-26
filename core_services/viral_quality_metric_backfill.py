@@ -25,7 +25,15 @@ COVERAGE_KEYS = (
     "execution_data_quality_tier",
     "execution_data_quality_missing",
     "execution_auto_ready",
+    "execution_contextual_fit_ready",
+    "execution_contextual_fit_hold_reasons",
+    "execution_quality_checked",
     "execution_quality_contract",
+    "execution_queue_status",
+    "execution_queue_status_actionable",
+    "execution_priority_before_quality_cap",
+    "execution_priority_after_quality_cap",
+    "execution_priority_cap",
 )
 QUALITY_METRIC_KEYS = (
     "viral_need_score",
@@ -56,8 +64,12 @@ QUALITY_METRIC_KEYS = (
     "execution_data_quality_tier",
     "execution_data_quality_missing",
     "execution_auto_ready",
+    "execution_contextual_fit_ready",
+    "execution_contextual_fit_hold_reasons",
     "execution_quality_checked",
     "execution_quality_contract",
+    "execution_queue_status",
+    "execution_queue_status_actionable",
     "execution_priority_before_quality_cap",
     "execution_priority_after_quality_cap",
     "execution_priority_cap",
@@ -244,10 +256,23 @@ def _target_from_row(row: sqlite3.Row) -> MetricBackfillCandidate:
     )
 
 
-def _needs_backfill(score_breakdown: Dict[str, Any]) -> bool:
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _execution_contract_needs_repair(candidate: MetricBackfillCandidate) -> bool:
+    score_breakdown = candidate.score_breakdown
+    status = str(candidate.target.comment_status or "pending").strip().lower() or "pending"
+    status_actionable = status in ViralHunter.EXECUTION_ACTIONABLE_STATUSES
     return (
         not all(key in score_breakdown for key in COVERAGE_KEYS)
         or score_breakdown.get("execution_quality_contract") != "final_queue_v2"
+        or str(score_breakdown.get("execution_queue_status") or "").strip().lower() != status
+        or _as_bool(score_breakdown.get("execution_queue_status_actionable")) != status_actionable
     )
 
 
@@ -378,13 +403,11 @@ def _merge_metrics(
     computed: Dict[str, Any],
     *,
     only_missing: bool,
+    force_execution_sync: bool,
 ) -> Dict[str, Any]:
     merged = dict(old)
     for key, value in computed.items():
-        execution_contract_missing = (
-            key in QUALITY_METRIC_KEYS
-            and merged.get("execution_quality_contract") != "final_queue_v2"
-        )
+        execution_contract_missing = key in QUALITY_METRIC_KEYS and force_execution_sync
         if (
             only_missing
             and key in QUALITY_METRIC_KEYS
@@ -454,18 +477,10 @@ def _load_candidates(
         placeholders = ",".join("?" for _ in status_list)
         scope_where.append(f"COALESCE(comment_status, 'pending') IN ({placeholders})")
         params.extend(status_list)
+    # Contract staleness cannot be safely inferred with a text search: a row can
+    # have every old key and still disagree with its persisted comment status.
+    # Load the bounded scope and apply the exact contract predicate below.
     candidate_where = list(scope_where)
-    if only_missing and "score_breakdown" in columns:
-        candidate_where.append(
-            """(
-                score_breakdown IS NULL
-                OR score_breakdown = ''
-                OR score_breakdown = '{}'
-                OR score_breakdown NOT LIKE '%clinic_treatment_fit_score%'
-                OR score_breakdown NOT LIKE '%worksite_efficiency_score%'
-                OR score_breakdown NOT LIKE '%final_queue_v2%'
-            )"""
-        )
     order_clause = "ORDER BY discovered_at DESC" if "discovered_at" in columns else "ORDER BY id"
     limit_clause = "LIMIT ?" if limit else ""
     query_params = list(params)
@@ -549,15 +564,25 @@ def backfill_quality_metrics(
             limit=limit,
         )
         columns = _table_columns(conn, "viral_targets") if _table_exists(conn, "viral_targets") else set()
+        if only_missing:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _execution_contract_needs_repair(candidate)
+            ]
         report["candidate_count"] = len(candidates)
         report["coverage_before"] = _coverage(conn, where_sql, params)
 
         for candidate in candidates:
-            if only_missing and not _needs_backfill(candidate.score_breakdown):
-                continue
+            execution_contract_needs_repair = _execution_contract_needs_repair(candidate)
             old_breakdown = dict(candidate.score_breakdown)
             computed = _quality_metric_breakdown(candidate)
-            new_breakdown = _merge_metrics(old_breakdown, computed, only_missing=only_missing)
+            new_breakdown = _merge_metrics(
+                old_breakdown,
+                computed,
+                only_missing=only_missing,
+                force_execution_sync=execution_contract_needs_repair,
+            )
             changed = _changed_keys(old_breakdown, new_breakdown)
             if not changed:
                 report["skipped_no_change"] += 1
