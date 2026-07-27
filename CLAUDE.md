@@ -80,6 +80,25 @@
   tests/test_viral_handoff_audit.py -q` and stage only source, test, and this
   memory file in the mixed worktree.
 
+# Persistent Memory — 2026-07-27 Scan #129 pinned-source fail-closed handoff
+
+- Legion #129 completed the bounded 500+ handoff with 2,581 total keywords
+  (37 S / 746 A; 783 S/A). Viral audit #57's immutable funnel was
+  `3,897 collected -> 383 filter survivors -> 34 novel after URL dedup ->
+  14 AI-suitable -> 9 final` (2 auto-ready / 1 manual-review / 6 needs-
+  enrichment). The 94.3% existing-URL exclusion rate is a query-surface
+  novelty bottleneck, not authorization to weaken quality gates or publish.
+- An explicitly requested `--source-scan-id` is a lineage contract: if the
+  completed Pathfinder source has no eligible Viral seeds,
+  `ViralHunter._load_keywords()` must raise instead of falling back to legacy
+  keywords. `ViralHunter.hunt()` must resolve that pinned source before pending
+  TTL cleanup, so an invalid handoff cannot mutate unrelated pending rows.
+- Validate this contract with `python -m pytest
+  tests/test_pathfinder_viral_stability.py -q`, `python -m py_compile
+  viral_hunter.py`, scoped `git diff --check`, and `PRAGMA integrity_check`.
+  Scan outputs remain review-only; do not automatically re-run, comment,
+  publish, or create ads after a code-only repair.
+
 # Marketing Bot 작업 맥락
 
 ## Persistent Memory — 2026-07-22 Scan #123

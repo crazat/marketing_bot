@@ -4,6 +4,8 @@ import re
 import sqlite3
 from collections import Counter
 
+import pytest
+
 from core_services.viral_seed_builder import (
     ViralSeedBuilder,
     keyword_structure_features,
@@ -4014,6 +4016,46 @@ def test_viral_hunter_load_keywords_can_pin_pathfinder_scan_id(tmp_path):
     assert keywords == ["scan101 diet consultation"]
     assert hunter.keyword_context["scan101 diet consultation"]["scan_run_id"] == 101
     assert "scan102 diet consultation" not in hunter.keyword_context
+
+
+def test_viral_hunter_load_keywords_fails_closed_for_empty_pinned_scan(tmp_path):
+    db_path = tmp_path / "empty_source_scan_seed_pin.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scan_runs (
+                id INTEGER PRIMARY KEY,
+                scan_type TEXT,
+                status TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE keyword_insights (
+                keyword TEXT PRIMARY KEY,
+                category TEXT,
+                grade TEXT,
+                search_volume INTEGER,
+                document_count INTEGER,
+                kei REAL,
+                priority_v3 REAL,
+                search_intent TEXT,
+                scan_run_id INTEGER,
+                business_core INTEGER,
+                status TEXT,
+                longtail_score REAL,
+                business_value_score REAL,
+                high_value_longtail INTEGER
+            );
+            INSERT INTO scan_runs(id, scan_type, status, completed_at)
+            VALUES (101, 'legion', 'completed', '2026-06-10');
+            """
+        )
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.seed_builder = ViralSeedBuilder(str(db_path))
+    hunter.keyword_context = {}
+
+    with pytest.raises(ValueError, match="refusing legacy keyword fallback"):
+        hunter._load_keywords(source_scan_run_id=101)
 
 
 def test_viral_hunter_limit_keywords_preserves_axis_lens_coverage(tmp_path):

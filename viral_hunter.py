@@ -9752,7 +9752,10 @@ class ViralHunter:
                 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 return [seed.keyword for seed in seeds]
             if source_scan_run_id:
-                logger.warning(f"Pathfinder scan #{source_scan_run_id} produced no Viral seeds; falling back to legacy keyword loader")
+                raise ValueError(
+                    f"Pathfinder scan #{source_scan_run_id} produced no eligible Viral seeds; "
+                    "refusing legacy keyword fallback for an explicitly pinned source scan"
+                )
             logger.warning("⚠️ 최신 Legion 기반 seed를 찾지 못해 legacy keyword loader로 폴백합니다")
 
         keywords = set()
@@ -14461,6 +14464,15 @@ class ViralHunter:
         """
         run_started_at = time.strftime('%Y-%m-%d %H:%M:%S')
 
+        # Resolve a pinned source before TTL cleanup. A source-specific handoff
+        # must not mutate unrelated rows or fall back to legacy keywords when its
+        # completed generation has no eligible Viral seeds.
+        if keywords is None:
+            keywords = self._load_keywords(
+                use_latest_legion=use_latest_legion,
+                source_scan_run_id=source_scan_run_id,
+            )
+
         # pending 큐 TTL 정리 — 직원이 손대지 않은 채 댓글 적시성 윈도우가 지난
         # 행을 만료시킨다. 큐가 죽은 재고로 차면 골든큐/우선순위가 모두 오염된다.
         if expire_pending:
@@ -14499,14 +14511,6 @@ class ViralHunter:
             "effective": int(self.DEFAULT_RESCUE_BACKLOG),
             "applied": False,
         }
-
-        if keywords is None:
-            keywords = self._load_keywords(
-                use_latest_legion=use_latest_legion,
-                source_scan_run_id=source_scan_run_id,
-            )
-        else:
-            self._load_keyword_context(keywords)
 
         self._load_keyword_context(keywords)
         effective_boost_categories, effective_boost_lenses, effective_boost_category_lenses = (
