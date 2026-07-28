@@ -161,3 +161,27 @@
 - 표적 테스트를 먼저 실행하고 `python -m pytest -q`, `git diff --check`로 마무리한다.
 - 혼합 작업 트리에서는 `git add -A`를 사용하지 않고, 의도한 파일만 명시적으로 stage한다.
 - DB·백업·lock·로그·대용량 감사 JSON·CSV 등 생성 산출물은 재현에 꼭 필요하지 않으면 커밋하지 않는다.
+
+# Persistent Memory - 2026-07-28 Scan #130 deep audit and scoped Cafe enrichment
+
+- Legion #130 completed with 2,530 keywords (38 S / 729 A; 767 S/A) and Viral
+  audit #58 consumed the explicit `--source-scan-id 130`. Its immutable funnel
+  was `3,722 collected -> 1,148 filter input -> 378 survivors -> 34 novel ->
+  22 after enrichment -> 13 AI-suitable -> 8 final`; all eight were
+  `needs_enrichment`, with no auto-ready or manual-review execution item.
+- Treat the 351 existing-URL exclusions from 378 survivors as a query-surface
+  novelty bottleneck, and the 50.1% lens-surface mismatch as planning feedback;
+  do not weaken quality gates or infer conversion from the 2,952-row persisted
+  target snapshot. Generate a scoped handoff audit so its seed/variant repair
+  and retirement feedback is available to the next fresh run.
+- `scripts/enrich_cafe_bodies.py --scan-id <run_id>` must constrain Selenium
+  evidence collection to that source lineage. Perform a dry-run first and make
+  an online SQLite backup before an actual run. It may update only body/preview
+  evidence, `last_scanned_at`, and `scan_count`; it must never change statuses,
+  AI decisions, comments, or publication. For #130, 2/8 scoped Cafe bodies were
+  recovered while six inaccessible posts remained unchanged.
+- Validate the scoped enrichment guard with
+  `python -m pytest tests/test_enrich_cafe_bodies.py tests/test_viral_handoff_audit.py -q`,
+  the full Pathfinder/Viral stability suite, `py_compile`, scoped diff checks,
+  and SQLite integrity/FK checks. Keep DBs, backups, logs, and audit reports
+  out of commits in this mixed worktree.
