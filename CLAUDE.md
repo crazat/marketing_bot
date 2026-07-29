@@ -185,3 +185,37 @@
   the full Pathfinder/Viral stability suite, `py_compile`, scoped diff checks,
   and SQLite integrity/FK checks. Keep DBs, backups, logs, and audit reports
   out of commits in this mixed worktree.
+
+# Persistent Memory - 2026-07-29 Scan #131 handoff diagnosis and metric repair
+
+- Legion #131 completed with 2,524 keywords (33 S / 679 A; 712 S/A), and Viral
+  audit #59 consumed the explicit `--source-scan-id 131`. Its immutable funnel
+  was `2,759 collected -> 1,065 filter input -> 352 survivors -> 29 novel ->
+  21 after enrichment -> 1 AI-suitable -> 0 final execution`. Treat the 332
+  existing-URL exclusions (94.3% of filter survivors) as a novelty/query-shape
+  bottleneck, never as permission to lower quality, safety, or execution gates.
+- The 2,046-row handoff-audit scope contains refreshed/rediscovered historical
+  targets. Its 7 surviving and 3 strict-fit rows are not #131 run conversions;
+  use `viral_scan_audits.audit_json.run_funnel.final_execution_candidates` for
+  current-run outcome. Do not immediately re-run the same source scan merely to
+  improve this number.
+- Run quality-metric repair only after a scoped handoff audit. First dry-run
+  `scripts/viral_quality_metric_backfill.py --scan-id 131 --scanned-since
+  <run-start>`, make an online SQLite backup, then apply the identical scope.
+  The #131 repair synchronized 1,886 missing execution-quality contracts,
+  raising clinic/worksite coverage from 17.2% to 100% without changing
+  `comment_status`, publishing, comments, or requeueing. Verify backup-vs-live
+  status counts, zero actionable execution rows, `PRAGMA integrity_check`, and
+  `PRAGMA foreign_key_check` after the write; quality-score improvement alone
+  is not yield improvement.
+- Generate and retain the post-backfill scoped handoff audit. The next fresh
+  planner loads its variant feedback: #131 marked the zero-strict-fit
+  `axis_specific` family (234 rows) for retirement/pause and `community_base`
+  (260 rows) for query-shape repair. Apply that evidence only to the next fresh
+  scan; never auto-requeue discarded/manual-review rows or weaken gates to
+  manufacture execution candidates.
+- Validate this workflow with
+  `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q`, scoped diff checks, and explicit
+  allowlist staging. Keep database files, backups, locks, audit JSON, report
+  artifacts, and screenshots out of the commit.
