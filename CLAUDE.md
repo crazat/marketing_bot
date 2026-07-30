@@ -219,3 +219,30 @@
   tests/test_viral_handoff_audit.py -q`, scoped diff checks, and explicit
   allowlist staging. Keep database files, backups, locks, audit JSON, report
   artifacts, and screenshots out of the commit.
+
+# Persistent Memory - 2026-07-30 Scan #132 partial AI-response recovery
+
+- Legion #132 completed with 2,491 keywords (30 S / 766 A; 796 S/A), and Viral
+  audit #60 consumed the explicit `--source-scan-id 132`. Its immutable funnel
+  was `3,362 collected -> 1,220 filter input -> 459 survivors -> 45 novel after
+  426 existing-URL exclusions -> 72 AI candidates -> 14 after enrichment -> 1
+  AI-suitable -> 0 final execution`. This is a novelty/recency and query-shape
+  bottleneck, never a reason to weaken final quality, safety, or execution
+  gates; use the next fresh source scan to evaluate query-shape repair.
+- A structured multi-post AI response may contain valid early decisions while
+  omitting later `POST_ID`s. Preserve parsed decisions, retry each omitted post
+  once with a single-post prompt, and leave a second incomplete result as
+  `needs_ai_retry`; do not convert parser failure into AI rejection or an
+  execution candidate. A later complete suitable verdict must resolve
+  `needs_ai_retry` to `pending`, remove stale parse-error markers, and still
+  pass every final gate.
+- For a scoped retry recovery, make an SQLite online backup first and select the
+  exact source lineage plus `missing_or_invalid_post_result`; do not refresh
+  unrelated backlog. #132 reprocessed nine such rows to four explicit AI
+  rejections, three pending, and two manual-review items, with zero auto-ready
+  rows and no comments or publication. The original audit remains the
+  authoritative current-run record.
+- Validate with `python -m pytest tests/test_pathfinder_viral_stability.py -q`,
+  `python -m py_compile viral_hunter.py`, scoped `git diff --check`, and
+  `PRAGMA integrity_check` plus `PRAGMA foreign_key_check`. Keep DBs, backups,
+  locks, logs, and generated audit reports out of the commit.

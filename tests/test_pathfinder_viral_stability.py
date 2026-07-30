@@ -13333,6 +13333,66 @@ def test_unified_analysis_parallel_retries_unparsed_model_output(monkeypatch):
     assert saved.saved[-1]["comment_status"] == "needs_ai_retry"
 
 
+def test_unified_analysis_parallel_recovers_omitted_rows_with_bounded_single_retry(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def insert_viral_target(self, data):
+            self.saved.append(data)
+            return True
+
+    monkeypatch.setattr(
+        AICommentGenerator,
+        "_load_prompts",
+        lambda self: {"unified_analysis": {"template": "{posts_formatted}", "batch_size": 25}},
+    )
+    responses = iter([
+        # The original two-post response is truncated after the first decision.
+        "POST_ID: 1\nSUITABLE: false\nSCORE: 10\nTYPE: other\n---",
+        # The one-post retry must use its own local POST_ID sequence.
+        "POST_ID: 1\nSUITABLE: true\nSCORE: 90\nTYPE: consultation\n"
+        "COMPETITOR: false\nCOMPETITOR_NAME: N/A\nCOUNTER_SCORE: 0\nREASON: local question\n---",
+    ])
+    calls = []
+
+    def fake_ai_generate(prompt, *args, **kwargs):
+        calls.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(viral_hunter, "ai_generate", fake_ai_generate)
+    first = ViralTarget(
+        platform="cafe",
+        url="https://cafe.naver.com/retry-partial/1",
+        title="first target",
+        content_preview="non-actionable first target",
+    )
+    omitted = ViralTarget(
+        platform="kin",
+        url="https://kin.naver.com/retry-partial/2",
+        title="omitted local question",
+        comment_status="needs_ai_retry",
+        content_preview="청주에서 상담 가능한 곳을 찾고 있습니다.",
+    )
+
+    generator = AICommentGenerator.__new__(AICommentGenerator)
+    saved = FakeDB()
+    results = generator.unified_analysis_parallel(
+        [first, omitted],
+        max_workers=1,
+        db=saved,
+    )
+
+    assert [target.url for target in results] == [omitted.url]
+    assert len(calls) == 2
+    assert first.comment_status == "filtered_out_ai"
+    assert omitted.score_breakdown["ai_verdict"] == "suitable"
+    assert omitted.score_breakdown["ai_parse_retry_attempted"] is True
+    assert omitted.comment_status == "pending"
+    assert omitted.score_breakdown["ai_retry_resolved"] is True
+    assert "ai_parse_error" not in omitted.score_breakdown
+
+
 def test_unified_analysis_parallel_routes_unexplained_high_signal_rejection_to_manual_review(monkeypatch):
     class FakeDB:
         def __init__(self):

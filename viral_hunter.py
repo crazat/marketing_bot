@@ -9024,6 +9024,62 @@ POST_ID: {i}
                 prompt = self._build_unified_prompt(template, posts_formatted)
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
+
+                # A multi-post response can be cut short while still containing
+                # valid decisions for its first few posts.  Preserve those
+                # decisions, then make one bounded single-post retry only for
+                # the omitted rows.  This is fail-closed: a second incomplete
+                # answer remains ``needs_ai_retry`` downstream rather than
+                # being treated as an AI rejection or execution candidate.
+                unparsed_targets = [
+                    target
+                    for target in batch
+                    if str((target.score_breakdown or {}).get("ai_verdict") or "").strip().lower()
+                    == "unparsed"
+                ]
+                if unparsed_targets and len(batch) > 1:
+                    retry_suitable: List[ViralTarget] = []
+                    retry_unsuitable = 0
+                    retry_competitors = 0
+                    for target in unparsed_targets:
+                        try:
+                            retry_prompt = self._build_unified_prompt(
+                                template,
+                                self._format_unified_target(1, target),
+                            )
+                            retry_text = ai_generate(retry_prompt, temperature=0.3, task="structured")
+                            retried_suitable, retried_unsuitable, retried_competitors = (
+                                self._parse_unified_results([target], retry_text)
+                            )
+                            target.score_breakdown = {
+                                **(target.score_breakdown or {}),
+                                "ai_parse_retry_attempted": True,
+                                "ai_parse_retry_count": 1,
+                            }
+                            retry_suitable.extend(retried_suitable)
+                            retry_unsuitable += retried_unsuitable
+                            retry_competitors += retried_competitors
+                        except Exception as retry_error:
+                            target.score_breakdown = {
+                                **(target.score_breakdown or {}),
+                                "ai_verdict": "unparsed",
+                                "ai_parse_error": "single_post_retry_failed",
+                                "ai_parse_retry_attempted": True,
+                                "ai_parse_retry_count": 1,
+                                "ai_parse_retry_error": str(retry_error)[:240],
+                            }
+                    suitable.extend(retry_suitable)
+                    # The first parser includes every unparsed row in its
+                    # unsuitable count. Replace only that portion with the
+                    # bounded retry outcomes so run-funnel metrics stay exact.
+                    unsuit = max(0, unsuit - len(unparsed_targets)) + retry_unsuitable
+                    comp += retry_competitors
+                    logger.info(
+                        "   AI incomplete response: retried %s omitted post(s) singly; "
+                        "recovered suitable=%s",
+                        len(unparsed_targets),
+                        len(retry_suitable),
+                    )
                 return batch_idx, suitable, unsuit, comp, None, list(batch)
             except Exception as e:
                 return batch_idx, [], 0, 0, e, list(batch)
@@ -9270,6 +9326,19 @@ POST_ID: {i}
             ai_reason = reason_match.group(1).strip() if reason_match else ""
 
             if is_suitable:
+                # ``needs_ai_retry`` represents an incomplete model response,
+                # not a content verdict.  Once a complete suitable result is
+                # obtained, return the target to the normal final-gate path.
+                # It can still be rejected or held by those gates below.
+                if str(target.comment_status or "").strip().lower() == "needs_ai_retry":
+                    target.comment_status = "pending"
+                    resolved_breakdown = {
+                        **(target.score_breakdown or {}),
+                        "ai_retry_resolved": True,
+                    }
+                    resolved_breakdown.pop("ai_parse_error", None)
+                    resolved_breakdown.pop("ai_parse_retry_error", None)
+                    target.score_breakdown = resolved_breakdown
                 target.ai_reviewed = True
                 target.ai_infiltration_score = infiltration_score
                 target.ai_post_type = post_type
