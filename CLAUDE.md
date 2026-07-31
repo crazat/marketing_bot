@@ -246,3 +246,30 @@
   `python -m py_compile viral_hunter.py`, scoped `git diff --check`, and
   `PRAGMA integrity_check` plus `PRAGMA foreign_key_check`. Keep DBs, backups,
   locks, logs, and generated audit reports out of the commit.
+
+# Persistent Memory - 2026-07-31 Scan #133 funnel diagnosis and scoped quality repair
+
+- Legion #133 completed with 2,502 keywords (40 S / 605 A; 645 S/A), and Viral
+  audit #61 consumed the explicit `--source-scan-id 133`. Its immutable funnel
+  was `2,635 collected -> 1,038 filter input -> 379 survivors -> 23 novel after
+  368 existing-URL exclusions -> 13 after enrichment -> 6 AI-suitable -> 2
+  final execution`. Use `viral_scan_audits.audit_json.run_funnel` for this
+  conversion; do not mix it with the 1,976-row current `viral_targets` snapshot.
+- The 97.1% existing-URL exclusion rate (368/379) and zero survival in several
+  high-volume axis variants are novelty/query-shape findings, not authority to
+  lower gates, auto-requeue discarded/manual-review rows, post comments, or
+  publish. The #133 post-backfill audit supplies next-fresh-run feedback: pause
+  the zero-survival `모공흉터`, `지루성피부염`, `골반교정`, and `얼굴교정` variants;
+  keep lower-volume repair variants budgeted and re-evaluate only on a new scan.
+- Run `scripts/viral_quality_metric_backfill.py` only after the scoped handoff
+  audit, with `--scan-id` and `--scanned-since`, a dry-run, and an online SQLite
+  backup. For #133, the identical-scope apply repaired 1,751 quality contracts,
+  lifting clinic/worksite coverage from 19.18% to 100% while leaving the target
+  count and `comment_status` distribution unchanged. A zero-update repeat
+  dry-run is required evidence of idempotence; score-contract repair is not a
+  yield or execution-authority improvement.
+- Validate with `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q`, backup-versus-live status counts, zero
+  contract mismatches, `PRAGMA integrity_check`, and `PRAGMA foreign_key_check`.
+  Preserve DBs, backups, logs, audit JSON, report artifacts, and screenshots in
+  the mixed worktree; stage only the explicit source/test/documentation allowlist.
