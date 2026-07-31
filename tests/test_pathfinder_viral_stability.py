@@ -3959,6 +3959,118 @@ def test_viral_hunter_reuses_duplicate_query_plan_without_losing_lineage(tmp_pat
     assert breakdown["pathfinder_query_variants"] == ["patient_voice_question_kin"]
 
 
+def test_viral_hunter_auto_backfills_a_saturated_high_priority_query(tmp_path):
+    initial_targets = [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/known/{index}",
+            title=f"청주 다이어트 한약 상담 질문 {index}",
+            content_preview="청주에서 다이어트 한약 상담 가능한 한의원을 찾는 환자 질문입니다.",
+            matched_keywords=["청주 다이어트 한약 상담"],
+            date_str="20260731",
+        )
+        for index in range(20)
+    ]
+    known_urls = {target.url for target in initial_targets[:15]}
+
+    class SaturatedSearcher:
+        def __init__(self):
+            self.backfill_calls = []
+            self._request_count = 0
+
+        def search_all(self, keyword, **kwargs):
+            return list(initial_targets)
+
+        def search_all_novelty_backfill(self, keyword, **kwargs):
+            self.backfill_calls.append((keyword, kwargs))
+            self._request_count += 4
+            return [
+                ViralTarget(
+                    platform="kin",
+                    url=f"https://example.com/deeper/{index}",
+                    title=f"청주 다이어트 한약 후기 질문 {index}",
+                    content_preview="최근 상담을 받아본 환자 경험과 비용이 궁금합니다.",
+                    matched_keywords=[keyword],
+                    date_str="20260731",
+                )
+                for index in range(3)
+            ]
+
+        def get_stats(self):
+            return {
+                "requests": self._request_count,
+                "cache_hits": 0,
+                "errors": 0,
+                "error_rate": "0%",
+            }
+
+    class EmptyFilter:
+        def filter(self, targets):
+            return []
+
+    class ExistingUrlDb:
+        def get_all_existing_viral_url_keys(self):
+            return set(known_urls)
+
+        def insert_viral_target(self, data):
+            return True
+
+    hunter = viral_hunter.ViralHunter.__new__(viral_hunter.ViralHunter)
+    hunter.keyword_context = {
+        "청주 다이어트 한약 상담": {
+            "category": "다이어트",
+            "execution_lens": "consultation",
+            "viral_readiness_score": 90,
+            "content_actionability_score": 90,
+        }
+    }
+    hunter.searcher = SaturatedSearcher()
+    hunter.filter = EmptyFilter()
+    hunter.db = ExistingUrlDb()
+    hunter.cfg = type("Cfg", (), {"root_dir": str(tmp_path)})()
+    hunter.generator = type("Generator", (), {"last_failed_ai_batches": set()})()
+    hunter.seed_builder = None
+    hunter._load_keyword_context = lambda keywords: None
+    hunter._load_checkpoint = lambda keyword_hash: None
+    hunter._save_checkpoint = lambda *args, **kwargs: None
+    hunter._clear_checkpoint = lambda: None
+    hunter._hydrate_known_post_dates = lambda targets: 0
+    hunter._persist_viral_discovery_audit = lambda *args, **kwargs: None
+    hunter._search_queries_for_keyword = lambda keyword, max_per_platform: [
+        {
+            "query": keyword,
+            "variant": "base",
+            "source_keyword": keyword,
+            "include_blog": False,
+            "platform_limits": {"cafe": 0, "blog": 0, "kin": 100},
+            "readiness": 90,
+            "medical_risk": 0,
+            "preferred_surface": "hybrid_local_content",
+            "recommended_content_type": "proof_safe_guide",
+        }
+    ]
+
+    hunter.hunt(
+        keywords=["청주 다이어트 한약 상담"],
+        max_per_platform=100,
+        top_n_for_ai=0,
+        fresh=True,
+        expire_pending=False,
+    )
+
+    assert len(hunter.searcher.backfill_calls) == 1
+    _, call_kwargs = hunter.searcher.backfill_calls[0]
+    assert {target.url for target in initial_targets}.issubset(call_kwargs["exclude_urls"])
+    assert hunter._novelty_backfill_stats == {
+        "eligible_plans": 1,
+        "triggered_plans": 1,
+        "initial_results": 20,
+        "overlapping_results": 15,
+        "returned_candidates": 3,
+        "api_requests": 4,
+    }
+
+
 def test_viral_hunter_load_keywords_can_pin_pathfinder_scan_id(tmp_path):
     db_path = tmp_path / "source_scan_seed_pin.db"
     with sqlite3.connect(db_path) as conn:
@@ -6872,6 +6984,84 @@ def test_naver_multi_sort_collect_tracks_exposure_metadata():
     assert shared.search_sort == "sim"
     assert shared.exposure_score > 0
     assert shared.sort_appearances == ["sim", "date"]
+
+
+def test_naver_search_cache_namespace_is_depth_aware():
+    searcher = viral_hunter.NaverUnifiedSearch.__new__(viral_hunter.NaverUnifiedSearch)
+
+    shallow = searcher._cache_namespace("kin", 20)
+    deep = searcher._cache_namespace("kin", 180)
+
+    assert shallow != deep
+    assert shallow.endswith("depth=20")
+    assert deep.endswith("depth=180")
+
+
+def test_naver_novelty_backfill_pages_below_first_pass_and_skips_known_urls():
+    searcher = viral_hunter.NaverUnifiedSearch(delay=0, use_cache=False)
+    searcher.SORT_OPTIONS = {"cafe": ("date",)}
+    calls = []
+
+    def fake_fetch(platform, keyword, display=100, start=1, sort="date"):
+        calls.append((platform, display, start, sort))
+        return [
+            {
+                "link": f"https://example.com/post/{rank}",
+                "title": f"청주 상담 질문 {rank}",
+                "description": "청주에서 상담 가능한 곳을 찾는 환자 질문입니다.",
+                "postdate": "20260731",
+                "cafename": "test cafe",
+            }
+            for rank in range(start, start + display)
+        ]
+
+    searcher._api_fetch = fake_fetch
+    excluded = {
+        f"https://example.com/post/{rank}"
+        for rank in range(21, 36)
+    }
+
+    targets = searcher.search_all_novelty_backfill(
+        "청주 상담",
+        include_blog=False,
+        platform_limits={"cafe": 20, "blog": 0, "kin": 0},
+        exclude_urls=excluded,
+        per_platform_limit=20,
+        max_pages_per_sort=2,
+    )
+
+    assert [call[2] for call in calls] == [21, 41]
+    assert len(targets) == 20
+    assert all(target.url not in excluded for target in targets)
+    assert min(target.search_rank for target in targets) == 36
+    assert max(target.search_rank for target in targets) == 55
+
+
+def test_viral_novelty_backfill_gate_requires_bounded_high_overlap_sample():
+    targets = [
+        ViralTarget(
+            platform="kin",
+            url=f"https://example.com/novelty/{index}",
+            title=f"청주 치료 상담 질문 {index}",
+        )
+        for index in range(20)
+    ]
+    fifteen_known = {target.url for target in targets[:15]}
+    fourteen_known = {target.url for target in targets[:14]}
+
+    should_backfill, stats = viral_hunter.ViralHunter._should_novelty_backfill(
+        targets,
+        fifteen_known,
+    )
+    below_threshold, lower_stats = viral_hunter.ViralHunter._should_novelty_backfill(
+        targets,
+        fourteen_known,
+    )
+
+    assert should_backfill is True
+    assert stats == {"valid": 20, "overlapping": 15, "overlap_rate": 0.75}
+    assert below_threshold is False
+    assert lower_stats["overlap_rate"] == 0.70
 
 
 def test_viral_filter_scores_gyulim_skin_scar_worksite_fit():
@@ -9864,6 +10054,7 @@ def test_viral_duplicate_upsert_updates_scan_metadata_without_table_scan(tmp_pat
 
     assert row == (2, 2, "pending")
     assert db.get_existing_viral_urls([target["url"], "https://example.com/new"]) == {target["url"]}
+    assert target["url"] in db.get_all_existing_viral_url_keys()
 
 
 def test_database_get_viral_targets_uses_recent_scan_filters(tmp_path):

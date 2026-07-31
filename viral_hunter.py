@@ -1884,8 +1884,10 @@ class NaverUnifiedSearch:
             "current_delay": f"{self._adaptive_delay:.1f}초"
         }
 
-    def _cache_namespace(self, platform: str) -> str:
-        return f"{platform}:sortmix_v2"
+    def _cache_namespace(self, platform: str, max_results: int) -> str:
+        """Keep a shallow cached search from silently capping a deeper request."""
+        depth = max(1, int(max_results or 1))
+        return f"{platform}:sortmix_v3:depth={depth}"
 
     def _sorts_for_platform(self, platform: str) -> Tuple[str, ...]:
         return self.SORT_OPTIONS.get(platform, ("date",))
@@ -1986,27 +1988,55 @@ class NaverUnifiedSearch:
         )
         return merged_targets[:max_results]
 
-    def _api_collect_multi_sort(self, platform: str, keyword: str, max_results: int) -> List[ViralTarget]:
+    def _api_collect_multi_sort(
+        self,
+        platform: str,
+        keyword: str,
+        max_results: int,
+        *,
+        start_at: int = 1,
+        exclude_urls: Optional[set[str]] = None,
+        max_pages: Optional[int] = None,
+    ) -> List[ViralTarget]:
         all_targets: List[ViralTarget] = []
         for sort_type in self._sorts_for_platform(platform):
-            all_targets.extend(self._api_collect(platform, keyword, max_results, sort_type=sort_type))
+            all_targets.extend(
+                self._api_collect(
+                    platform,
+                    keyword,
+                    max_results,
+                    sort_type=sort_type,
+                    start_at=start_at,
+                    exclude_urls=exclude_urls,
+                    max_pages=max_pages,
+                )
+            )
         return self._merge_sort_results(all_targets, max_results)
 
     def _api_collect(self, platform: str, keyword: str, max_results: int,
-                     sort_type: str = "date") -> List[ViralTarget]:
+                     sort_type: str = "date", *, start_at: int = 1,
+                     exclude_urls: Optional[set[str]] = None,
+                     max_pages: Optional[int] = None) -> List[ViralTarget]:
         """공식 API로 N개까지 수집. 페이지당 display=100, start는 1/101/201…"""
         targets: List[ViralTarget] = []
         seen = set()
+        excluded = set(exclude_urls or ())
         display = 100
         # Naver API는 start + display ≤ 1000까지만 허용
         max_results = min(max_results, 900)
 
-        start = 1
-        while len(targets) < max_results and start <= 1000:
+        start = max(1, min(1000, int(start_at or 1)))
+        pages_fetched = 0
+        while (
+            len(targets) < max_results
+            and start <= 1000
+            and (max_pages is None or pages_fetched < max_pages)
+        ):
             fetch_n = min(display, max_results - len(targets), 1001 - start)
             if fetch_n <= 0:
                 break
             items = self._api_fetch(platform, keyword, display=fetch_n, start=start, sort=sort_type)
+            pages_fetched += 1
             if not items:
                 break
 
@@ -2014,7 +2044,11 @@ class NaverUnifiedSearch:
 
             for idx, item in enumerate(items):
                 link = item.get('link', '') or ''
-                if not link or link in seen:
+                canonical_link = canonicalize_viral_url(link) or link
+                if not link or canonical_link in seen:
+                    continue
+                seen.add(canonical_link)
+                if link in excluded or canonical_link in excluded:
                     continue
                 title = self._strip_html(item.get('title', ''))
                 if not title or len(title) < 5:
@@ -2028,7 +2062,6 @@ class NaverUnifiedSearch:
                 else:
                     author = ''
 
-                seen.add(link)
                 rank = start + idx
                 exposure_score = self._estimate_exposure_score(platform, rank, sort_type)
                 targets.append(ViralTarget(
@@ -2050,7 +2083,7 @@ class NaverUnifiedSearch:
                     break
 
             # 이번 배치에서 추가된 유효 타겟이 하나도 없다면, 무의미한 페이징 호출 중단을 위해 조기 탈출
-            if len(targets) == before_add_count:
+            if len(targets) == before_add_count and not excluded:
                 logger.info(f"[{platform}] '{keyword}' {sort_type} 스캔 조기 종료: 신규 유효 타겟 없음 (누적: {len(targets)}/{max_results})")
                 break
 
@@ -2071,7 +2104,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("cafe"), keyword)
+            cached = self.cache.get(self._cache_namespace("cafe", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Cafe] '{keyword}' 캐시 히트")
@@ -2082,7 +2115,7 @@ class NaverUnifiedSearch:
 
         # 캐시 저장
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("cafe"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("cafe", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Cafe] '{keyword}' -> {len(targets)}개 발견")
@@ -2099,7 +2132,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("blog"), keyword)
+            cached = self.cache.get(self._cache_namespace("blog", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Blog] '{keyword}' 캐시 히트")
@@ -2109,7 +2142,7 @@ class NaverUnifiedSearch:
         targets = self._api_collect_multi_sort("blog", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("blog"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("blog", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Blog] '{keyword}' -> {len(targets)}개 발견")
@@ -2126,7 +2159,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("kin"), keyword)
+            cached = self.cache.get(self._cache_namespace("kin", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Kin] '{keyword}' 캐시 히트")
@@ -2136,7 +2169,7 @@ class NaverUnifiedSearch:
         targets = self._api_collect_multi_sort("kin", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("kin"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("kin", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Kin] '{keyword}' -> {len(targets)}개 발견")
@@ -2176,6 +2209,58 @@ class NaverUnifiedSearch:
             f"(카페:{len(cafe_results)}, 블로그:{len(blog_results)}, 지식인:{len(kin_results)})"
         )
         return all_targets
+
+    def search_all_novelty_backfill(
+        self,
+        keyword: str,
+        *,
+        include_blog: bool,
+        platform_limits: Dict[str, int],
+        exclude_urls: set[str],
+        per_platform_limit: int = 60,
+        max_pages_per_sort: int = 2,
+    ) -> List[ViralTarget]:
+        """Probe below a saturated first pass and return only unseen URLs.
+
+        This deliberately bypasses the 24-hour first-pass cache. ViralHunter
+        calls it only for a bounded number of high-overlap query plans.
+        """
+        all_targets: List[ViralTarget] = []
+        limits = dict(platform_limits or {})
+        for platform in ("cafe", "blog", "kin"):
+            if platform == "blog" and not include_blog:
+                continue
+            initial_limit = max(0, int(limits.get(platform, 0) or 0))
+            if initial_limit <= 0:
+                continue
+            start_at = min(1000, initial_limit + 1)
+            remaining_window = max(0, 1001 - start_at)
+            fetch_limit = min(
+                max(1, int(per_platform_limit or 1)),
+                max(20, int(math.ceil(initial_limit * 0.60))),
+                remaining_window,
+            )
+            if fetch_limit <= 0:
+                continue
+            all_targets.extend(
+                self._api_collect_multi_sort(
+                    platform,
+                    keyword,
+                    fetch_limit,
+                    start_at=start_at,
+                    exclude_urls=exclude_urls,
+                    max_pages=max(1, int(max_pages_per_sort or 1)),
+                )
+            )
+        unique_targets: List[ViralTarget] = []
+        seen_urls: set[str] = set()
+        for target in all_targets:
+            identity = canonicalize_viral_url(target.url) or target.url
+            if not identity or identity in seen_urls:
+                continue
+            seen_urls.add(identity)
+            unique_targets.append(target)
+        return unique_targets
 
 
 # ============================================
@@ -9605,6 +9690,11 @@ class ViralHunter:
     REDISCOVERED_RETRY_MIN_AXIS_FIT = 80.0
     REDISCOVERED_RETRY_MIN_LENS_FIT = 70.0
     REDISCOVERED_RETRY_MIN_REPLY_SCORE = 75.0
+    NOVELTY_BACKFILL_MIN_RESULTS = 20
+    NOVELTY_BACKFILL_MIN_OVERLAP_RATE = 0.75
+    NOVELTY_BACKFILL_MAX_PLANS = 60
+    NOVELTY_BACKFILL_PER_PLATFORM_LIMIT = 60
+    NOVELTY_BACKFILL_MAX_PAGES_PER_SORT = 3
     DEFAULT_RESCUE_BACKLOG = 60
     MAX_AUTO_RESCUE_BACKLOG = 300
     EXECUTION_QUALITY_KEYS = (
@@ -10457,7 +10547,7 @@ class ViralHunter:
                 })
 
         signature = {
-            "version": 4,
+            "version": 5,
             "max_per_platform": int(max_per_platform or 0),
             "source_scan_run_id": int(source_scan_run_id or 0),
             "boost_categories": self._checkpoint_boost_categories(boost_categories),
@@ -10496,6 +10586,58 @@ class ViralHunter:
             clone.sort_appearances = list(target.sort_appearances or [])
             clones.append(clone)
         return clones
+
+    @staticmethod
+    def _viral_url_identity_keys(url: str) -> set[str]:
+        raw_url = str(url or "").strip()
+        if not raw_url:
+            return set()
+        canonical = canonicalize_viral_url(raw_url)
+        return {value for value in (raw_url, canonical) if value}
+
+    def _load_existing_viral_url_keys(self) -> set[str]:
+        loader = getattr(getattr(self, "db", None), "get_all_existing_viral_url_keys", None)
+        if not callable(loader):
+            return set()
+        try:
+            return {str(value) for value in (loader() or set()) if str(value or "").strip()}
+        except Exception as exc:
+            logger.warning("Existing Viral URL preload failed; novelty backfill disabled: %s", exc)
+            return set()
+
+    @classmethod
+    def _novelty_overlap_stats(
+        cls,
+        targets: List[ViralTarget],
+        exclude_urls: set[str],
+    ) -> Dict[str, float]:
+        valid = 0
+        overlapping = 0
+        for target in targets or []:
+            identities = cls._viral_url_identity_keys(getattr(target, "url", ""))
+            if not identities:
+                continue
+            valid += 1
+            if identities & exclude_urls:
+                overlapping += 1
+        return {
+            "valid": valid,
+            "overlapping": overlapping,
+            "overlap_rate": (overlapping / valid) if valid else 0.0,
+        }
+
+    @classmethod
+    def _should_novelty_backfill(
+        cls,
+        targets: List[ViralTarget],
+        exclude_urls: set[str],
+    ) -> Tuple[bool, Dict[str, float]]:
+        stats = cls._novelty_overlap_stats(targets, exclude_urls)
+        should_backfill = (
+            int(stats["valid"]) >= cls.NOVELTY_BACKFILL_MIN_RESULTS
+            and float(stats["overlap_rate"]) >= cls.NOVELTY_BACKFILL_MIN_OVERLAP_RATE
+        )
+        return should_backfill, stats
 
     @staticmethod
     def _is_manual_review_target(target: ViralTarget) -> bool:
@@ -14620,6 +14762,15 @@ class ViralHunter:
         self._handoff_repair_companion_counts = {}
         self._platform_drop_counts = {}
         self._platform_surface_budget_scale_counts = {}
+        self._novelty_backfill_stats = {
+            "eligible_plans": 0,
+            "triggered_plans": 0,
+            "initial_results": 0,
+            "overlapping_results": 0,
+            "returned_candidates": 0,
+            "api_requests": 0,
+        }
+        existing_viral_url_keys = self._load_existing_viral_url_keys()
         # 퍼널 거절 누적도 런 단위로 리셋 (같은 헌터 객체 재사용 시 직전 런 누수 방지).
         if getattr(self, "filter", None) is not None:
             self.filter.cumulative_reject_stats = {}
@@ -14713,6 +14864,88 @@ class ViralHunter:
                             include_blog=bool(search_plan["include_blog"]),
                             platform_limits=limits,
                         )
+                        plan_exclusion_urls = set(existing_viral_url_keys)
+                        plan_exclusion_urls.update(seen_urls)
+                        for prior_target in results:
+                            plan_exclusion_urls.update(
+                                self._viral_url_identity_keys(getattr(prior_target, "url", ""))
+                            )
+                        should_backfill, overlap_stats = self._should_novelty_backfill(
+                            query_results,
+                            plan_exclusion_urls,
+                        )
+                        novelty_search = getattr(
+                            self.searcher,
+                            "search_all_novelty_backfill",
+                            None,
+                        )
+                        if should_backfill:
+                            self._novelty_backfill_stats["eligible_plans"] += 1
+                        if (
+                            should_backfill
+                            and callable(novelty_search)
+                            and self._novelty_backfill_stats["triggered_plans"]
+                            < self.NOVELTY_BACKFILL_MAX_PLANS
+                        ):
+                            backfill_exclusions = set(plan_exclusion_urls)
+                            for initial_target in query_results:
+                                backfill_exclusions.update(
+                                    self._viral_url_identity_keys(
+                                        getattr(initial_target, "url", "")
+                                    )
+                                )
+                            self._novelty_backfill_stats["triggered_plans"] += 1
+                            self._novelty_backfill_stats["initial_results"] += int(
+                                overlap_stats["valid"]
+                            )
+                            self._novelty_backfill_stats["overlapping_results"] += int(
+                                overlap_stats["overlapping"]
+                            )
+                            requests_before_backfill = int(
+                                getattr(self.searcher, "_request_count", 0) or 0
+                            )
+                            try:
+                                backfill_results = novelty_search(
+                                    query,
+                                    include_blog=bool(search_plan["include_blog"]),
+                                    platform_limits=limits,
+                                    exclude_urls=backfill_exclusions,
+                                    per_platform_limit=self.NOVELTY_BACKFILL_PER_PLATFORM_LIMIT,
+                                    max_pages_per_sort=self.NOVELTY_BACKFILL_MAX_PAGES_PER_SORT,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "[novelty-backfill] query=%s failed; keeping first pass: %s",
+                                    query,
+                                    exc,
+                                )
+                                backfill_results = []
+                            requests_after_backfill = int(
+                                getattr(self.searcher, "_request_count", 0) or 0
+                            )
+                            self._novelty_backfill_stats["api_requests"] += max(
+                                0,
+                                requests_after_backfill - requests_before_backfill,
+                            )
+                            for backfill_target in backfill_results:
+                                backfill_target.score_breakdown = {
+                                    **(backfill_target.score_breakdown or {}),
+                                    "novelty_backfill": 1.0,
+                                }
+                            query_results.extend(backfill_results)
+                            self._novelty_backfill_stats["returned_candidates"] += len(
+                                backfill_results
+                            )
+                            logger.info(
+                                "[novelty-backfill] query=%s overlap=%d/%d (%.1f%%) returned=%d plan=%d/%d",
+                                query,
+                                int(overlap_stats["overlapping"]),
+                                int(overlap_stats["valid"]),
+                                float(overlap_stats["overlap_rate"]) * 100.0,
+                                len(backfill_results),
+                                self._novelty_backfill_stats["triggered_plans"],
+                                self.NOVELTY_BACKFILL_MAX_PLANS,
+                            )
                         search_plan_cache[cache_key] = self._clone_search_targets(query_results)
                         self._search_plan_cache_misses += 1
                     for target in query_results:
@@ -15391,6 +15624,24 @@ class ViralHunter:
                     'filter_survivors': filter_survivor_count,
                     'existing_url_excluded': existing_before_ai,
                     'discovery_candidates_after_dedup': discovery_candidates_after_dedup,
+                    'novelty_backfill_eligible_plans': int(
+                        self._novelty_backfill_stats.get('eligible_plans', 0) or 0
+                    ),
+                    'novelty_backfill_triggered_plans': int(
+                        self._novelty_backfill_stats.get('triggered_plans', 0) or 0
+                    ),
+                    'novelty_backfill_initial_results': int(
+                        self._novelty_backfill_stats.get('initial_results', 0) or 0
+                    ),
+                    'novelty_backfill_overlapping_results': int(
+                        self._novelty_backfill_stats.get('overlapping_results', 0) or 0
+                    ),
+                    'novelty_backfill_returned_candidates': int(
+                        self._novelty_backfill_stats.get('returned_candidates', 0) or 0
+                    ),
+                    'novelty_backfill_api_requests': int(
+                        self._novelty_backfill_stats.get('api_requests', 0) or 0
+                    ),
                     'backlog_rescued': rescued_count,
                     'signature_backlog_rescued': sig_rescued_count,
                     'ai_candidates_before_enrichment': ai_candidates_before_enrichment,
@@ -15431,6 +15682,18 @@ class ViralHunter:
         print(f"   DB 저장: {saved}개")
         if rescued_count:
             print(f"   ♻️ 백로그 레스큐 재심사: {rescued_count}개")
+        novelty_stats = getattr(self, "_novelty_backfill_stats", {}) or {}
+        if int(novelty_stats.get("triggered_plans", 0) or 0):
+            initial_count = int(novelty_stats.get("initial_results", 0) or 0)
+            overlap_count = int(novelty_stats.get("overlapping_results", 0) or 0)
+            overlap_rate = (overlap_count / initial_count) if initial_count else 0.0
+            print(
+                "   Novelty backfill: "
+                f"{int(novelty_stats.get('triggered_plans', 0) or 0)} plans, "
+                f"initial overlap {overlap_count}/{initial_count} ({overlap_rate:.1%}), "
+                f"returned {int(novelty_stats.get('returned_candidates', 0) or 0)} candidates, "
+                f"extra API requests {int(novelty_stats.get('api_requests', 0) or 0)}"
+            )
         dropped_variants = getattr(self, "_variant_drop_counts", {}) or {}
         if dropped_variants:
             drop_summary = ", ".join(
@@ -15603,6 +15866,12 @@ def main():
     parser.add_argument('--legacy-keywords', action='store_true', help='최신 Legion curated seed 대신 기존 누적 키워드 로더 사용')
     parser.add_argument('--source-scan-id', type=int, default=None, help='특정 Pathfinder/Legion scan_run_id 기반 seed로 실행')
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
+    parser.add_argument(
+        '--max-per-platform',
+        type=int,
+        default=100,
+        help='적응형 배율 적용 전 플랫폼별 기본 검색 깊이 (기본 100)',
+    )
     parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
     parser.add_argument('--rescue-backlog', type=int, default=None,
@@ -15785,6 +16054,7 @@ def main():
         keywords = [args.keyword] if args.keyword else None
         hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords,
                     fresh=args.fresh, checkpoint_every=args.checkpoint_every,
+                    max_per_platform=max(1, args.max_per_platform),
                     top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel,
                     use_latest_legion=not args.legacy_keywords,
                     source_scan_run_id=args.source_scan_id,

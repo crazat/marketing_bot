@@ -3577,6 +3577,33 @@ class DatabaseManager:
             logger.error(f"get_existing_viral_urls error: {e}")
             return set()
 
+    def get_all_existing_viral_url_keys(self) -> set[str]:
+        """Return raw and canonical URL identities for novelty-aware discovery."""
+        try:
+            self.cursor.execute(
+                """
+                SELECT url, canonical_url
+                FROM viral_targets
+                WHERE COALESCE(url, '') <> ''
+                """
+            )
+            keys: set[str] = set()
+            for raw_url, stored_canonical in self.cursor.fetchall():
+                raw_url = str(raw_url or "").strip()
+                canonical = str(stored_canonical or "").strip()
+                if raw_url:
+                    keys.add(raw_url)
+                if canonical:
+                    keys.add(canonical)
+                elif raw_url:
+                    normalized = canonicalize_viral_url(raw_url)
+                    if normalized:
+                        keys.add(normalized)
+            return keys
+        except Exception as e:
+            logger.error(f"get_all_existing_viral_url_keys error: {e}")
+            return set()
+
     @staticmethod
     def _parse_json_dict(value) -> dict:
         if isinstance(value, dict):

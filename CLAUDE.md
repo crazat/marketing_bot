@@ -273,3 +273,25 @@
   contract mismatches, `PRAGMA integrity_check`, and `PRAGMA foreign_key_check`.
   Preserve DBs, backups, logs, audit JSON, report artifacts, and screenshots in
   the mixed worktree; stage only the explicit source/test/documentation allowlist.
+
+# Persistent Memory - 2026-07-31 novelty-depth recovery
+
+- Audit #61 proved that the next yield repair belongs before the final quality
+  gates: 368 of 379 filter survivors were existing URLs. The live 24-hour search
+  cache also had 99 depth-agnostic entries, all below 100 results (maximum 42),
+  so a shallow companion search could silently cap a later 100/180-result plan.
+- Cache Naver search results by platform plus requested depth. When a unique
+  high-priority query plan returns at least 20 URLs and 75% are already persisted
+  or already seen in the current run, probe below the first-pass depth while
+  excluding those URL identities. Bound this novelty backfill to 60 query plans,
+  60 candidates per platform, and three pages per sort; persist its eligible
+  plans, triggered plans, overlap, returned candidates, and extra API requests
+  in `viral_scan_audits.audit_json.run_funnel`.
+- `--max-per-platform` controls the base depth before adaptive scaling; the
+  default remains 100 and a deliberate deeper run can use 200. This increases
+  time and API work only; it must not lower deterministic, medical, AI, evidence,
+  or execution gates, nor authorize comment generation or publication.
+- Validate with the full Pathfinder/Viral stability suite, the handoff-audit and
+  quality-backfill suites, `py_compile`, and `git diff --check`. Measure actual
+  yield only on the next fresh completed Legion source with an explicit
+  `--source-scan-id`; do not rerun #133 or reinterpret its immutable audit.
