@@ -12,7 +12,7 @@ Viral Hunter API
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, Tuple
 import sys
 import os
 from pathlib import Path
@@ -70,6 +70,7 @@ parent_dir = str(setup_paths.PROJECT_ROOT)
 
 from db.database import DatabaseManager
 from viral_hunter import ViralHunter, ViralTarget
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 from backend_utils.error_handlers import handle_exceptions
 from schemas.response import success_response, error_response
 from config.app_settings import get_settings
@@ -78,22 +79,92 @@ from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 router = APIRouter()
 
-VIRAL_CORE_CATEGORIES = [
-    "\ub2e4\uc774\uc5b4\ud2b8",
-    "\uad50\ud1b5\uc0ac\uace0",
-    "\ud53c\ubd80",
-    "\ube44\ub300\uce6d/\uad50\uc815",
-    "\uccb4\ud615\uad50\uc815",
-    "\ub9ac\ud504\ud305/\ud0c4\ub825",
-    "\uacbd\uc7c1\uc0ac_\uc5ed\uacf5\ub7b5",
-]
+_PREFERRED_GYULIM_CORE_CATEGORY_ORDER = (
+    "피부/여드름",
+    "다이어트",
+    "교통사고",
+    "안면비대칭",
+    "체형교정",
+    "리프팅/탄력",
+    "통증/디스크",
+    "탈모/두피",
+    "두통/어지럼",
+    "소화/위장",
+    "호흡기/알레르기",
+    "갱년기/여성",
+    "수면/피로",
+    "스트레스/자율신경",
+    "여성/산후",
+    "다한증/냉증",
+    "수험생/집중력",
+    "면역/보약",
+    "경쟁사_역공략",
+)
+
+
+def _unique_categories(categories: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for category in categories:
+        clean = (category or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+    return result
+
+
+def _canonical_viral_category(category: Optional[str]) -> str:
+    if not category:
+        return "기타"
+    return GYULIM_KEYWORD_PROFILE.normalize_category(str(category).strip())
+
+
+VIRAL_CORE_CANONICAL_CATEGORIES = _unique_categories(
+    [_canonical_viral_category(category) for category in _PREFERRED_GYULIM_CORE_CATEGORY_ORDER]
+    + [_canonical_viral_category(category) for category in GYULIM_KEYWORD_PROFILE.business_core_categories]
+)
+
+# 골든큐 라우팅에서 콘텐츠 축을 신뢰할 시그니처 진료축(새살침 흉터, 로랑·데이릴 경쟁 안면비대칭).
+# cross-axis 발견 시 시드 축으로 라우팅하면 이 글들이 엉뚱한 버킷에 숨으므로, 이 축이
+# 콘텐츠/시드 어느 쪽에라도 걸리면 콘텐츠(detected post axis) 기준으로 그룹핑한다.
+SIGNATURE_ROUTING_AXES = frozenset({"흉터/여드름흉터", "안면비대칭"})
+
+VIRAL_CORE_CATEGORIES = _unique_categories(
+    VIRAL_CORE_CANONICAL_CATEGORIES
+    + [
+        alias
+        for alias, canonical in GYULIM_KEYWORD_PROFILE.category_aliases.items()
+        if _canonical_viral_category(canonical) in VIRAL_CORE_CANONICAL_CATEGORIES
+    ]
+)
 
 VALID_VIRAL_WORK_SCOPES = {"latest_legion", "core", "all_backlog"}
+VIRAL_FINAL_SCAN_RESULT_STATUSES = (
+    "pending",
+    "generated",
+    "approved",
+    "posted",
+    "ai_approved",
+    "raw_backlog",
+    "manual_review",
+    "needs_ai_retry",
+)
 
 
 def _normalize_work_scope(work_scope: Optional[str]) -> str:
     scope = (work_scope or "latest_legion").strip()
     return scope if scope in VALID_VIRAL_WORK_SCOPES else "latest_legion"
+
+
+def _append_final_scan_result_scope(
+    where: List[str],
+    params: List[Any],
+    status_column: str = "comment_status",
+) -> None:
+    placeholders = ",".join(["?"] * len(VIRAL_FINAL_SCAN_RESULT_STATUSES))
+    where.append(f"COALESCE(NULLIF({status_column}, ''), 'pending') IN ({placeholders})")
+    params.extend(VIRAL_FINAL_SCAN_RESULT_STATUSES)
 
 
 def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
@@ -126,6 +197,71 @@ def _latest_legion_scan_id(cursor: sqlite3.Cursor) -> int:
         return 0
 
 
+def _viral_target_columns(cursor: sqlite3.Cursor) -> set[str]:
+    try:
+        return {row[1] for row in cursor.execute("PRAGMA table_info(viral_targets)").fetchall()}
+    except Exception:
+        return set()
+
+
+def _viral_category_scope_columns(cursor: sqlite3.Cursor) -> List[str]:
+    columns = _viral_target_columns(cursor)
+    scope_columns = ["category"]
+    if "matched_keyword_category" in columns:
+        scope_columns.append("matched_keyword_category")
+    return scope_columns
+
+
+def _append_core_category_scope(cursor: sqlite3.Cursor, where: List[str], params: List[Any]) -> None:
+    placeholders = ",".join(["?"] * len(VIRAL_CORE_CATEGORIES))
+    clauses = []
+    for column in _viral_category_scope_columns(cursor):
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(VIRAL_CORE_CATEGORIES)
+    where.append("(" + " OR ".join(clauses) + ")")
+
+
+def _viral_category_expr(cursor: sqlite3.Cursor) -> str:
+    columns = _viral_target_columns(cursor)
+    if "matched_keyword_category" in columns:
+        return "COALESCE(NULLIF(matched_keyword_category, ''), NULLIF(category, ''), '기타')"
+    return "COALESCE(NULLIF(category, ''), '기타')"
+
+
+def _build_category_stats(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
+    category_buckets: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        category = _canonical_viral_category(row["category"])
+        count = int(row["count"] or 0)
+        avg_score = float(row["avg_score"] or 0)
+        max_score = float(row["max_score"] or 0)
+        bucket = category_buckets.setdefault(
+            category,
+            {"count": 0, "score_sum": 0.0, "max_score": 0.0},
+        )
+        bucket["count"] += count
+        bucket["score_sum"] += avg_score * count
+        bucket["max_score"] = max(bucket["max_score"], max_score)
+
+    category_stats = []
+    for category, bucket in category_buckets.items():
+        count = int(bucket["count"])
+        avg_score = (bucket["score_sum"] / count) if count else 0.0
+        max_score = bucket["max_score"]
+        priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
+
+        category_stats.append({
+            "category": category,
+            "count": count,
+            "avgScore": round(avg_score, 2),
+            "maxScore": round(max_score, 2),
+            "priority": round(priority, 2),
+        })
+
+    category_stats.sort(key=lambda x: x["priority"], reverse=True)
+    return category_stats
+
+
 def _apply_work_scope_sql(
     cursor: sqlite3.Cursor,
     work_scope: Optional[str],
@@ -142,26 +278,166 @@ def _apply_work_scope_sql(
         return
     if scope == "latest_legion":
         scan_id = _latest_legion_scan_id(cursor)
-        if scan_id:
+        if scan_id and "source_scan_run_id" in _viral_target_columns(cursor):
             where.append("source_scan_run_id = ?")
             params.append(scan_id)
     if scope in ("latest_legion", "core"):
-        where.append(f"category IN ({','.join(['?'] * len(VIRAL_CORE_CATEGORIES))})")
-        params.extend(VIRAL_CORE_CATEGORIES)
+        _append_core_category_scope(cursor, where, params)
     if exclude_revisited:
         where.append("COALESCE(scan_count, 1) <= 1")
 
 
-def _apply_work_scope_filters(cursor: sqlite3.Cursor, filters: Dict[str, Any], work_scope: Optional[str]) -> None:
+def _apply_work_scope_filters(
+    cursor: sqlite3.Cursor,
+    filters: Dict[str, Any],
+    work_scope: Optional[str],
+) -> None:
     scope = _normalize_work_scope(work_scope)
-    if scope in ("latest_legion", "core") and not filters.get("category"):
+    explicit_batch = bool(filters.get("scan_batch"))
+
+    if scope in ("latest_legion", "core") and not explicit_batch and not filters.get("category"):
         filters["include_categories"] = VIRAL_CORE_CATEGORIES
-    if scope == "latest_legion":
+    if scope == "latest_legion" and not explicit_batch:
         scan_id = _latest_legion_scan_id(cursor)
         if scan_id:
             filters["source_scan_run_id"] = scan_id
-    if filters.get("exclude_revisited") is None and not filters.get("min_scan_count"):
+    if (
+        filters.get("exclude_revisited") is None
+        and not filters.get("min_scan_count")
+        and not explicit_batch
+    ):
         filters["exclude_revisited"] = True
+
+
+def _append_scan_batch_sql(
+    cursor: sqlite3.Cursor,
+    where: List[str],
+    params: List[Any],
+    scan_batch: str,
+) -> None:
+    batch = (scan_batch or "").strip()
+    if not batch:
+        return
+    columns = _viral_target_columns(cursor)
+    if batch.startswith("run:") and "source_scan_run_id" in columns:
+        try:
+            where.append("source_scan_run_id = ?")
+            params.append(int(batch.split(":", 1)[1]))
+            return
+        except (TypeError, ValueError):
+            pass
+    scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in columns else "discovered_at"
+    where.append(f"strftime('%Y-%m-%d %H', {scanned_expr}) = ?")
+    params.append(batch)
+
+
+def _list_scan_batches_from_db() -> List[Dict[str, Any]]:
+    with closing(sqlite3.connect(get_db_path())) as conn:
+        cursor = conn.cursor()
+        target_columns = _viral_target_columns(cursor)
+        has_source_scan = "source_scan_run_id" in target_columns
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_runs'")
+        has_scan_runs = bool(cursor.fetchone())
+
+        batches: List[Dict[str, Any]] = []
+        if has_scan_runs and has_source_scan:
+            run_columns = {row[1] for row in cursor.execute("PRAGMA table_info(scan_runs)").fetchall()}
+            completed_expr = "sr.completed_at" if "completed_at" in run_columns else "NULL"
+            started_expr = "sr.started_at" if "started_at" in run_columns else "NULL"
+            scan_type_filter = ""
+            if "scan_type" in run_columns and "mode" in run_columns:
+                scan_type_filter = "AND (sr.scan_type = 'legion' OR sr.mode LIKE '%legion%')"
+            elif "scan_type" in run_columns:
+                scan_type_filter = "AND sr.scan_type = 'legion'"
+            elif "mode" in run_columns:
+                scan_type_filter = "AND sr.mode LIKE '%legion%'"
+
+            final_where: List[str] = []
+            final_params: List[Any] = []
+            _append_final_scan_result_scope(final_where, final_params, "v.comment_status")
+            final_status_filter = "AND " + " AND ".join(final_where)
+
+            query = f"""
+                SELECT
+                    sr.id as scan_run_id,
+                    COALESCE({completed_expr}, {started_expr}, MAX(v.last_scanned_at), MAX(v.discovered_at)) as batch_time,
+                    COUNT(*) as count,
+                    MIN(COALESCE(v.last_scanned_at, v.discovered_at)) as first_discovered,
+                    MAX(COALESCE(v.last_scanned_at, v.discovered_at)) as last_discovered
+                FROM scan_runs sr
+                JOIN viral_targets v ON v.source_scan_run_id = sr.id
+                WHERE 1=1
+                  {final_status_filter}
+                  {scan_type_filter}
+                GROUP BY sr.id
+                HAVING count > 0
+                ORDER BY batch_time DESC, sr.id DESC
+                LIMIT 30
+            """
+            for scan_run_id, batch_time, count, first_discovered, last_discovered in cursor.execute(query, final_params).fetchall():
+                batch_dt = datetime.fromisoformat(str(batch_time).replace(" ", "T"))
+                batch_date = batch_dt.strftime("%Y-%m-%d")
+                hour = batch_dt.strftime("%H")
+                batches.append({
+                    "batch_id": f"run:{int(scan_run_id)}",
+                    "batch_label": f"{batch_date} {hour}시 ({int(count):,}개)",
+                    "batch_date": batch_date,
+                    "batch_hour": int(hour),
+                    "count": int(count),
+                    "first_discovered": first_discovered,
+                    "last_discovered": last_discovered,
+                    "source_scan_run_id": int(scan_run_id),
+                })
+
+        if batches:
+            return batches
+
+        scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
+        final_where = []
+        final_params = []
+        _append_final_scan_result_scope(final_where, final_params)
+        final_status_filter = "AND " + " AND ".join(final_where)
+        query = f"""
+            SELECT
+                strftime('%Y-%m-%d %H', {scanned_expr}) as batch_hour,
+                strftime('%Y-%m-%d', {scanned_expr}) as batch_date,
+                strftime('%H', {scanned_expr}) as hour,
+                COUNT(*) as count,
+                MIN({scanned_expr}) as first_discovered,
+                MAX({scanned_expr}) as last_discovered
+            FROM viral_targets
+            WHERE 1=1
+              {final_status_filter}
+            GROUP BY strftime('%Y-%m-%d %H', {scanned_expr})
+            ORDER BY batch_hour DESC
+            LIMIT 30
+        """
+
+        for batch_hour, batch_date, hour, count, first_discovered, last_discovered in cursor.execute(query, final_params).fetchall():
+            batches.append({
+                "batch_id": batch_hour,
+                "batch_label": f"{batch_date} {hour}시 ({int(count):,}개)",
+                "batch_date": batch_date,
+                "batch_hour": int(hour),
+                "count": int(count),
+                "first_discovered": first_discovered,
+                "last_discovered": last_discovered,
+            })
+
+        return batches
+
+
+def _viral_score_breakdown_expr(cursor: sqlite3.Cursor, key: str) -> str:
+    columns = _viral_target_columns(cursor)
+    if "score_breakdown" not in columns:
+        return "CAST(0 AS REAL)"
+    safe_key = "".join(ch for ch in key if ch.isalnum() or ch == "_")
+    return (
+        "COALESCE("
+        "CASE WHEN json_valid(score_breakdown) "
+        f"THEN CAST(json_extract(score_breakdown, '$.{safe_key}') AS REAL) "
+        "ELSE 0 END, 0)"
+    )
 
 # [성능 최적화] ViralHunter 싱글톤 인스턴스
 _viral_hunter_instance: Optional[ViralHunter] = None
@@ -347,6 +623,8 @@ class BulkActionByFilterRequest(BaseModel):
     post_region: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     min_score: Optional[float] = Field(None, ge=0.0, le=150.0)
+    min_clinic_fit: Optional[float] = Field(None, ge=0.0, le=100.0)
+    min_worksite_efficiency: Optional[float] = Field(None, ge=0.0, le=100.0)
     commentable_only: Optional[bool] = None
     work_scope: Optional[str] = "latest_legion"
     exclude_revisited: Optional[bool] = None
@@ -828,6 +1106,7 @@ async def get_scan_batches() -> List[Dict[str, Any]]:
         스캔 배치 목록 [{batch_id, batch_label, count, scan_time}]
     """
     try:
+        return _list_scan_batches_from_db()
         db = DatabaseManager()
 
         # discovered_at을 시간 단위로 그룹화 (같은 스캔 세션)
@@ -938,10 +1217,17 @@ async def get_viral_home_stats(
         # 스캔 배치 필터 조건
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
+        effective_work_scope = "all_backlog" if scan_batch else work_scope
+        effective_exclude_revisited = False if scan_batch else exclude_revisited
+        _apply_work_scope_sql(
+            cursor,
+            effective_work_scope,
+            scope_where,
+            params,
+            exclude_revisited=effective_exclude_revisited,
+        )
         if scan_batch:
-            scope_where.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
-            params.append(scan_batch)
+            _append_scan_batch_sql(cursor, scope_where, params, scan_batch)
         batch_condition = f"AND {' AND '.join(scope_where)}" if scope_where else ""
 
         # 1. 플랫폼별 통계 (DB 집계)
@@ -994,36 +1280,58 @@ async def get_viral_home_stats(
             del platform_stats[p]['totalScore']
 
         # 2. 카테고리별 통계 (DB 집계)
+        category_expr = _viral_category_expr(cursor)
         cursor.execute(f"""
             SELECT
-                COALESCE(category, '기타') as category,
+                {category_expr} as category,
                 COUNT(*) as count,
                 AVG(COALESCE(priority_score, 0)) as avg_score,
                 MAX(COALESCE(priority_score, 0)) as max_score
             FROM viral_targets
             WHERE comment_status = 'pending'
             {batch_condition}
-            GROUP BY COALESCE(category, '기타')
+            GROUP BY {category_expr}
             ORDER BY MAX(COALESCE(priority_score, 0)) DESC
         """, params)
 
-        category_rows = cursor.fetchall()
-        category_stats = []
-        for row in category_rows:
-            avg_score = row['avg_score'] or 0
-            max_score = row['max_score'] or 0
-            priority = max_score * 0.5 + avg_score * 0.3 + row['count'] * 0.2
+        category_stats = _build_category_stats(cursor.fetchall())
+        # Scanned categories are separate from the actionable pending queue.
+        scanned_scope_where: List[str] = []
+        scanned_params: List[Any] = []
+        scanned_work_scope = "all_backlog" if scan_batch else work_scope
+        _apply_work_scope_sql(
+            cursor,
+            scanned_work_scope,
+            scanned_scope_where,
+            scanned_params,
+            exclude_revisited=False,
+        )
+        if scan_batch:
+            _append_scan_batch_sql(cursor, scanned_scope_where, scanned_params, scan_batch)
+        _append_final_scan_result_scope(scanned_scope_where, scanned_params)
+        scanned_batch_condition = f"AND {' AND '.join(scanned_scope_where)}" if scanned_scope_where else ""
 
-            category_stats.append({
-                'category': row['category'],
-                'count': row['count'],
-                'avgScore': round(avg_score, 2),
-                'maxScore': round(max_score, 2),
-                'priority': round(priority, 2)
-            })
+        cursor.execute(f"""
+            SELECT
+                {category_expr} as category,
+                COUNT(*) as count,
+                AVG(COALESCE(priority_score, 0)) as avg_score,
+                MAX(COALESCE(priority_score, 0)) as max_score
+            FROM viral_targets
+            WHERE 1=1
+            {scanned_batch_condition}
+            GROUP BY {category_expr}
+            ORDER BY MAX(COALESCE(priority_score, 0)) DESC
+        """, scanned_params)
+        scanned_category_stats = _build_category_stats(cursor.fetchall())
 
-        # 우선순위순 정렬
-        category_stats.sort(key=lambda x: x['priority'], reverse=True)
+        cursor.execute(f"""
+            SELECT COUNT(*) as total
+            FROM viral_targets
+            WHERE 1=1
+            {scanned_batch_condition}
+        """, scanned_params)
+        scanned_total_count = cursor.fetchone()['total']
 
         # 3. 총 개수
         cursor.execute(f"""
@@ -1070,8 +1378,10 @@ async def get_viral_home_stats(
 
         return {
             'total_count': total_count,
+            'scanned_total_count': scanned_total_count,
             'platform_stats': platform_stats,
             'category_stats': category_stats,
+            'scanned_category_stats': scanned_category_stats,
             'status_stats': status_stats,
             'score_distribution': score_distribution
         }
@@ -1103,6 +1413,8 @@ async def get_viral_targets(
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
     min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
+    min_clinic_fit: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum clinic_treatment_fit_score"),
+    min_worksite_efficiency: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum worksite_efficiency_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
     limit: int = Query(default=200, ge=1, le=1000, description="최대 조회 수"),
     offset: int = Query(default=0, ge=0, description="페이지 오프셋")
@@ -1150,6 +1462,8 @@ async def get_viral_targets(
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
             "min_exposure": min_exposure,
+            "min_clinic_fit": min_clinic_fit,
+            "min_worksite_efficiency": min_worksite_efficiency,
             "commentable_only": commentable_only,
         }.items() if v is not None}
 
@@ -1479,6 +1793,140 @@ async def get_target_context(target_id: str) -> Dict[str, Any]:
             conn.close()
 
 
+def _venue_diversity_key(item: Dict[str, Any]) -> str:
+    """카페/블로거의 venue 식별자(author). KIN(author='')·미상은 캡 제외.
+
+    cafe author=카페명, blog author=블로거명 → venue 동일성. KIN author는 질문자
+    닉네임이고 venue 식별이 불가하므로(공급자-venue 게이트 의도적 제외와 일관) 캡에서 뺀다.
+    """
+    author = str(item.get("author") or "").strip().lower()
+    platform = str(item.get("platform") or "").lower()
+    if not author or platform in {"kin", "naver_kin"}:
+        return ""
+    return author
+
+
+def _select_targets_with_venue_diversity(
+    groups_map: Dict[str, List[Dict[str, Any]]],
+    category_order: List[str],
+    *,
+    total_limit: int,
+    per_category: int,
+    venue_cap: int,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """카테고리 균형 라운드로빈에 venue(카페/블로거) 다양성 하드 캡을 더한다.
+
+    한 카페/블로거가 작업 큐를 독점하면 (1) 실제 댓글 도달 폭이 좁아지고 (2) 동일
+    venue 반복 댓글이 네이버 스팸/조작 탐지 지문이 된다. 카테고리 균형과 per_category
+    상한은 그대로 두되, 한 venue 의 누적 선택은 venue_cap 을 절대 넘지 않는다(하드 캡).
+    같은 카페에 댓글을 몰아 다는 것 자체가 리스크이므로, 분산이 큐 길이보다 우선한다 —
+    풀이 한 venue 에 쏠려 있으면 큐가 total_limit 보다 짧아지고, 그 짧아짐이 곧
+    '발견을 넓혀라'는 신호다(coverage_bounds 감사와 candidate_total 로 가시화). KIN
+    (author='')은 venue 식별 불가라 캡 제외. 입력 groups_map 의 각 버킷은 호출 전
+    이미 점수순 정렬되어 있어야 한다.
+    """
+    selected_by_category: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in category_order}
+    selected_ids: set = set()
+    venue_counts: Dict[str, int] = {}
+    selected_total = 0
+
+    while selected_total < total_limit:
+        progressed = False
+        for cat in category_order:
+            if selected_total >= total_limit:
+                break
+            if len(selected_by_category[cat]) >= per_category:
+                continue
+            next_item = None
+            for item in groups_map.get(cat, []):
+                item_id = str(item.get("id") or "")
+                if not item_id or item_id in selected_ids:
+                    continue
+                vkey = _venue_diversity_key(item)
+                if vkey and venue_counts.get(vkey, 0) >= venue_cap:
+                    continue
+                next_item = item
+                break
+            if next_item is None:
+                continue
+            vkey = _venue_diversity_key(next_item)
+            if vkey:
+                venue_counts[vkey] = venue_counts.get(vkey, 0) + 1
+            selected_ids.add(str(next_item.get("id") or ""))
+            selected_by_category[cat].append(next_item)
+            selected_total += 1
+            progressed = True
+        if not progressed:
+            break
+
+    return selected_by_category
+
+
+def _norm_platform_key(platform: Any) -> str:
+    p = str(platform or "").strip().lower()
+    if p in {"kin", "naver_kin"}:
+        return "kin"
+    if p in {"cafe", "naver_cafe"}:
+        return "cafe"
+    return p or "unknown"
+
+
+def _platform_acceptance_factors(cursor, *, min_decided: int = 30) -> Dict[str, float]:
+    """플랫폼별 직원 수용도 = (posted+approved+generated)/(+skipped). 표본 부족 시 중립(0.5).
+
+    라이브 근거(2026-06-20): 직원은 KIN 을 cafe 대비 2.6배 작업하고 blog 는 거의 버린다
+    (스킵의 39%·posted 의 1.4%). 그러나 골든큐 정렬키(worksite)의 플랫폼 가중치는 cafe>kin
+    이라 실수요와 어긋나 80% 스킵을 유발했다. 학습된 수용도를 랭킹에 반영해 자기조정한다
+    (하드코딩 스냅샷 아님 — 직원 결정이 바뀌면 따라간다). 표본<min_decided 면 중립.
+    """
+    factors: Dict[str, float] = {}
+    try:
+        rows = cursor.execute(
+            """
+            SELECT platform,
+                   SUM(CASE WHEN comment_status IN ('posted','approved','ai_approved','generated') THEN 1 ELSE 0 END) AS used,
+                   SUM(CASE WHEN comment_status='skipped' THEN 1 ELSE 0 END) AS skipped
+            FROM viral_targets
+            GROUP BY platform
+            """
+        ).fetchall()
+    except Exception:
+        return factors
+    agg: Dict[str, List[int]] = {}
+    for r in rows:
+        try:
+            plat, used, skipped = r["platform"], r["used"], r["skipped"]
+        except (TypeError, KeyError, IndexError):
+            plat, used, skipped = r[0], r[1], r[2]
+        a = agg.setdefault(_norm_platform_key(plat), [0, 0])
+        a[0] += int(used or 0)
+        a[1] += int(skipped or 0)
+    for p, (used, skipped) in agg.items():
+        decided = used + skipped
+        factors[p] = (used / decided) if decided >= min_decided else 0.5
+    return factors
+
+
+# worksite 점수(보통 30~100)에 대한 플랫폼 수용도 조정 폭. factor 0~1 → 조정 [-SCALE/2, +SCALE/2].
+PLATFORM_ACCEPTANCE_RANK_SCALE = 24.0
+# 직원 실수요 강판별자(lens_fit)의 랭킹 조정 스케일·상한.
+STAFF_SIGNAL_RANK_SCALE = 0.3
+STAFF_SIGNAL_RANK_CAP = 10.0
+
+
+def _staff_signal_rank_adjustment(item: Dict[str, Any]) -> float:
+    """직원 실수요 강판별자를 랭킹에 반영(라이브: lens_fit posted 65.6 vs skipped 57.4, Δ+8.1).
+
+    골든큐 1차 정렬키 worksite 는 약한 판별자(Δ+1.2)인데 가장 강한 수치 판별자 lens_fit 은
+    랭킹에 없었다. lens_fit 을 bounded 가산한다. 결측(0)은 중립(점수 미산출 행을 벌하지 않음).
+    """
+    adj = 0.0
+    lens_fit = float(item.get("pathfinder_lens_fit_score") or 0)
+    if lens_fit > 0:
+        adj += max(-STAFF_SIGNAL_RANK_CAP, min(STAFF_SIGNAL_RANK_CAP, (lens_fit - 55.0) * STAFF_SIGNAL_RANK_SCALE))
+    return adj
+
+
 @router.get("/todays-queue")
 async def get_todays_queue(
     total_limit: int = Query(default=30, ge=5, le=100),
@@ -1508,21 +1956,53 @@ async def get_todays_queue(
         cursor = conn.cursor()
         scope_where: List[str] = []
         params: List[Any] = []
-        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=exclude_revisited)
+        scope = _normalize_work_scope(work_scope)
+        latest_scan_id = _latest_legion_scan_id(cursor) if scope == "latest_legion" else 0
+        effective_exclude_revisited = exclude_revisited
+        if today_only and effective_exclude_revisited is None:
+            effective_exclude_revisited = False
+        _apply_work_scope_sql(cursor, work_scope, scope_where, params, exclude_revisited=effective_exclude_revisited)
         scope_condition = f" AND {' AND '.join(scope_where)}" if scope_where else ""
+        clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
+        worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
+        lens_fit_expr = _viral_score_breakdown_expr(cursor, "pathfinder_lens_fit_score")
+        target_columns = _viral_target_columns(cursor)
+        scanned_expr = "COALESCE(last_scanned_at, discovered_at)" if "last_scanned_at" in target_columns else "discovered_at"
+        last_scanned_select = "last_scanned_at" if "last_scanned_at" in target_columns else "NULL AS last_scanned_at"
+        matched_category_select = (
+            "matched_keyword_category"
+            if "matched_keyword_category" in target_columns
+            else "NULL AS matched_keyword_category"
+        )
+        matched_keyword_select = (
+            "matched_keyword"
+            if "matched_keyword" in target_columns
+            else "NULL AS matched_keyword"
+        )
+        candidate_limit = min(500, max(total_limit * 4, total_limit + per_category * len(VIRAL_CORE_CATEGORIES)))
 
         query = f"""
             SELECT id, platform, url, title, content_preview, matched_keywords,
-                   category, priority_score, discovered_at, author, matched_keyword
+                   category, {matched_category_select}, priority_score, discovered_at, {last_scanned_select}, author, {matched_keyword_select},
+                   {clinic_fit_expr} AS clinic_treatment_fit_score,
+                   {worksite_efficiency_expr} AS worksite_efficiency_score,
+                   {lens_fit_expr} AS pathfinder_lens_fit_score
             FROM viral_targets
             WHERE comment_status = 'pending'
               AND priority_score >= 80
               {scope_condition}
         """
-        if today_only:
-            query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
-        query += " ORDER BY priority_score DESC, discovered_at DESC LIMIT ?"
-        params.append(total_limit)
+        if today_only and not (scope == "latest_legion" and latest_scan_id):
+            query += f" AND {scanned_expr} >= datetime('now', '-48 hours')"
+        query += f"""
+            ORDER BY
+                {worksite_efficiency_expr} DESC,
+                {clinic_fit_expr} DESC,
+                priority_score DESC,
+                {scanned_expr} DESC
+            LIMIT ?
+        """
+        params.append(candidate_limit)
         cursor.execute(query, params)
         rows = [dict(r) for r in cursor.fetchall()]
 
@@ -1535,22 +2015,87 @@ async def get_todays_queue(
                     r["matched_keywords"] = []
 
         # 카테고리별 그룹핑 (per_category 상한 적용)
+        # 시그니처 축(흉터/여드름흉터·안면비대칭)이 콘텐츠 또는 시드 어느 쪽에라도 걸리면
+        # 포스트의 콘텐츠 축(category, re-canonicalization 이후 신뢰 가능)으로 라우팅한다 —
+        # 시드 축(matched_keyword_category)으로만 라우팅하면 cross-axis 발견(예: 스킨 시드가
+        # 찾은 SCAR 글)에서 시그니처 글이 엉뚱한 버킷에 숨는다(라이브: 78건 숨음, 흉터 60·
+        # 안면비대칭 17). 그 외 비시그니처 글은 기존 시드 우선 라우팅을 유지해 인접 축
+        # (체형교정↔통증) 경계 탐지 노이즈로 인한 대규모 재배치를 피한다. 콘텐츠가
+        # '기타'(미분류)면 시드 lineage로 폴백.
         groups_map: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
-            cat = r.get("category") or "기타"
+            raw_category = r.get("category") or "기타"
+            content_cat = _canonical_viral_category(raw_category)
+            seed_cat = (
+                _canonical_viral_category(r.get("matched_keyword_category"))
+                if r.get("matched_keyword_category") else ""
+            )
+            if content_cat in SIGNATURE_ROUTING_AXES or seed_cat in SIGNATURE_ROUTING_AXES:
+                cat = content_cat if content_cat and content_cat != "기타" else (seed_cat or "기타")
+            else:
+                cat = seed_cat or content_cat or "기타"
+            if raw_category != cat:
+                r["raw_category"] = raw_category
+            if r.get("matched_keyword_category"):
+                r["matched_keyword_category"] = seed_cat
+            r["category"] = cat
             groups_map.setdefault(cat, []).append(r)
 
+        # 학습된 플랫폼 수용도(직원 posted vs skipped)를 골든큐 랭킹에 반영 — worksite 의
+        # 플랫폼 가중치(cafe>kin)가 실수요(kin>cafe)와 어긋나 blog/저수용 글이 큐 상단을
+        # 차지하던 문제를 자기조정으로 교정한다. 표본 부족 플랫폼은 중립(영향 0).
+        platform_factors = _platform_acceptance_factors(cursor)
+
+        def target_rank_key(item: Dict[str, Any]) -> Tuple[float, float, float]:
+            factor = platform_factors.get(_norm_platform_key(item.get("platform")), 0.5)
+            platform_adj = (factor - 0.5) * PLATFORM_ACCEPTANCE_RANK_SCALE
+            return (
+                float(item.get("worksite_efficiency_score") or 0)
+                + platform_adj
+                + _staff_signal_rank_adjustment(item),
+                float(item.get("clinic_treatment_fit_score") or 0),
+                float(item.get("priority_score") or 0),
+            )
+
+        for items in groups_map.values():
+            items.sort(key=target_rank_key, reverse=True)
+
+        category_order = sorted(
+            groups_map,
+            key=lambda cat: target_rank_key(groups_map[cat][0]) if groups_map[cat] else (0.0, 0.0, 0.0),
+            reverse=True,
+        )
+        # venue 다양성 캡: 카테고리 균형은 유지하되 한 카페/블로거(author=venue)가 작업
+        # 큐를 독점하지 못하게 한다 — 실제 댓글 도달 폭 확대 + 동일 venue 반복 댓글로 인한
+        # 네이버 스팸/조작 탐지 지문 위험 완화. 카테고리가 굶지 않도록 폴백 보존(헬퍼 참조).
+        venue_cap = max(3, total_limit // 4)
+        selected_by_category = _select_targets_with_venue_diversity(
+            groups_map,
+            category_order,
+            total_limit=total_limit,
+            per_category=per_category,
+            venue_cap=venue_cap,
+        )
+        selected_total = sum(len(items) for items in selected_by_category.values())
+
         groups = []
-        for cat, items in sorted(groups_map.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        for cat in category_order:
+            items = selected_by_category.get(cat, [])
+            if not items:
+                continue
             groups.append({
                 "category": cat,
-                "count": len(items),
-                "items": items[:per_category],
+                "count": len(groups_map.get(cat, [])),
+                "selected_count": len(items),
+                "items": items,
             })
 
         return {
-            "total": len(rows),
+            "total": selected_total,
+            "candidate_total": len(rows),
             "today_only": today_only,
+            "portfolio_balanced": True,
+            "per_category": per_category,
             "generated_at": datetime.now().isoformat(),
             "groups": groups,
         }
@@ -1580,6 +2125,8 @@ async def count_viral_targets(
     exclude_revisited: Optional[bool] = Query(default=None, description="Hide rediscovered duplicate URLs from staff queues"),
     min_score: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum priority_score"),
     min_exposure: Optional[float] = Query(default=None, ge=0.0, le=150.0, description="Minimum exposure_score"),
+    min_clinic_fit: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum clinic_treatment_fit_score"),
+    min_worksite_efficiency: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Minimum worksite_efficiency_score"),
     commentable_only: Optional[bool] = Query(default=None, description="Only targets that allow comments"),
 ) -> Dict[str, int]:
     """[R3 Repository PoC] 필터 조건에 일치하는 viral_targets 총 개수.
@@ -1605,6 +2152,8 @@ async def count_viral_targets(
             "exclude_revisited": exclude_revisited,
             "min_score": min_score,
             "min_exposure": min_exposure,
+            "min_clinic_fit": min_clinic_fit,
+            "min_worksite_efficiency": min_worksite_efficiency,
             "commentable_only": commentable_only,
         }
         filters = {k: v for k, v in filters.items() if v is not None}
@@ -1632,25 +2181,39 @@ async def get_viral_categories() -> List[Dict[str, Any]]:
         cursor = conn.cursor()
 
         # DB에서 직접 카테고리별 집계 (기존: 10,000개 로드 후 Python 처리)
-        cursor.execute("""
+        category_expr = _viral_category_expr(cursor)
+        cursor.execute(f"""
             SELECT
-                COALESCE(category, '기타') as category,
+                {category_expr} as category,
                 COUNT(*) as count,
                 AVG(COALESCE(priority_score, 0)) as avg_score,
                 MAX(COALESCE(priority_score, 0)) as max_score
             FROM viral_targets
             WHERE comment_status = 'pending'
-            GROUP BY COALESCE(category, '기타')
+            GROUP BY {category_expr}
         """)
 
         rows = cursor.fetchall()
 
         # 우선순위 계산 및 결과 생성
-        result = []
+        buckets: Dict[str, Dict[str, float]] = {}
         for row in rows:
             category, count, avg_score, max_score = row
-            avg_score = avg_score or 0
-            max_score = max_score or 0
+            category = _canonical_viral_category(category)
+            count = int(count or 0)
+            bucket = buckets.setdefault(
+                category,
+                {'count': 0, 'score_sum': 0.0, 'max_score': 0.0},
+            )
+            bucket['count'] += count
+            bucket['score_sum'] += float(avg_score or 0) * count
+            bucket['max_score'] = max(bucket['max_score'], float(max_score or 0))
+
+        result = []
+        for category, bucket in buckets.items():
+            count = int(bucket['count'])
+            avg_score = (bucket['score_sum'] / count) if count else 0.0
+            max_score = bucket['max_score']
             priority = max_score * 0.5 + avg_score * 0.3 + count * 0.2
 
             result.append({
@@ -2290,11 +2853,13 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         params: List[Any] = []
         scope_where: List[str] = []
         exclude_revisited = req.exclude_revisited
+        if req.scan_batch:
+            exclude_revisited = False
         if exclude_revisited is None and req.min_scan_count and req.min_scan_count > 0:
             exclude_revisited = False
         _apply_work_scope_sql(
             cursor,
-            req.work_scope,
+            "all_backlog" if req.scan_batch else req.work_scope,
             scope_where,
             params,
             exclude_revisited=exclude_revisited,
@@ -2313,15 +2878,23 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
             where += " AND category = ?"
             params.append(req.category)
         if req.scan_batch:
-            where += " AND strftime('%Y-%m-%d %H', discovered_at) = ?"
-            params.append(req.scan_batch)
+            batch_where: List[str] = []
+            _append_scan_batch_sql(cursor, batch_where, params, req.scan_batch)
+            if batch_where:
+                where += " AND " + " AND ".join(batch_where)
         elif req.date_filter:
+            target_columns = _viral_target_columns(cursor)
+            scanned_expr = (
+                "COALESCE(last_scanned_at, discovered_at)"
+                if "last_scanned_at" in target_columns
+                else "discovered_at"
+            )
             if req.date_filter == "오늘":
-                where += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+                where += f" AND DATE({scanned_expr}) = DATE('now', 'localtime')"
             elif req.date_filter == "최근 7일":
-                where += " AND discovered_at >= datetime('now', '-7 days')"
+                where += f" AND {scanned_expr} >= datetime('now', '-7 days')"
             elif req.date_filter == "최근 30일":
-                where += " AND discovered_at >= datetime('now', '-30 days')"
+                where += f" AND {scanned_expr} >= datetime('now', '-30 days')"
         if req.min_scan_count and req.min_scan_count > 0:
             where += " AND scan_count >= ?"
             params.append(req.min_scan_count)
@@ -2351,6 +2924,12 @@ async def bulk_action_by_filter(req: BulkActionByFilterRequest) -> Dict[str, Any
         if req.min_score is not None:
             where += " AND COALESCE(priority_score, 0) >= ?"
             params.append(req.min_score)
+        if req.min_clinic_fit is not None:
+            where += f" AND {_viral_score_breakdown_expr(cursor, 'clinic_treatment_fit_score')} >= ?"
+            params.append(req.min_clinic_fit)
+        if req.min_worksite_efficiency is not None:
+            where += f" AND {_viral_score_breakdown_expr(cursor, 'worksite_efficiency_score')} >= ?"
+            params.append(req.min_worksite_efficiency)
         if req.commentable_only:
             where += " AND COALESCE(is_commentable, 0) = 1"
 
@@ -3422,6 +4001,8 @@ async def get_smart_recommendations(
         recurring_params: List[Any] = []
         _apply_work_scope_sql(cursor, work_scope, recurring_where, recurring_params, exclude_revisited=False)
         recurring_condition = f" AND {' AND '.join(recurring_where)}" if recurring_where else ""
+        clinic_fit_expr = _viral_score_breakdown_expr(cursor, "clinic_treatment_fit_score")
+        worksite_efficiency_expr = _viral_score_breakdown_expr(cursor, "worksite_efficiency_score")
 
         # 1. 빠른 필터 프리셋 생성
 
@@ -3498,6 +4079,32 @@ async def get_smart_recommendations(
                 "filter": {"status": "pending", "commentable_only": True, "sort": "priority"}
             })
 
+        cursor.execute(f"""
+            SELECT COUNT(*) FROM viral_targets
+            WHERE comment_status = 'pending'
+            AND COALESCE(is_commentable, 0) = 1
+            AND {clinic_fit_expr} >= 70
+            AND {worksite_efficiency_expr} >= 70
+            {visible_condition}
+        """, visible_params)
+        efficient_worksite_count = cursor.fetchone()[0]
+
+        if efficient_worksite_count > 0:
+            result["quick_filters"].append({
+                "id": "gyulim_efficient_worksite",
+                "name": "\uaddc\ub9bc \uace0\ud6a8\uc728 \uc791\uc5c5\uc9c0",
+                "icon": "target",
+                "description": f"\uc9c4\ub8cc \uc801\ud569 + \uc791\uc5c5 \ud6a8\uc728\uc774 \ub192\uc740 {efficient_worksite_count}\uac1c",
+                "count": efficient_worksite_count,
+                "filter": {
+                    "status": "pending",
+                    "commentable_only": True,
+                    "min_clinic_fit": 70,
+                    "min_worksite_efficiency": 70,
+                    "sort": "worksite_efficiency",
+                }
+            })
+
         # AI 생성된 댓글 대기 중
         cursor.execute(f"""
             SELECT COUNT(*) FROM viral_targets
@@ -3505,6 +4112,13 @@ async def get_smart_recommendations(
             {visible_condition}
         """, visible_params)
         generated_count = cursor.fetchone()[0]
+
+        if efficient_worksite_count > 0:
+            result["insights"].append({
+                "type": "gyulim_efficiency",
+                "message": f"\uaddc\ub9bc \uc9c4\ub8cc \uc801\ud569\ub3c4\uc640 \uc791\uc5c5 \ud6a8\uc728\uc774 \ubaa8\ub450 \ub192\uc740 \ud0c0\uae43 {efficient_worksite_count}\uac1c\uac00 \uc788\uc2b5\ub2c8\ub2e4.",
+                "importance": "high"
+            })
 
         if generated_count > 0:
             result["quick_filters"].append({
@@ -3518,12 +4132,16 @@ async def get_smart_recommendations(
 
         # 2. 오늘 집중해야 할 타겟 (Top 5)
         cursor.execute(f"""
-            SELECT id, title, platform, priority_score, matched_keywords, scan_count
+            SELECT id, title, platform, priority_score, matched_keywords, scan_count,
+                   {clinic_fit_expr} AS clinic_treatment_fit_score,
+                   {worksite_efficiency_expr} AS worksite_efficiency_score
             FROM viral_targets
             WHERE comment_status = 'pending'
             {visible_condition}
             ORDER BY
                 CASE WHEN scan_count >= 2 THEN 1 ELSE 0 END DESC,
+                {worksite_efficiency_expr} DESC,
+                {clinic_fit_expr} DESC,
                 priority_score DESC
             LIMIT 5
         """, visible_params)
@@ -3543,12 +4161,14 @@ async def get_smart_recommendations(
 
         # 3. 플랫폼별 우선순위
         cursor.execute(f"""
-            SELECT platform, COUNT(*) as count, AVG(priority_score) as avg_score
+            SELECT platform, COUNT(*) as count, AVG(priority_score) as avg_score,
+                   AVG({worksite_efficiency_expr}) as avg_worksite_efficiency,
+                   AVG({clinic_fit_expr}) as avg_clinic_fit
             FROM viral_targets
             WHERE comment_status = 'pending'
             {visible_condition}
             GROUP BY platform
-            ORDER BY avg_score DESC
+            ORDER BY avg_worksite_efficiency DESC, avg_clinic_fit DESC, avg_score DESC
         """, visible_params)
 
         platform_priorities = []

@@ -28,21 +28,25 @@ sys.stdout.reconfigure(encoding='utf-8')
 DB_PATH = os.path.join(ROOT_DIR, 'db', 'marketing_data.db')
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--top', type=int, default=30, help='상위 N건 (priority_score desc)')
-    parser.add_argument('--min-score', type=float, default=80.0, help='최소 priority_score')
-    parser.add_argument('--max-content', type=int, default=200,
-                        help='이 길이 미만 content_preview만 enrich (이미 풍부한 글 재방문 안 함)')
-    parser.add_argument('--dry-run', action='store_true')
-    args = parser.parse_args()
+def backup_db(db_path: str) -> str:
+    """Create an online SQLite backup before an evidence-only update."""
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = os.path.join(
+        os.path.dirname(db_path), 'backups', f'marketing_data.db.backup_pre_cafe_enrich_{stamp}'
+    )
+    os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+    src = sqlite3.connect(db_path)
+    dst = sqlite3.connect(backup_path)
+    with dst:
+        src.backup(dst)
+    src.close()
+    dst.close()
+    return backup_path
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
 
-    rows = cur.execute(
-        """
+def build_target_query(scan_id: int | None) -> str:
+    """Keep a requested enrichment run pinned to its Pathfinder lineage."""
+    query = """
         SELECT id, url, title, content_preview, priority_score
           FROM viral_targets
          WHERE platform IN ('cafe', 'naver_cafe')
@@ -50,11 +54,35 @@ def main() -> int:
            AND priority_score >= ?
            AND (LENGTH(COALESCE(content_preview, '')) < ? OR content IS NULL OR content = '')
            AND url LIKE 'http%'
-         ORDER BY priority_score DESC
-         LIMIT ?
-        """,
-        (args.min_score, args.max_content, args.top),
-    ).fetchall()
+    """
+    if scan_id is not None:
+        query += " AND COALESCE(source_scan_run_id, 0) = ?\n"
+    return query + " ORDER BY priority_score DESC LIMIT ?"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--top', type=int, default=30, help='상위 N건 (priority_score desc)')
+    parser.add_argument('--min-score', type=float, default=80.0, help='최소 priority_score')
+    parser.add_argument('--max-content', type=int, default=200,
+                        help='이 길이 미만 content_preview만 enrich (이미 풍부한 글 재방문 안 함)')
+    parser.add_argument('--scan-id', type=int,
+                        help='Restrict enrichment to a specific source_scan_run_id')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--no-backup', action='store_true',
+                        help='Skip the SQLite backup before an evidence-only update')
+    args = parser.parse_args()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    query = build_target_query(args.scan_id)
+    params: list[object] = [args.min_score, args.max_content]
+    if args.scan_id is not None:
+        params.append(args.scan_id)
+    params.append(args.top)
+    rows = cur.execute(query, params).fetchall()
 
     if not rows:
         print('대상 없음 (score 미달 또는 이미 본문 풍부).')
@@ -78,6 +106,10 @@ def main() -> int:
     except ImportError as e:
         print(f'cafe_spy import 실패: {e}')
         return 1
+
+    if not args.no_backup:
+        backup_path = backup_db(DB_PATH)
+        print(f'backup created: {backup_path}')
 
     spy = CafeSpy()
     if not getattr(spy, 'driver', None):

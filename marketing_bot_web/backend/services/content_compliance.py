@@ -212,7 +212,22 @@ VIOLATION_PATTERNS = {
 }
 
 
-def check_content_compliance(content: str, content_type: str = "blog") -> Dict[str, Any]:
+# task="viral_comment" 운영 정책(CLAUDE.md USER DIRECTIVE, 2026-06-19): 바이럴 댓글은
+# 정식 명칭(규림한의원)을 밝힌 1인칭 환자 경험담 톤을 의도적으로 허용한다("1인칭 방문/효과
+# 경험담을 의료광고법 위반으로 제거하지 말 것"). 따라서 1인칭 경험담 자체를 잡는 아래
+# 카테고리만 viral 경로에서 면제하고, 단정효과·할인·이벤트·AI의료진추천·비교·전후비교·
+# 최초/유일 등 경성 위반은 viral 여부와 무관하게 그대로 강제한다.
+FIRST_PERSON_EXPERIENCE_CATEGORIES = frozenset({
+    "환자 치료경험담 (인플루언서)",
+})
+
+
+def check_content_compliance(
+    content: str,
+    content_type: str = "blog",
+    *,
+    exempt_categories=None,
+) -> Dict[str, Any]:
     """
     콘텐츠의 의료광고 규정 준수 여부를 키워드 기반으로 사전 체크합니다.
 
@@ -231,8 +246,11 @@ def check_content_compliance(content: str, content_type: str = "blog") -> Dict[s
     issues = []
     max_severity = "info"
     severity_order = {"info": 0, "low": 1, "medium": 2, "high": 3}
+    exempt = exempt_categories or frozenset()
 
     for category, rule in VIOLATION_PATTERNS.items():
+        if category in exempt:
+            continue
         for pattern in rule["patterns"]:
             matches = re.findall(pattern, content, re.IGNORECASE)
             if matches:
@@ -521,6 +539,7 @@ def screen_korean_comment(
     *,
     require_disclosure: bool = True,
     auto_append_disclosure: bool = True,
+    allow_first_person_experience: bool = False,
 ) -> Dict[str, Any]:
     """
     한국어 마케팅 댓글/콘텐츠 인라인 스크린.
@@ -541,7 +560,11 @@ def screen_korean_comment(
             "auto_modified": bool,     # final_text가 원문과 다른지
         }
     """
-    base = check_content_compliance(text, content_type="comment")
+    base = check_content_compliance(
+        text,
+        content_type="comment",
+        exempt_categories=FIRST_PERSON_EXPERIENCE_CATEGORIES if allow_first_person_experience else None,
+    )
     violations = base.get("issues", [])
     max_sev = base.get("severity", "info")
 

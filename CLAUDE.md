@@ -1,2131 +1,297 @@
-# Claude Code 프로젝트 가이드라인
-
-## 2026-06-04 Memory: Gyulim Pathfinder Treatment Taxonomy
-
-- Pathfinder treatment discovery now has a shared Cheongju Gyulim taxonomy in `core_services/gyulim_keyword_profile.py`. Keep scar/acne/skin, face asymmetry, diet, pain/disc, traffic accident, body correction, and lifting/elasticity rules centralized there instead of copying treatment terms into each scanner.
-- Legion, Total War, and legacy Pathfinder paths now consume the shared profile for seed generation, category detection, business-core/focus filtering, low-business-value leakage checks, and treatment-aware relevance scoring. When changing treatment coverage, update the profile first, then wire any new category-specific logic through callers.
-- Pain/disc is a first-class Gyulim discovery axis now. Keywords such as `청주 허리통증 한의원 비용` and `청주 목디스크 추나요법` must pass focus/business-core checks, while bare technique or self-care leakage such as `청주 추나` or diet-dance/exercise/product terms should remain excluded unless a direct clinic-service anchor is present.
-- The quality filter uses the shared profile so pain, scar, acne, and skin keywords are not under-scored before SERP analysis. Backend Pathfinder fallback core-category filters include `통증/디스크` and `리프팅/탄력` for older DB rows without `business_core`.
-- Regression coverage lives in `tests/test_gyulim_keyword_profile.py`. Focused verification for this change:
-  - `python -m py_compile core_services\gyulim_keyword_profile.py core_services\keyword_filter.py pathfinder.py pathfinder_v3_complete.py pathfinder_v3_legion.py marketing_bot_web\backend\routers\pathfinder.py`
-  - `python -m pytest tests/test_gyulim_keyword_profile.py -q`
-  - `python -m pytest tests/test_pathfinder_viral_stability.py -q`
-  - `python -m pytest tests/test_pathfinder_insight_broker.py -q`
-- Next live validation after code changes should be a Legion/API-backed Pathfinder run followed by category balance review across scar/skin, asymmetry, diet, pain/disc, traffic accident, and lifting/body-correction S/A/B distributions. Do not report “world-class” coverage from static tests alone; confirm live Naver/SearchAd output quality when credentials and scan budget allow.
-
-## 2026-06-04 Memory: Pathfinder Place Rank and SmartPlace Value Loop
-
-- Pathfinder now exports a `place_rank_lift` and `place_value_loop` in `core_services/pathfinder_insight_broker.py`. Keep both together: `place_rank_lift` handles rank recovery/measurement, while `place_value_loop` turns Pathfinder insights into SmartPlace profile value and imports SmartPlace signals back into Pathfinder.
-- `place_rank_lift` uses official Naver SmartPlace/Search Advisor references and explicitly blocks manipulative tactics: fake clicks/saves/shares, fake reservations, fake receipts/reviews, review reward or wording/star control, profile keyword stuffing, backlink/redirect/domain-forwarding SEO spam, competitor attacks, and report abuse.
-- `place_tracking_expansion.candidate_keywords` are measurement inputs only. They can be applied to tracking through `POST /pathfinder/place-tracking-candidates/apply`, which writes pending mobile/desktop rows through `DatabaseManager.add_keyword_to_tracking()` and updates `config/keywords.json`. Do not use these candidates as stuffing targets in SmartPlace descriptions or content.
-- Candidate generation now removes nested/duplicated local tokens and forces service-like phrases when a clinic term is present. Example desired representative candidates are service phrases such as `분평동 교통사고 입원 한의원`, not long pasted source keywords.
-- `place_value_loop.pathfinder_to_place` produces SmartPlace representative keyword candidates (max 5, actual service/menu terms only), SmartPlace update tasks for representative keywords, descriptions/FAQ, photos/images, reservation/TalkTalk/SmartCall/additional info, review responses, and AI briefing readiness.
-- `place_value_loop.place_to_pathfinder` defines the reverse loop: SmartPlace popular search terms, visitor review keywords, AI briefing text, image/review exposure state, reservation/order/TalkTalk/SmartCall action stats, and profile change history should feed future Pathfinder priorities and 14-day experiments.
-- Downstream handoffs and prompts must preserve `place_value_loop` and card-level `place_value_brief` alongside `place_rank`, `place_lift_actions`, `place_lift_experiments`, `place_tracking_candidates`, and `place_profile_audit`.
-- Frontend `InsightBriefPanel` now shows "SmartPlace 부가가치 루프" with representative keyword candidates, SmartPlace update tasks, and reverse Pathfinder import signals. The Pathfinder page also has a "추적 시작" action for top place tracking candidates.
-- Focused verification for this system:
-  - `python -m pytest tests/test_pathfinder_viral_stability.py tests/test_pathfinder_insight_broker.py tests/test_pathfinder_place_tracking_apply.py tests/test_viral_target_repo.py -q` -> 86 passed.
-  - `npm --prefix marketing_bot_web/frontend run typecheck`
-  - `npm --prefix marketing_bot_web/frontend run lint`
-  - `npm --prefix marketing_bot_web/frontend run build`
-  - Read-only DB smoke should show `place_value_status=ready`, representative keyword candidates, `card_has_value=True`, and `prompt_has_value=True`.
-
-## 2026-06-03 Memory: Pathfinder Insight Handoff System
-
-- Pathfinder now has a dedicated insight broker at `core_services/pathfinder_insight_broker.py`. It turns `keyword_insights` rows into user-facing briefs, Codex prompt context, and per-agent handoff packets for `blog_agent`, `shorts_studio_agent`, `viral_hunter_agent`, and `ad_agent`.
-- Each keyword card must preserve the same execution contract downstream: `handoff_id`, `evidence_trace`, `confidence`, `confidence_band`, `human_review`, `feedback_snapshot`, `decision_packet`, `measurement_plan`, and `data_quality`.
-- `decision_packet.state` is the publish gate: `go` can draft/publish with normal operator oversight, `review` can draft but requires operator review before publish, and `hold` is operator-review-only. Feedback such as `needs_review`, `rejected`, or `failed` can promote a card back to review/hold.
-- `data_quality` follows a DQV-style fitness-for-purpose snapshot: completeness, source diversity, scan-run linkage, evidence count, and quality warnings. Thin data quality keeps the quality gate in review.
-- `measurement_plan` is mandatory for insight delivery. It records the hypothesis, primary metric, review cadence, success threshold, and stop condition for each `handoff_id`.
-- Backend routes: `GET /pathfinder/insight-brief`, `GET /pathfinder/agent-handoff`, and `POST /pathfinder/insight-feedback`. Feedback is stored in `pathfinder_insight_feedback` and is read back into future briefs through `feedback_summary` and card-level `feedback_snapshot`.
-- Frontend `InsightBriefPanel` shows the brief, Codex synthesis, quality gate, decision overview, feedback state, action queue, and approval/review feedback controls.
-- Existing content agents now consume Pathfinder handoff context: `agent_crew.py` blog research, `director.py` shorts scripting, backend content agent topic/calendar generation, and `viral_hunter.py` comment generation.
-- CLI export: `python scripts/pathfinder_insight_handoff.py --out scratch/pathfinder_handoff_test.json --limit 3 --allow-stale`; delete scratch exports after verification.
-- Focused verification for this system:
-  - `python -m py_compile core_services/pathfinder_insight_broker.py scripts/pathfinder_insight_handoff.py marketing_bot_web/backend/routers/pathfinder.py marketing_bot_web/backend/services/ai_agents/content_agent.py agent_crew.py director.py viral_hunter.py tests/test_pathfinder_insight_broker.py`
-  - `$env:PYTHONPATH=(Get-Location).Path; pytest tests/test_pathfinder_insight_broker.py tests/test_pathfinder_viral_stability.py -q`
-  - `npm --prefix marketing_bot_web/frontend run build`
-
-## 2026-06-03 Memory: RECOVER OS Frontend Redesign (Seoul Clinical Editorial)
-
-- The marketing_bot_web frontend was fully re-skinned to the "RECOVER OS — Seoul Clinical Editorial" design from `markbotdesign_upgrade.zip`. Decision: apply the full visual system (palette/type/layout) but KEEP the existing "Marketing Bot / 규림한의원 마케팅 OS" brand identity in the chrome — do NOT introduce a "RECOVER OS" wordmark.
-- Design tokens: Sage/Clay/Mist palette, Ink (dark) / Warm Ivory (light) bases, Fraunces display serif, IBM Plex Mono labels, `--d1..d8` unified data-viz palette, dark sidebar + light/dark content, no emoji (line icons only).
-- Token plumbing: raw hex/rgba tokens live in `src/styles/recover-os.css` (`:root,[data-theme='dark']` + `[data-theme='light']`); shadcn HSL CSS vars in `src/index.css` were remapped to RECOVER so every Tailwind-class component re-skins at once; `tailwind.config.js` exposes `sage/clay/mist/ok/warn/danger/info(+.tint)/d1..d8`, Fraunces/IBM Plex Mono families, and `.ros-*` bespoke classes are namespaced to avoid collisions. `index.html` adds the Google Fonts links; `src/main.tsx` imports `recover-os.css` after `index.css`.
-- Shared helpers (new): `src/lib/chartColors.ts` (CSS-var chart palette: `D[]`, `SERIES`, `PLATFORM_COLOR`, `CATEGORY_COLOR`, `STATUS_COLOR`, `scoreColor`, `CHART_TOOLTIP_STYLE`) and `src/lib/entityIcons.tsx` (`platformIcon`/`gradeIcon`/`statusIcon` → lucide ReactNode). Recharts accepts `var(--d1)` strings so charts are theme-reactive.
-- Emoji removal: ~446 prefix emoji stripped by script + ~400 standalone converted to lucide line icons via the entityIcons helper. The only intentional remaining emoji are functional `log.includes('⚠️'/'✅'/'🔥')` matches (MissionProgress/LiveLogViewer), `⌘` in a comment, and monochrome typographic ✓✕▼▶. When stripping emoji that were a button/span's ONLY child, restore a lucide icon — empty `<button>/<span>` are a regression class (fixed in WorkView quick-actions, SearchInput search+clear, KeyboardShortcutsHelp close, EmptyState tip).
-- Net-new feature — right-side detail drawer (RECOVER 440px pattern): `src/components/ui/Drawer.tsx` (reusable: `.ros-drawer`/`.ros-drawer-ov`, useFocusTrap, scroll-lock, Esc/overlay close, createPortal, eyebrow/title/footer) + `src/components/leads/LeadDetailDrawer.tsx` (temp chip · Fraunces score · 상담 메모 · clickable 4-step status timeline · matched QAMatchPanel · 원문 열기/지금 연락 footer). Wired into `KanbanBoard` via a new `onLeadClick` prop (card click + keyboard Enter open the drawer instead of the URL); `LeadManager` owns `detailLead` state and passes `onLeadClick={setDetailLead}` + `onStatusChange={handleDrawerStatusChange}` to all 6 platform KanbanBoards (status change reuses `handleUpdateLead`, optimistically advances the drawer timeline, and opens the conversion modal on `converted`).
-- Viral composer decision: WorkView already has a strong INLINE composer (`CommentPreview`: editable textarea, quality score, regenerate, copy, keyword chips), so NO separate "CommentComposerDrawer" was built (would duplicate and fight the accordion auto-advance). Instead `CommentPreview` was re-skinned to tokens (`.ros-composer` textarea, mist/ok/warn/danger, lucide Check/X).
-- Color tokenization swept LeadTable (status pills/trust/action buttons), LeadCard (연락처·기회 badges), WorkView (priority/stat colors) from raw blue/purple/green/yellow/red → semantic tokens.
-- Verification: `npm run typecheck`, `npm run lint` (max-warnings 0), `npm run build` all green (33 files gzip+brotli). Drawer verified LIVE in BOTH themes on the dedicated dev server (port 5190 — NOT 5173/5174 which is the separate gangnam build) by injecting synthetic leads into the React Query cache (`['naver-leads','']`) to mount real kanban cards; card click opens the drawer, Esc closes + restores focus, timeline reflects actual lead status. Leads API needs the operator key (`marketing_bot_web/frontend/.env.local::VITE_MARKETING_BOT_API_KEY`, mirrored to backend `MARKETING_BOT_API_KEY`); local leads tables return `[]` so real kanban cards require seeding.
-
-## 2026-06-03 Memory: Codex CLI Image Generation Only
-
-- User requirement: image generation must use Codex CLI built-in image generation only. Do not use `OPENAI_API_KEY`, direct OpenAI API calls, or app/project code paths for this image-generation issue unless the user explicitly changes this constraint.
-- In Codex CLI, invoke image generation in natural language or with `$imagegen`. `gpt-image-2` is the internal model used by the built-in Codex image-generation skill, not a user-specified tool name to place in a `tools` array.
-- If an error says `The model 'gpt-image-2' does not exist` with `param: tools`, treat it as API/tool-schema misuse or server-side Codex tool mapping, not as a local `marketing_bot` code fix. Do not try to "fix" it by editing application code.
-- Local verification on 2026-06-03: `codex --version` returned `codex-cli 0.136.0`; `npm view @openai/codex version` also returned `0.136.0`; `~/.codex/config.toml` and project `.codex` settings had no `gpt-image-2`, `image_generation`, or `$imagegen` override.
-- `C:\Projects\blog_automation` is explicitly off limits. Do not inspect, edit, restore, commit, or otherwise touch it for this work unless the user gives a new explicit instruction naming that project.
-
-## 2026-06-03 Memory: Viral Hunter Ad Filtering and Legion Longtail Upgrade
-
-- Viral Hunter/KIN filtering was hardened after the 2026-06-02 UI timeout and ad-like target review. The filter now scores actual user need, reply opportunity, timing window, journey fit, and qualification fit separately, with explicit KIN provider-answer/ad-answer/recommendation-spam patterns and stronger blog/brand/legal promo suppression. Keep this distinction: do not treat polished provider answers or covert recommendation ads as commentable user questions.
-- `viral_targets.updated_at` is now part of the DB schema/migration path in `db/database.py` and `marketing_bot_web/backend/services/db_init.py`, so refreshed existing URLs can track update time separately from first discovery.
-- Frontend Viral Hunter comment generation uses `longRunningApi` for single and batch generation to avoid the previous `timeout of 30000ms exceeded` failure on slower AI comment calls.
-- Legion now evaluates `longtail_score`, `business_value_score`, and `high_value_longtail` per keyword. High-value longtail classification requires local intent, service/category fit, direct service anchors, and no low-business-value leakage; search volume alone should not decide priority.
-- Legion filters low-conversion activity/product leakage before SERP work, including `다이어트댄스`, `다이어트 댄스`, `줌바`, and unrelated exercise/product terms unless a direct clinic-service anchor is present. This specifically addresses prior top-ranking noise such as `분평동 다이어트 댄스 추천`.
-- Legion Round 4 now adds a `round4_longtail` template expansion path for local service + decision-intent combinations such as neighborhood/service/cost, consultation, insurance, admission, and treatment-cost variants. Preserve this source when reviewing diversity; it is designed to catch high-intent longtails that autocomplete may miss.
-- `keyword_insights` gains `longtail_score`, `business_value_score`, and `high_value_longtail`; `core_services/viral_seed_builder.py` reads these columns when present and ranks high-value longtail seeds ahead of generic B-grade keywords while remaining backward-compatible with older DBs.
-- Latest focused verification for this upgrade:
-  - `python -m py_compile pathfinder_v3_legion.py core_services/viral_seed_builder.py tests/test_pathfinder_viral_stability.py`
-  - `python -m pytest tests/test_pathfinder_viral_stability.py -q` -> 26 passed.
-  - `python pathfinder_v3_legion.py --smoke` completed without DB/CSV writes and printed the new longtail/business-value metrics.
-- Read-only audit of the latest local Legion DB snapshot found 26 low-business-value diet/activity keywords that the new filter would remove and identified stricter B->A high-value longtail promotion candidates. No full production Legion rescan/save was run during this upgrade.
-
-## 2026-06-02 Codex CLI Runtime Lock
-
-- All LLM calls now route through `marketing_bot_web/backend/services/ai_client.py` and `codex_cli_client.py`.
-- The runtime is Codex CLI-only: no legacy Google AI SDK fallback, API key fallback, or direct model client path is allowed.
-- `codex exec` runs API-like calls with `--dangerously-bypass-approvals-and-sandbox` by default through `CODEX_CLI_BYPASS_APPROVALS_AND_SANDBOX=true`.
-- Model routing is task-based: `fast_json`/`structured` use `gpt-5.4-mini`, general Korean content uses `gpt-5.4`, `viral_comment`/`compliance`/`strategy` use `gpt-5.5`, and `batch_fast` uses `gpt-5.3-codex-spark`.
-- Before reporting completion on AI work, verify the legacy-provider `rg` scan returns no active-code hits and run the focused Codex gateway tests.
-
-## 2026-05-20 Memory: Legion/Viral Scan 26 Latest Sequential Run
-
-- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=26`, target 500, 665 total keywords, 75 inserted, 590 updated, S=2/A=0/B=649/C=14. Console run started 2026-05-20 18:46:29 KST and completed 2026-05-20 18:56:41 KST in 612s.
-- Legion scan 26 diversity metrics: category entropy 0.8887, source entropy 0.7055, intent entropy 0.7238, top source share 48.12%, multi-source verified rate 6.47%, quality flag rate 4.21%.
-- Legion scan 26 source distribution: `round4_intent` 320, `round1_seed` 129, `round3_region` 88, `round8_ai` 82, `round2_expand` 18, `round1_ad_related` 14, `round7_problem` 11, `round5_competitor` 3. Category distribution: traffic accident 207, diet 156, skin/acne 143, body correction 80, face asymmetry 67, lifting/elasticity 12. Intent distribution: commercial 360, transactional 130, validation 64, red_flag 63, informational 47, comparison 1.
-- Viral Hunter after scan 26 loaded 42 curated seeds from the latest Legion run, scanned cafe/blog/KIN, discovered 5,132 candidates, filtered to 2,156 commentable, removed 77 repeated-content targets, refreshed/excluded 1,317 existing URLs before AI, saved 462 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 67 AI-suitable targets with 30 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260520_190332.csv`.
-- Final current-run saved target snapshot for scan 26 from the CSV/DB URL match: total=529, raw_backlog=462, pending=67. Platform distribution was blog=341, cafe=157, kin=31. Category distribution was traffic accident=155, asymmetry/correction=141, diet=129, skin=64, competitor counterattack=30, pain/disc=7, headache/dizziness=2, respiratory=1.
-- Broader `source_scan_run_id=26` association after refresh contains 1,846 rows because existing URLs were refreshed/reassigned during the run; use the CSV or current-run URL match when reporting newly saved scan output.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning, and API stats reported 311 requests, 0 cache hits, 0 errors.
-
-## 2026-05-20 Memory: Marketing Bot Web Server Diagnosis
-
-- User reported the server was not working. Actual state: frontend Vite was already listening on `127.0.0.1:5173`, but backend API port `8000` was not listening, so frontend `/api` calls failed through the Vite proxy.
-- Verified `marketing_bot_web/frontend/vite.config.ts` proxies `/api` and `/ws` to `localhost:8000`; when backend is down the app shell can load at `http://localhost:5173` but data/API requests fail.
-- Docker Desktop was not running (`docker ps` could not connect to `dockerDesktopLinuxEngine`), so Docker compose/nginx mode was unavailable.
-- Port `80` was owned by Windows `System` PID 4 and returned 404 for `http://127.0.0.1`; use `http://localhost:5173` for local dev unless Docker/nginx and port 80 are fixed.
-- Direct backend import and `uvicorn main:app --reload --port 8000` from `marketing_bot_web/backend` succeeded under system Python `C:\Python314\python.exe`; `/health`, `/docs`, and Vite-proxied `/api/health/live` returned 200 after restart.
-- `marketing_bot_web/start-simple.bat` starts backend with output redirected to `nul`, so backend startup failures are hidden. The repo `.venv` has Linux-style `bin/` entries, not Windows `Scripts/python.exe`, so the batch file uses system `python` on Windows.
-- Backend was restarted manually with `python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000`; logs were redirected to `logs/marketing_bot_backend.out.log` and `logs/marketing_bot_backend.err.log`.
-- Follow-up LAN access issue: `http://192.168.0.197:8000/` failed because backend was bound to `127.0.0.1:8000` only. Restarted backend with `python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000`; `Get-NetTCPConnection` then showed `0.0.0.0:8000`, and `http://192.168.0.197:8000/`, `/health`, and `/docs` all returned 200. If another device still cannot connect, check Windows firewall for `python.exe` or port `8000`.
-
-## 2026-05-18 Memory: Marketing Bot Web Frontend UX Hardening Sweep
-
-- Completed a multi-pass frontend UX review across accessibility, feedback clarity, mobile ergonomics, async duplicate prevention, state persistence, and modal focus behavior.
-- Accessibility cleanup converted key clickable cards/rows into keyboard-operable buttons and added missing labels/expanded states in dashboard, lead, hot-lead, pipeline, and Q&A surfaces.
-- Toast and Modal UX were hardened: toasts now expose clearer roles/actions, base modals restore focus, trap Tab focus, respect stacked modal order, and keep body scroll locked until all open modals close.
-- Mobile/list UX improved with safer pagination, default `button` type behavior, tighter tab/list layouts, and mobile Viral Hunter list cards for better scanning on small screens.
-- Viral Hunter single-comment generation now tracks per-target pending IDs so duplicate clicks do not fire duplicate API requests; copy actions use a shared clipboard fallback helper with failure toasts instead of false success messages.
-- Pathfinder filter/search state is now more consistent: search query is URL-backed, filter chips show and remove active filters individually, presets include search/stale/low-volume options, reset clears all visible filter state, and CSV export uses the currently visible filtered list.
-- Several custom overlays were moved to the shared Modal component, including dashboard settings, opportunity content ideas, review template creation, smart alert rule creation, and referral source recording.
-- Latest verification for the UX sweep in `marketing_bot_web/frontend`: `npm run typecheck`, `npm run lint`, `npm run build:fast`, and `git diff --check` passed; local Vite dev server responded 200 at `http://127.0.0.1:5173`.
-
-## 2026-05-18 Memory: Legion/Viral Scan 21 Latest Sequential Run
-
-- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=21`, target 500, 673 total keywords, 79 inserted, 594 updated, S=2/A=1/B=609/C=61. Console run started 2026-05-18 21:43:34 KST and completed 2026-05-18 21:56:20 KST in 765s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=21`.
-- Legion scan 21 diversity metrics: category entropy 0.8909, source entropy 0.7138, intent entropy 0.7689, top source share 47.1%, multi-source verified rate 5.5%, quality flag rate 5.2%.
-- Legion scan 21 source distribution: `round4_intent` 317, `round1_seed` 129, `round3_region` 90, `round8_ai` 89, `round2_expand` 18, `round1_ad_related` 17, `round7_problem` 10, `round5_competitor` 3. Category distribution: traffic accident 199, diet 158, skin/acne 133, body correction 92, face asymmetry 85, lifting/elasticity 6. Intent distribution: commercial 378, transactional 142, red_flag 58, comparison 50, informational 45.
-- Viral Hunter after scan 21 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 6,066 candidates, filtered to 959, removed 6 repeated-content targets, refreshed/excluded 592 existing URLs before AI, saved 61 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 32 AI-suitable targets. CSV report: `reports\viral_targets_20260518_220253.csv`.
-- Final current-run saved target snapshot for scan 21 (`source_scan_run_id=21` and `discovered_at >= 2026-05-18T21:57:00`): total=93, raw_backlog=61, pending=32. Platform distribution was blog=66, kin=16, cafe=11. Category distribution was diet=65, traffic accident=18, competitor counterattack=7, skin=2, pain/disc=1.
-- Broader `source_scan_run_id=21` association after refresh contains 685 rows because existing URLs were refreshed/reassigned during the run; use the current-run `discovered_at` window when reporting newly saved scan output.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning; several Codex CLI 503 responses during parallel AI analysis caused affected batches to fall back to unsuitable, so pending AI-suitable output was lower than recent scans.
-
-## 2026-05-18 Memory: Legion/Viral Scan 20 Latest Sequential Run
-
-- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=20`, target 500, 656 total keywords, 226 inserted, 430 updated, S=2/A=1/B=621/C=32. Console run started 2026-05-18 18:27:05 KST and completed 2026-05-18 18:40:19 KST in 793s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=20`.
-- Legion scan 20 diversity metrics: category entropy 0.8984, source entropy 0.6861, intent entropy 0.7970, top source share 48.17%, multi-source verified rate 5.18%, quality flag rate 4.73%.
-- Legion scan 20 source distribution: `round4_intent` 316, `round1_seed` 128, `round3_region` 90, `round8_ai` 87, `round2_expand` 19, `round7_problem` 10, `round1_ad_related` 3, `round5_competitor` 3. Category distribution: traffic accident 197, skin/acne 146, diet 144, body correction 80, face asymmetry 77, lifting/elasticity 12. Intent distribution: commercial 353, transactional 138, red_flag 61, validation 59, informational 45.
-- Viral Hunter after scan 20 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 5,557 candidates, filtered to 1,769, removed 44 repeated-content targets, refreshed/excluded 1,118 existing URLs before AI, saved 307 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 68 AI-suitable targets with 16 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260518_184643.csv`.
-- Final current-run saved target snapshot for scan 20 (`source_scan_run_id=20` and `discovered_at >= 2026-05-18T18:41:00`): total=375, raw_backlog=307, pending=68. Platform distribution was blog=276, cafe=68, kin=31. Category distribution was diet=94, traffic accident=86, asymmetry/correction=84, skin=78, competitor counterattack=16, pain/disc=9, other=7, headache/dizziness=1.
-- Broader `source_scan_run_id=20` association after refresh contains 1,493 rows because existing URLs were refreshed/reassigned during the run; use the current-run `discovered_at` window when reporting newly saved scan output.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter stderr only showed the non-blocking Logfire no-config warning.
-
-## 2026-05-18 Memory: Stability Hardening Sweep V2
-
-- Additional deep stability pass completed from concurrency, malformed input, timeout cleanup, timezone, cache edge-case, and optional dependency perspectives.
-- Replaced deprecated `asyncio.iscoroutinefunction()` checks with `inspect.iscoroutinefunction()` in workflow/cache/performance paths for Python 3.14 compatibility.
-- Replaced remaining direct `datetime.utcnow()` usage in touched backend runtime/logging/compliance/job-run paths with timezone-aware UTC helpers while preserving existing naive DB string compatibility where needed.
-- `TTLCache` now clamps zero/negative capacity to at least one entry and treats `ttl <= 0` as non-persistent cache behavior instead of silently falling back to the default TTL.
-- Langfuse is now imported lazily only when both public and secret keys are configured, avoiding the Python 3.14/Pydantic v1 warning in normal local runs.
-- WebSocket sends are serialized per connection, including broadcast, direct send, and ping/pong paths, so concurrent broadcasts cannot overlap writes to the same socket.
-- WebSocket subscribe/unsubscribe now ignore malformed or non-string event values instead of raising during set conversion.
-- `FileWatcher.start()` rolls back `running` and loop state if watchdog/polling startup fails, keeping retry behavior clean.
-- `ProcessJobManager` timeout handling now records `timed_out` even if process-tree termination fails; Windows forced termination has a timeout/fallback. Default concurrent job log names include the job id prefix to avoid same-second log file collisions.
-- Latest verification after V2 sweep:
-  - `python -m compileall -q marketing_bot_web\backend\services\process_jobs.py marketing_bot_web\backend\services\websocket_manager.py marketing_bot_web\backend\tests\test_stability_regressions.py`
-  - `python -m pytest -c pytest.ini marketing_bot_web\backend\tests\test_stability_regressions.py -q` -> 18 passed.
-  - `python -m pytest tests -q` -> 180 passed, 1 skipped.
-  - `python -m pytest marketing_bot_web\backend\tests -q` -> 71 passed, coverage 21.29%.
-  - `npm run typecheck` and `npm run lint` passed in `marketing_bot_web/frontend`.
-  - `git diff --check` passed with CRLF normalization warnings only.
-
-## 2026-05-18 Memory: Stability Hardening Sweep
-
-- Completed a multi-pass stability review focused on crash recovery, resource cleanup, frontend storage resilience, long-running watcher behavior, and durable JSON writes.
-- Backend scheduler state now uses a real file lock plus atomic temp-file replacement. The DB executor is lazy and shut down during app lifespan cleanup.
-- SQLite connection defaults now include a longer busy timeout and bounded cache sizing, and several connection sites were changed to close connections reliably.
-- Pydantic response timestamp serialization was fixed for JSON output on current Pydantic versions.
-- File watcher behavior was hardened for log rotation/truncation, malformed status JSON, idempotent startup, bounded recent-log reads, and async broadcast error logging.
-- Frontend local storage and event parsing now go through safe helpers so malformed local/session payloads or invalid SSE/WebSocket JSON do not crash the UI.
-- JSON config/state/result writes now go through `utils.json_io.atomic_write_json()` with same-directory temp files, fsync, cleanup on failure, and optional file locking. Active Python code should not call `json.dump()` directly for file writes outside that helper.
-- Latest verification after the stability sweep:
-  - `python -m pytest -q --no-cov` in `marketing_bot_web/backend`: 64 passed.
-  - `python -m pytest -q --maxfail=20` at repo root: 180 passed, 1 skipped.
-  - Frontend `npm run typecheck`, `npm run lint`, and `npm run build` all passed.
-  - Remaining warning is the external Langfuse/Pydantic Python 3.14 compatibility warning; it is non-blocking.
-
-## 2026-05-15 Memory: Legion/Viral Scan 19 and Pathfinder Rerank Fix
-
-- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=19`, target 500, 703 total keywords, 172 inserted, 531 updated, S=2/A=0/B=637/C=64. Console run started 2026-05-15 20:59:23 KST and completed 2026-05-15 21:22:22 KST. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=19`.
-- Legion scan 19 diversity metrics: category entropy 0.8862, source entropy 0.6938, intent entropy 0.7707, top source share 50.36%, multi-source verified rate 5.97%, quality flag rate 6.4%.
-- Legion scan 19 source distribution: `round4_intent` 354, `round1_seed` 130, `round3_region` 89, `round8_ai` 79, `round2_expand` 23, `round1_ad_related` 15, `round7_problem` 10, `round5_competitor` 3. Category distribution: traffic accident 199, diet 173, skin/acne 154, body correction 89, face asymmetry 82, lifting/elasticity 6.
-- Pathfinder diversity reranking was a visible post-processing bottleneck during scan 19. `_rerank_for_diversity()` now caches tokenized keywords and each candidate's current max similarity to selected results, preserving the same greedy scoring logic while avoiding recomputing all prior pair similarities on every selection.
-- Viral Hunter after scan 19 loaded 42 curated seeds from the latest Legion run, scanned cafe/blog/KIN, discovered 3,252 candidates, filtered to 1,237, removed 43 repeated-content targets, refreshed/excluded 488 existing URLs before AI, saved 406 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 66 AI-suitable targets with 22 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260515_212753.csv`.
-- Final scan 19 viral queue snapshot by `source_scan_run_id=19`: total=960, raw_backlog=634, pending=105, skipped=87, filtered_out=73, filtered_out_ai=43, posted=18. Platform distribution was blog=570, cafe=282, kin=107, naver_kin=1. Category distribution was diet=460, asymmetry/correction=175, skin=142, pain/disc=85, traffic accident=74, competitor counterattack=22, headache/dizziness=2.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter still logged `ViralTarget.__init__() got an unexpected keyword argument 'canonical_url'` for some seed paths; the scan continued and completed successfully, but this compatibility issue remains worth fixing.
-
-## 2026-05-15 Memory: Legion/Viral Scan 18 and Web Server Verification
-
-- Latest completed sequential command set remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=18`, target 500, 700 total keywords, 255 inserted, 445 updated, S=2/A=1/B=629/C=68. Console run started 2026-05-15 09:32:37 KST and completed 2026-05-15 09:50:39 KST. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=18`.
-- Legion scan 18 diversity metrics from the run log: category entropy 0.8935, source entropy 0.6981, intent entropy 0.7019, top source share 49.14%, multi-source verified rate 5.71%, quality flag rate 5.0%. `legion_v3_metrics.json` was written, but PowerShell JSON parsing failed because some mojibake category/rejection keys are malformed; use DB/log counts unless that exporter is fixed.
-- Legion scan 18 source distribution: `round4_intent` 344, `round1_seed` 131, `round3_region` 89, `round8_ai` 88, `round2_expand` 23, `round1_ad_related` 12, `round7_problem` 10, `round5_competitor` 3. Category distribution: traffic accident 207, diet 159, skin/acne 143, face asymmetry 92, body correction 92, lifting/elasticity 7.
-- Viral Hunter after scan 18 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 4,360 candidates, filtered to 1,381, refreshed/excluded 779 existing URLs before AI, saved 302 raw backlog rows, AI-analyzed top 300 with parallel 5, and found 127 AI-suitable targets. CSV report: `reports\viral_targets_20260515_095728.csv`.
-- Final scan 18 viral queue snapshot by `source_scan_run_id=18`: total=1,208, raw_backlog=684, pending=184, skipped=123, filtered_out=114, filtered_out_ai=90, posted=13. Platform distribution was blog=675, cafe=273, kin/naver_kin=259, naver_cafe=1. Category distribution was traffic accident=483, diet=304, asymmetry/correction=267, pain/disc=76, skin=45, competitor counterattack=31, headache/dizziness=2.
-- DB verification found 429 newly discovered targets for scan 18, 30 targets with `priority_score >= 120`, 242 with `priority_score >= 100`, 42 competitor-flagged targets, and 184 pending targets. Pending work queue includes 15 priority 120+ targets and 31 competitor-flagged pending targets; the alert log reported Tier 1 HOT LEADs by priority/competitor criteria, not by `ai_infiltration_score >= 120` (max AI score was 95).
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter logs only showed the expected Python 3.14 Langfuse/Pydantic warning and Logfire no-config warning; no blocking scan error was observed.
-- Latest Marketing Bot Web verification: `marketing_bot_web/frontend` production build passed with Vite 8 and wrote gzip/brotli for 33 static files. `python main.py` was started in `marketing_bot_web/backend` as PID 3208 on port 8000, serving the built SPA and API. Verified `GET /dashboard`, `GET /viral`, and the built CSS asset returned 200. Direct API calls require `X-API-Key`; the bundled `VITE_MARKETING_BOT_API_KEY` is present in the built frontend and a direct `.env` key check returned 200 for `/api/hud/system-status`. A `build_and_run.bat` window stopping at `Press any key to continue` can just be closed after the background server is started.
-
-## 2026-05-13 Memory: Legion/Viral Scan 17 Latest Sequential Run
-
-- Latest completed sequential command set: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- User priority remains source diversity, not only raw volume. Always verify Legion category/source/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Latest completed sequential run: Legion `scan_run_id=17`, target 500, 671 total keywords, 236 inserted, 435 updated, S=2/A=0/B=617/C=52, completed 2026-05-13 18:25:21 KST. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=17`.
-- Legion scan 17 diversity metrics: category entropy 0.8965, source entropy 0.6803, intent entropy 0.7359, top source share 49.33%, multi-source verified rate 4.92%, quality flag rate 7.15%.
-- Legion scan 17 source distribution: `round4_intent` 331, `round1_seed` 130, `round3_region` 89, `round8_ai` 85, `round2_expand` 19, `round7_problem` 10, `round1_ad_related` 4, `round5_competitor` 3. Category distribution: traffic accident 212, skin/acne 143, diet 143, face asymmetry 82, body correction 78, lifting/elasticity 13.
-- Viral Hunter after scan 17 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 2,890 candidates, filtered to 290 saved targets, AI-analyzed top 300, and found 43 AI-suitable targets with 15 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260513_183224.csv`.
-- Final scan 17 viral queue snapshot by `source_scan_run_id=17`: total=625, raw_backlog=437, pending=68, skipped=51, filtered_out_ai=33, filtered_out=31, posted=5. Platform distribution was blog=421, cafe=165, kin/naver_kin=39. Category distribution was traffic accident=307, diet=123, skin=96, asymmetry/correction=75, competitor counterattack=15, pain/disc=8, headache/dizziness=1.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter again logged `ViralTarget.__init__() got an unexpected keyword argument 'canonical_url'` on some seed paths; the scan continued and completed successfully, but this compatibility issue remains worth fixing.
-
-## 2026-05-13 Memory: Legion/Viral Scan 15 Source Diversity Baseline
-
-- User priority for Legion/Viral Hunter work is source diversity, not only raw volume. When running the sequence, verify diversity using Legion source/category/intent metrics and Viral Hunter platform/category/status distribution before reporting completion.
-- Standard sequential command remains: `python pathfinder_v3_legion.py --target 500 --save-db`, then `python viral_hunter.py --scan --fresh --top-n-for-ai 300 --ai-parallel 5`.
-- Latest completed sequential run: Legion `scan_run_id=15`, target 500, 696 total keywords, 244 inserted, 452 updated, S=2/A=1/B=628/C=65, completed in 1167s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=15`.
-- Legion scan 15 diversity metrics: category entropy 0.871, source entropy 0.6927, intent entropy 0.7876, top source share 50.0%, multi-source verified rate 6.03%, quality flag rate 4.74%.
-- Legion scan 15 source distribution: `round4_intent` 348, `round1_seed` 130, `round3_region` 89, `round8_ai` 81, `round2_expand` 23, `round1_ad_related` 12, `round7_problem` 10, `round5_competitor` 3. Keep these multiple discovery paths active.
-- Viral Hunter after scan 15 loaded 42 curated seeds from the latest Legion run: traffic accident 10, skin/acne 12, diet 10, face asymmetry 6, body correction 4. It scanned cafe/blog/KIN, discovered 4,176 candidates, filtered to 707 saved targets, AI-analyzed top 300, and found 63 AI-suitable targets with 14 Tier 1 HOT LEADs. CSV report: `reports\viral_targets_20260513_161647.csv`.
-- Final scan 15 viral queue snapshot by `source_scan_run_id=15`: raw_backlog=834, pending=101, filtered_out=99, filtered_out_ai=86, skipped=82, posted=11. Platform distribution was blog=814, cafe=244, kin/naver_kin=155. Category distribution was diet=545, traffic accident=314, skin=191, asymmetry/correction=101, pain/disc=43, competitor counterattack=14, headache/dizziness=3, respiratory=2.
-- Telegram alerts were MOCK because `TELEGRAM_BOT_TOKEN` or `CHAT_ID` was not configured. Viral Hunter also logged one first-seed exception: `ViralTarget.__init__() got an unexpected keyword argument 'canonical_url'`; the scan continued and completed successfully, but this compatibility issue should be fixed before relying on that seed path.
-
-## 2026-05-12 Memory: Web Build Fix and Legion/Viral Scan 13
-
-- Marketing Bot Web production build now uses a local Vite `staticCompression()` plugin instead of `vite-plugin-compression`. The old plugin shared module-level cache across gzip/brotli instances on Windows, causing noisy `dist/C:/Projects/...` log paths and skipped brotli output. The local plugin writes both `.gz` and `.br` for static JS/CSS/HTML/JSON assets and logs a single summary.
-- `vite-plugin-compression` was removed from frontend dependencies. Latest verification after the change: `npm run build` in `marketing_bot_web/frontend` passed and wrote gzip+brotli for 33 files, with no `dist\C:` directory created.
-- `marketing_bot_web/build_and_run.bat` and `marketing_bot_web/run_server.bat` set `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` after `chcp 65001` so Korean/Unicode startup logs do not hit Windows `cp949` output errors.
-- Direct `python main.py` backend launches now run Uvicorn with `access_log=False` and `log_level="warning"` to avoid logging full WebSocket query strings/API keys. Do not re-enable access logs unless sensitive query parameters are redacted first.
-- Latest local web verification after restart: backend PID 47812 listening on port 8000, `GET http://127.0.0.1:8000/health` healthy, root HTML and built JS asset returned 200. The remaining Langfuse/Pydantic Python 3.14 warning is non-blocking.
-- Latest manual Legion run reference: `scan_run_id=13`, target 500, 696 total keywords, 283 inserted, 413 updated, S=2/A=1/B=679/C=14, completed in 1292s. Full latest-run keyword lineage uses `keyword_insights.last_scan_run_id=13`.
-- Viral Hunter immediately after scan 13 loaded 42 curated seeds from the latest Legion run: 교통사고 10, 피부/여드름 12, 다이어트 10, 안면비대칭 6, 체형교정 4. It discovered 6,777 candidates, filtered/commentable set 3,147, excluded/refreshed 1,338 existing URLs, saved 1,433 raw backlog rows, AI-analyzed top 300, and reported 156 AI-suitable targets. CSV report: `reports\viral_targets_20260512_172352.csv`.
-- Final scan 13 viral queue snapshot by `source_scan_run_id=13`: total=2927, pending=313, raw_backlog=1756, filtered_out_ai=269, filtered_out=337, skipped=234, posted=18. Category counts were led by 다이어트 1063, 교통사고 994, 피부 442, 비대칭/교정 257, 통증/디스크 114, 경쟁사_역공략 45.
-
-## 2026-05-12 Memory: Face Asymmetry Competitive Recovery Baseline
-
-- User-facing priority is recovering visibility for `청주 안면비대칭`, especially against `로랑한의원` and `데이릴한의원`. Current Place spot check after the latest update: `청주 안면비대칭` = 로랑 1 / 데이릴 2 / 규림 3 on mobile and desktop; `청주 안면비대칭 교정` = 데이릴 1 only, 규림 not in results.
-- `config/targets.json` and `config/competitors.json` now track 로랑's official site/asymmetry page/blogs and 데이릴's official site/procedure pages/blog accounts. Do not remove these competitors from asymmetry monitoring; earlier config had 데이릴 missing and one stale competitor in the asymmetry group.
-- Asymmetry keyword coverage is intentionally broad now: core terms plus face asymmetry, jaw/TMJ, body/posture/pelvis correction, price/review intent, and local modifiers such as 복대동, 가경동, 오창, and 율량동. Keep `config/keywords.json`, `config/keywords_master.json`, and `config/keyword_targets.json` aligned when editing this area.
-- The body/asymmetry landing canonical is `https://kyurim-webpage.vercel.app/events/body`; official site monitoring also includes `https://www.kyurim.com`. Business blog identity is `blog.naver.com/sangshan1`.
-- `scrapers/blog_rank_tracker.py` now falls back to the official Naver Blog API when VIEW HTML scraping is blocked. Self matches must be based on blog URL/author identity, not arbitrary mentions of 규림 in third-party posts, or false positives return.
-- `scrapers/web_visibility_tracker.py` must treat shared domains carefully. For `blog.naver.com`, match URL patterns such as `/sangshan1`, not only the domain, otherwise competitor/self visibility is misclassified.
-- AEO checks now include asymmetry-specific prompts around face asymmetry clinic recommendation, TMJ correction, recurrence reasons, and combined body correction. `load_self_aliases()` supports nested `business` fields in `business_profile.json`.
-- Latest focused verification for this work:
-  - `python -m json.tool` on the modified config JSON files
-  - `python -m py_compile scrapers\blog_rank_tracker.py scrapers\web_visibility_tracker.py scripts\aeo_visibility.py`
-  - `python scrapers\blog_rank_tracker.py`
-  - `python scrapers\web_visibility_tracker.py`
-  - `python scrapers\competitor_blog_tracker.py`
-
-## 2026-05-12 Memory: Naver Place Rank Scan Run Baseline
-
-- Latest Place rank scan was run directly with `python scrapers\scraper_naver_place.py` on Windows. The default command performs mobile + desktop rank collection, then competitor review collection and `place_scan_enrichment` unless `--skip-reviews` is passed.
-- Latest manual run reference: started 2026-05-12 09:36:50 KST, completed enrichment at 10:17:09 KST. `rank_history` received 560 rows: 10 targets x 28 keywords x 2 devices. `rank_history.checked_at` is stored UTC-like, so convert carefully when reporting Korean local scan times.
-- Current 규림한의원 baseline from that run: mobile found 18/28, desktop found 15/28. Strong ranks held at `청주 성안길 한의원` 2위, `청주 안면비대칭*` 3위, `청주 여드름 한약` 3위, `청주 여드름흉터 한의원` 4위, `청주 여드름 한의원` 5위.
-- Watchlist from the same run: `청주 상당구 한의원` 7→21위, `청주 교통사고 한의원`/`청주 교통사고한의원` 43→55위, `청주 교통사고 병원` 54→67위, desktop `청주 다이어트 한약` and `청주 한의원` moved to `not_in_results`.
-- Competitor review collection added 56 new reviews. Enrichment completed with reviews 9 collected/0 failed and SERP 30 analyzed/0 failed. Notable SERP signals: `청주 안면비대칭 병원` had AI Briefing, and `청주 교통사고` had 1 Place clip.
-- Logs for this flow are primarily in `logs\marketing_bot.log`. Redirected stderr may contain the known Python 3.14 Langfuse/Pydantic v1 warning; treat that warning as non-blocking unless accompanied by scraper failure logs.
-
-## 2026-05-12 Memory: Viral Hunter Canonical URL Deduplication
-
-- Viral Hunter duplicate prevention must compare `canonical_url`, not only the raw `url`. KIN URLs are keyed by `docId`; Naver blog/cafe URLs are keyed by stable post identity/path so search parameters such as `qb`, `from`, `trackingCode`, and iframe wrappers do not create duplicate targets.
-- Shared canonicalization lives in `core_services/viral_url_canonicalizer.py`. Keep DB writes, repository writes, checkpoint restore, in-run batch dedupe, and existing-target refresh on this shared helper instead of reimplementing URL parsing in each caller.
-- `viral_targets.canonical_url` is nullable and indexed, not unique. Existing production data already contains historical duplicate canonical groups, so future inserts/refreshes should select an existing row by `url OR canonical_url` and avoid creating more duplicates without forcing a destructive merge.
-- `ViralTarget.id` is canonical-URL based. If changing canonical rules, expect target IDs for newly discovered Naver posts to follow the canonical identity.
-- Latest targeted verification for this change:
-  - `python -m py_compile core_services\viral_url_canonicalizer.py db\database.py repositories\viral_target_repo.py viral_hunter.py`
-  - `$env:PYTHONPATH='.'; pytest -q tests\test_viral_target_repo.py tests\test_pathfinder_viral_stability.py` -> 32 passed
-- Latest DB migration check: default DB had 61,895 viral targets, 61,895 with `canonical_url`, and 6,724 pre-existing duplicate canonical groups after backfill. Do not treat those historical groups as a failed migration.
-
-## 2026-05-11 Memory: Viral Hunter Exposure Scoring Upgrade
-
-- Viral Hunter no longer treats Naver API `sort=date` as enough evidence of public exposure. Naver collection now mixes cafe/blog `sim+date` and kin `sim+point+date`, records `search_sort`, `search_rank`, `search_start`, `sort_appearances`, and calculates `exposure_score` before filtering.
-- Keep the score model split: `exposure_score` = search visibility / engagement proxy, `workability_score` = rule-based commentability, `conversion_fit_score` = action/intent/business fit, and `priority_score` = weighted final score. Do not collapse these back into a single opaque score.
-- `viral_targets` now persists exposure and AI-review metadata: `exposure_score`, `workability_score`, `conversion_fit_score`, `score_breakdown`, search rank/sort fields, `ai_reviewed`, `ai_infiltration_score`, `ai_post_type`, `ai_competitor`, and `ai_competitor_name`. Keep migrations in `db/database.py`, backend `db_init.py`, and `migration_manager.py` aligned.
-- Zero-result streaks from long-tail keywords are not block evidence by themselves. Only treat them as Naver blocking when API errors are also elevated; never reintroduce a fixed 5-minute sleep for clean 0-result API responses.
-- Staff APIs and UI can filter/sort by exposure: `/viral/targets?sort=exposure`, `/viral/targets?min_exposure=...`, and the frontend sort selector includes exposure/workability. Repository rows decode `score_breakdown` and `sort_appearances` JSON for consumers.
-- Latest targeted verification for this change:
-  - `python -m py_compile viral_hunter.py viral_hunter_multi_platform.py db\database.py marketing_bot_web\backend\routers\viral.py marketing_bot_web\backend\services\db_init.py marketing_bot_web\backend\services\migration_manager.py repositories\viral_target_repo.py`
-  - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_target_repo.py tests\test_router_smoke.py -q` -> 35 passed
-  - `npm run typecheck` in `marketing_bot_web/frontend`
-
-## 2026-05-11 Memory: Legion Diversity and Viral Hunter Scan 11
-
-- Pathfinder Legion now loads a recent keyword/viral diversity profile before expansion. It adds history-aware exploration seeds, penalizes keywords already seen in recent Legion/Viral Hunter history, and caps expansion candidates per category so one high-volume bucket does not dominate later rounds.
-- `core_services/viral_seed_builder.py` carries seed novelty metadata (`novelty_score`, `historical_target_count`, `historical_revisit_rate`) and penalizes repeatedly rediscovered or high-revisit matched keywords before building Viral Hunter seeds. Keep `max_per_intent_per_category` in place to avoid same-intent seed clusters inside a category.
-- Latest targeted verification for this change:
-  - `python -m py_compile pathfinder_v3_legion.py core_services\viral_seed_builder.py viral_hunter.py tests\test_pathfinder_viral_stability.py`
-  - `python -m pytest tests\test_viral_target_repo.py tests\test_router_smoke.py tests\test_pathfinder_viral_stability.py -q`
-- Latest manual run reference:
-  - Legion `scan_run_id=11`: target 300, 723 total keywords, 437 inserted, 286 updated, S=2/A=1/B=686/C=34, 704 business_core, completed in 562s.
-  - Viral Hunter from scan 11: 42 seeds, 1,882 discovered, 627 after filters, 267 existing URLs refreshed/excluded, 220 saved, report at `reports\viral_targets_20260511_183814.csv`.
-  - Ad-classification batch for scan 11 processed 175 rows and applied 58 additional `filtered_out_ai` rows. Final scan 11 queue snapshot: `pending=125`, `raw_backlog=134`, `filtered_out_ai=115`, `filtered_out=89`, `skipped=20`, `posted=4`.
-- When applying ad-classification batches from a specific run, continue using explicit scope: `python scripts\ai_ad_classify_apply.py <batch_dir> --source-scan-run-id <scan_id>`.
-
-## 2026-05-11 Memory: Staff WebUI Auth and Port Restart Guard
-
-- If a staff browser repeatedly sends `/ws?api_key=1075` or another old value, clear `localStorage.marketing_bot_api_key` or let the frontend 403 recovery path replace it with the bundled `VITE_MARKETING_BOT_API_KEY` when present. The backend key remains `MARKETING_BOT_API_KEY`.
-- Frontend API auth now prefers the browser-stored operator key, but on 403 it falls back once to the bundled local/dev key before prompting. WebSocket auth failures with close codes 1006/1008 also retry once after that fallback.
-- `build_and_run.bat` is now repeat-run safe for the common local case: if port 8000 is held by a Python `main.py` backend, it stops that process before starting the freshly built server. If another app owns 8000, it fails and prints the PID instead of killing it.
-- Latest incident verification:
-  - `npm run build` in `marketing_bot_web/frontend`
-  - `GET /api/health` -> 200
-  - `GET /api/viral/home-stats` with the configured key -> 200
-  - The stale literal key `1075` correctly returns 403.
-
-## 2026-05-11 Memory: Viral Hunter WebUI Auth and Asymmetry Quota Fix
-
-- If Viral Hunter data exists in SQLite but the WebUI shows an empty/error state, check API auth first. The local backend expects `MARKETING_BOT_API_KEY`; the frontend must send the same value through an ignored local env such as `marketing_bot_web/frontend/.env.local` (`VITE_MARKETING_BOT_API_KEY`). Do not commit real keys.
-- Docker Compose frontend should load `../.env` so local Vite builds can receive the operator-provided API key. This is for local/dev wiring; production should still avoid baking admin secrets into public JS.
-- Latest incident reference: Legion `scan_run_id=10` had `비대칭/교정` candidates, but WebUI default queue showed none because it filters to `comment_status='pending'`. Distribution was `raw_backlog=64`, `skipped=9`, `posted=1`, `pending=0`.
-- Root cause was global top-N AI selection starvation: high-volume skin/traffic/diet results consumed the `--top-n-for-ai 300` budget before minority core categories like `비대칭/교정`.
-- Viral Hunter AI target selection now uses category floors before filling remaining slots by score. Keep `비대칭/교정` represented (`AI_CATEGORY_MIN_QUOTAS`, currently 25) and preserve the original score ordering after selection.
-- Do not promote `raw_backlog` rows directly to `pending` just to make them visible. If an existing scan needs recovery, re-run/rescue AI analysis for the relevant raw_backlog category so ad/natural suitability filters still run.
-- Verification for this fix:
-  - `python -m py_compile viral_hunter.py`
-  - `python -m pytest tests/test_pathfinder_viral_stability.py -q`
-
-## 2026-05-08 Memory: Core Keyword/Viral Staff Queue Baseline
-
-- Clinic acquisition core keywords are intentionally narrow: 다이어트, 교통사고, 안면비대칭, 여드름흉터, 여드름, 새살침, 체형교정. Treat adjacent categories as secondary unless the user explicitly broadens scope.
-- Pathfinder Legion now marks acquisition-fit rows with `keyword_insights.business_core`; downstream APIs and Viral Hunter seed selection should prefer `business_core=1` plus verified `document_count > 0`.
-- Viral Hunter seed selection must use `core_services/viral_seed_builder.py` against the latest completed Legion scan, with bounded quotas and lineage fields carried into `viral_targets`.
-- Staff-facing Viral Hunter queues (`latest_legion`/`core`/`all_backlog`) should hide rediscovered duplicate URLs by default via `scan_count <= 1`. Use `min_scan_count >= 2` or explicit `exclude_revisited=false` only for deliberate historical/re-discovery review.
-- Unknown Viral Hunter `work_scope` values must fall back to `latest_legion`; never let malformed scope input bypass core-category staff filters.
-- Viral Hunter smart recommendations and quick filters must use the same staff scope and filter vocabulary as `/viral/targets`: `min_score`, `commentable_only`, `exclude_revisited`, and `work_scope` should round-trip from recommendation cards to list/count/bulk APIs.
-- Smart recommendation quick-filter and platform-priority clicks should apply their own query contract, not stack stale `comment_status`, search, scan batch, or AI filters from the previous list state.
-- Viral Hunter should exclude DB-existing URLs before raw backlog storage and AI suitability analysis. Use `DatabaseManager.refresh_existing_viral_targets()` to refresh `scan_count`, `last_scanned_at`, and source lineage without changing `comment_status`.
-- Viral target rediscovery updates must be idempotent per URL in a single run, tolerate legacy `scan_count=NULL`, and must not overwrite existing priority/KEI lineage with zero-value placeholders.
-- AI suitability/competitor bonuses must preserve the 150-point Viral Hunter scale. Do not cap back to 100, or 120+ HOT LEAD thresholds become unstable.
-- Latest manual run reference:
-  - Legion `scan_run_id=10`: 483 keywords, 482 business_core, completed 2026-05-08 11:48:12.
-  - Viral Hunter from scan 10: 42 seeds, 4,410 discovered, 2,050 saved, 87 pending all 신규, duplicate overlap report at `reports/viral_overlap_scan10_20260508_210238.csv`.
-- Current targeted verification for this flow:
-  - `python -m pytest tests/test_viral_target_repo.py tests/test_router_smoke.py tests/test_pathfinder_viral_stability.py`
-  - `npm run typecheck` in `marketing_bot_web/frontend`
-- Latest commit verification: `python -m pytest tests -q` -> 167 passed, 1 skipped; frontend `npm run typecheck` passed.
-
-## 2026-05-08 Memory: Web/API Stability Hardening Baseline
-
-- Current verified baseline:
-  - `python -m pytest -q` in `marketing_bot_web/backend` -> 56 passed, 1 warning.
-  - `python -m pytest tests -q` from repo root -> 156 passed, 1 skipped, 1 warning.
-  - Frontend `npm run typecheck` and `npm run build` pass.
-  - `python -m compileall marketing_bot_web\backend db\database.py` passes.
-- Config API writes are guarded by a process-local lock, normalized/deduplicated, backed up with microsecond filenames, and persisted through atomic JSON replacement. Keep backup restore filename validation.
-- Backup/restore/VACUUM/retention operations run off the FastAPI event loop via `asyncio.to_thread` and share a backup operation lock. Do not add direct DB file overwrites.
-- Long-running UI-triggered scripts should use `services/process_jobs.py` so duplicate jobs are rejected, process trees can be stopped, timeouts are enforced, and old completed jobs are pruned.
-- WebSocket clients carry API keys through `withApiKeyQuery`; reconnects must stop on unmount and auth close code 1008. Server broadcasts use send timeouts and stale-connection cleanup.
-- Service worker must never cache `/api/*`; navigation is network-first and asset requests should not fall back to `index.html`.
-- Production frontend must not bake admin API keys into JS. The browser stores the operator-provided key in `localStorage` as `marketing_bot_api_key`.
-
-## 2026-05-06 Memory: Pathfinder/Viral Hunter Reliability Baseline
-
-- Latest Pathfinder Legion run records keyword lineage as first-seen/last-seen:
-  - `keyword_insights.scan_run_id` means first discovery run.
-  - `keyword_insights.last_scan_run_id` means latest run that refreshed the keyword.
-  - Use `last_scan_run_id` when reporting a specific Legion run's full result set.
-- `scan_runs.new_keywords` is now inserted rows only. Existing refreshed keywords are counted in `scan_runs.updated_keywords`; do not treat `new_keywords` as total run size.
-- Viral Hunter defaults to `--top-n-for-ai 300`. Targets beyond the AI quota should be saved as `raw_backlog`, not staff-ready `pending`.
-- AI failures and parse failures must fail closed:
-  - Viral Hunter AI batch failures are saved as `needs_ai_retry`, excluded from pending, and failed checkpoints are preserved for retry.
-  - Missing `SUITABLE` in AI output is not suitable by default.
-  - Ad-classification parse failures are marked `needs_ai_retry` with `ai_ad_reason='parse_failed'`.
-- Duplicate viral URLs should not be loaded via full-table scans. Use indexed URL lookups; in Viral Hunter runs, refresh existing URL metadata before AI and exclude them from AI/raw queues.
-- Batch ad-classification apply supports source-run scoping. Prefer `--source-scan-run-id` or batch metadata when applying results from a specific Legion run.
-- Current targeted verification for this flow:
-  - `python -m py_compile pathfinder_v3_legion.py viral_hunter.py db\database.py scripts\ai_ad_classify_submit.py scripts\ai_ad_classify_apply.py tests\test_pathfinder_viral_stability.py`
-  - `python -m pytest tests\test_pathfinder_viral_stability.py tests\test_viral_target_repo.py tests\test_router_smoke.py -q`
-
-## 2026-05-05 Memory: Stability Audit Baseline
-
-- Full stability audit fixes are complete. Current verification baseline:
-  - `python -m pip check` -> no broken requirements.
-  - `python -m pytest -q` -> 149 passed, 1 skipped.
-  - `python -m pytest marketing_bot_web\backend\tests -q` -> 49 passed.
-  - Frontend `npm audit --audit-level=moderate`, `npm run lint`, `npm run typecheck`, and `npm run build` all pass.
-- DB path handling is centralized through `MARKETING_BOT_DB_PATH` / `APP_DB_PATH`; keep SQLite access on the shared helper path and avoid ad hoc cwd-relative DB paths.
-- DB backup/restore must use `db_backup.py` or the backend backup router, both based on SQLite Backup API and integrity checks. Do not restore by direct file overwrite while the app may be running.
-- AI/RAG side effects are opt-in for tests and local deterministic flows. Keep pytest paths free from real Codex CLI/RAG calls unless an explicit environment flag enables them.
-- Frontend is on Vite 8 with `@vitejs/plugin-react` and OXC minification. Keep the flat ESLint config (`frontend/eslint.config.js`) and package lock in sync when changing frontend tooling.
-- Known residual environment note: Python 3.14 can emit a Langfuse/Pydantic v1 compatibility warning. It is non-blocking under the current test baseline.
-
-## 2026-04-30 Memory: Pathfinder Legion -> Viral Hunter Core Flow
-
-- Clinic focus for keyword/viral logic: beauty Korean medicine clinic services (diet, skin/acne scars/새살침, asymmetry/body correction/lifting) plus traffic-accident inpatient care.
-- Pathfinder Legion and Viral Hunter are the core product flow. Viral Hunter should default to the latest completed Legion scan and core clinic categories, not accumulated legacy backlog.
-- Previous records must remain in DB. Frontend default work scope is `latest_legion`; `all_backlog` is only for deliberate historical review.
-- Viral Hunter seed selection is now organic: `core_services/viral_seed_builder.py` builds curated seeds from the latest Legion scan and carries lineage into `viral_targets` (`source_scan_run_id`, matched keyword grade/KEI/priority/category).
-- Scheduler execution is disabled. The program should be driven from natural-language Codex work and explicit UI/API actions, not the old system scheduler.
-- Staff work UX should stay simple: current queue, category start, source check, generate/copy/approve/skip/delete, with only necessary quality/ops signals.
-- Staff comment quality feedback is stored in `viral_target_feedback`; target actions are logged to `audit_events`. Use `/api/viral/quality-summary` and `/api/viral/ops-status` for monitoring.
-- Medical-ad safety remains important: avoid risky promise/case-result keywords such as 성공사례, 비포애프터, 전후사진, 합의금 in automated keyword expansion/comment logic.
-
-## 프로젝트 개요
-
-**Marketing Bot** - 한의원 마케팅 자동화 시스템
-- 네이버 플레이스 순위 추적
-- 키워드 발굴 (Pathfinder)
-- 경쟁사 분석 및 약점 공략
-- 바이럴 콘텐츠 수집
-- 리드(잠재고객) 발굴
-
----
-
-## 핵심 기술 스택
-
-### 백엔드
-- **FastAPI** (Python 3.11+)
-- **SQLite** 데이터베이스
-- **Codex CLI 2.5 Flash Lite + 3.1 Flash Lite Preview** (codex-cli SDK, 중앙 클라이언트: `services/ai_client.py`)
-
-### 프론트엔드
-- **React 19** + TypeScript 5.6
-- **TanStack Query v5** (데이터 페칭)
-- **Tailwind CSS** (스타일링)
-- **Vite 8** (빌드)
-- **PWA** (manifest + service worker, production 빌드 시 자동 활성화)
-- SSE 스트리밍 (useAIStream 훅)
-
-### 관측성 / 평가 (2026-04-26 추가)
-- **Logfire** (Pydantic, FastAPI/SQLite/AI 자동 instrument, LOGFIRE_TOKEN 있을 때만 cloud)
-- **Langfuse** (`@observe` 데코레이터, LANGFUSE_*_KEY 있을 때만 활성)
-- **ai_call_log** 테이블 + `/api/jobs/ai-cost` (모델별·모듈별 비용 추적)
-- **job_runs** 테이블 + `/api/jobs/runs|summary|health` (cron 신뢰성)
-
-### Agent / RAG (2026-04-26 추가)
-- **sqlite-vec + BGE-M3 + bge-reranker-v2-m3** (Q&A RAG, recall@5=1.0/MRR=0.97 검증)
-- **Pydantic AI** (services/agent_runtime.py, lead→comment 5-tool 루프)
-- **Camoufox** (SERP 캡차 우회 — Firefox C++ fingerprint spoofing)
-- **Playwright 1.58** (모바일 26초 vs Selenium 911초, DOM 셀렉터 정밀화 미완)
-
----
-
-## 중요: 실행 환경
-
-### ⚠️ Windows에서만 실행
-사용자는 **Windows에서만** 실행합니다. WSL은 사용하지 않습니다.
-
-```bash
-# 서버 실행 (Windows CMD/PowerShell에서)
-build_and_run.bat
-```
-
-### Python 스크립트 직접 실행 권장
-웹 UI에서 스캔 실행보다 터미널에서 직접 실행이 더 안정적:
-
-```bash
-# Pathfinder 키워드 수집
-python pathfinder_v3_complete.py --save-db
-
-# 순위 스캔 (모바일 + 데스크탑) - [Phase 3] 기본값: 병렬 모드
-python scrapers/scraper_naver_place.py
-
-# [Phase 3] 병렬 모드 옵션
-python scrapers/scraper_naver_place.py -w 5        # 5개 브라우저 동시 실행
-python scrapers/scraper_naver_place.py --sequential  # 순차 모드 (기존 방식)
-python scrapers/scraper_naver_place.py --skip-reviews  # 경쟁사 리뷰 수집 스킵
-
-# 데스크탑 스크래핑 테스트 (모바일 제외)
-python test_desktop_only.py
-
-# LEGION 모드 (대량 키워드 수집)
-python pathfinder_v3_legion.py --target 500 --save-db
-```
-
-> **참고**: 웹 서버에서 Place Sniper 실행 시에도 `scrapers/scraper_naver_place.py`를 subprocess로 호출합니다 (hud.py:56). 새 스캔 실행 시 최신 코드가 바로 적용됩니다.
-
----
-
-## 🤖 Claude Code 자연어 운영 가이드 (2026-04-26 추가)
-
-이 프로젝트는 **스캔/조사/조회는 Claude Code 대화로**, **바이럴 댓글/리드 처리/Q&A 큐레이션은 web UI로** 분담하도록 설계됨.
-
-### 자연어 의도 → 스킬 매핑
-
-사용자가 다음과 같이 말하면, Claude는 해당 SKILL.md를 읽고 그 안의 워크플로우/명령어/보고 템플릿을 따라 실행 → DB 조회 → 자연어 인사이트로 보고.
-
-| 사용자 의도 (예시) | 스킬 | 위치 |
-|---|---|---|
-| "순위 스캔" / "오늘 순위 어때" / "[키워드] 순위" | **scan-ranks** | `skills/scan-ranks/SKILL.md` |
-| "키워드 발굴" / "S급 찾아" / "Legion 모드" | **scan-pathfinder** | `skills/scan-pathfinder/SKILL.md` |
-| "경쟁사 변화" / "리뷰 새로 들어온 거" / "경쟁사 블로그" | **scan-competitors** | `skills/scan-competitors/SKILL.md` |
-| "오늘 종합" / "주간 브리핑" / "임원 보고용" | **brief** | `skills/brief/SKILL.md` |
-| "헬스체크" / "수집 상태" / "API 키 만료된 거" | **data-health** | `skills/data-health/SKILL.md` |
-| 그 외 일반 데이터 질문 ("최근 30일 1위", "뷰 가장 많은") | **query** | `skills/query/SKILL.md` |
-| 단일 lead → 댓글 초안 (web UI/cron 자동) | **viral-comment-drafter** | `skills/viral-comment-drafter/SKILL.md` |
-| "카페 본문 채워줘" / "hot 글 재방문" / "AI 분류 이상해" | **viral-enrich** | `skills/viral-enrich/SKILL.md` |
-| "garbage 정리" / "저품질 강등" / "광고 데이터 갱신" | **pathfinder-quality** | `skills/pathfinder-quality/SKILL.md` |
-| "PAA 수집" / "쇼핑 인사이트" / "한약재 시드" / "보조 키워드 발굴" | **scan-keywords-extra** | `skills/scan-keywords-extra/SKILL.md` |
-| "카카오맵 리뷰" / "Threads 멘션" / "클립 댓글" / "신규 채널" | **viral-channels** | `skills/viral-channels/SKILL.md` |
-| "AEO 측정" / "AI 검색 노출" / "ChatGPT가 우리 추천하나" | **aeo-tracker** | `skills/aeo-tracker/SKILL.md` |
-| "경쟁사 별점" / "비공개 전환" / "단가 비교" | **competitor-watch** | `skills/competitor-watch/SKILL.md` |
-| "가이드북 임베딩" / "단가 게이트" / "의료광고법 컴플라이언스" | **medical-compliance** | `skills/medical-compliance/SKILL.md` |
-| "신규 한의원 개원" / "폐업 / 인허가" / "HIRA 통계" / "정부 정책 시드" / "어르신 주치의" / "첩약 보험" | **clinic-lifecycle** | `skills/clinic-lifecycle/SKILL.md` |
-| "SERP 변동" / "top10 turnover" / "MY플레이스 클립" / "AI FAQ 도입한 경쟁사" | **serp-content-vitality** | `skills/serp-content-vitality/SKILL.md` |
-| "GSC 검색어" / "사이트 진입 키워드" / "Naver Search Advisor" / "Clarity 히트맵" / "PageSpeed" / "Core Web Vitals" | **inbound-analytics** | `skills/inbound-analytics/SKILL.md` |
-| "p-value" / "A/B 통계 검정" / "카니발리제이션" / "콘텐츠 갭" / "Schema.org" / "구조화 데이터" / "의도 재분류" | **content-quality** | `skills/content-quality/SKILL.md` |
-
-### 호출 절차 (Claude가 따라야 할 4단계)
-
-1. **사용자 발화 분류** — 위 표에서 매칭되는 스킬 결정. 모호하면 사용자에게 한 번 묻기.
-2. **SKILL.md 읽기** — 해당 스킬의 SKILL.md를 Read로 읽어 워크플로우/명령어/가드레일 파악.
-3. **Bash로 명령 실행** — SKILL.md에 적힌 명령을 그대로 실행. 장시간(5분+) 작업은 `run_in_background=true`.
-4. **결과 보고** — SKILL.md의 "보고 템플릿"을 따라 자연어 인사이트로 응답. **stdout raw 덤프 절대 금지.**
-
-### 보고 원칙 (모든 스킬 공통)
-
-- **숫자는 SQL로 직접 검증** — 캐시된 리포트 텍스트를 그대로 베끼지 말 것.
-- **인사이트 ≠ 데이터** — "X가 Y개"가 아니라 "X가 Y개로 평소 대비 Z% 증가, 원인은 W로 추정"까지.
-- **추천 액션 포함** — 모든 보고 끝에 "다음에 뭘 할지" 1~3개 제안.
-- **출력 길이 통제** — 변화 10건 이내면 모두, 초과면 top 5 + "외 N개". 임원 브리핑은 30~80줄.
-- **법규 자동 적용** — `ai_generate_korean()` 사용 시 `services/content_compliance.py`가 의료광고법 자동 게이트.
-
-### 절대 금지 사항
-
-- ❌ **자동 게시** — 댓글/포스팅/SNS 자동 발행 절대 금지. 모든 사람 게시는 web UI 또는 Telegram HITL 4-button 통과 필수.
-- ❌ **DML SQL** — INSERT/UPDATE/DELETE/DROP은 query 스킬에서 차단. 데이터 변경은 명시적 마이그레이션 스크립트로만.
-- ❌ **DB 직접 cp 복사** — 반드시 `scripts/safe_db_copy.sh` 또는 `db_backup.py` 사용 (사고 이력: 2026-02-06).
-- ❌ **자기 한의원 타게팅** — `business_profile.json::self_exclusion` 매칭은 모든 결과에서 제외.
-- ❌ **30분/24시간 내 중복 스캔** — 사용자가 명시적으로 "다시" 요청 안 했으면 직전 스캔 시각 보여주고 확인.
-
-### Web UI에서 처리해야 하는 것 (Claude가 대신 안 함)
-
-| 작업 | 이유 |
-|---|---|
-| 바이럴 댓글 초안 검토/수정/승인 | 시각 검토 + 사람 판단 필수 |
-| 리드 카드 처리 (상태 변경, 컨택 기록) | 영업 과정 문서화는 사람이 |
-| Q&A Repository 답변 큐레이션 | 표준 답변 작성/검토는 사람이 |
-| Battle 키워드 추가/등급 조정 | 사업 판단 |
-| Competitor 약점 라벨링 | 사용 여부 표시는 사람이 |
-
-이 작업들이 요청되면 **"web UI(/viral, /leads 등)에서 처리해주세요"** 안내 후 종료.
-
-### 자주 쓰는 빠른 조회 (스킬 없이 즉답 가능)
-
-```bash
-# DB 테이블 카운트 (5초)
-sqlite3 db/marketing_data.db "SELECT 'rank_history' t, COUNT(*) FROM rank_history UNION ALL SELECT 'keyword_insights', COUNT(*) FROM keyword_insights UNION ALL SELECT 'viral_targets', COUNT(*) FROM viral_targets"
-
-# 직전 스캔 시각
-sqlite3 db/marketing_data.db "SELECT MAX(checked_at) FROM rank_history"
-
-# 오늘 cron 실행 결과
-sqlite3 db/marketing_data.db "SELECT job_name, status, started_at FROM job_runs WHERE started_at >= date('now') ORDER BY started_at DESC"
-```
-
----
-
-## 프로젝트 구조
-
-```
-/mnt/c/projects/marketing_bot/
-├── config/
-│   ├── config.json          # API 키 설정 (Codex CLI, Naver)
-│   ├── keywords.json         # 키워드 설정 (naver_place, blog_seo)
-│   ├── schedule.json         # Chronos Timeline 스케줄 설정
-│   └── business_profile.json # 업체 정보
-├── db/
-│   ├── marketing_data.db     # 메인 데이터베이스
-│   └── backups/              # DB 백업
-├── marketing_bot_web/
-│   ├── backend/              # FastAPI 백엔드
-│   │   ├── main.py
-│   │   ├── routers/          # API 라우터들
-│   │   │   ├── battle.py     # Battle Intelligence API
-│   │   │   ├── competitors.py # 경쟁사 분석 API
-│   │   │   ├── hud.py        # 대시보드 API
-│   │   │   ├── leads.py      # 리드 관리 API
-│   │   │   ├── pathfinder.py # 키워드 발굴 API
-│   │   │   ├── qa.py         # Q&A Repository API (Phase 5.0)
-│   │   │   └── viral.py      # 바이럴 콘텐츠 API
-│   │   ├── services/
-│   │   │   └── db_init.py    # DB 스키마 초기화 (Phase 6.1)
-│   │   └── backend_utils/    # 백엔드 유틸리티 (⚠️ utils 아님!)
-│   │       ├── logger.py     # 로깅 시스템
-│   │       └── error_handlers.py
-│   └── frontend/             # React 프론트엔드
-│       └── src/
-│           ├── pages/        # 페이지 컴포넌트
-│           ├── components/   # UI 컴포넌트
-│           │   ├── settings/     # Settings 페이지 탭 컴포넌트 (8개)
-│           │   └── viral/views/  # ViralHunter 뷰 컴포넌트
-│           └── services/api/ # API 클라이언트 (도메인별 분리)
-├── scrapers/
-│   ├── scraper_naver_place.py # 네이버 플레이스 순위 스크래핑 (모바일+데스크탑)
-│   ├── scraper_instagram.py   # Instagram 스크래핑
-│   ├── scraper_youtube.py     # YouTube 스크래핑
-│   ├── scraper_tiktok_monitor.py # TikTok 모니터링
-│   ├── cafe_spy.py            # 네이버 카페 스크래핑
-│   └── competitor_analyzer.py # 경쟁사 분석
-├── pathfinder_v3_complete.py # 키워드 발굴 스크립트
-├── pathfinder_v3_legion.py   # LEGION 모드 (대량 키워드 수집)
-├── test_desktop_only.py      # 데스크탑 스크래핑 테스트 (모바일 제외)
-└── vision_analyst.py         # 이미지 분석 (Codex CLI Vision)
-```
-
-> ⚠️ **주의**: `backend/backend_utils/` 폴더명은 프로젝트 루트의 `utils.py`와 충돌을 피하기 위해 `backend_utils`로 명명됨. `from backend_utils.logger import ...` 형태로 import.
-
----
-
-## 주요 페이지 및 기능
-
-| 페이지 | 경로 | 기능 |
-|--------|------|------|
-| Dashboard | `/` | 메트릭, 브리핑, Sentinel Alerts, Chronos Timeline |
-| Pathfinder | `/pathfinder` | 키워드 수집/분석/활용/히스토리/클러스터 |
-| Viral Hunter | `/viral` | 바이럴 콘텐츠 수집 |
-| Battle Intelligence | `/battle` | 순위 추적, 트렌드, 경쟁사 활력 |
-| Lead Manager | `/leads` | 6개 플랫폼 리드 관리 |
-| Competitor Analysis | `/competitors` | 약점 공략, 기회 키워드, Instagram 분석 |
-| Settings | `/settings` | 시스템 정보 |
-
----
-
-## 데이터베이스 테이블
-
-### 핵심 테이블
-- `keyword_insights` - 발굴된 키워드 (grade, search_volume, category, status)
-- `rank_history` - 순위 스캔 이력 (keyword, rank, status, device_type, scanned_date)
-  - `device_type`: "mobile" 또는 "desktop" (2026-02-12부터 분리 추적)
-- `competitor_reviews` - 경쟁사 리뷰 데이터
-- `competitor_weaknesses` - 경쟁사 약점 분석 결과
-- `opportunity_keywords` - 기회 키워드
-- `viral_targets` - 바이럴 콘텐츠 (matched_keyword 컬럼 포함)
-
-### Phase 5.0/6.x 추가 테이블
-- `qa_repository` - Q&A 패턴 및 표준 응답 (question_pattern, standard_answer, variations)
-- `scan_runs` - Pathfinder 스캔 실행 기록 (mode, status, grade별 count)
-- `auto_approval_rules` - AI Agent 자동 승인 규칙
-- `competitor_rankings` - 경쟁사 순위 추적 (scanned_date 컬럼 사용)
-- `contact_history` - 리드 컨택 히스토리
-- `notifications` - 알림 (reference_keyword, link 컬럼 포함)
-- `comment_templates` - 댓글 템플릿 (situation_type, engagement_signal)
-
-### rank_history.status 값
-- `found` - 순위 발견됨
-- `not_in_results` - 검색 결과 100위 내에 없음
-- `no_results` - 검색 결과 자체가 없음
-- `error` - 스캔 오류
-
----
-
-## keywords.json 구조
-
-```json
-{
-  "naver_place": [
-    "청주 한의원",
-    "청주 다이어트 한약",
-    // ... 플레이스 순위가 존재하는 키워드만
-  ],
-  "blog_seo": [
-    "청주 새살침",
-    "청주 안면비대칭 교정"
-    // ... 플레이스 순위가 없는 블로그 SEO용 키워드
-  ]
-}
-```
-
----
-
-## AI 모델 사용 규칙
-
-**Codex CLI (codex-cli SDK) — 중앙 클라이언트 사용. 용도별 2단 구성.**
-
-| 함수 | 모델 | 가격 (1M tok) | 용도 |
-|------|------|:---:|------|
-| `ai_generate()` | **codex_cli-2.5-flash-lite** (GA) | $0.10 / $0.40 | 분류·판단·요약 (바이럴 적합성 등) |
-| `ai_generate_json()` | **codex_cli-2.5-flash-lite** (GA) | $0.10 / $0.40 | 구조화 JSON (response_mime_type) |
-| `ai_generate_korean()` | **codex_cli-3.1-flash-lite-preview** | $0.25 / $1.50 | 한국어 댓글·창작 (자연스러움 우선) |
-
-모든 AI 호출은 `services/ai_client.py`를 통해 이루어집니다. 모델 변경 시 이 파일만 수정.
-
-```python
-# 올바른 사용법 (중앙 클라이언트)
-from services.ai_client import ai_generate, ai_generate_json, ai_generate_korean
-
-# 텍스트 생성 / 분류 / 판단 (저렴한 기본 모델)
-result = ai_generate(prompt, temperature=0.7, max_tokens=4096)
-
-# JSON 생성 (자동 파싱 + 복구)
-data = ai_generate_json(prompt, temperature=0.3, max_tokens=4096)
-
-# 한국어 댓글·창작 (더 자연스러운 preview 모델)
-comment = ai_generate_korean(prompt, temperature=0.6, max_tokens=800)
-
-# 잘못된 사용 (금지)
-from google import codex_cli              # X - 직접 호출 금지
-from openai import OpenAI             # X - 사용 안 함 (Qwen 전환 완료)
-client = codex_cli.Client(api_key=...)    # X - 중앙 클라이언트 사용
-```
-
-**환경변수**:
-- `CODEX_CLI_API_KEY` (필수) — `config/secrets.json`에 있음, 자동 폴백
-- `CODEX_CLI_CLASSIFY_MODEL` (선택) — 기본 모델 오버라이드
-- `CODEX_CLI_KOREAN_MODEL` (선택) — 한국어 모델 오버라이드
-
-**예외**: `vision_analyst.py`만 Codex CLI Vision (이미지 분석)을 직접 사용
-
-**폴백 동작**: `ai_generate_korean()` 호출 실패 시 자동으로 `ai_generate()`(기본 모델)로 재시도
-
----
-
-## 최근 개선 사항 (2026-04-29) — AI 댓글 "생성 완료만 뜨고 결과물 안 보임" 버그
-
-### 트리거 — 원장님 보고
-
-> "AI 댓글 생성 후 생성완료 문구는 뜨는데 생성된 댓글 확인이 안된다"
-
-### 원인 (3중 결함 동시 존재)
-
-| # | 위치 | 결함 |
-|---|---|---|
-| **A** | `routers/viral.py::generate_comment` (단건) | 댓글을 응답으로만 돌려주고 **DB에 저장 안 함**. 일괄 엔드포인트만 `UPDATE viral_targets SET generated_comment` 정상 저장 |
-| **B** | `pages/ViralHunter.tsx::handleBulkGenerateComments` | 일괄 생성 시 단건 API를 N번 호출하면서 `result.comment`를 **버림** → `successCount++`만 하고 `setExpandedComments` 호출 안 함. 토스트만 뜨고 어디에도 댓글 없음 |
-| **C** | `views/ListView.tsx` | 테이블에 **"생성된 댓글" 칸 자체 없음**. 행마다 `🤖 댓글 생성` 버튼은 있는데 결과 표시할 자리가 없어서, 클릭해도 토스트만 뜨고 끝 |
-
-→ ListView(일괄 작업 모드)에서 작업하는 사용자는 댓글이 어디에도 안 보였음. WorkView(아코디언)는 in-memory `expandedComments`로 표시되긴 했으나 새로고침/재진입 시 사라짐(DB 미저장).
-
-### Fix
-
-| 파일 | 변경 |
-|---|---|
-| `marketing_bot_web/backend/routers/viral.py:1433` | 단건 생성 후 `UPDATE viral_targets SET generated_comment, comment_status='generated'` 저장. persist 실패해도 응답은 성공(받은 텍스트로 작업 가능) |
-| `marketing_bot_web/frontend/src/pages/ViralHunter.tsx:544` | 일괄 생성 핸들러에서 `result.comment`를 `setExpandedComments`에 누적 |
-| `marketing_bot_web/frontend/src/components/viral/views/WorkView.tsx:163` | `expandedComments[id] ?? target.generated_comment ?? ''` 폴백 — 이전 세션/배치 생성분도 재진입 시 표시 |
-| `marketing_bot_web/frontend/src/components/viral/views/ListView.tsx` | 행 `🤖 댓글 생성` 버튼 결과를 모달로 표시 (`commentPreview` state + Modal + 📋 클립보드 복사 버튼) |
-
-### 운영 메모
-
-- 단건 생성도 이제 `comment_status='generated'`로 변경되므로 골든큐(pending) 목록에서 사라짐 — 필터에서 `AI 생성됨` 또는 `comment_status=generated`로 재확인
-- ListView는 가상화 테이블이라 행에 댓글 본문 칸을 추가하면 ROW_HEIGHT 재조정·virtualizer estimateSize 재튜닝 필요 → 모달 방식이 비용 대비 효과 큼
-- WorkView 폴백(target.generated_comment)은 ViralTargetData 타입에 이미 정의돼 있던 필드 → 백엔드가 GET /viral/targets에서 내려주고 있으므로 추가 API 변경 없음
-
-### 교훈 (메모리 저장됨)
-
-- "토스트는 뜨는데 결과물 안 보임" 신고는 **데이터 저장과 표시 둘 다** 점검 — 한쪽만 망가져도 사용자에게는 같은 증상
-- 테이블 뷰에 액션 버튼 추가할 때 **결과 표시 자리도 함께** — 액션만 있고 표시 없는 비대칭 UI 만들지 말 것
-- 단건/일괄 엔드포인트가 같은 모델을 다룰 때 **persist 동작 일치** 필수. 프롬프트 결과를 응답으로만 돌려주는 패턴은 escape route 차단
-
----
-
-## 최근 개선 사항 (2026-04-28) — 바이럴 수집 근본 개혁 + Rules of Hooks 버그 + 골든큐 정의 강화
-
-### 트리거 — 미용 주력인데 골든큐에 미용 비중 거의 0
-
-직원이 ViralHunter 페이지에서 어제 작업한 데이터가 그대로 남아있다 / 페이지 오류 / 오늘 수집한 게 어디 있는지 모르겠다 보고. 진단 결과:
-- 골든큐 280건 중 category=`기타` 87.5% (245건)
-- 다이어트 4건 / 피부·탈모 0건 / 비대칭/교정 0건 (LP 페이지 5/6이 미용인데)
-- AI 분류 reason에 hallucination 다수 (다이어트 글 → reason "우울증 관련 질문")
-
-### 4축 동시 수정 + 골든큐 정의 강화
-
-| 단계 | 파일 | 변경 |
-|---|---|---|
-| **A** | `scripts/generate_viral_seeds.py` (신규) | pathfinder S+A → 미용 주력 시드 자동 생성 (카테고리별 quota: 다이어트 7 / 피부 7 / 탈모 5 / 비대칭 5 / 교정 3 / 교통사고 5 / 통증 4 / 두통 2 / 호흡 2). 사람이 매번 18개 손큐레이션하다가 미용 누락하던 실수 차단 |
-| | `logs/viral_seeds_curated.json` | 18개 (산후조리원 5/지역 7/다이어트 3) → **자동 생성 36개 미용 주력** |
-| **B** | `scripts/ai_ad_classify_submit.py` | content 컬럼 우선 (enrich된 본문 활용) + 본문 잘림 300자 → **1500자**. AI hallucination 감소 |
-| **C** | `viral_hunter.py::ViralTarget.__post_init__` | `matched_keywords[0]`만 보던 분류 → **title도 normalize_category에 통과**. 산후조리원/지역 시드 시드만 봐서 "기타" 87% 떨어지던 문제 해결 |
-| **D** | `scripts/ai_ad_classify_submit.py` SYSTEM_PROMPT | 산후조리원 후기에 한약 한 줄 = medium 명시 + 에스테틱/양방 미용 = low + 미용 주력 5종 high 케이스 예시 4개 추가 |
-| **🆕** | `pages/ViralHunter.tsx` + `repositories/viral_target_repo.py` + `routers/viral.py` | **골든큐 정의 강화** — `자연_질문 + 청주 + high` → `+ confidence>=0.85 + category IN (다이어트,피부,비대칭/교정,교통사고,통증/디스크)`. category 콤마 다중값 지원 추가 |
-
-### 결과 — 양보다 질
-
-| | 변경 전 | 변경 후 |
-|---|:---:|:---:|
-| 골든큐 size | 280건 | **41건** |
-| 미용 주력 카테고리 비중 | 22% | **100%** |
-| `기타` 카테고리 노이즈 | 87.5% | **0%** |
-| 정치 뉴스/산후조리원 후기 노출 | 다수 | 0 |
-| AI confidence 평균 | 혼재 | **모두 0.95** |
-| 카테고리 분포 | 기타 245 / 경쟁사 16 / 교통사고 15 / 다이어트 4 | 교통사고 16 / 다이어트 10 / 피부 10 / 통증/디스크 4 / 비대칭/교정 1 |
-
-### React #310 버그 (시간 1시간+ 허비) — Rules of Hooks 위반
-
-**증상**: `/viral` 진입 시 "이 페이지에서 오류가 발생했습니다" 화면. minified production stack trace로 ViralHunter.tsx 의심해서 수십 번 추측만 함.
-
-**근본 원인**: `marketing_bot_web/frontend/src/components/viral/SmartFilterBar.tsx`
-```tsx
-const { data, isLoading, isError } = useQuery(...)
-if (isLoading) { return (...) }   // ← early return
-const handleApplyQuickFilter = useCallback(...)  // ← hook AFTER early return
-```
-첫 렌더(loading=true) 8개 hook → 데이터 로드 후(loading=false) 9개 hook → React 비교 시 #310.
-
-**Fix**: useCallback을 early return **위로** 이동. 1줄 차이지만 결정적.
-
-**교훈** (메모리 저장됨):
-- minified prod 에러 stack trace로 추측 금지 — `npm run dev`로 5분 안에 정확한 컴포넌트·라인 찾을 수 있음
-- 사용자에게 "콘솔 에러 보내주세요" 반복 요청 금지 — `claude-in-chrome` MCP로 직접 navigate + read_console_messages
-
-### 댓글 프롬프트 자연 후기톤 (사용자 명시 요청)
-
-| 변경 | 결과 |
-|---|---|
-| `config/prompts.json::comment_generation` system+template 전면 개정 | 풀네임 "규림한의원" 사용 금지, ㄱㄹ/ㄱㄹ한의원/성안길 ㄱㄹ 등 초성·모호 표현만 허용 |
-| `config/prompts.json::category_templates` (다이어트/교통사고/여드름/통증) | 4개 카테고리 예시 모두 "규림" → "ㄱㄹ"로 교체 |
-| `viral_hunter.py` fallback 프롬프트 | 동일 톤으로 재작성 |
-| `services/content_compliance.py::screen_korean_comment` | 자동 첨부 해시태그 `"#광고 #규림한의원"` → `"#광고"` 만으로 단순화 |
-| `services/ai_client.py::ai_generate_korean` | `auto_append_disclosure=False` — 사용자 명시 요청에 따라 #광고 자동 첨부 자체 비활성화 |
-
-검증 — 골든 타겟 3건 random 샘플 댓글 생성 결과 모두 "시내 ㄱㄹ한의원" 표현 자연스럽게 사용, 풀네임 0회 등장.
-
-### 백엔드 500 에러 3건 동시 fix
-
-| 엔드포인트 | 원인 | Fix |
-|---|---|---|
-| `/api/leads/pending-alerts` | `scorer.score(lead)` 메서드 없음 | `scorer.calculate_score(lead)` |
-| `/api/pathfinder/stats?apply_filter=true` | `grade_filter` 변수 미정의 (옛 코드 잔재) | `where_clause + params` 파라미터 바인딩으로 통일 |
-| `/api/viral/trend-insights?days=7` | `older_avg=0`일 때 `recent_avg/older_avg` division by zero | `if older_avg > 0` 가드 + `older_avg=0 and recent_avg>0` 분기 추가 |
-
-### ViralHunter.tsx 렌더 안정화 (#310과 별개로 정리)
-
-- `filtersFromUrl` IIFE → `useState(() => {...})` lazy init (마운트 시 1회만 평가)
-- URL 동기화 useEffect deps에서 `setSearchParams` 제거 (react-router v7에서 매 렌더 새 reference 가능 → 잠재 무한 루프 차단)
-- HomeView 헤더 아래에 큰 주황 골든큐 진입 버튼 ("🎯 오늘 우선 처리 골든큐 — 지금 작업 시작 →")
-- `view: 'home'` default 유지 (list로 바꿨다가 다른 사이드 효과 있어 되돌림)
-
-### 신규/수정 파일
-
-**Backend**:
-- `marketing_bot_web/backend/routers/viral.py` — count + bulk-action에 ai_ad_label/specialty_match/post_region/min_confidence 필터 추가
-- `marketing_bot_web/backend/routers/leads.py` — scorer 메서드명 fix
-- `marketing_bot_web/backend/routers/pathfinder.py` — stats 쿼리 파라미터 바인딩 통일
-- `marketing_bot_web/backend/services/ai_client.py` — auto_append_disclosure=False
-- `marketing_bot_web/backend/services/content_compliance.py` — 해시태그 단순화
-- `repositories/viral_target_repo.py` — post_region 필터 + category 콤마 다중값
-
-**Frontend**:
-- `pages/ViralHunter.tsx` — 골든큐 default + lazy init
-- `components/viral/FilterBar.tsx` — FilterState에 post_region 추가
-- `components/viral/SmartFilterBar.tsx` — Rules of Hooks 위반 fix
-- `components/viral/views/HomeView.tsx` — 큰 골든큐 진입 버튼
-- `services/api/viral.ts` — getTargets/getTargetsCount/bulkActionByFilter에 새 필터 4종
-
-**Scripts**:
-- `scripts/generate_viral_seeds.py` (신규) — pathfinder → 시드 자동 생성
-
-**Config**:
-- `config/prompts.json` — 댓글 프롬프트 자연 후기톤 + ㄱㄹ 표현
-- `logs/viral_seeds_curated.json` — 자동 생성으로 갱신
-
-### 운영 메모
-
-- **시드 자동 생성 권장 명령**: `python scripts/generate_viral_seeds.py` — 매번 viral_hunt 전에 실행하면 미용 주력 시드 자동 보장
-- **viral_hunt 권장 흐름**: `generate_viral_seeds.py` → `viral_hunter_curated.py` → `ai_ad_classify_submit.py` → wait → `ai_ad_classify_apply.py`
-- **AI batch 큐 대기 시간**: Codex CLI batch API가 트래픽 따라 1~2시간까지도 걸림 — wait 스크립트 cap 90 → 180분으로 늘림 (`scripts/_tmp_classify_wait_apply.py`)
-- **골든큐 size 41건**이 적정 — 직원 하루 작업량으로 충분, 양보다 질
-
----
-
-## 최근 개선 사항 (2026-04-25 ~ 04-26) — 시스템 고도화 2 ultrathink 라운드 (28건)
-
-### 라운드 1: 인프라 현대화 (10건, 2026-04-25)
-
-이전 audit 결과를 받아 시스템 인프라를 현대화. 5개 도메인 병렬 조사 후 구현.
-
-| # | 변경 | 결과 |
-|---|---|---|
-| 1 | 의료광고법 컴플라이언스 게이트 (services/content_compliance.py + ai_client.py 자동 통합) | `ai_generate_korean()` 모든 호출 자동 스크린, ai_korean_screen_log 감사 |
-| 2 | 자체 리뷰/허위 예약 자동화 코드 감사 | viral_targets 자기 한의원 15건 영구 차단, business_profile.json self_exclusion 추가, viral_hunter `_is_self_target()` 게이트 |
-| 3 | Camoufox 도입 (place_scan_enrichment SERP 포팅) | 19/19 캡차 차단 → 정상 200KB+ HTML 수신 |
-| 4 | Codex CLI 컨텍스트 캐싱 + 배치 + Pydantic structured | system_prompt ≥1500자 자동 캐싱(75-90% 절감), `ai_generate_structured`/`ai_generate_batch` 신규 |
-| 5 | Q&A RAG (sqlite-vec + BGE-M3 + bge-reranker-v2-m3) | services/rag/qa_search.py, lead_service에 통합, recall 40% → 자연어 변형 5건 100% 매칭 |
-| 6 | job_runs 추적 + 의존성 게이트 (APScheduler 대신 schedule lib에 wrapper) | `@track_run` 데코레이터 + `requires_recent` 게이트, /api/jobs/runs API |
-| 7 | AI 브리핑 + MY플레이스 클립 모니터 | serp_features 5컬럼 추가 (ai_briefing_text/sources/includes_us/clip_count/clip_urls) |
-| 8 | Playwright 마이그레이션 인프라 (셀렉터 정밀화 별도) | scraper_naver_place_pw 26초 (Selenium 911초 대비 35배), 단 DOM 셀렉터 추가 작업 필요 |
-| 9 | Logfire 자동 instrument | FastAPI + sqlite3 + ai_client trace, console + cloud(token시) |
-| 10 | SSE 스트리밍 인프라 | `ai_generate_stream` + GET /api/agent/stream + frontend `useAIStream` 훅 |
-
-### 라운드 2: 신규 규제 대응 + Agent Loop (18건, 2026-04-26)
-
-**🚨 트리거**: 6개 도메인 ultrathink 조사 중 **2026-04-08 ~ 04-24 사이 한국에서 의료/AI 광고 규제 4건 통과/예고** 발견. 즉시 대응 필요.
-
-#### CRITICAL — 법적 리스크 차단 (4건)
-| # | 변경 | 결과 |
-|---|---|---|
-| C1 | 의료광고법 신규 패턴 4종 (content_compliance.py) | 비급여 할인·이벤트 / AI 가상인물 표시 누락 / AI 의료진 추천 영상 / 협찬 미표기 후기 강화 |
-| C2 | AI 생성 사용 고지 자동 푸터 (`append_ai_disclosure`) | AI 기본법 2026/1 시행 — 모든 한국어 AI 출력에 자동 첨부 |
-| C3 | Vision 의료광고법 이미지 게이트 (vision_analyst.py + ai_client.ai_analyze_image) | 전후사진 / 가짜의사 / 금지어 OCR 5축 검출, ai_image_screen_log 적재 |
-| C4 | 별점 부활 + 클립 source_type 컬럼 | competitor_reviews/rank_history.star_rating + serp_features.place_clip_source_type |
-
-#### HIGH — Agent Loop + 관측성 (7건)
-| # | 변경 | 결과 |
-|---|---|---|
-| H1 | services/agent_runtime.py 5-tool 루프 (Pydantic AI) | search_qa / draft / critique / verify_url / check_dup_history |
-| H2 | Multi-criteria critique + revise loop | compliance(regex) + naturalness(LLM) + tone(LLM) 3축, max 2회 revise |
-| H3 | pending_approvals 테이블 + 30분 만료 | `_enqueue_approval` + `expire_overdue` |
-| H4 | Telegram inline keyboard HITL 4-button | services/telegram_approval.py outbound + routers/telegram_callback.py inbound webhook + answerCallbackQuery |
-| H5 | Langfuse `@observe` 통합 | LANGFUSE_*_KEY 있을 때만 활성, no-op 폴백 |
-| H6 | ai_call_log + 비용 추적 | services/ai_cost.py + `record_call`, GET /api/jobs/ai-cost (모델별·모듈별·일별) |
-| H7 | scrapers/competitor_visual_analyzer.py | 9곳 × 사진 20장 → 5축 점수 + competitor_visual_scores 테이블, 월 $0.90 |
-
-#### MEDIUM — 평가·확장 (5건)
-| # | 변경 | 결과 |
-|---|---|---|
-| M1 | scripts/build_qa_goldset.py + recall@5 baseline | Codex CLI Pro 합성 30 query → **Recall@5=1.0, MRR=0.97** 검증 |
-| M2 | routers/compliance_review.py | /queue (차단/통과 균형 샘플) + /label (correct/FP/FN) + /metrics (precision/recall) |
-| M3 | PWA (이미 완성됨 확인) | manifest.webmanifest + sw.js + main.tsx 등록 모두 존재, production 빌드만 필요 |
-| M4 | skills/viral-comment-drafter/SKILL.md | Anthropic Agent Skills 패턴 문서화 (lead→comment 워크플로우) |
-| M5 | scrapers/reels_visual_trend.py | 인스타 reels hook 패턴 클러스터링 (color/composition/tone/objects), visual_trend_signals 테이블 |
-
-### 신규 파일 (총 11개)
-
-**Backend services**: `agent_runtime.py`, `telegram_approval.py`, `ai_cost.py`, `job_runs.py`, `rag/qa_search.py`
-**Backend routers**: `jobs.py`, `telegram_callback.py`, `compliance_review.py`
-**Scrapers**: `camoufox_engine.py`, `competitor_visual_analyzer.py`, `reels_visual_trend.py`
-**Scripts**: `build_qa_goldset.py`
-**Skills**: `skills/viral-comment-drafter/SKILL.md`
-**Frontend**: `hooks/useAIStream.ts`
-
-### 신규 DB 테이블 (db_init 자동 생성)
-
-`pending_approvals`, `ai_image_screen_log`, `competitor_visual_scores`, `ai_call_log`, `visual_trend_signals`, `qa_eval_runs`, `qa_eval_dataset`, `screen_review`, `ai_korean_screen_log`, `job_runs` (총 10개) + 기존 `serp_features`/`competitor_reviews`/`rank_history` 컬럼 확장
-
-### 신규 API 엔드포인트
-
-```
-GET  /api/jobs/runs?job_name=&limit=         # 잡 실행 이력
-GET  /api/jobs/summary                       # 7일 잡별 요약
-GET  /api/jobs/health                        # 헬스 (severity)
-GET  /api/jobs/ai-cost?days=7                # 일별/모델별/모듈별 AI 비용
-POST /api/telegram/webhook                   # 텔레그램 inbound (callback_query)
-GET  /api/telegram/health                    # 텔레그램 봇 헬스
-GET  /api/compliance-review/queue            # 검수 샘플 (차단/통과 균형)
-POST /api/compliance-review/label            # 1-click correct/FP/FN
-GET  /api/compliance-review/metrics          # precision/recall (사람 라벨 기반)
-GET  /api/agent/stream                       # SSE 한국어 AI 스트리밍
-```
-
-### 신규 의존성
-
-```
-camoufox==0.4.11 (+ 530MB Firefox)
-sqlite-vec==0.1.9
-sentence-transformers==5.4.1 (BGE-M3 568MB + bge-reranker-v2-m3 568MB)
-APScheduler==3.11.2 (참고용 설치, schedule lib 유지)
-logfire==4.32.1 + [fastapi,sqlite3]
-langfuse==4.5.1
-pydantic-ai==1.87.0
-babel-plugin-react-compiler@beta (frontend, 미적용)
-```
-
-### 신규 환경변수 (모두 선택)
-
-```bash
-LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY    # Cloud free tier 활성화
-LOGFIRE_TOKEN                                 # Cloud 활성화 (없으면 local span only)
-TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID         # 이미 있다면 HITL 자동 작동
-CODEX_CLI_VISION_MODEL                           # 기본 codex_cli-2.5-flash-lite
-MARKETING_BOT_EMBED_MODEL                     # 기본 BAAI/bge-m3
-MARKETING_BOT_RERANKER_MODEL                  # 기본 BAAI/bge-reranker-v2-m3
-```
-
-### 핵심 발견 — 2026 4월 한국 신규 규제
-
-| 규제 | 시행 | 처벌 | 시스템 대응 |
-|---|---|---|---|
-| 공정위 AI 가상인물 표시 의무 (4/8 행정예고 ~4/28) | 즉시 | **매출 2% 과징금, 형사 2년/1.5억** | 컴플라이언스 패턴 + AI 고지 푸터 |
-| AI 의사·한의사 추천 영상광고 금지 (4/23 통과) | 6개월 후 | 형사 처벌 | AI 의료진 추천 패턴 + Vision 가짜의사 게이트 |
-| AI 기본법 (2026/1 시행) — 생성형 AI 사용 고지 의무 | 진행 중 | 행정처분 | `append_ai_disclosure` 자동 첨부 |
-| 식약처 AI 가짜의사 단속 본격화 | 진행 중 | 사이트 차단 + 현장조사 | Vision `screen_medical_image()` 5카테고리 |
-
-### 비용 영향 (월)
-
-| 항목 | 월 |
-|---|---:|
-| Vision 경쟁사 사진 (180장/일) | $0.90 |
-| Vision 의료광고법 게이트 (10장/일) | $0.15 |
-| Reels visual hook (30/주) | $0.02 |
-| Pydantic AI agent loop (~30 lead/일) | <$5 |
-| Q&A gold set | $0.6 (1회) |
-| Langfuse / Logfire / Telegram | $0 |
-| **합계 신규** | **<$7/월** |
-
-Codex CLI 컨텍스트 캐싱(75-90% 절감) + 배치 API(50% 할인)로 기존 비용은 절반 이하로.
-
----
-
-## 최근 개선 사항 (2026-04-25) — UX 대규모 정비 (4 ultrathink 라운드)
-
-4회 연속 UX 감사를 통해 Critical 5건, High 8건, Medium 7건의 사용성 문제를 해결. 각 라운드마다 문제를 찾고 → 검증 → 구현 → TypeScript 체크 → 다음 라운드 루프.
-
-### 1차 — 구조적 마찰 제거
-
-- Dashboard 중복 "📊 상세 분석" Collapsible 2개 → 1개로 병합
-- Dashboard 섹션 순서 재배치 (배너 → 메트릭 → 목표 → 스마트액션 → 알림/빠른실행 → 상세분석)
-- Settings 탭 **10개 → 7개** (알림+외부알림, 자동화+연동, 시스템+설정파일 병합)
-- LeadManager 뷰 모드 3개 → **2개** (카드뷰 제거, 테이블/칸반만 유지)
-- ViralHunter "전체 목록 보기" → **"일괄 작업 모드"**로 라벨 명확화
-- 모바일 햄버거 메뉴 열림 시 MobileTabBar 자동 숨김
-
-### 2차 — MarketingHub 통합 (1차에서 놓친 발견)
-
-- MarketingHub 탭 **8개 → 5개** (golden-time+lead-quality→performance 등 병합)
-- MarketingHub Overview compact 위젯 **6개 → 3개**로 축소
-- MarketingHub 탭을 공용 `TabNavigation` 컴포넌트로 전환
-- Dashboard ROI·WeeklyReport → MarketingHub로 이관 (Dashboard에서 링크만 안내)
-- Pathfinder 필터 그리드 반응형 (`grid-cols-1 md:grid-cols-4` → `sm:grid-cols-2 lg:grid-cols-4`)
-- LeadManager "잠재 고객" → "리드" 용어 통일
-- BattleIntelligence 예측 카드 부가 지표 모바일 숨김 (`hidden sm:block`)
-- CompetitorAnalysis 탭 밑줄 겹침 수정 (`-bottom-px`)
-
-### 3차 — Analytics 페이지 폐지 (A안 선택)
-
-- **Analytics 페이지 완전 흡수** → Marketing Hub에 통합. Sidebar "마케팅 분석" 메뉴 제거
-- MarketingHub 탭 **5개 → 6개** (🔗 어트리뷰션 신설)
-- Analytics 흡수 컴포넌트 8종: AIInsights, PerformanceFeedback, AttributionChain, KeywordLifecycle, ResponseGoldenTime, ChannelROI, CompetitorMovements, WeeklyBriefing
-- `/analytics?tab=*` → `/marketing?tab=*` 자동 리다이렉트 (레거시 북마크 호환)
-- 전역 단축키 `g+a` (Analytics) → `g+m` (Marketing Hub) 재매핑
-- Toast `defaultDuration` **4000ms → 5500ms** (연속 액션 시 빨리 사라지는 문제 해결)
-- LeadTable 컬럼 **11개 → 9개** (감성 제거, 발견일은 xl 이상만)
-- ConversionModal ESC/오버레이 클릭 보호 (입력값 있을 때 차단)
-- WorkView 자동 다음 타겟 `scrollIntoView` 추가 (연속 A/S/D 처리 시 화면 자동 스크롤)
-
-### 4차 — 탭 일관성 완성
-
-- `TabNavigation` 컴포넌트에 `badge?: number` prop 지원 추가
-- BattleIntelligence 7탭 → `TabNavigation` 전환 (하락 알림 badge 유지)
-- CompetitorAnalysis 7탭 → `TabNavigation` 전환
-- Dashboard "오늘 할 일" 위젯 **3개 → 2개** (`SuggestedActions` 제거, `SmartActionPanel` 상시 노출로 승격)
-
-### 누적 효과
-
-| 항목 | Before | After |
-|------|:----:|:----:|
-| Dashboard 중복 "상세 분석" Collapsible | 2개 | 1개 |
-| Dashboard 중복 "오늘 할 일" 위젯 | 3개 | 2개 |
-| Settings 탭 | 10 | 7 |
-| MarketingHub 탭 | 8 | 6 (Analytics 흡수 포함) |
-| LeadManager 뷰 모드 | 3 | 2 |
-| LeadTable 컬럼 | 11 | 9 |
-| 페이지 탭 `TabNavigation` 통일 | 6/8 | **8/8** |
-| 사이드바 최상위 메뉴 | 12 | 11 |
-| Toast 표시 시간 | 4초 | 5.5초 |
-
-### URL 마이그레이션 (모두 자동 리다이렉트)
-
-**Analytics 폐지**:
-- `/analytics?tab=ai-insights` → `/marketing?tab=growth`
-- `/analytics?tab=golden-time` → `/marketing?tab=performance`
-- `/analytics?tab=competitor` → `/marketing?tab=monitoring`
-- `/analytics?tab=lifecycle` → `/marketing?tab=attribution`
-- `/analytics?tab=roi|attribution|performance|overview` → 같은 ID 재사용
-
-**MarketingHub 탭 통합**:
-- `?tab=golden-time|lead-quality` → `performance`
-- `?tab=campaigns|ab-tests` → `growth`
-- `?tab=competitor-radar|alerts` → `monitoring`
-
-**Settings 탭 통합**:
-- `?tab=external-notifications` → `notifications`
-- `?tab=integrations` → `automation`
-- `?tab=config` → `system`
-
-**LeadManager 뷰**: `?view=card` → `table`
-
-### 기능 삭제 0건
-
-- Analytics의 모든 컴포넌트는 MarketingHub 내부 탭/섹션으로 유지
-- 제거된 것은 **중복 위젯·중복 개념**만 (SuggestedActions, 2번 렌더되던 Collapsible)
-- 폐지된 Analytics 페이지도 리다이렉트 셔임으로 보존
-
-### 감사 프로세스 교훈
-
-1·2·3차 라운드에서 false positive를 경험함 → 에이전트 보고를 **파일 내용으로 직접 검증** 후에만 구현. 이미 구현돼 있던 것들 (ConversionModal 라벨, Pathfinder 빈 상태, WorkView 자동 이동 로직)은 잘못된 플래그였음.
-
-특히 **1차에서 MarketingHub(8탭)를 놓친 것**과 **2차에서 Analytics(8탭)를 놓친 것**이 큰 교훈 — 사이드바의 모든 페이지를 체크리스트로 순회해야 함.
-
----
-
-## 최근 개선 사항 (2026-04-25)
-
-### Qwen → Codex CLI 전면 마이그레이션
-
-Qwen3.5-Flash 무료 한도 초과로 전면 교체. 용도별 2단 구성으로 비용과 품질 양쪽 최적화.
-
-**모델 선정 근거**:
-- **분류/판단 (대량)**: `codex_cli-2.5-flash-lite` — GA, 최저가, 10k 타겟 스캔 1회 $0.36
-- **한국어 댓글 생성**: `codex_cli-3.1-flash-lite-preview` — 2.5 Flash보다 **싸고**(-17%/-40%), **빠르고**(+64%), **우수** (Intelligence Index +62%, GPQA +4p, SimpleQA +16p)
-- 세대 차이(3.1 vs 2.5)가 등급 차이(Lite vs 표준)를 압도. 단 FACTS Grounding이 85→41로 급락하므로 팩트는 프롬프트에 RAG 주입 필수
-
-**변경된 파일**: `marketing_bot_web/backend/services/ai_client.py` 전면 재작성
-
-**호출부 호환성**: 모든 기존 함수 시그니처 유지. 호출자 코드 변경 불필요 (21개 파일).
-
-**SDK 변경**:
-- 이전: `openai.OpenAI` + DashScope 엔드포인트
-- 현재: `codex_cli_bridge.Client` (v1.60.0)
-
-**환경변수 이전**:
-- `QWEN_API_KEY` 제거 → `CODEX_CLI_API_KEY` 재사용 (`config/secrets.json`에 이미 있음)
-
-**레거시 방어**: 호출자가 실수로 `model="qwen-..."` 넘겨도 자동으로 기본 Codex CLI 모델로 대체.
-
-**스모크 검증 통과**: `ai_generate` / `ai_generate_json` / `ai_generate_korean` 3개 함수 모두 실 API 호출 성공 확인.
-
----
-
-## 최근 개선 사항 (2026-03-18)
-
-### Phase 9-10: 정보 수집 고도화 (Intelligence Enhancement)
-
-26개 데이터 수집기, 25개 DB 테이블, 34→27개 스케줄 작업 구현 및 정리.
-
-#### 핵심 수집기 (활성 - 테스트 완료)
-
-| 파일 | 기능 | 수집 건수 |
-|------|------|:--------:|
-| `scrapers/naver_api_community_monitor.py` | 블로그+카페 커뮤니티 멘션 (Naver Search API) | 523건 |
-| `scrapers/naver_kin_lead_finder.py` | 지식인 리드 자동 발굴 + 바이럴 등록 | 1,118건 |
-| `scrapers/naver_ad_keyword_collector.py` | 네이버 광고 키워드 + 경쟁 분석 (ad_bid 통합) | 759건 |
-| `scrapers/keyword_trend_collector.py` | DataLab 키워드 트렌드 시계열 | 203건 |
-| `scrapers/competitor_blog_tracker.py` | 경쟁사 블로그 포스팅 추적 | 215건 |
-| `scrapers/competitor_change_detector.py` | 경쟁사 Place 변경 감지 | 베이스라인 |
-| `scrapers/healthcare_news_monitor.py` | 의료/경쟁사 뉴스 모니터링 | 859건 |
-| `scrapers/web_visibility_tracker.py` | 웹 검색 가시성 추적 | 19건 |
-| `scrapers/search_demographics_analyzer.py` | 키워드별 연령/성별 인구통계 | 19건 |
-| `scrapers/blog_rank_tracker.py` | 블로그 VIEW탭 순위 | 19건 |
-| `scrapers/naver_shop_trend_monitor.py` | 한약/건강식품 쇼핑 트렌드 | 7건 |
-| `scrapers/intelligence_synthesizer.py` | 6종 종합 인텔리전스 리포트 + 텔레그램 | 6건 |
-| `scrapers/data_health_monitor.py` | 수집 파이프라인 헬스체크 | - |
-| `scrapers/place_scan_enrichment.py` | Place Sniper 후처리 (리뷰메타+SERP) | Selenium |
-
-#### 보조 수집기 (비활성 - 조건부)
-
-| 파일 | 비활성 사유 |
-|------|-----------|
-| `scrapers/kakao_map_tracker.py` | Kakao REST API 키 만료 |
-| `scrapers/hira_api_client.py` | data.go.kr API 키 미발급 |
-| `scrapers/commercial_data_collector.py` | data.go.kr API 키 미발급 |
-| `scrapers/medical_review_monitor.py` | 모두닥 ToS 명시 금지("무단 수집"), 굿닥 SPA noindex로 검색 결과 차단, 하이닥 미검증 — 2026-04 재확인 결과 |
-| `scrapers/review_intelligence_collector.py` | GraphQL 차단 → place_scan_enrichment로 대체 |
-| `scrapers/geo_grid_tracker.py` | Naver Local API 위치 미지원 |
-| `scrapers/review_nlp_analyzer.py` | codex-cli 패키지 필요 (Windows 전용) |
-
-#### 삭제된 파일
-
-- `scrapers/community_monitor_expanded.py` → `naver_api_community_monitor`로 대체
-
-#### 통합 사항
-
-- `ad_bid_monitor` → `naver_ad_keyword_collector`에 내장
-- `naver_api_community_monitor`에서 지식인 제거 → `naver_kin_lead_finder` 전담
-- `review_intelligence` + `serp_features` → `place_scan_enrichment` (Place Sniper 후처리)
-
-#### DB 테이블 (Phase 9-10)
-
-| 테이블 | 용도 |
-|--------|------|
-| `community_mentions` | 커뮤니티 멘션 (블로그/카페/지식인) |
-| `naver_ad_keyword_data` | 네이버 광고 키워드 상세 데이터 |
-| `naver_ad_related_keywords` | 연관 키워드 |
-| `keyword_trend_daily` | 일별 키워드 검색 트렌드 |
-| `competitor_blog_activity` | 경쟁사 블로그 포스팅 추적 |
-| `review_intelligence` | 경쟁사 리뷰 메타데이터 |
-| `blog_rank_history` | 블로그 VIEW탭 순위 |
-| `geo_grid_rankings` | 지오그리드 순위 |
-| `competitor_changes` | 경쟁사 변경 감지 |
-| `kakao_rank_history` | 카카오맵 순위 |
-| `intelligence_reports` | 종합 인텔리전스 리포트 |
-| `search_demographics` | 키워드별 연령/성별 분석 |
-| `healthcare_news` | 의료 뉴스 모니터링 |
-| `web_visibility` | 웹 검색 가시성 |
-| `ad_competition_tracking` | 광고 경쟁 강도 추적 |
-| `shop_trend_monitoring` | 쇼핑 트렌드 |
-| `keyword_clusters` | 키워드 클러스터 분석 |
-| `viral_conversion_patterns` | 바이럴 전환 패턴 |
-| `serp_features` | SERP 기능 모니터링 |
-| `review_nlp_analysis` | 리뷰 NLP 분석 (Codex CLI) |
-| `smartplace_stats` | 스마트플레이스 통계 (CSV 임포트) |
-| `call_tracking` | 전화 추적 (CSV 임포트) |
-| `hira_clinics` | HIRA 의료기관 데이터 |
-| `medical_platform_reviews` | 의료 리뷰 플랫폼 |
-| `commercial_district_data` | 소상공인 상권 데이터 |
-
-#### API 엔드포인트
-
-**라우터**: `backend/routers/data_intelligence.py` → `/api/data-intelligence/`
-
-16개 엔드포인트: smartplace, reviews, blog, hira, medical-reviews, competitor-changes, kakao, call-tracking, commercial, geo-grid, naver-ads, community, dashboard 등
-
-#### 프론트엔드
-
-- `frontend/src/services/api/dataIntelligence.ts` - Data Intelligence API 클라이언트
-- `frontend/src/services/api/index.ts` - `dataIntelligenceApi` export 추가
-
-#### Chronos Timeline (27개 활성 작업)
-
-```
-03:00 🌌 Pathfinder        05:00 👤 Demographics     06:00 📈 Trends
-06:30 📰 News              07:30 🔔 Changes          08:00 🛡️ Sentinel
-08:30 💬 Community(API)    09:00 📍 Place Sniper     09:30 🎯 Kin Leads
-10:00 📝 Blog Rank         10:15 🌐 Web Visibility   10:30 📊 Briefing
-11:00 💰 Ad Keywords+Comp  11:30 📝 Comp Blogs       12:00 🎖️ Ambassador
-14:00 ☕ Cafe Swarm        14:30 🎯 Viral Hunter     15:00 🥕 Carrot Farm
-16:00 📸 Instagram         18:30 📺 YouTube          19:00 🛒 Shop Trends
-21:00 👁️ Place Watch       21:30 🎵 TikTok           21:45 🧪 Review NLP
-22:00 🧠 Intelligence      23:00 💊 Health Check
-```
-
-#### 텔레그램 알림 수정
-
-`alert_bot.py`에 Markdown 파싱 실패 시 plain text 폴백 추가.
-
-#### 비활성 기능 사유 (schedule.json `disabled_reason`)
-
-| 기능 | 사유 |
-|------|------|
-| `kakao_map` | Kakao REST API 키 만료 |
-| `geo_grid` | Naver Local API 위치 기반 미지원 |
-| `hira_update` / `commercial_data` | data.go.kr API 키 미발급 |
-| `medical_reviews` | 모두닥은 ToS로 수집 금지, 굿닥/하이닥은 ToS 검토 후 활성화 가능 |
-| `serp_features` | 네이버 캡차 차단 → Selenium 전용 |
-| `review_intel` | GraphQL 차단 → place_scan_enrichment 대체 |
-| `keyword_clusters` | 테마 기반 분리로 개선 완료 (1→11 클러스터) |
-| `viral_conversion` | source_target_id 미연결 (리드 시스템 연동 필요) |
-
----
-
-## 최근 개선 사항 (2026-03-02)
-
-### 1. mentions 테이블 스키마 수정
-
-**파일**: `backend/services/db_init.py`
-
-**문제**: `viral.py`의 `_create_lead_from_viral` 함수에서 mentions 테이블에 없는 컬럼들을 사용하여 `sqlite3.OperationalError: table mentions has no column named platform` 오류 발생
-
-**해결**: db_init.py에 누락된 컬럼 자동 추가 코드 추가
-
-| 컬럼명 | 타입 | 용도 |
-|--------|------|------|
-| `platform` | TEXT | 플랫폼 (youtube, tiktok, naver 등) |
-| `summary` | TEXT | 콘텐츠 요약 |
-| `author` | TEXT | 작성자 |
-| `category` | TEXT | 카테고리 |
-| `source_module` | TEXT | 소스 모듈 (viral_hunter 등) |
-| `created_at` | TIMESTAMP | 생성일시 |
-
-### 2. Google Generative AI 패키지 마이그레이션
-
-**문제**: `codex_cli_bridge` 패키지가 deprecated 되어 경고 발생
-
-**해결**: `codex_cli_bridge` 신규 API로 마이그레이션
-
-| 파일 | 변경 내용 |
-|------|----------|
-| `viral_hunter.py` | `codex_cli_bridge` → `codex_cli_bridge` |
-| `backend/routers/competitors.py` | `codex_cli_bridge` → `codex_cli_bridge` |
-| `backend/routers/pathfinder.py` | `codex_cli_bridge` → `codex_cli_bridge` |
-
-**구 API vs 신 API 비교**:
-
-```python
-# 구 API (deprecated)
-import codex_cli_bridge as codex_cli
-codex_cli.configure(api_key=api_key)
-model = codex_cli.CodexCliModel('codex_cli-3-flash-preview')
-response = model.generate_content(prompt)
-
-# 신 API (현재 사용)
-from google import codex_cli
-from codex_cli_bridge import types
-client = codex_cli.Client(api_key=api_key)
-response = client.models.generate_content(
-    model='codex_cli-3-flash-preview',
-    contents=prompt,
-    config=types.GenerateContentConfig(temperature=0.7)
-)
-```
-
----
-
-## 최근 개선 사항 (2026-03-01)
-
-### Phase 8: 시스템 안정성 및 효율성 개선
-
-코드베이스 전체 분석을 통해 보안, 안정성, 코드 품질을 개선했습니다.
-
-#### 1. API 키 기반 인증 미들웨어 (Critical)
-
-**파일**: `backend/middleware/auth.py` (신규)
-
-민감 엔드포인트에 대한 API 키 인증 추가:
-
-```python
-# 보호된 엔드포인트
-PROTECTED_PATHS = [
-    "/api/export",
-    "/api/backup",
-    "/api/automation",
-    "/api/scheduler",
-    "/api/migration",
-    "/api/preferences",
-]
-
-# 사용법: X-API-Key 헤더로 인증
-curl -H "X-API-Key: your-api-key" http://localhost:8000/api/export/keywords
-
-# 환경변수로 API 키 설정
-export MARKETING_BOT_API_KEY=your-secure-api-key
-
-# 개발 시 인증 비활성화
-export DISABLE_API_AUTH=true
-```
-
-#### 2. SQL Injection 취약점 제거 (Critical)
-
-**파일**: `backend/routers/pathfinder.py`
-
-```python
-# Before: 취약한 문자열 삽입
-date_filter = f"AND created_at >= datetime('now', '-{days} days')"
-
-# After: 파라미터 바인딩
-async def get_pathfinder_stats(
-    days: Optional[int] = Query(None, ge=1, le=365, description="조회 기간")
-):
-    if days:
-        where_conditions.append("created_at >= datetime('now', ?)")
-        params.append(f"-{days} days")
-```
-
-#### 3. Subprocess 모니터링 및 Zombie 방지 (Critical)
-
-**파일**: `backend/routers/hud.py`
-
-```python
-# Pathfinder 모듈에 cleanup 스레드 추가
-def cleanup_pathfinder(proc, mod_name):
-    try:
-        # 타임아웃 30분
-        proc.wait(timeout=1800)
-    except subprocess.TimeoutExpired:
-        logger.warning(f"프로세스 타임아웃 ({mod_name}), 강제 종료")
-        proc.kill()
-        proc.wait()
-    finally:
-        with running_processes_lock:
-            if mod_name in running_processes:
-                del running_processes[mod_name]
-
-threading.Thread(target=cleanup_pathfinder, args=(process, module_name), daemon=True).start()
-```
-
-#### 4. LIMIT/OFFSET Query 검증 (High)
-
-**파일**: `automation.py`, `hud.py`, `notifications.py`
-
-```python
-# Before: 제한 없는 limit
-async def get_priority_queue(limit: int = 20):
-
-# After: 최대값 검증
-async def get_priority_queue(
-    limit: int = Query(default=20, ge=1, le=100, description="조회할 리드 수")
-):
-```
-
-#### 5. TypeScript any 타입 제거 (High)
-
-**파일**: `frontend/src/components/pathfinder/KeywordAnalysisTab.tsx`
-
-```typescript
-// Before
-interface KeywordAnalysisTabProps {
-  stats: any
-}
-const icons: any = { S: '🔥', A: '🟢', B: '🔵', C: '⚪' }
-
-// After
-import type { Keyword, PathfinderStats } from '@/types'
-import { GRADE_ICONS, GRADE_COLORS, TREND_ICONS } from '@/types'
-
-interface KeywordAnalysisTabProps {
-  stats: PathfinderStats | null
-}
-```
-
-#### 6. 설정 파일 로드 중앙화 (Medium)
-
-**파일**: `backend/setup_paths.py`
-
-```python
-# 새로 추가된 헬퍼 함수
-from setup_paths import get_api_key, load_config, get_config_path
-
-# API 키 조회
-api_key = get_api_key('codex_cli')
-
-# 설정 파일 로드 (캐싱 지원)
-config = load_config('config.json')
-
-# 캐시 클리어 (설정 파일 수정 후)
-clear_config_cache()
-```
-
-#### 7. 긴 함수 분해 (Medium)
-
-**파일**: `backend/routers/leads.py`
-
-Q&A 매칭 로직을 헬퍼 함수로 분리:
-
-```python
-def _find_qa_matches(cursor, lead_text: str, max_matches: int = 3) -> List[Dict[str, Any]]:
-    """Q&A 매칭 헬퍼 함수"""
-    # 251줄 generate_ai_response에서 분리
-```
-
-#### 수정된 파일 목록
-
-| 파일 | 내용 |
-|------|------|
-| `middleware/auth.py` | 신규 - API 키 인증 미들웨어 |
-| `middleware/__init__.py` | auth 모듈 export 추가 |
-| `main.py` | APIKeyMiddleware 등록, CORS 헤더에 X-API-Key 추가 |
-| `routers/pathfinder.py` | SQL Injection 제거 (파라미터 바인딩) |
-| `routers/hud.py` | Subprocess 모니터링, LIMIT Query 검증 |
-| `routers/automation.py` | LIMIT Query 검증 |
-| `routers/notifications.py` | LIMIT Query 검증 |
-| `routers/leads.py` | 설정 중앙화, 함수 분해 |
-| `setup_paths.py` | `load_config()`, `get_api_key()` 헬퍼 추가 |
-| `KeywordAnalysisTab.tsx` | any 타입 → Keyword/PathfinderStats 타입 |
-
----
-
-## 최근 개선 사항 (2026-02-28)
-
-### 종합 성능 및 안정성 개선
-
-코드베이스 전체 분석을 통해 Critical/High 이슈 27건을 수정했습니다.
-
-#### 1. DB 연결 누수 수정 (Critical)
-
-**파일**: instagram.py, export.py, qa.py 등 16개 파일
-
-```python
-# Before: 예외 발생 시 연결 누수
-conn = sqlite3.connect(db_path)
-cursor.execute(...)
-conn.close()  # 예외 발생 시 실행 안 됨
-
-# After: try-finally 패턴
-conn = None
-try:
-    conn = sqlite3.connect(db_path)
-    cursor.execute(...)
-finally:
-    if conn:
-        conn.close()
-```
-
-#### 2. bare except → except Exception (Critical)
-
-**파일**: 17+ 파일 (pathfinder.py, viral_hunter.py, ai_keyword_enhancer.py 등)
-
-```python
-# Before: SystemExit, KeyboardInterrupt도 잡힘
-except:
-    pass
-
-# After: 시스템 시그널 정상 처리
-except Exception:
-    pass
-```
-
-#### 3. Threading Locks 추가 (Critical)
-
-**파일**: hud.py, viral.py
-
-```python
-# hud.py - 전역 상태 보호
-running_processes: Dict[str, subprocess.Popen] = {}
-running_processes_lock = threading.Lock()
-
-scan_progress: Dict[str, Dict[str, Any]] = {}
-scan_progress_lock = threading.Lock()
-
-# viral.py - 캐시 보호
-_verification_cache: Dict[str, Dict[str, Any]] = {}
-_verification_cache_lock = threading.Lock()
-```
-
-#### 4. N+1 쿼리 수정 (Critical)
-
-**파일**: leads.py
-
-```python
-# Before: 개별 UPDATE 반복 (N회)
-for lead_id in lead_ids:
-    cursor.execute("UPDATE ... WHERE id = ?", [lead_id])
-
-# After: 배치 UPDATE (1회)
-placeholders = ','.join('?' * len(lead_ids))
-cursor.execute(f"UPDATE ... WHERE id IN ({placeholders})", lead_ids)
-```
-
-#### 5. Export API 스트리밍 (High)
-
-**파일**: export.py (6개 엔드포인트)
-
-```python
-# Before: 전체 메모리 로드
-rows = cursor.fetchall()
-csv_content = _generate_csv([dict(row) for row in rows], columns)
-
-# After: 배치 스트리밍 (1000행씩)
-def _generate_csv_streaming(conn, cursor, columns):
-    while True:
-        rows = cursor.fetchmany(STREAMING_BATCH_SIZE)
-        if not rows:
-            break
-        yield csv_chunk
-
-return StreamingResponse(_generate_csv_streaming(conn, cursor, columns), ...)
-```
-
-#### 6. React 메모이제이션 (High)
-
-**파일**: Dashboard.tsx
-
-| 최적화 | 내용 |
-|--------|------|
-| `formatTime` | `useCallback`으로 메모이제이션 |
-| `GOAL_TYPE_LABELS`, `GOAL_TYPE_ICONS` | 컴포넌트 외부 상수로 이동 |
-| 네비게이션 핸들러 | `useCallback`으로 메모이제이션 |
-
-#### 수정된 파일 목록
-
-| 카테고리 | 파일 |
-|----------|------|
-| DB 연결 | instagram.py, export.py, qa.py, hud.py, viral.py |
-| bare except | pathfinder.py, pathfinder_ultra.py, viral_hunter_enhanced.py, ai_keyword_enhancer.py, ambassador_v2.py, carrot_farmer.py, api_tracker.py, alert_bot.py, competitor_discovery.py, ai_orchestrator.py, librarian.py, core/knowledge_base.py, core/analytics.py, keyword_discovery/*.py, monitor_pathfinder.py |
-| Thread Safety | hud.py, viral.py |
-| N+1 쿼리 | leads.py |
-| 스트리밍 | export.py |
-| React | Dashboard.tsx |
-
----
-
-## 최근 개선 사항 (2026-02-27)
-
-### 병렬 스캔 DB 연결 오류 수정
-
-**파일**: `scrapers/scraper_naver_place.py`
-
-**문제**: 병렬 스캔 시 `sqlite3.ProgrammingError: Cannot operate on a closed database` 오류 발생
-
-**원인**:
-- `DatabaseManager`가 **싱글톤 패턴**으로 구현되어 애플리케이션 전체에서 하나의 인스턴스만 존재
-- `_scan_single_keyword()` 함수 끝에서 `db.conn.close()` 호출
-- 병렬 실행 시 한 스레드가 연결을 닫으면 다른 스레드들이 닫힌 연결 사용 시도 → 오류
-
-**수정 내용**:
-
-| 위치 | 변경 |
-|------|------|
-| Line 416 | `db.conn.close()` 제거 (`_scan_single_keyword` 함수) |
-| Line 1370 | `db.conn.close()` 제거 (`scrape_competitor_reviews` 함수) |
-
-**핵심 원칙**: 싱글톤 DB 연결은 개별 함수에서 닫지 않음. 연결 관리는 `DatabaseManager` 클래스가 담당.
-
----
-
-## 최근 개선 사항 (2026-02-26)
-
-### 프론트엔드 성능 최적화
-
-#### 1. Dashboard 병렬 로드 최적화
-
-**파일**: `frontend/src/pages/Dashboard.tsx`
-
-| 변경 | 내용 |
-|------|------|
-| 쿼리 병렬화 | `enabled: !metricsLoading` 조건 제거 → 4개 쿼리 동시 실행 |
-| refetchInterval 조정 | 60초 → 120초 (서버 부하 감소) |
-
-**예상 효과**: 대시보드 로딩 시간 30% 단축
-
-#### 2. React.memo 적용
-
-| 컴포넌트 | 비교 함수 |
-|----------|----------|
-| `LeadTable.tsx` | leads, viewMode, initialPageSize |
-| `KeywordTable.tsx` | keywords, showCategory, showActions |
-| `MetricCard.tsx` | 기본 shallow 비교 |
-| `LeadCard.tsx` | lead.id, lead.status, isFocused |
-| `ViralTargetCard.tsx` | target.id, target.generated_comment, isGenerating |
-
-#### 3. Vite 빌드 압축 플러그인
-
-**파일**: `frontend/vite.config.ts`, `frontend/package.json`
-
-```typescript
-// vite.config.ts
-import compression from 'vite-plugin-compression'
-
-plugins: [
-  compression({ algorithm: 'gzip', ext: '.gz' }),
-  compression({ algorithm: 'brotliCompress', ext: '.br' }),
-]
-```
-
-**예상 효과**: 번들 크기 50-70% 감소
-
-#### 4. React Query 프리페칭
-
-**파일**: `frontend/src/hooks/usePrefetch.ts`, `frontend/src/components/Layout.tsx`
-
-- 사이드바 메뉴 hover 시 100ms 딜레이 후 데이터 미리 로드
-- 페이지 전환 시 즉각적인 렌더링
-
-| 페이지 | 프리페칭 데이터 |
-|--------|----------------|
-| `/pathfinder` | 키워드 목록, 통계 |
-| `/battle` | 랭킹 키워드, 트렌드 |
-| `/viral` | 통계, 스캔 배치 |
-| `/leads` | 리드 목록, 긴급 알림 |
-| `/competitors` | 약점 분석, 경쟁사 목록 |
-
-#### 5. 기타 UI 개선
-
-| 파일 | 내용 |
-|------|------|
-| `BatchProgressIndicator.tsx` | 신규 - 배치 작업 진행률 표시 |
-| `OfflineBanner.tsx` | 자동 새로고침 기능 추가 |
-
----
-
-## 최근 개선 사항 (2026-02-23)
-
-### 안정성 및 속도 개선 Phase 2
-
-**제안서**: `STABILITY_IMPROVEMENT_PROPOSAL_V2.md`
-
-#### 🔴 CRITICAL 수정 완료
-
-| 파일 | 수정 내용 |
-|------|----------|
-| `scrapers/instagram_reels_analyzer.py` | DB 연결 누수 수정 - `try/finally` 패턴 적용 |
-| `db/recover_data.py` | `try/finally` 추가 - 예외 시에도 연결 닫힘 보장 |
-| `backend/services/event_bus.py` | `asyncio.run()` 블로킹 제거 - 백그라운드 스레드 큐 사용 |
-
-#### 🟠 HIGH 수정 완료
-
-| 파일 | 수정 내용 |
-|------|----------|
-| `viral_hunter.py` | Bare `except:` → `except Exception:` 변경 (3개소) |
-| `pathfinder_v3_legion.py` | Bare `except:` → `except Exception:` 변경 (핵심 6개소) |
-| `backend/services/comment_verifier.py` | 비동기 래퍼 추가 (`verify_url_async`, `verify_batch_async`) |
-| `backend/routers/viral.py` | 비동기 검증 함수 사용으로 서버 블로킹 방지 |
-| `backend/routers/pathfinder.py` | `asyncio.create_subprocess_exec()` 사용 |
-
-#### 새로 추가된 함수/클래스
-
-**`backend/services/event_bus.py`:**
-```python
-class EventBus:
-    def _start_sync_processor(self)  # 백그라운드 스레드로 동기 이벤트 처리
-    def shutdown(self)               # 서버 종료 시 정리
-```
-
-**`backend/services/comment_verifier.py`:**
-```python
-async def verify_url_async(url, platform)       # 비동기 단일 URL 검증
-async def verify_batch_async(targets, max_concurrent=3)  # 비동기 일괄 검증
-def shutdown_verifier_pool()                     # 스레드 풀 정리
-```
-
-#### 주요 패턴 변경
-
-**DB 연결 관리 (모든 새 코드에 적용):**
-```python
-conn = None
-try:
-    conn = sqlite3.connect(db_path)
-    # 작업 수행
-finally:
-    if conn:
-        conn.close()
-```
-
-**동기 컨텍스트에서 async 함수 호출 (EventBus):**
-```python
-# Before: asyncio.run() - 블로킹!
-asyncio.run(self.publish(event))
-
-# After: 큐 기반 백그라운드 처리 - Non-blocking
-self._sync_queue.put(event)  # 백그라운드 스레드가 처리
-```
-
-**Selenium 검증 비동기화 (viral.py):**
-```python
-# Before: 동기 호출 - 서버 블로킹
-with CommentVerifier() as verifier:
-    result = verifier.verify_url(url, platform)
-
-# After: 비동기 래퍼 - Non-blocking
-result = await verify_url_async(url, platform)
-```
-
----
-
-## 최근 개선 사항 (2026-02-22)
-
-### [Phase 3] 스크래퍼 병렬화 구현
-
-**파일**: `/mnt/c/Projects/marketing_bot/scrapers/scraper_naver_place.py`
-
-**구현 내용:**
-
-| 구성 요소 | 설명 |
-|-----------|------|
-| `BrowserPool` 클래스 | 스레드 안전한 브라우저 인스턴스 풀 관리 |
-| `_scan_single_keyword()` | 단일 키워드 스캔 (병렬 실행용, 독립 DB 연결) |
-| `_scan_keywords_parallel()` | ThreadPoolExecutor로 병렬 실행 |
-| `check_naver_place_rank(parallel=True)` | 병렬/순차 모드 선택 가능 |
-
-**사용법:**
-```bash
-# 기본: 병렬 모드 (3개 브라우저)
-python scrapers/scraper_naver_place.py
-
-# 5개 브라우저로 병렬 실행
-python scrapers/scraper_naver_place.py -w 5
-
-# 순차 모드 (기존 방식)
-python scrapers/scraper_naver_place.py --sequential
-```
-
-**예상 효과:**
-- 스캔 시간: 2-3분 → 30-40초 (5배 단축)
-- 네이버 차단 방지: 작업 시작 간 2초 딜레이
-
-**주의사항:**
-- 브라우저 수를 너무 많이 늘리면 네이버 차단 리스크 증가
-- SQLite 스레드 안전성을 위해 각 스레드에서 독립적으로 DB 연결 생성
-
----
-
-## 최근 개선 사항 (2026-02-19)
-
-### 네이버 플레이스 데스크탑 스크래핑 재수정
-
-**이전 문제점 (2026-02-12 수정 후에도 발생)**
-- 페이지네이션 로직이 stale element 오류 유발
-- Apollo State 접근 시 iframe 전환 순서 오류
-- 업체명이 빈 문자열로 추출됨
-
-**최종 해결 (2026-02-19)**
-
-| 수정 | 내용 |
-|------|------|
-| 페이지네이션 제거 | 스크롤 기반으로 단순화 (stale element 방지) |
-| extracted_places 순서 | Apollo State 전환 **전에** DOM에서 업체명 추출 |
-| 광고 감지 | "광고" 텍스트 포함 여부로 판단, 순위에서 제외 |
-
-**스크롤 로직 개선 (2026-02-20 추가 수정)**
-
-| 문제 | 해결 |
-|------|------|
-| 스크롤이 3회에서 조기 종료 | 최소 10회 스크롤 강제 |
-| 한 번에 끝까지 스크롤 | 점진적 스크롤 (800px씩) |
-| 52개에서 멈춤 | 82개 이상 로드 가능 |
-| 모바일/데스크탑 순위 불일치 | 완전 일치 확인 |
-
-**현재 로직 (scraper_naver_place.py)**
-```python
-# 1. iframe 전환
-driver.switch_to.frame(iframe)
-
-# 2. 점진적 스크롤로 항목 로드 (최소 10회, 최대 50회)
-for scroll_attempt in range(50):
-    # 점진적 스크롤 (한 번에 800px씩)
-    driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop + 800;", scroll_container)
-    time.sleep(0.5)
-
-    # 최소 10회까지는 계속 진행
-    if scroll_attempt < 10:
-        continue
-
-    # 끝 도달 판정: scrollTop + clientHeight >= scrollHeight
-    at_bottom = (new_scroll + viewport_height >= new_height - 10)
-
-# 3. 텍스트 기반 항목 수집 (한의원/병원/약국 등 포함)
-for li in driver.find_elements(By.TAG_NAME, "li"):
-    if ("km" in text or "m " in text) and ("진료" in text or "영업" in text):
-        place_items.append(li)
-
-# 4. DOM에서 업체명 추출 (iframe 전환 전에 완료!)
-for item in place_items:
-    place_name, is_ad = _extract_place_name(item)
-    extracted_places.append((place_name, is_ad, idx))
-
-# 5. Apollo State 파싱 (항목이 적으면 시도)
-driver.switch_to.default_content()  # 메인 프레임으로 전환
-apollo_state = driver.execute_script("return window.__APOLLO_STATE__ || null;")
-```
-
-**전체 스캔 결과 (2026-02-20) - 16/17 성공 (94%)**
-
-| 키워드 | 모바일 | 데스크탑 | 일치 |
-|--------|:------:|:--------:|:----:|
-| 청주 한의원 | 20위 | 20위 | ✅ |
-| 청주 다이어트 한약 | 11위 | 11위 | ✅ |
-| 청주 다이어트 한의원 | 37위 | 37위 | ✅ |
-| 청주 교통사고 한의원 | 23위 | 23위 | ✅ |
-| 청주 교통사고 병원 | 31위 | 31위 | ✅ |
-| 청주 성안길 한의원 | 1위 | 1위 | ✅ |
-| 청주 상당구 한의원 | 4위 | 4위 | ✅ |
-| 청주 시내 한의원 | - | - | 결과 1개뿐 |
-
-> **결론**: 스크롤 수정 후 모바일/데스크탑 순위가 **완전 일치**함. 이전에 순위 차이가 나던 것은 스크롤 조기 종료로 인한 파싱 실패였음.
-
-### API 타입 오류 수정
-- `viral.py`: `target_action` 반환 타입 `Dict[str, str]` → `Dict[str, Any]` (lead_created boolean 처리)
-
----
-
-## 최근 개선 사항 (2026-02-17)
-
-### Settings.tsx 컴포넌트 분리 리팩토링
-- ✅ **2,272줄 → ~200줄** (91% 감소)
-- ✅ 8개 탭 컴포넌트로 분리:
-
-| 컴포넌트 | 파일명 | 줄수 | 기능 |
-|---------|--------|------|------|
-| BackupTab | `BackupTab.tsx` | ~240 | DB 백업/복원, 무결성 검사, VACUUM |
-| SystemTab | `SystemTab.tsx` | ~280 | 시스템 상태, 진단, DB 마이그레이션 |
-| AutomationTab | `AutomationTab.tsx` | ~350 | 리드 분류, 바이럴 추천, 경쟁사 모니터링 |
-| KeywordsTab | `KeywordsTab.tsx` | ~300 | keywords.json 편집 (naver_place/blog_seo) |
-| QATab | `QATab.tsx` | ~330 | Q&A Repository CRUD |
-| NotificationsTab | `NotificationsTab.tsx` | ~90 | 브라우저 알림 권한 관리 |
-| IntegrationsTab | `IntegrationsTab.tsx` | ~150 | API 연동 상태 (Instagram 등) |
-| ExternalNotificationsTab | `ExternalNotificationsTab.tsx` | ~540 | 텔레그램/카카오톡 알림 설정 |
-
-- ✅ 경로: `frontend/src/components/settings/`
-- ✅ 통합 export: `index.ts`
-
-### TypeScript 타입 정합성 수정
-- ✅ `AutomationTab`: 로컬 인터페이스 제거, `@/services/api/automation` 타입 사용
-- ✅ `ExternalNotificationsTab`: `NotificationHistory` 타입 API에서 import
-- ✅ `KeywordsTab`: `KeywordsData` 타입 `@/services/api/base`에서 import
-- ✅ `AIInsights.tsx`, `PerformanceFeedback.tsx`: 미사용 import(`RefreshCw`) 제거
-
-### 빌드 검증
-- ✅ TypeScript 컴파일 성공 (`tsc --noEmit`)
-- ⚠️ Vite/Rollup 빌드: WSL↔Windows 환경 이슈 (`@rollup/rollup-linux-x64-gnu` 모듈 경고, 실행에는 문제 없음)
-
----
-
-## 개선 사항 (2026-02-12)
-
-### 네이버 플레이스 데스크탑 스크래핑 초기 구현
-
-**문제 상황**
-- ✅ 모바일 스크래핑 (`m.place.naver.com`): 정상 작동
-- ❌ 데스크탑 스크래핑 (`map.naver.com`): 파싱 실패
-
-**초기 해결 (2026-02-12)**
-1. iframe 전환 (`#searchIframe`)
-2. 스크롤 컨테이너 스크롤
-3. Apollo State JSON 파싱 시도
-
-> ⚠️ **주의**: 이 버전에는 페이지네이션 로직이 있었으나, stale element 오류가 발생하여 2026-02-19에 스크롤 기반으로 단순화됨. 최신 로직은 상단 2026-02-19 섹션 참조.
-
----
-
-## 최근 개선 사항 (2026-02-11)
-
-### ViralHunter.tsx 뷰 컴포넌트 분리
-- ✅ **1,926줄 → 826줄** (57% 감소)
-- ✅ 4개 뷰 컴포넌트로 분리:
-  - `HomeView.tsx` (465줄): 홈 화면, 통계, 스캔 설정, 검증
-  - `WorkView.tsx` (411줄): 아코디언 방식 개별 타겟 처리
-  - `ListView.tsx` (521줄): 테이블 형식 전체 관리, 대량 처리
-  - `CompletionView.tsx` (79줄): 카테고리 작업 완료 화면
-- ✅ 경로: `frontend/src/components/viral/views/`
-
-### API 클라이언트 도메인 분리
-- ✅ **api.ts 2,260줄 → 도메인별 15개 모듈로 분리**
-- ✅ 경로: `frontend/src/services/api/`
-  - `base.ts`: 공통 설정 (axios instance, 타입)
-  - `hud.ts`, `viral.ts`, `pathfinder.ts`, `leads.ts`
-  - `battle.ts`, `competitors.ts`, `qa.ts`, `settings.ts`
-  - `export.ts`, `reviews.ts`, `analytics.ts`, `websocket.ts`
-  - `index.ts`: 통합 재내보내기
-- ✅ 하위 호환성 유지: 기존 `import { viralApi } from '@/services/api'` 동작
-
----
-
-## 개선 사항 (2026-02-09)
-
-### Phase 5.0 구현 완료
-- ✅ **LeadScorer 확장**: `opportunity_bonus` 필드 추가 (질문형/신선도/댓글수 기반)
-- ✅ **TrustScorer 확장**: `engagement_signal` 필드 추가 (seeking_info/ready_to_act/passive)
-- ✅ **Q&A Repository**: `/api/qa/*` API 및 테이블 구현
-- ✅ **Comment Templates 고도화**: situation_type, engagement_signal 필터링
-
-### Phase 6.1 DB 초기화 시스템
-- ✅ `services/db_init.py` - 앱 시작 시 스키마 초기화 (매 요청마다 확인 X)
-- ✅ 모든 테이블 및 컬럼 자동 생성/마이그레이션
-
-### 폴더 구조 변경 (중요!)
-- ✅ `backend/utils/` → `backend/backend_utils/` 이름 변경
-  - **이유**: 프로젝트 루트의 `utils.py`와 Python import 충돌
-  - **영향**: 11개 파일의 import 경로 수정됨
-
-### API 응답 구조 수정
-- ✅ Pathfinder 히스토리 탭: `scanHistory.runs` 접근 방식 수정
-- ✅ Lead Manager 중복 탭: `success_response()` 래핑 데이터 추출 수정
-
-### 데이터베이스 및 API 개선 (2026-02-07)
-- ✅ `instagram_competitors` 테이블 생성
-- ✅ HUD API 에러 처리 개선 (200 → 500 반환)
-- ✅ Dashboard 에러 상태 UI 추가
-- ✅ LeadManager 상태 필터 UI 구현
-- ✅ `volume`/`search_volume` 컬럼 중복 정리
-  - `search_volume`: 검색량 (표준)
-  - `document_count`: 블로그 문서 수
-  - `volume`: 레거시 (사용하지 않음)
-
-### 설정 파일 분리
-- ✅ `config/schedule.json`: Chronos Timeline 스케줄 설정
-  - 각 모듈의 실행 시간, 이름, 아이콘, 명령어 정의
-  - `enabled: false`로 특정 모듈 비활성화 가능
-
-### Battle Intelligence
-- ✅ 순위 상태 분류 개선 (scanned/not_found/error/pending)
-- ✅ competitor-vitals API: competitor_reviews 테이블 사용
-- ✅ RankingKeywordsList: 상태별 스타일 및 안내 메시지
-
-### Competitor Analysis
-- ✅ analyze-reviews API: Codex CLI AI 기반 약점 분석
-- ✅ 약점 유형별 분류 (서비스, 가격, 시설, 대기시간, 효과)
-- ✅ 기회 키워드 자동 생성
-
-### Settings 페이지
-- ✅ Hollow features 제거 ("곧 추가됩니다", "준비 중..." 제거)
-- ✅ 실제 유용한 시스템 정보 표시
-
-### Codex CLI 모델 통일
-- ✅ vision_analyst.py 폴백 모델 수정
-- ✅ 모든 Codex CLI 사용처에서 codex_cli-3-flash-preview 사용 확인
-
-### 데이터베이스 백업 시스템 (신규)
-- ✅ `/api/backup/*` API 라우터 추가 (상태조회, 수동백업, 무결성검사, VACUUM)
-- ✅ Settings 페이지에 백업 관리 UI 추가
-  - 마지막 백업 일자 및 경고 레벨 표시 (7일 이상: critical, 3일 이상: warning)
-  - 수동 백업, 무결성 검사, DB 최적화 버튼
-  - 최근 백업 목록 표시
-- ✅ `setup_backup_scheduler.bat` - Windows Task Scheduler 자동 백업 설정 스크립트
-
-### UI/UX 개선
-- ✅ 사이드바 메뉴 순서 변경: Viral Hunter를 Pathfinder 바로 아래로 이동
-- ✅ ConfirmModal 통합: window.confirm → ConfirmModal 컴포넌트 사용
-  - ViralHunter.tsx: 대량 작업 확인 모달
-  - CompetitorList.tsx: 경쟁사 삭제 확인 모달
-- ✅ 모바일 반응형 개선: grid-cols-2 md:grid-cols-4 패턴 적용
-- ✅ Modal 컴포넌트 리팩토링: AddKeywordModal, EditKeywordModal
-- ✅ EmptyState 컴포넌트 통일: RankingKeywordsList, LeadTable
-- ✅ 접근성(a11y) 개선
-  - focus:ring 스타일 추가 (버튼, 입력 필드)
-  - aria 속성 추가 (aria-label, aria-expanded, aria-controls, aria-pressed)
-  - focus-visible:ring 최적화 (키보드 전용 포커스)
-- ✅ 에러 UI 컴포넌트 추가: ErrorIcon, WarningIcon, FormErrorMessage
-
----
-
-## 알려진 이슈 및 TODO
-
-### 해결 완료
-- [x] **네이버 플레이스 데스크탑 스크래핑 완전 해결** (2026-02-20)
-  - 점진적 스크롤 (800px씩) + 최소 10회 스크롤 강제
-  - 전체 스캔 성공률: 16/17 (94%)
-  - 모바일/데스크탑 순위 완전 일치 확인
-- [x] **네이버 플레이스 데스크탑 스크래핑 재수정** (2026-02-19)
-  - 페이지네이션 제거 → 스크롤 기반으로 단순화
-  - extracted_places 추출 순서 수정 (iframe 전환 전에 완료)
-- [x] **Settings.tsx 컴포넌트 분리** (2026-02-17)
-  - 2,272줄 → ~200줄 (91% 감소), 8개 탭 컴포넌트로 분리
-  - 경로: `frontend/src/components/settings/`
-- [x] **네이버 플레이스 데스크탑 스크래핑 초기 구현** (2026-02-12)
-  - iframe 전환, 스크롤, Apollo State JSON 파싱 구현
-- [x] Instagram 스캔 모듈: `scrapers/scraper_instagram.py` 존재 (Graph API + Google 폴백)
-- [x] `instagram_competitors` 테이블 생성됨
-- [x] Pathfinder 히스토리 탭 크래시 수정 (API 응답 구조)
-- [x] Lead Manager 중복 탭 크래시 수정 (success_response 래핑)
-- [x] `backend/utils` → `backend_utils` 충돌 해결
-
-### 주의사항
-- 플레이스 순위가 없는 키워드는 `blog_seo` 카테고리로 분리
-- Battle Intelligence에서 "순위권 밖" 키워드 삭제 시 keywords.json도 함께 수정됨
-- `volume` 컬럼은 레거시 - 새 코드에서는 `search_volume`, `document_count` 사용
-- **import 경로**: `from backend_utils.xxx` 사용 (`from utils.xxx` 아님!)
-- **API 응답**: `success_response()` 사용 시 실제 데이터는 `.data` 속성에 있음
-- **데스크탑 vs 모바일 순위**: 스크롤 수정 후 완전 일치 확인됨 (2026-02-20). 순위 차이가 나면 스크래핑 오류일 가능성 높음
-- **Apollo State 활용**: 네이버 플레이스 데스크탑 스크래핑 시 DOM보다 Apollo State에 더 많은 항목이 있으면 Apollo State 사용
-- **스크래핑 실행**: 웹 서버에서 스캔 시 `scrapers/scraper_naver_place.py`를 subprocess로 호출하므로 파일 수정 후 즉시 적용됨 (서버 재시작 불필요)
-
----
-
-## 중요: 데이터베이스 작업 규칙
-
-### 1. DB 파일 수정/복사/이동 전 필수 백업
-
-**절대 규칙: DB 파일을 수정, 복사, 이동, 덮어쓰기 전에 반드시 백업을 먼저 생성할 것**
-
-```bash
-# 백업 명령어 (반드시 실행)
-cp /mnt/c/projects/marketing_bot/db/marketing_data.db \
-   /mnt/c/projects/marketing_bot/db/backups/marketing_data.db.backup_$(date +%Y%m%d_%H%M%S)
-```
-
-### 2. DB 복사/동기화 시 주의사항
-
-- **WSL DB → Windows DB 복사 금지**: 데이터 손실 위험
-- 동기화가 필요한 경우 **병합(merge)** 방식 사용
-- 복사 전 양쪽 DB의 데이터 개수 확인 필수
-
-```bash
-# 복사 전 확인 명령어
-echo "=== 원본 DB ===" && sqlite3 원본.db "SELECT COUNT(*) FROM viral_targets"
-echo "=== 대상 DB ===" && sqlite3 대상.db "SELECT COUNT(*) FROM viral_targets"
-```
-
-### 3. 백업 및 안전 스크립트
-
-**수동 백업:**
-```bash
-/mnt/c/projects/marketing_bot/scripts/backup_db.sh [설명]
-# 예: ./backup_db.sh "before_schema_change"
-```
-
-**Python 백업 스크립트:**
-```bash
-python db_backup.py
-# SQLite Backup API 사용, 무결성 검사 포함
-```
-
-**안전한 DB 복사 (cp 대신 사용):**
-```bash
-/mnt/c/projects/marketing_bot/scripts/safe_db_copy.sh <원본> <대상>
-# 자동으로 데이터 개수 비교, 경고, 백업 생성
-```
-
-**⛔ 절대 금지:**
-```bash
-# 이렇게 하지 말 것!
-cp source.db target.db  # 직접 복사 금지
-```
-
-### 4. 자동 백업 설정 (권장)
-
-**Windows Task Scheduler 등록:**
-```cmd
-# 관리자 권한으로 실행
-setup_backup_scheduler.bat
-```
-- 매일 오전 2시에 자동 백업 실행
-- 7일치 백업 보관
-
-**웹 UI에서 백업 관리:**
-- Settings 페이지 (http://localhost:8000/settings)
-- 마지막 백업 상태 확인
-- 수동 백업, 무결성 검사, DB 최적화 가능
-
-### 4. 백업 보관 정책
-
-- 위치: `/mnt/c/projects/marketing_bot/db/backups/`
-- 보관 기간: 최근 30개 백업 유지
-- 명명 규칙: `marketing_data.db.backup_YYYYMMDD_HHMMSS`
-
----
-
-## 개발 규칙
-
-### 코드 수정 전 확인사항
-1. 영향받는 파일 목록 파악
-2. 테스트 방법 확인
-3. 롤백 방법 준비
-
-### 커밋 전 확인사항
-1. TypeScript 컴파일 오류 없음
-2. 기존 기능 정상 동작
-3. DB 스키마 변경 시 마이그레이션 스크립트 준비
-
-### UI 개발 원칙
-- **허울 뿐인 기능 금지**: "준비 중...", "곧 추가됩니다" 같은 placeholder 사용 금지
-- 기능이 없으면 UI 요소 자체를 표시하지 않거나 실제 구현
-- 에러 처리: API 호출 실패 시 사용자에게 명확한 메시지 표시
-
----
-
-## 사고 이력 및 교훈
-
-### 2026-02-06: DB 덮어쓰기로 인한 데이터 손실
-- **원인**: WSL DB를 Windows DB로 `cp` 명령으로 복사하여 기존 데이터 덮어씀
-- **손실**: 이전 스캔 데이터 전체
-- **교훈**: DB 작업 전 반드시 백업 생성
-- **방지책**: 이 문서의 규칙 및 backup_db.sh 스크립트 추가
-
----
-
-## 새로운 대화에서 이어서 작업할 때
-
-1. **이 파일(CLAUDE.md)을 먼저 읽기**
-2. **현재 상태 확인**: `build_and_run.bat` 실행 후 웹 UI 확인
-3. **DB 상태 확인**: 테이블별 데이터 개수 확인
-4. **keywords.json 확인**: 플레이스/블로그 키워드 분리 상태
-
-```bash
-# DB 상태 빠른 확인
-sqlite3 /mnt/c/projects/marketing_bot/db/marketing_data.db "
-SELECT 'keyword_insights' as tbl, COUNT(*) FROM keyword_insights
-UNION ALL SELECT 'rank_history', COUNT(*) FROM rank_history
-UNION ALL SELECT 'competitor_reviews', COUNT(*) FROM competitor_reviews
-UNION ALL SELECT 'viral_targets', COUNT(*) FROM viral_targets
-UNION ALL SELECT 'qa_repository', COUNT(*) FROM qa_repository
-UNION ALL SELECT 'scan_runs', COUNT(*) FROM scan_runs
-UNION ALL SELECT 'auto_approval_rules', COUNT(*) FROM auto_approval_rules;
-"
-```
+# Persistent Memory — 2026-07-23 Scan #124 hardening
+
+- Legion #124 completed the bounded 500+ pipeline (2,619 total; 59 S / 736 A).
+  Viral Hunter must consume the fixed completed source scan and never publish or
+  generate comments automatically.
+- A rediscovered URL with no usable current SERP date must reuse a valid stored
+  `viral_targets.posted_at` before the final timing gate. Expired posts must be
+  persisted as `filtered_out_stale_window`, without inflating scan/freshness
+  counters.
+- Source-seed audit reports are deduplicated by `source_scan_run_id`. Aggregate
+  only zero-fit negative evidence from distinct scans; a prior confirmed fit
+  keeps the seed as a ranked repair candidate and prevents automatic retirement.
+- Validate this handoff with `python -m pytest tests/test_pathfinder_viral_stability.py -q`
+  and inspect the staged allowlist before publishing in a mixed worktree.
+
+# Persistent Memory — 2026-07-24 Scan #125 zero-yield patient-voice gate
+
+- Legion #125 completed the bounded 500+ pipeline with 869 S/A results.
+  Viral Hunter must keep the completed source scan fixed, and its immutable
+  `viral_scan_audits.run_funnel` is the only current-run conversion record.
+  Do not evaluate the run from a rediscovery-inclusive `viral_targets` snapshot.
+- The #125 Viral funnel was 5,263 collected, 581 post-filter, 45 after existing
+  URL deduplication, 22 after enrichment, 1 AI-suitable, and 0 auto-ready.
+  Treat this as a seed-quality and deduplication bottleneck, not a reason to
+  weaken final execution gates or authorize posting/comments.
+- A patient-voice variant with one completed run, at least 500 discovered and
+  120 genuinely fresh rows, and no pending/fresh-pending survivor is proven
+  zero-yield for the gate. Block it before it consumes a second full run; the
+  #115 profile (543 discovered, 149 fresh, zero survivors) otherwise repeated
+  as #125's 1,217 discoveries with zero strict fits.
+- Validate this behavior with `python -m pytest tests/test_pathfinder_viral_stability.py -q`,
+  `python -m py_compile viral_hunter.py`, and a scoped `git diff --check`.
+  Re-measure the change only on the next fresh completed Legion source scan,
+  not by re-running the rediscovery-biased #125 input.
+
+# Persistent Memory — 2026-07-25 Scan #126 execution-context and priority-stability gate
+
+- After a completed Legion run, keep the fixed `--source-scan-id`; #126 produced
+  2,670 keywords (45 S / 783 A), and Viral audit #55 recorded
+  `2,603 collected -> 426 filtered -> 54 novel after URL dedup -> 12 AI-suitable
+  -> 10 final`. Analyze this immutable funnel, not `viral_targets` refresh
+  totals. A 90.1% existing-URL exclusion rate is a novelty/query-surface
+  bottleneck, not justification to weaken gates.
+- Final `auto_ready` requires full evidence plus both
+  `clinic_treatment_fit_score >= 55` and `journey_fit_score >= 55`. Discovery
+  can retain weaker matches for review, but they must be `context_review` /
+  `needs_enrichment`, never automatic execution. #126's scan-time 4/2/4 queue
+  became current 3 auto-ready / 2 manual-review / 5 needs-enrichment after this
+  safe reconciliation; the original audit remains immutable.
+- `_sync_execution_quality()` can run during persistence/reload reconciliation.
+  Use stored pre-quality priority only when current priority still equals the
+  recorded post-quality value, so evidence multipliers are idempotent; a true
+  upstream re-score remains a new baseline. Validate a repeat replay leaves
+  priorities unchanged, use `DatabaseManager.update_viral_execution_queue()`
+  only for the exact queue scope, make an SQLite online backup first, and run
+  `PRAGMA integrity_check`.
+
+# Persistent Memory — 2026-07-26 Scan #128 quality-backfill execution contract
+
+- Legion #128 completed the bounded 500+ handoff with 2,643 total keywords
+  (52 S / 786 A; 838 S/A). Viral audit #56's immutable funnel was
+  `2,836 collected -> 394 filter survivors -> 52 novel after URL dedup ->
+  20 AI-suitable -> 17 final` (4 auto-ready / 4 manual-review / 9 needs-
+  enrichment). Compare this audit payload with the same-scope #126 funnel;
+  never infer run conversion from the 2,162-row rediscovery-inclusive target
+  snapshot.
+- Run `quality metric backfill` after the handoff audit. On #128 it raised
+  clinic/worksite score coverage from 18.22% to 100% without changing any
+  `comment_status` or generating/posting comments. Persist the full execution
+  contract: contextual-fit fields, queue status and actionable flag, quality
+  fields, and priority-cap fields.
+- A final contract can be stale even when all old score keys exist. The
+  backfill must load the intended scope then use the exact Python predicate:
+  recompute when stored `execution_queue_status` or its actionable flag differs
+  from the persisted target state. When repair is needed, force the complete
+  execution-quality merge so a filtered row cannot retain `auto_ready=true`.
+  Make an SQLite backup, dry-run first, verify `PRAGMA integrity_check`, status
+  counts, zero queue-status mismatches, and zero non-actionable auto-ready rows.
+  Validate with `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q` and stage only source, test, and this
+  memory file in the mixed worktree.
+
+# Persistent Memory — 2026-07-27 Scan #129 pinned-source fail-closed handoff
+
+- Legion #129 completed the bounded 500+ handoff with 2,581 total keywords
+  (37 S / 746 A; 783 S/A). Viral audit #57's immutable funnel was
+  `3,897 collected -> 383 filter survivors -> 34 novel after URL dedup ->
+  14 AI-suitable -> 9 final` (2 auto-ready / 1 manual-review / 6 needs-
+  enrichment). The 94.3% existing-URL exclusion rate is a query-surface
+  novelty bottleneck, not authorization to weaken quality gates or publish.
+- An explicitly requested `--source-scan-id` is a lineage contract: if the
+  completed Pathfinder source has no eligible Viral seeds,
+  `ViralHunter._load_keywords()` must raise instead of falling back to legacy
+  keywords. `ViralHunter.hunt()` must resolve that pinned source before pending
+  TTL cleanup, so an invalid handoff cannot mutate unrelated pending rows.
+- Validate this contract with `python -m pytest
+  tests/test_pathfinder_viral_stability.py -q`, `python -m py_compile
+  viral_hunter.py`, scoped `git diff --check`, and `PRAGMA integrity_check`.
+  Scan outputs remain review-only; do not automatically re-run, comment,
+  publish, or create ads after a code-only repair.
+
+# Marketing Bot 작업 맥락
+
+## Persistent Memory — 2026-07-22 Scan #123
+
+- Legion scan #123 satisfied the 500+ operational target with 645 S/A keywords
+  (47 S, 598 A; 2,521 total). Interpret current-run performance from immutable
+  `viral_scan_audits.run_funnel`, not the rediscovery-inclusive snapshot.
+- Viral Hunter #123 ended at 12 execution candidates. Post-run QA quarantined
+  one stale `pending` item whose `여성/산후` lineage did not match its knee-care
+  question; the current queue is 11 (3 auto-ready, 8 needs enrichment).
+- The profile-axis mismatch safeguard applies only to seed categories that map
+  to the broad `general` domain. Focused domains keep cross-axis rescue; scar
+  and skin remain compatible.
+- `DatabaseManager.update_viral_execution_queue()` can persist a deterministic
+  final-gate rejection without increasing `scan_count` or freshness metrics.
+- Remaining operating risk: multi-source verification was 12.26%, below the
+  20% source-health guard. Treat this as upstream source-yield work, not a
+  missed Legion target.
+
+> 이 파일은 모든 작업에서 먼저 읽을 최소 운영 맥락만 담는다. 상세 계약·명령·실행 이력은 아래 문서를 기준으로 한다.
+
+## 문서 기준
+
+- [운영 계약](docs/OPERATING_CONTRACTS.md): 현재 유효한 도메인·안전·데이터 정합성 규칙
+- [운영 이력](docs/operations_history.md): 날짜별 변경 배경, 스캔 결과, 재발 방지 메모
+- [터미널 실행 가이드](docs/TERMINAL_GUIDE.md): Pathfinder/Viral Hunter 및 DB 검증 명령
+
+문서 간 충돌이 있으면 현재 동작을 정의하는 운영 계약과 코드·테스트를 우선 확인하고, 과거 결과는 이력으로만 취급한다.
+
+## 프로젝트 지도
+
+- 목적: 청주 중심 로컬 마케팅 키워드 탐색, 바이럴 후보 발굴, 안전한 실행 큐 관리
+- 구성: FastAPI + SQLite 백엔드, React/TypeScript/Vite 프런트엔드
+- AI 진입점: `marketing_bot_web/backend/services/ai_client.py`
+- 핵심 흐름: `pathfinder_v3_legion.py` → `core_services/viral_seed_builder.py` →
+  `viral_hunter.py` → `core_services/viral_handoff_audit.py`
+- 운영 DB: `db/marketing_data.db`; 후보 상태·점수 근거는 `viral_targets`와 `score_breakdown`에서 확인
+
+## 변하지 않는 운영 원칙
+
+- 자동 게시·자동 답글 생성은 하지 않는다. 게시·승인은 Web UI 또는 Telegram HITL에서만 처리한다.
+- `manual_review`, `needs_enrichment`, `filtered_out*`, `skipped`, `deleted`, `posted`를 자동 실행 큐로 되돌리지 않는다.
+  영속 DB 상태가 메모리 상태보다 우선한다.
+- 검색량·추출 수·rescue 가능성을 이유로 의료·지역·광고·시점·AI·최종 실행 게이트를 완화하지 않는다.
+- 사용자 소유 결과·설정·프롬프트 정책은 명시적 승인 없이 바꾸지 않는다.
+- 세부 카테고리, 지역, rescue, 실행 큐, 백업 규칙은 [운영 계약](docs/OPERATING_CONTRACTS.md)을 따른다.
+
+## 표준 작업 흐름
+
+- `scan_runs.status='completed'`인 Legion run만 Viral 입력으로 사용하고, 실행 시 `--source-scan-id`를 명시한다.
+- 일반 순서는 `handoff audit → quality metric backfill → pending body enrichment → execution export reconciliation`이다.
+- 감사 수율은 `audit_json.run_funnel`의 동일 런·동일 범위 지표로 분석한다. 영속 snapshot의 누계·재발견 수를 신규 기회나 실행 수율로 사용하지 않는다.
+- AI가 `SUITABLE`로 확정되지 않은 후보는 실행하지 않는다. 최종 export·alert 전에는 DB 상태를 다시 읽는다.
+
+## 변경·검증 안전
+
+- DB 수정·복사·이동 전 SQLite Backup API 또는 `db_backup.py`로 백업하고, 임의 DML 대신 전용 스크립트·마이그레이션을 사용한다.
+- `DatabaseManager` 싱글턴 연결은 개별 함수에서 닫지 않는다. `qa_repository` 적재 후에는 `QASearchEngine.index_all()`을 수행한다.
+- Windows PowerShell 기준으로 작업한다. 변경 전 `git status -sb`와 영향 범위를 확인한다.
+- 표적 테스트를 먼저 실행하고 `python -m pytest -q`, `git diff --check`로 마무리한다.
+- 혼합 작업 트리에서는 `git add -A`를 사용하지 않고, 의도한 파일만 명시적으로 stage한다.
+- DB·백업·lock·로그·대용량 감사 JSON·CSV 등 생성 산출물은 재현에 꼭 필요하지 않으면 커밋하지 않는다.
+
+# Persistent Memory - 2026-07-28 Scan #130 deep audit and scoped Cafe enrichment
+
+- Legion #130 completed with 2,530 keywords (38 S / 729 A; 767 S/A) and Viral
+  audit #58 consumed the explicit `--source-scan-id 130`. Its immutable funnel
+  was `3,722 collected -> 1,148 filter input -> 378 survivors -> 34 novel ->
+  22 after enrichment -> 13 AI-suitable -> 8 final`; all eight were
+  `needs_enrichment`, with no auto-ready or manual-review execution item.
+- Treat the 351 existing-URL exclusions from 378 survivors as a query-surface
+  novelty bottleneck, and the 50.1% lens-surface mismatch as planning feedback;
+  do not weaken quality gates or infer conversion from the 2,952-row persisted
+  target snapshot. Generate a scoped handoff audit so its seed/variant repair
+  and retirement feedback is available to the next fresh run.
+- `scripts/enrich_cafe_bodies.py --scan-id <run_id>` must constrain Selenium
+  evidence collection to that source lineage. Perform a dry-run first and make
+  an online SQLite backup before an actual run. It may update only body/preview
+  evidence, `last_scanned_at`, and `scan_count`; it must never change statuses,
+  AI decisions, comments, or publication. For #130, 2/8 scoped Cafe bodies were
+  recovered while six inaccessible posts remained unchanged.
+- Validate the scoped enrichment guard with
+  `python -m pytest tests/test_enrich_cafe_bodies.py tests/test_viral_handoff_audit.py -q`,
+  the full Pathfinder/Viral stability suite, `py_compile`, scoped diff checks,
+  and SQLite integrity/FK checks. Keep DBs, backups, logs, and audit reports
+  out of commits in this mixed worktree.
+
+# Persistent Memory - 2026-07-29 Scan #131 handoff diagnosis and metric repair
+
+- Legion #131 completed with 2,524 keywords (33 S / 679 A; 712 S/A), and Viral
+  audit #59 consumed the explicit `--source-scan-id 131`. Its immutable funnel
+  was `2,759 collected -> 1,065 filter input -> 352 survivors -> 29 novel ->
+  21 after enrichment -> 1 AI-suitable -> 0 final execution`. Treat the 332
+  existing-URL exclusions (94.3% of filter survivors) as a novelty/query-shape
+  bottleneck, never as permission to lower quality, safety, or execution gates.
+- The 2,046-row handoff-audit scope contains refreshed/rediscovered historical
+  targets. Its 7 surviving and 3 strict-fit rows are not #131 run conversions;
+  use `viral_scan_audits.audit_json.run_funnel.final_execution_candidates` for
+  current-run outcome. Do not immediately re-run the same source scan merely to
+  improve this number.
+- Run quality-metric repair only after a scoped handoff audit. First dry-run
+  `scripts/viral_quality_metric_backfill.py --scan-id 131 --scanned-since
+  <run-start>`, make an online SQLite backup, then apply the identical scope.
+  The #131 repair synchronized 1,886 missing execution-quality contracts,
+  raising clinic/worksite coverage from 17.2% to 100% without changing
+  `comment_status`, publishing, comments, or requeueing. Verify backup-vs-live
+  status counts, zero actionable execution rows, `PRAGMA integrity_check`, and
+  `PRAGMA foreign_key_check` after the write; quality-score improvement alone
+  is not yield improvement.
+- Generate and retain the post-backfill scoped handoff audit. The next fresh
+  planner loads its variant feedback: #131 marked the zero-strict-fit
+  `axis_specific` family (234 rows) for retirement/pause and `community_base`
+  (260 rows) for query-shape repair. Apply that evidence only to the next fresh
+  scan; never auto-requeue discarded/manual-review rows or weaken gates to
+  manufacture execution candidates.
+- Validate this workflow with
+  `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q`, scoped diff checks, and explicit
+  allowlist staging. Keep database files, backups, locks, audit JSON, report
+  artifacts, and screenshots out of the commit.
+
+# Persistent Memory - 2026-07-30 Scan #132 partial AI-response recovery
+
+- Legion #132 completed with 2,491 keywords (30 S / 766 A; 796 S/A), and Viral
+  audit #60 consumed the explicit `--source-scan-id 132`. Its immutable funnel
+  was `3,362 collected -> 1,220 filter input -> 459 survivors -> 45 novel after
+  426 existing-URL exclusions -> 72 AI candidates -> 14 after enrichment -> 1
+  AI-suitable -> 0 final execution`. This is a novelty/recency and query-shape
+  bottleneck, never a reason to weaken final quality, safety, or execution
+  gates; use the next fresh source scan to evaluate query-shape repair.
+- A structured multi-post AI response may contain valid early decisions while
+  omitting later `POST_ID`s. Preserve parsed decisions, retry each omitted post
+  once with a single-post prompt, and leave a second incomplete result as
+  `needs_ai_retry`; do not convert parser failure into AI rejection or an
+  execution candidate. A later complete suitable verdict must resolve
+  `needs_ai_retry` to `pending`, remove stale parse-error markers, and still
+  pass every final gate.
+- For a scoped retry recovery, make an SQLite online backup first and select the
+  exact source lineage plus `missing_or_invalid_post_result`; do not refresh
+  unrelated backlog. #132 reprocessed nine such rows to four explicit AI
+  rejections, three pending, and two manual-review items, with zero auto-ready
+  rows and no comments or publication. The original audit remains the
+  authoritative current-run record.
+- Validate with `python -m pytest tests/test_pathfinder_viral_stability.py -q`,
+  `python -m py_compile viral_hunter.py`, scoped `git diff --check`, and
+  `PRAGMA integrity_check` plus `PRAGMA foreign_key_check`. Keep DBs, backups,
+  locks, logs, and generated audit reports out of the commit.
+
+# Persistent Memory - 2026-07-31 Scan #133 funnel diagnosis and scoped quality repair
+
+- Legion #133 completed with 2,502 keywords (40 S / 605 A; 645 S/A), and Viral
+  audit #61 consumed the explicit `--source-scan-id 133`. Its immutable funnel
+  was `2,635 collected -> 1,038 filter input -> 379 survivors -> 23 novel after
+  368 existing-URL exclusions -> 13 after enrichment -> 6 AI-suitable -> 2
+  final execution`. Use `viral_scan_audits.audit_json.run_funnel` for this
+  conversion; do not mix it with the 1,976-row current `viral_targets` snapshot.
+- The 97.1% existing-URL exclusion rate (368/379) and zero survival in several
+  high-volume axis variants are novelty/query-shape findings, not authority to
+  lower gates, auto-requeue discarded/manual-review rows, post comments, or
+  publish. The #133 post-backfill audit supplies next-fresh-run feedback: pause
+  the zero-survival `모공흉터`, `지루성피부염`, `골반교정`, and `얼굴교정` variants;
+  keep lower-volume repair variants budgeted and re-evaluate only on a new scan.
+- Run `scripts/viral_quality_metric_backfill.py` only after the scoped handoff
+  audit, with `--scan-id` and `--scanned-since`, a dry-run, and an online SQLite
+  backup. For #133, the identical-scope apply repaired 1,751 quality contracts,
+  lifting clinic/worksite coverage from 19.18% to 100% while leaving the target
+  count and `comment_status` distribution unchanged. A zero-update repeat
+  dry-run is required evidence of idempotence; score-contract repair is not a
+  yield or execution-authority improvement.
+- Validate with `python -m pytest tests/test_viral_quality_metric_backfill.py
+  tests/test_viral_handoff_audit.py -q`, backup-versus-live status counts, zero
+  contract mismatches, `PRAGMA integrity_check`, and `PRAGMA foreign_key_check`.
+  Preserve DBs, backups, logs, audit JSON, report artifacts, and screenshots in
+  the mixed worktree; stage only the explicit source/test/documentation allowlist.
+
+# Persistent Memory - 2026-07-31 novelty-depth recovery
+
+- Audit #61 proved that the next yield repair belongs before the final quality
+  gates: 368 of 379 filter survivors were existing URLs. The live 24-hour search
+  cache also had 99 depth-agnostic entries, all below 100 results (maximum 42),
+  so a shallow companion search could silently cap a later 100/180-result plan.
+- Cache Naver search results by platform plus requested depth. When a unique
+  high-priority query plan returns at least 20 URLs and 75% are already persisted
+  or already seen in the current run, probe below the first-pass depth while
+  excluding those URL identities. Bound this novelty backfill to 60 query plans,
+  60 candidates per platform, and three pages per sort; persist its eligible
+  plans, triggered plans, overlap, returned candidates, and extra API requests
+  in `viral_scan_audits.audit_json.run_funnel`.
+- `--max-per-platform` controls the base depth before adaptive scaling; the
+  default remains 100 and a deliberate deeper run can use 200. This increases
+  time and API work only; it must not lower deterministic, medical, AI, evidence,
+  or execution gates, nor authorize comment generation or publication.
+- Validate with the full Pathfinder/Viral stability suite, the handoff-audit and
+  quality-backfill suites, `py_compile`, and `git diff --check`. Measure actual
+  yield only on the next fresh completed Legion source with an explicit
+  `--source-scan-id`; do not rerun #133 or reinterpret its immutable audit.

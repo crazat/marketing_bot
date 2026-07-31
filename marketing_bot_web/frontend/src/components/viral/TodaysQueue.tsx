@@ -29,7 +29,7 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
   const queryClient = useQueryClient()
   const toast = useToast()
   const [pendingAction, setPendingAction] = useState<string | null>(null)
-  // [V1] 오늘 발견분만 보기 (기본 ON)
+  // Recent scan queue (keeps yesterday's latest scan visible as today's work).
   const [todayOnly, setTodayOnly] = useState<boolean>(true)
 
   const { data, isLoading, isError } = useQuery({
@@ -89,12 +89,12 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
               todayOnly ? 'bg-primary/10 border-primary text-primary font-medium' : 'border-border'
             }`}
           >
-            {todayOnly ? '오늘만' : '전체'}
+            {todayOnly ? '최근 스캔' : '전체'}
           </button>
         </div>
         <p className="text-sm text-muted-foreground">
           {todayOnly
-            ? '오늘 새로 발견된 HOT LEAD가 없습니다. 전체 보기로 전환하거나 새로 스캔하세요.'
+            ? '최근 스캔 기준 HOT LEAD가 없습니다. 전체 보기로 전환하거나 새로 스캔하세요.'
             : '대기 중인 HOT LEAD가 없습니다. 새로운 스캔을 실행해 보세요.'}
         </p>
       </div>
@@ -108,11 +108,11 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
           <Inbox className="h-5 w-5" />
           오늘의 작업 큐
           <span className="text-sm font-normal text-muted-foreground ml-2">
-            · 점수 80+ {todayOnly ? '오늘 ' : '전체 '}상위 {data.total}건
+            · 점수 80+ {todayOnly ? '최근 스캔 ' : '전체 '}상위 {data.total}건
           </span>
         </h2>
         <div className="flex items-center gap-2">
-          {/* [V1] 오늘 필터 토글 */}
+          {/* Recent scan filter toggle */}
           <button
             onClick={() => setTodayOnly((v) => !v)}
             className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
@@ -120,9 +120,9 @@ export default function TodaysQueue({ onOpenTarget, onOpenCategory }: TodaysQueu
                 ? 'bg-primary/10 border-primary text-primary font-medium'
                 : 'bg-background border-border hover:bg-muted text-muted-foreground'
             }`}
-            title="오늘 발견된 타겟만 표시"
+            title="최근 스캔된 타겟만 표시"
           >
-            {todayOnly ? '오늘만' : '전체'}
+            {todayOnly ? '최근 스캔' : '전체'}
           </button>
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Clock className="h-3 w-3" />

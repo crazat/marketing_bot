@@ -73,6 +73,7 @@ export interface SmartRecommendations {
   today_focus: {
     id: string; title: string; platform: string
     priority_score: number; matched_keywords: string[]; scan_count: number
+    clinic_treatment_fit_score?: number; worksite_efficiency_score?: number
   }[]
   platform_priorities: { platform: string; count: number; avg_score: number }[]
   insights: { type: string; message: string; importance: 'high' | 'medium' | 'low' }[]
@@ -95,8 +96,16 @@ export interface TargetContext {
 // [Phase 9.0] 홈 화면 집계 통계 타입
 export interface HomeStats {
   total_count: number
+  scanned_total_count?: number
   platform_stats: Record<string, { count: number; avgScore: number; maxScore: number }>
   category_stats: Array<{
+    category: string
+    count: number
+    avgScore: number
+    maxScore: number
+    priority: number
+  }>
+  scanned_category_stats?: Array<{
     category: string
     count: number
     avgScore: number
@@ -128,7 +137,7 @@ export const viralApi = {
   },
 
   getTargets: async (
-    status = 'pending',
+    status: string | null = 'pending',
     category?: string,
     limit = 50,
     filters?: {
@@ -139,6 +148,8 @@ export const viralApi = {
       min_scan_count?: number
       min_score?: number
       min_exposure?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       sort?: string
@@ -152,7 +163,8 @@ export const viralApi = {
       exclude_revisited?: boolean
     }
   ) => {
-    const params: Record<string, any> = { status, limit }
+    const params: Record<string, any> = { limit }
+    if (status) params.status = status
 
     if (category) params.category = category
     if (filters?.category) params.category = filters.category
@@ -164,6 +176,8 @@ export const viralApi = {
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
     if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
+    if (filters?.min_clinic_fit != null) params.min_clinic_fit = filters.min_clinic_fit
+    if (filters?.min_worksite_efficiency != null) params.min_worksite_efficiency = filters.min_worksite_efficiency
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.sort) params.sort = filters.sort
@@ -181,7 +195,7 @@ export const viralApi = {
   },
 
   getTargetsCount: async (
-    status = 'pending',
+    status: string | null = 'pending',
     category?: string,
     filters?: {
       date_filter?: string
@@ -191,6 +205,8 @@ export const viralApi = {
       min_scan_count?: number
       min_score?: number
       min_exposure?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       scan_batch?: string
@@ -202,7 +218,8 @@ export const viralApi = {
       exclude_revisited?: boolean
     }
   ): Promise<{ total: number }> => {
-    const params: Record<string, any> = { status }
+    const params: Record<string, any> = {}
+    if (status) params.status = status
 
     if (category) params.category = category
     if (filters?.category) params.category = filters.category
@@ -214,6 +231,8 @@ export const viralApi = {
     if (filters?.min_scan_count) params.min_scan_count = filters.min_scan_count
     if (filters?.min_score != null) params.min_score = filters.min_score
     if (filters?.min_exposure != null) params.min_exposure = filters.min_exposure
+    if (filters?.min_clinic_fit != null) params.min_clinic_fit = filters.min_clinic_fit
+    if (filters?.min_worksite_efficiency != null) params.min_worksite_efficiency = filters.min_worksite_efficiency
     if (filters?.commentable_only != null) params.commentable_only = filters.commentable_only
     if (filters?.search) params.search = filters.search
     if (filters?.scan_batch) params.scan_batch = filters.scan_batch
@@ -327,11 +346,15 @@ export const viralApi = {
     })
     return response.data as {
       total: number
+      candidate_total?: number
       today_only?: boolean
+      portfolio_balanced?: boolean
+      per_category?: number
       generated_at: string
       groups: Array<{
         category: string
         count: number
+        selected_count?: number
         items: Array<{
           id: string
           platform: string
@@ -344,6 +367,8 @@ export const viralApi = {
           discovered_at: string
           author?: string
           matched_keyword?: string
+          clinic_treatment_fit_score?: number
+          worksite_efficiency_score?: number
         }>
       }>
     }
@@ -451,6 +476,8 @@ export const viralApi = {
       comment_status?: string
       min_scan_count?: number
       min_score?: number
+      min_clinic_fit?: number
+      min_worksite_efficiency?: number
       commentable_only?: boolean
       search?: string
       scan_batch?: string

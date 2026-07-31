@@ -32,7 +32,7 @@ from typing import List, Dict, Set, Tuple, Optional
 from collections import Counter
 from pathlib import Path
 from utils.json_io import atomic_write_json
-from core_services.gyulim_keyword_profile import GYULIM_KEYWORD_PROFILE
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
 
 # 서비스 모듈 import
 try:
@@ -293,7 +293,7 @@ class SeasonalKeywordDB:
 
                 if adjusted_month in months:
                     for kw in months[adjusted_month]:
-                        keywords.append(f"청주 {kw}")
+                        keywords.append(f"{GYULIM_KEYWORD_PROFILE.primary_region} {kw}")
 
         return keywords
 
@@ -315,15 +315,14 @@ class KeywordCollector:
             "Referer": "https://www.naver.com/"
         }
 
-        # 청주 지역명
-        self.cheongju_regions = [
-            "청주", "상당", "서원", "흥덕", "청원",
-            "복대", "가경", "율량", "오창", "오송",
-            "분평", "봉명", "산남", "용암", "금천"
-        ]
+        # 활성 클리닉 프로필의 지역명
+        self.cheongju_regions = list(dict.fromkeys(
+            list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+            + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+        ))
 
-        # 한의원 관련 키워드 (규림한의원 진료 분야 포함)
-        self.hanbang_keywords = [
+        # 활성 클리닉 프로필의 진료 관련 키워드
+        self.hanbang_keywords = list(GYULIM_KEYWORD_PROFILE.hanbang_keywords) + [
             # 기본 한의원
             "한의원", "한방", "한약", "침", "추나", "부항", "뜸",
 
@@ -1081,9 +1080,21 @@ class PathfinderV3:
             max_neighborhoods_per_category=4,
             include_contexts=True,
         )
-        seeds = list(dict.fromkeys(profile_seeds + seeds))
+        profile_seeds.extend(
+            GYULIM_KEYWORD_PROFILE.build_exploration_seed_keywords(
+                max_terms_per_category=6,
+                max_suffixes_per_category=4,
+                max_contexts_per_category=4,
+                max_neighborhoods_per_category=4,
+            )
+        )
+        legacy_seeds = [
+            seed for seed in seeds
+            if GYULIM_KEYWORD_PROFILE.is_target_region(seed, include_nearby=True)
+        ]
+        seeds = list(dict.fromkeys(profile_seeds + legacy_seeds))
         seed_coverage = GYULIM_KEYWORD_PROFILE.coverage_audit(seeds, min_per_category=6)
-        print(f"🎯 규림 진료축 시드 커버리지: {seed_coverage['counts']}")
+        print(f"🎯 {GYULIM_KEYWORD_PROFILE.display_name} 진료축 시드 커버리지: {seed_coverage['counts']}")
 
         # ========== 시즌 키워드 추가 (ULTRA 이식) ==========
         seasonal_seeds = SeasonalKeywordDB.get_current_seasonal_keywords()
@@ -1157,17 +1168,20 @@ class PathfinderV3:
         if self.ai_expander and self.ai_expander.is_available():
             print("\n[Phase 2.5] AI 시맨틱 확장...")
             # 카테고리별 시드 추출
-            category_seeds = {
-                "다이어트": [kw for kw in list(all_keywords)[:100] if "다이어트" in kw][:5],
-                "안면비대칭": [kw for kw in list(all_keywords)[:100] if "비대칭" in kw][:5],
-                "교통사고": [kw for kw in list(all_keywords)[:100] if "교통사고" in kw][:5],
-            }
+            category_seeds = {}
+            for category in GYULIM_KEYWORD_PROFILE.focus_categories:
+                profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+                terms = tuple(profile.category_terms + profile.core_tokens) if profile else (category,)
+                category_seeds[category] = [
+                    kw for kw in list(all_keywords)[:150]
+                    if any(term and term in kw for term in terms)
+                ][:5]
 
             ai_expanded = self.ai_expander.batch_expand(category_seeds, max_per_category=10)
             ai_count = 0
             for cat, keywords_list in ai_expanded.items():
                 for kw in keywords_list:
-                    if self.collector.is_cheongju_related(kw) or "청주" in kw:
+                    if self.collector.is_cheongju_related(kw) or GYULIM_KEYWORD_PROFILE.is_target_region(kw, include_nearby=True):
                         all_keywords.add(kw)
                         ai_count += 1
 
@@ -1520,8 +1534,13 @@ class PathfinderV3:
         for r in results:
             try:
                 # 지역 추출
-                region = "청주"
-                for reg in ["오창", "가경", "복대", "율량", "분평", "봉명", "산남"]:
+                region = GYULIM_KEYWORD_PROFILE.primary_region
+                region_candidates = (
+                    list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+                    + list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                    + list(GYULIM_KEYWORD_PROFILE.nearby_regions)
+                )
+                for reg in region_candidates:
                     if reg in r.keyword:
                         region = reg
                         break

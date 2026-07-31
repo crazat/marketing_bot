@@ -34,57 +34,62 @@ TASK_COMPLIANCE = "compliance"
 TASK_STRATEGY = "strategy"
 TASK_BATCH_FAST = "batch_fast"
 
+# [2026-07-11] GPT-5.6 패밀리(Sol/Terra/Luna) 재분배.
+#   Sol   = frontier 추론(5.5 동일가 $5/$30 = 무료 품질 업그레이드) → 고위험 컴플라이언스·전략·댓글
+#   Terra = 균형 production($2.50/$15) → 일반 추론·한국어 초안·비전
+#   Luna  = 대량 정형($1/$6·1.05M 컨텍스트) → 스키마 판정·분류·추출·배치
+# structured(바이럴 unified 판정)→Luna는 라이브 판정 품질 검증 후 확정 권장(모델-티어 변경 게이트).
 TASK_MODEL_DEFAULTS: Dict[str, Dict[str, str]] = {
     TASK_GENERAL: {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-terra",
         "reasoning_effort": "medium",
         "verbosity": "medium",
         "description": "General marketing reasoning and plain text generation.",
     },
     TASK_FAST_JSON: {
-        "model": "gpt-5.4-mini",
+        "model": "gpt-5.6-luna",
         "reasoning_effort": "low",
         "verbosity": "low",
         "description": "Fast JSON classification, tagging, extraction, and short summaries.",
     },
     TASK_KOREAN_CONTENT: {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-terra",
         "reasoning_effort": "medium",
         "verbosity": "medium",
         "description": "Korean medical marketing copy after local compliance screening.",
     },
     TASK_STRUCTURED: {
-        "model": "gpt-5.4-mini",
+        "model": "gpt-5.6-luna",
         "reasoning_effort": "low",
         "verbosity": "low",
         "description": "Schema-constrained JSON and Pydantic structured output.",
     },
     TASK_VISION: {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-terra",
         "reasoning_effort": "medium",
         "verbosity": "medium",
         "description": "Image-backed evidence, creative, and screenshot analysis.",
     },
     TASK_VIRAL_COMMENT: {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "reasoning_effort": "high",
         "verbosity": "medium",
         "description": "High-quality Korean viral infiltration comments before local compliance gates.",
     },
     TASK_COMPLIANCE: {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "reasoning_effort": "high",
         "verbosity": "low",
         "description": "Medical advertising law, risk review, and final safety judgment.",
     },
     TASK_STRATEGY: {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "reasoning_effort": "xhigh",
         "verbosity": "medium",
         "description": "World-class readiness, competitive strategy, and executive synthesis.",
     },
     TASK_BATCH_FAST: {
-        "model": "gpt-5.3-codex-spark",
+        "model": "gpt-5.6-luna",
         "reasoning_effort": "low",
         "verbosity": "low",
         "description": "Bulk low-risk extraction or classification runs.",

@@ -67,6 +67,7 @@ interface HomeViewProps {
   onSelectCategory: (category: string) => void
   onBatchVerify: (category: string | undefined, limit: number) => void
   onViewList: () => void
+  onOpenScannedCategory?: (category: string) => void
   onKpiNavigate?: (target: 'pending' | 'today_processed' | 'week_processed' | 'hot_pending') => void
   onToggleScanSettings: () => void
   onScanSettingsChange: (settings: ScanSettings) => void
@@ -113,6 +114,7 @@ export function HomeView({
   onSelectCategory,
   onBatchVerify,
   onViewList,
+  onOpenScannedCategory,
   onToggleScanSettings,
   onScanSettingsChange,
   onVerifyLimitChange,
@@ -121,6 +123,10 @@ export function HomeView({
   stopScan,
 }: HomeViewProps) {
   const workTotal = homeStats?.total_count ?? 0
+  const scannedTotal = homeStats?.scanned_total_count ?? workTotal
+  const scannedCategoryStats = homeStats?.scanned_category_stats ?? []
+  const showingScannedCategories = categoryStats.length === 0 && scannedCategoryStats.length > 0
+  const displayCategoryStats = showingScannedCategories ? scannedCategoryStats : categoryStats
   const processedTotal = (stats?.posted || 0) + (stats?.skipped || 0)
 
   return (
@@ -156,8 +162,8 @@ export function HomeView({
           <div className="mt-1 text-2xl font-bold">{formatCount(workTotal)}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <div className="text-xs text-muted-foreground">전체 대기</div>
-          <div className="mt-1 text-2xl font-bold">{formatCount(stats?.pending)}</div>
+          <div className="text-xs text-muted-foreground">최종 통과</div>
+          <div className="mt-1 text-2xl font-bold">{formatCount(scannedTotal)}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground">처리 완료</div>
@@ -215,9 +221,13 @@ export function HomeView({
       <section className="rounded-lg border border-border bg-card p-5">
         <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-xl font-bold">카테고리별 작업</h2>
+            <h2 className="text-xl font-bold">
+              {showingScannedCategories ? '카테고리별 최종 통과 결과' : '카테고리별 작업'}
+            </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              직원은 아래 카테고리에서 바로 댓글 작업을 시작하면 됩니다.
+              {showingScannedCategories
+                ? '작업 대기 큐는 비어 있지만, 최신 스캔에서 최종 통과한 카테고리는 아래에서 확인할 수 있습니다.'
+                : '직원은 아래 카테고리에서 바로 댓글 작업을 시작하면 됩니다.'}
             </p>
           </div>
           {scanBatches && scanBatches.length > 0 && (
@@ -226,7 +236,7 @@ export function HomeView({
               onChange={(event) => onHomeScanBatchChange(event.target.value)}
               className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
             >
-              <option value="">최신 작업 큐</option>
+              <option value="">최신 최종 결과</option>
               {scanBatches.slice(0, 12).map((batch) => (
                 <option key={batch.batch_id} value={batch.batch_id}>
                   {batch.batch_label}
@@ -236,7 +246,7 @@ export function HomeView({
           )}
         </div>
 
-        {categoryStats.length === 0 ? (
+        {displayCategoryStats.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-8 text-center">
             <div className="text-lg font-semibold">작업할 타겟이 없습니다</div>
             <p className="mt-2 text-sm text-muted-foreground">
@@ -254,7 +264,7 @@ export function HomeView({
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {categoryStats.map(({ category, count, avgScore }) => (
+            {displayCategoryStats.map(({ category, count, avgScore }) => (
               <div key={category} className="rounded-lg border border-border bg-background p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -265,22 +275,34 @@ export function HomeView({
                   </div>
                   <div className="text-2xl font-bold text-primary">{formatCount(count)}</div>
                 </div>
-                <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className={`mt-4 grid gap-2 ${showingScannedCategories ? 'grid-cols-1' : 'grid-cols-2'}`}>
                   <Button
-                    onClick={() => onSelectCategory(category)}
+                    onClick={() => {
+                      if (showingScannedCategories) {
+                        if (onOpenScannedCategory) {
+                          onOpenScannedCategory(category)
+                        } else {
+                          onViewList()
+                        }
+                        return
+                      }
+                      onSelectCategory(category)
+                    }}
                     size="sm"
                     variant="primary"
                   >
-                    작업 시작
+                    {showingScannedCategories ? '목록 보기' : '작업 시작'}
                   </Button>
-                  <Button
-                    onClick={() => onBatchVerify(category, 0)}
-                    disabled={isVerifying}
-                    size="sm"
-                    variant="outline"
-                  >
-                    검증
-                  </Button>
+                  {!showingScannedCategories && (
+                    <Button
+                      onClick={() => onBatchVerify(category, 0)}
+                      disabled={isVerifying}
+                      size="sm"
+                      variant="outline"
+                    >
+                      검증
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}

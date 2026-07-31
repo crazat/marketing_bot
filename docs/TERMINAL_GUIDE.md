@@ -117,11 +117,17 @@ python utils/check_db.py --verify-scan pathfinder
 
 ### Viral Hunter - 바이럴 콘텐츠 수집
 
-**실행 시간**: 약 10-20분
-**예상 결과**: 100-500개의 바이럴 타겟
+**실행 시간**: 약 20-60분 이상 (검색 깊이와 중복 표면에 따라 증가)
+**예상 결과**: 품질 게이트를 통과한 검토 대상
 
 ```powershell
-python viral_hunter.py --scan
+python viral_hunter.py --scan --source-scan-id <완료된_Legion_run_id>
+```
+
+기존 URL이 많은 표면을 더 깊게 탐색하려면 기본 깊이도 높일 수 있습니다.
+
+```powershell
+python viral_hunter.py --scan --source-scan-id <완료된_Legion_run_id> --max-per-platform 200
 ```
 
 **DB 확인**:
@@ -140,8 +146,14 @@ python utils/check_db.py --table viral_targets --since 15
 ```
 
 **참고사항**:
-- 네이버 블로그, 카페, 지식iN, Instagram에서 잠재고객을 발굴합니다.
-- `comment_status`가 `writable`인 항목만 댓글 작성이 가능합니다.
+- 완료된 Legion 계보를 `--source-scan-id`로 고정합니다. 비어 있거나 잘못된 ID는
+  누적/최신 키워드로 대체하지 않고 실패합니다.
+- 네이버 블로그, 카페, 지식iN에서 후보를 수집합니다.
+- 한 쿼리의 상위 결과 중 기존·실행 중 중복 URL이 75% 이상이면, 최대 60개
+  고우선 쿼리에 한해 다음 페이지를 자동 탐색합니다. 이 과정은 시간이 더 걸리지만
+  점수·안전·실행 게이트를 낮추지 않습니다.
+- 결과는 검토 전용입니다. 스캔 완료가 댓글 생성·게시 승인이나 자동 실행 권한을
+  의미하지 않습니다.
 
 ---
 

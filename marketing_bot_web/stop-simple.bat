@@ -36,7 +36,7 @@ netstat -ano | findstr ":8000" > nul 2>&1
 if %errorlevel% equ 0 (
     echo ⚠️  포트 8000이 여전히 사용 중입니다
     for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000"') do (
-        taskkill /F /PID %%a > nul 2>&1
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\server_port_check.ps1" -Port 8000 -Restart > nul
     )
 )
 

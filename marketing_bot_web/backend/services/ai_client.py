@@ -191,6 +191,7 @@ def _screen_korean_text(
     *,
     call_site: str,
     retry_count: int,
+    allow_first_person_experience: bool = False,
 ) -> Dict[str, Any]:
     try:
         from services.content_compliance import (
@@ -202,7 +203,11 @@ def _screen_korean_text(
         logger.warning("[compliance] import failed, allowing generated text: %s", exc)
         return {"passed": True, "final_text": text, "violations": []}
 
-    result = screen_korean_comment(text, auto_append_disclosure=False)
+    result = screen_korean_comment(
+        text,
+        auto_append_disclosure=False,
+        allow_first_person_experience=allow_first_person_experience,
+    )
     db_path = _resolve_default_db_path()
     if db_path:
         try:
@@ -248,16 +253,24 @@ def ai_generate_korean(
     if not compliance_screen:
         return text
 
-    screen = _screen_korean_text(text, prompt, call_site=call_site, retry_count=0)
+    screen = _screen_korean_text(
+        text, prompt, call_site=call_site, retry_count=0,
+        allow_first_person_experience=(task == "viral_comment"),
+    )
     if not screen.get("passed"):
-        retry_prompt = (
-            f"{prompt}\n\n[Required revision]\n"
-            "- Use possibility-based wording only.\n"
-            "- Remove first-person treatment experience wording.\n"
-            "- Remove guaranteed outcomes, discounts, event claims, and comparative superiority.\n"
-            "- Do not recommend named clinicians.\n"
-            "- Keep it natural Korean, 1-2 sentences."
-        )
+        # 바이럴 댓글은 '실제 다녀온 환자 후기' 톤(1인칭 방문·경험담)을 의도적으로 유지한다
+        # (운영 결정 2026-06-19). 그래서 viral_comment 는 retry 시 1인칭 치료 경험 제거를
+        # 지시하지 않는다. 단, 단정적 효과·할인·이벤트·실명 의료진 추천 등 경성 의료광고법
+        # 위반은 viral 여부와 무관하게 계속 제거한다.
+        revision_lines = ["- Use possibility-based wording only."]
+        if task != "viral_comment":
+            revision_lines.append("- Remove first-person treatment experience wording.")
+        revision_lines += [
+            "- Remove guaranteed outcomes, discounts, event claims, and comparative superiority.",
+            "- Do not recommend named clinicians.",
+            "- Keep it natural Korean, 1-2 sentences.",
+        ]
+        retry_prompt = f"{prompt}\n\n[Required revision]\n" + "\n".join(revision_lines)
         try:
             result = codex.generate_text(
                 retry_prompt,
@@ -268,7 +281,10 @@ def ai_generate_korean(
             )
             codex.record_codex_call("ai_generate_korean_retry", result, retry_prompt)
             text = result.text
-            screen = _screen_korean_text(text, prompt, call_site=call_site, retry_count=1)
+            screen = _screen_korean_text(
+                text, prompt, call_site=call_site, retry_count=1,
+                allow_first_person_experience=(task == "viral_comment"),
+            )
         except Exception as exc:
             logger.error("[Codex CLI] Korean compliance retry failed: %s", exc)
             return _codex_error_message(exc)
@@ -282,7 +298,10 @@ def ai_generate_korean(
         return "[AI] generation blocked by medical advertising compliance"
 
     final = screen.get("final_text") or text
-    if ai_disclosure_required:
+    # 바이럴 댓글은 '실제 다녀온 환자 후기' 톤을 깨지 않도록 AI 보조 고지 푸터를 붙이지
+    # 않는다(운영 결정 2026-06-19; viral 댓글 #광고 푸터 비활성과 동일 맥락). 그 외 한국어
+    # 콘텐츠는 기존대로 고지 푸터를 유지한다(AI 기본법 대응).
+    if ai_disclosure_required and task != "viral_comment":
         try:
             from services.content_compliance import append_ai_disclosure
 

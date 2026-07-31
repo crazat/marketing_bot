@@ -123,8 +123,8 @@ class NaverDataLabManager:
             return None
         
         metrics = results[0].get('data', [])
-        if len(metrics) < 5: # Need at least a few data points
-            return 0.0 
+        if len(metrics) < 5:  # 데이터 부족 → None 반환 (0.0이면 "stable"로 오분류됨)
+            return None
         
         # Simple Linear Regression
         # x = [0, 1, 2...], y = [ratios]

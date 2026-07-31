@@ -10,10 +10,13 @@ export interface FilterState {
   comment_status?: string;     // 댓글 상태 필터 추가
   min_scan_count?: number;
   min_score?: number;
+  min_clinic_fit?: number;
+  min_worksite_efficiency?: number;
   commentable_only?: boolean;
   search?: string;
   sort?: string;
   scan_batch?: string;
+  exclude_revisited?: boolean;
   // [2026-04-27] AI 분류 필터
   ai_ad_label?: string;        // 자연_질문 / 광고 / 광고성_후기톤 / 기타_노이즈 (콤마 가능)
   min_confidence?: number;     // 0.0~1.0
@@ -72,6 +75,8 @@ export function FilterBar({ filters, onFilterChange, onReset, scanBatches = [] }
       filters.comment_status ||
       filters.min_scan_count ||
       filters.min_score ||
+      filters.min_clinic_fit ||
+      filters.min_worksite_efficiency ||
       filters.commentable_only ||
       filters.search ||
       (filters.sort && filters.sort !== 'priority') ||

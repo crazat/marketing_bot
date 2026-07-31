@@ -3366,12 +3366,81 @@ class DatabaseManager:
                     last_scanned_at = excluded.last_scanned_at,
                     scan_count = COALESCE(viral_targets.scan_count, 0) + 1,
                     content_hash = excluded.content_hash,
+                    is_commentable = CASE
+                        -- A successful retry must be allowed to replace its
+                        -- temporary needs_ai_retry workflow state.
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') = 'needs_ai_retry'
+                             AND (
+                                COALESCE(excluded.comment_status, 'pending') = 'pending'
+                                OR COALESCE(excluded.ai_reviewed, 0) = 1
+                                OR COALESCE(
+                                    CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                         THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                    END,
+                                    ''
+                                ) != ''
+                             )
+                            THEN excluded.is_commentable
+                        WHEN COALESCE(excluded.ai_reviewed, 0) = 1
+                             OR COALESCE(
+                                CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                     THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                END,
+                                ''
+                             ) != ''
+                            THEN excluded.is_commentable
+                        ELSE viral_targets.is_commentable
+                    END,
                     comment_status = CASE
+                        -- needs_ai_retry is a temporary parse/transport state,
+                        -- not a terminal status.  Persist a later AI verdict
+                        -- or a final-gate rejection, while still preserving it
+                        -- against an ordinary rediscovery update.
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') = 'needs_ai_retry'
+                             AND COALESCE(excluded.comment_status, 'pending') != 'pending'
+                             AND (
+                                COALESCE(excluded.ai_reviewed, 0) = 1
+                                OR COALESCE(
+                                    CASE WHEN json_valid(COALESCE(excluded.score_breakdown, '{}'))
+                                         THEN json_extract(excluded.score_breakdown, '$.final_reject_reason')
+                                    END,
+                                    ''
+                                ) != ''
+                             )
+                            THEN excluded.comment_status
                         WHEN COALESCE(viral_targets.comment_status, 'pending') IN ('needs_ai_retry', 'raw_backlog')
                              AND COALESCE(excluded.comment_status, 'pending') = 'pending'
                             THEN 'pending'
+                        WHEN COALESCE(viral_targets.comment_status, 'pending') IN (
+                                'filtered_out_stale_window',
+                                'filtered_out',
+                                'filtered_out_ai',
+                                'filtered_out_low_intent',
+                                'filtered_out_low_opportunity',
+                                'filtered_out_clinic_mismatch',
+                                'filtered_out_unqualified_lead',
+                                'filtered_out_journey_mismatch'
+                             )
+                             AND COALESCE(excluded.comment_status, 'pending') = 'pending'
+                             AND COALESCE(excluded.ai_reviewed, 0) = 1
+                            THEN 'pending'
                         WHEN COALESCE(excluded.comment_status, 'pending') != 'pending'
-                             AND COALESCE(viral_targets.comment_status, 'pending') IN ('pending', 'raw_backlog')
+                             AND (
+                                COALESCE(viral_targets.comment_status, 'pending') IN ('pending', 'raw_backlog')
+                                OR (
+                                    COALESCE(viral_targets.comment_status, 'pending') IN (
+                                        'filtered_out_stale_window',
+                                        'filtered_out',
+                                        'filtered_out_ai',
+                                        'filtered_out_low_intent',
+                                        'filtered_out_low_opportunity',
+                                        'filtered_out_clinic_mismatch',
+                                        'filtered_out_unqualified_lead',
+                                        'filtered_out_journey_mismatch'
+                                    )
+                                    AND COALESCE(excluded.ai_reviewed, 0) = 1
+                                )
+                             )
                             THEN excluded.comment_status
                         ELSE viral_targets.comment_status
                     END,
@@ -3508,6 +3577,55 @@ class DatabaseManager:
             logger.error(f"get_existing_viral_urls error: {e}")
             return set()
 
+    def get_all_existing_viral_url_keys(self) -> set[str]:
+        """Return raw and canonical URL identities for novelty-aware discovery."""
+        try:
+            self.cursor.execute(
+                """
+                SELECT url, canonical_url
+                FROM viral_targets
+                WHERE COALESCE(url, '') <> ''
+                """
+            )
+            keys: set[str] = set()
+            for raw_url, stored_canonical in self.cursor.fetchall():
+                raw_url = str(raw_url or "").strip()
+                canonical = str(stored_canonical or "").strip()
+                if raw_url:
+                    keys.add(raw_url)
+                if canonical:
+                    keys.add(canonical)
+                elif raw_url:
+                    normalized = canonicalize_viral_url(raw_url)
+                    if normalized:
+                        keys.add(normalized)
+            return keys
+        except Exception as e:
+            logger.error(f"get_all_existing_viral_url_keys error: {e}")
+            return set()
+
+    @staticmethod
+    def _parse_json_dict(value) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                import json
+
+                parsed = json.loads(value)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _merge_score_breakdown(existing_value, incoming_value) -> dict:
+        existing = DatabaseManager._parse_json_dict(existing_value)
+        incoming = DatabaseManager._parse_json_dict(incoming_value)
+        if not incoming:
+            return existing
+        return {**existing, **incoming}
+
     def refresh_existing_viral_targets(self, targets_data: list[dict]) -> int:
         """Refresh scan metadata for existing viral URLs without changing workflow status.
 
@@ -3547,6 +3665,11 @@ class DatabaseManager:
                 if not existing_identity:
                     continue
                 target_id, _stored_url = existing_identity
+                existing_breakdown_row = self.cursor.execute(
+                    "SELECT score_breakdown FROM viral_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                existing_score_breakdown = existing_breakdown_row[0] if existing_breakdown_row else "{}"
 
                 kws_list = target_data.get('matched_keywords') or []
                 if isinstance(kws_list, str):
@@ -3559,7 +3682,11 @@ class DatabaseManager:
                 matched_keyword_single = (kws_list[0] if kws_list else None) or target_data.get('matched_keyword')
                 author = target_data.get('author') or None
                 posted_at = target_data.get('date_str') or target_data.get('posted_at') or None
-                score_breakdown_json = json.dumps(target_data.get('score_breakdown') or {}, ensure_ascii=False)
+                score_breakdown = self._merge_score_breakdown(
+                    existing_score_breakdown,
+                    target_data.get('score_breakdown') or {},
+                )
+                score_breakdown_json = json.dumps(score_breakdown, ensure_ascii=False)
                 sort_appearances_json = json.dumps(target_data.get('sort_appearances') or [], ensure_ascii=False)
                 content_hash = self.calculate_content_hash(
                     url=canonical_url or url,
@@ -3663,6 +3790,86 @@ class DatabaseManager:
             logger.error(f"refresh_existing_viral_targets error: {e}")
             return 0
 
+    def update_viral_execution_queue(self, targets_data: list[dict]) -> int:
+        """Persist final execution-quality fields or final-gate rejections without a rediscovery.
+
+        The normal Viral upsert advances scan metadata.  Final queue calibration
+        happens after AI, resume, and enrichment paths converge. The same narrow
+        update can quarantine a pending item when post-run QA finds a deterministic
+        final-gate rejection. Neither path may inflate freshness analytics.
+        """
+        if not targets_data:
+            return 0
+
+        try:
+            import json
+
+            updated = 0
+            for target_data in targets_data:
+                url = target_data.get("url")
+                if not url:
+                    continue
+                canonical_url = target_data.get("canonical_url") or canonicalize_viral_url(url)
+                existing_identity = self._find_existing_viral_target_identity(url, canonical_url)
+                if not existing_identity:
+                    continue
+                target_id, _ = existing_identity
+                row = self.cursor.execute(
+                    "SELECT score_breakdown FROM viral_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                existing_breakdown = row[0] if row else "{}"
+                merged_breakdown = self._merge_score_breakdown(
+                    existing_breakdown,
+                    target_data.get("score_breakdown") or {},
+                )
+                final_reject = bool(merged_breakdown.get("final_reject_reason"))
+                final_status = target_data.get("comment_status") or "filtered_out"
+                self.cursor.execute(
+                    """
+                    UPDATE viral_targets
+                    SET priority_score = ?,
+                        workability_score = ?,
+                        conversion_fit_score = ?,
+                        score_breakdown = ?,
+                        is_commentable = CASE
+                            WHEN ? THEN 0
+                            ELSE is_commentable
+                        END,
+                        comment_status = CASE
+                            WHEN ?
+                             AND comment_status IN ('pending', 'raw_backlog', 'needs_ai_retry')
+                                THEN ?
+                            WHEN ? = 'manual_review' THEN 'manual_review'
+                            ELSE comment_status
+                        END,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        target_data.get("priority_score", 0) or 0,
+                        target_data.get("workability_score", 0) or 0,
+                        target_data.get("conversion_fit_score", 0) or 0,
+                        json.dumps(merged_breakdown, ensure_ascii=False),
+                        final_reject,
+                        final_reject,
+                        final_status,
+                        target_data.get("comment_status") or "",
+                        datetime.now().isoformat(),
+                        target_id,
+                    ),
+                )
+                updated += max(0, int(self.cursor.rowcount or 0))
+            self.conn.commit()
+            return updated
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"update_viral_execution_queue error: {e}")
+            return 0
+
     def get_viral_targets(self, status: str = None, platform: str = None,
                           category: str = None, date_filter: str = None,
                           platforms: list = None, comment_status: str = None,
@@ -3688,6 +3895,15 @@ class DatabaseManager:
         try:
             query = 'SELECT * FROM viral_targets WHERE 1=1'
             params = []
+            target_columns = {
+                row[1]
+                for row in self.cursor.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            scanned_expr = (
+                "COALESCE(last_scanned_at, discovered_at)"
+                if "last_scanned_at" in target_columns
+                else "discovered_at"
+            )
 
             # comment_status가 있으면 우선, 없으면 status 사용
             effective_status = comment_status if comment_status else status
@@ -3710,15 +3926,23 @@ class DatabaseManager:
 
             # 스캔 배치 필터 (YYYY-MM-DD HH 형식)
             if scan_batch:
-                query += " AND strftime('%Y-%m-%d %H', discovered_at) = ?"
-                params.append(scan_batch)
+                batch = str(scan_batch).strip()
+                if batch.startswith("run:") and "source_scan_run_id" in target_columns:
+                    try:
+                        query += " AND source_scan_run_id = ?"
+                        params.append(int(batch.split(":", 1)[1]))
+                    except (TypeError, ValueError):
+                        query += " AND 1=0"
+                else:
+                    query += f" AND strftime('%Y-%m-%d %H', {scanned_expr}) = ?"
+                    params.append(batch)
             elif date_filter:
                 if date_filter == "오늘":
-                    query += " AND DATE(discovered_at) = DATE('now', 'localtime')"
+                    query += f" AND DATE({scanned_expr}) = DATE('now', 'localtime')"
                 elif date_filter == "최근 7일":
-                    query += " AND discovered_at >= datetime('now', '-7 days')"
+                    query += f" AND {scanned_expr} >= datetime('now', '-7 days')"
                 elif date_filter == "최근 30일":
-                    query += " AND discovered_at >= datetime('now', '-30 days')"
+                    query += f" AND {scanned_expr} >= datetime('now', '-30 days')"
 
             # 재발견 필터
             if min_scan_count is not None and min_scan_count > 0:
@@ -3734,15 +3958,15 @@ class DatabaseManager:
 
             # 정렬
             if sort == 'date':
-                query += ' ORDER BY discovered_at DESC'
+                query += f' ORDER BY {scanned_expr} DESC'
             elif sort == 'scan_count':
-                query += ' ORDER BY scan_count DESC, discovered_at DESC'
+                query += f' ORDER BY scan_count DESC, {scanned_expr} DESC'
             elif sort == 'exposure':
-                query += ' ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY exposure_score DESC, priority_score DESC, {scanned_expr} DESC'
             elif sort == 'workability':
-                query += ' ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY workability_score DESC, priority_score DESC, {scanned_expr} DESC'
             else:  # 기본: priority
-                query += ' ORDER BY priority_score DESC, discovered_at DESC'
+                query += f' ORDER BY priority_score DESC, {scanned_expr} DESC'
 
             query += ' LIMIT ? OFFSET ?'
             params.append(limit)

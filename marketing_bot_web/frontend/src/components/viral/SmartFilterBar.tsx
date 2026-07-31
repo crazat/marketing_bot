@@ -44,6 +44,8 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget, workScope = 'lat
       date_filter: undefined,
       min_scan_count: undefined,
       min_score: undefined,
+      min_clinic_fit: undefined,
+      min_worksite_efficiency: undefined,
       commentable_only: undefined,
       search: undefined,
       scan_batch: undefined,
@@ -58,6 +60,12 @@ export function SmartFilterBar({ onApplyFilter, onSelectTarget, workScope = 'lat
     }
     if (filter.min_score) {
       filterState.min_score = Number(filter.min_score)
+    }
+    if (filter.min_clinic_fit) {
+      filterState.min_clinic_fit = Number(filter.min_clinic_fit)
+    }
+    if (filter.min_worksite_efficiency) {
+      filterState.min_worksite_efficiency = Number(filter.min_worksite_efficiency)
     }
     if (filter.commentable_only != null) {
       filterState.commentable_only = Boolean(filter.commentable_only)

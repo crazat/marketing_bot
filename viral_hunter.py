@@ -22,6 +22,7 @@ except Exception:
     pass
 import json
 import socket
+import sqlite3
 socket.setdefaulttimeout(15)
 import time
 import re
@@ -29,8 +30,8 @@ import math
 import hashlib
 import logging
 import argparse
-from dataclasses import dataclass, field, asdict
-from typing import Any, List, Optional, Dict, Tuple
+from dataclasses import dataclass, field, asdict, replace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote, urljoin
 import requests
@@ -46,8 +47,20 @@ from utils import ConfigManager, logger
 from utils.json_io import atomic_write_json
 from services.ai_client import ai_generate, ai_generate_korean
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
-from core_services.viral_seed_builder import ViralSeedBuilder
+from core_services.viral_seed_builder import (
+    ViralSeedBuilder,
+    canonical_category_for_keyword,
+    keyword_structure_features,
+    strip_region_tokens,
+    strip_transactional_suffix,
+)
 from core_services.pathfinder_insight_broker import load_pathfinder_prompt_context
+from core_services.gyulim_keyword_profile import ACTIVE_KEYWORD_PROFILE as GYULIM_KEYWORD_PROFILE
+from core_services.semantic_axis_matcher import SemanticAxisMatcher, semantic_discovery_enabled
+
+# 의미기반 진료축 매처 싱글톤 — 기본은 비활성(opt-in env + 모델 필요)이라 no-op.
+# 테스트는 이 전역을 주입형 fake 매처로 교체해 모델 없이 의미 구제를 검증한다.
+_SEMANTIC_AXIS_MATCHER = SemanticAxisMatcher()
 
 # Windows encoding fix
 if sys.platform.startswith('win'):
@@ -55,36 +68,1076 @@ if sys.platform.startswith('win'):
 
 
 AI_CATEGORY_MIN_QUOTAS: Dict[str, int] = {
+    "흉터/여드름흉터": 50,
     "피부": 50,
     "교통사고": 50,
     "다이어트": 40,
-    "비대칭/교정": 25,
-    "통증/디스크": 20,
+    "안면비대칭": 25,
+    "체형교정": 20,
     "경쟁사_역공략": 20,
     "리프팅/탄력": 10,
 }
 
+AI_CATEGORY_FLOOR_PRIORITY: Tuple[str, ...] = (
+    "흉터/여드름흉터",
+    "안면비대칭",
+    "피부/여드름",
+    "다이어트",
+    "교통사고",
+    "체형교정",
+    "리프팅/탄력",
+    "경쟁사_역공략",
+)
+
 AI_CATEGORY_ALIASES: Dict[str, str] = {
-    "피부/여드름": "피부",
-    "안면비대칭": "비대칭/교정",
-    "체형교정": "비대칭/교정",
+    "흉터": "흉터/여드름흉터",
+    "여드름흉터": "흉터/여드름흉터",
+    "피부": "피부/여드름",
+    "비대칭/교정": "안면비대칭",
+    "통증/디스크": "체형교정",
 }
+
+
+AI_COMPLIANCE_SEVERE_REPLY_FLAGS = {
+    "urgent_medical",
+    "medication_advice_request",
+    "acute_side_effect",
+}
+AI_COMPLIANCE_REVIEW_REPLY_FLAGS = {
+    "sensitive_medical",
+    "testimonial_sensitive",
+    "generic_category",
+}
+
+
+def _canonical_ai_category(raw_category: str) -> str:
+    aliased = AI_CATEGORY_ALIASES.get(raw_category, raw_category)
+    return GYULIM_KEYWORD_PROFILE.normalize_category(aliased)
 
 
 def _ai_quota_category(target: "ViralTarget") -> str:
     """Return the category bucket used for balanced AI target selection."""
-    raw_category = (
-        getattr(target, "category", None)
-        or getattr(target, "matched_keyword_category", None)
-        or "기타"
+    category = _canonical_ai_category(str(getattr(target, "category", "") or ""))
+    matched_category = _canonical_ai_category(str(getattr(target, "matched_keyword_category", "") or ""))
+    generic_categories = {"", "기타", "general", "unknown", "uncategorized"}
+    core_handoff_categories = {
+        "흉터/여드름흉터", "피부/여드름", "교통사고", "다이어트", "안면비대칭", "체형교정", "리프팅/탄력"
+    }
+    if matched_category in core_handoff_categories:
+        return matched_category
+    if category not in generic_categories:
+        return category
+    if matched_category not in generic_categories:
+        return matched_category
+    return _canonical_ai_category("기타")
+
+
+PATHFINDER_AXIS_COMPANION_GENERIC_TERMS: Dict[str, set[str]] = {
+    "흉터/여드름흉터": {
+        "흉터", "여드름흉터", "흉터치료", "흉터새살침", "새살침", "피부재생",
+    },
+    "피부/여드름": {
+        "피부", "피부관리", "피부질환", "피부트러블", "트러블", "여드름",
+    },
+    "다이어트": {
+        "다이어트", "다이어트한약", "다이어트 한약", "한방다이어트",
+        "비만", "체중", "감량",
+    },
+    "안면비대칭": {
+        "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭교정", "안면교정",
+    },
+    "체형교정": {
+        "체형교정", "자세교정", "척추교정",
+    },
+    "리프팅/탄력": {
+        "리프팅", "탄력", "한방리프팅", "매선리프팅",
+    },
+    "교통사고": {
+        "교통사고", "자동차사고", "교통사고한의원", "자동차사고한의원",
+    },
+}
+
+PATHFINDER_AXIS_SHORT_SPECIFIC_TERMS: Dict[str, set[str]] = {
+    "다이어트": {"산후", "요요"},
+    "교통사고": {"입원", "자보"},
+}
+
+PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX: Dict[str, str] = {
+    "흉터/여드름흉터": "axis_scar",
+    "피부/여드름": "axis_skin",
+    "다이어트": "axis_diet",
+    "안면비대칭": "axis_asymmetry",
+    "체형교정": "axis_body",
+    "리프팅/탄력": "axis_lifting",
+    "교통사고": "axis_traffic",
+}
+
+
+AI_TREATMENT_SUBINTENT_BUCKETS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "흉터/여드름흉터": {
+        "acne_scar": ("여드름흉터", "여드름자국", "패인흉터", "흉터치료"),
+        "regeneration_hanbang": ("새살침", "흉터새살침", "흉터 새살침", "피부재생"),
+        "pore_texture": ("모공흉터", "모공", "피부결"),
+        "pigmentation": ("색소침착", "붉은자국", "갈색자국", "착색"),
+        "surgery_wound": ("수술흉터", "상처흉터", "수두흉터", "켈로이드"),
+    },
+    "안면비대칭": {
+        "facial_asymmetry": ("안면비대칭", "얼굴비대칭", "얼굴좌우차이", "좌우비대칭"),
+        "jaw_tmj": ("턱비대칭", "턱관절", "턱", "교합"),
+        "cheekbone_head": ("광대비대칭", "광대좌우차이", "두상비대칭", "머리비대칭"),
+        "non_surgical_correction": ("비수술", "안면교정", "비대칭교정", "웨딩 안면비대칭"),
+    },
+    "피부/여드름": {
+        "acne_trouble": ("여드름", "성인여드름", "피부트러블", "트러블", "피지"),
+        "skin_condition": ("피부질환", "피부관리", "건선"),
+        "dermatitis": ("아토피", "지루성피부염", "습진", "두드러기"),
+        "redness_rosacea": ("홍조", "안면홍조", "열감"),
+        "wart_pigment": ("편평사마귀", "색소", "기미", "잡티"),
+    },
+    "다이어트": {
+        "diet_program": ("다이어트", "한방다이어트", "다이어트한약", "다이어트 한의원"),
+        "weight_loss": ("비만", "체중", "감량", "살빼", "체지방"),
+        "appetite_metabolism": ("식욕억제", "식욕", "대사", "요요"),
+        "body_part": ("뱃살", "허벅지살", "팔뚝살", "복부"),
+        "life_event": ("산후다이어트", "웨딩다이어트", "웨딩 다이어트"),
+    },
+    "체형교정": {
+        "posture_correction": ("체형교정", "자세교정", "추나"),
+        "pelvis_spine": ("골반교정", "골반틀어짐", "척추교정", "척추측만"),
+        "neck_shoulder": ("거북목", "라운드숄더", "목", "어깨"),
+        "leg_posture": ("휜다리", "오다리", "휜다리교정"),
+        "posture_pain": ("통증", "허리", "허리통증"),
+    },
+    "리프팅/탄력": {
+        "skin_aging": ("리프팅", "처짐", "노화", "얼굴라인"),
+        "thread_lifting": ("매선", "매선리프팅", "침리프팅", "한방리프팅", "동안침", "매선침"),
+        "elasticity_wrinkle": ("피부탄력", "탄력", "주름", "팔자주름"),
+        "jawline_doublechin": ("이중턱", "턱선", "얼굴라인"),
+    },
+    "교통사고": {
+        "accident_context": ("교통사고", "자동차사고", "추돌사고", "교통사고한의원", "교통사고 한의원"),
+        "insurance_admin": ("자동차보험", "자보", "보험", "합의"),
+        "neck_back_pain": ("목통증", "허리통증", "사고후통증", "통증", "두통"),
+        "hospitalization": ("입원", "교통사고입원", "자동차사고입원"),
+        "aftereffect": ("후유증", "교통사고후유증"),
+    },
+}
+
+
+def _compact_query_text(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _pathfinder_axis_specific_terms_for_keyword(keyword: str, category: str, limit: int = 2) -> List[str]:
+    """Specific treatment/context terms from the active Pathfinder profile."""
+    profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+    if not profile:
+        return []
+
+    compact_keyword = _compact_query_text(keyword)
+    generic_terms = {
+        _compact_query_text(term)
+        for term in PATHFINDER_AXIS_COMPANION_GENERIC_TERMS.get(category, set())
+    }
+    low_value_terms = {
+        _compact_query_text(term)
+        for term in getattr(profile, "low_business_value_terms", ()) or ()
+    }
+    region_terms = {
+        _compact_query_text(term)
+        for term in (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()) or ())
+        )
+    }
+    generic_anchor_terms = {
+        _compact_query_text(term)
+        for term in ("한의원", "한방", "한약", "치료", "상담", "예약", "추천", "후기")
+    }
+    short_specific_terms = {
+        _compact_query_text(term)
+        for term in PATHFINDER_AXIS_SHORT_SPECIFIC_TERMS.get(category, set())
+    }
+
+    ordered_terms: List[str] = []
+    ordered_terms.extend(getattr(profile, "longtail_contexts", ()) or ())
+    ordered_terms.extend(getattr(profile, "core_tokens", ()) or ())
+    ordered_terms.extend(getattr(profile, "category_terms", ()) or ())
+
+    scored: List[Tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for index, raw_term in enumerate(ordered_terms):
+        term = str(raw_term or "").strip()
+        compact = _compact_query_text(term)
+        if not compact or compact in seen:
+            continue
+        if compact not in compact_keyword:
+            continue
+        if len(compact) < 3 and compact not in short_specific_terms:
+            continue
+        if compact in generic_terms or compact in low_value_terms:
+            continue
+        if compact in region_terms or compact in generic_anchor_terms:
+            continue
+        seen.add(compact)
+        scored.append((index, -len(compact), term))
+
+    scored.sort()
+    return [term for _, __, term in scored[:max(0, int(limit or 0))]]
+
+
+def _normalized_ai_category_quotas(quotas: Dict[str, int]) -> Dict[str, int]:
+    normalized: Dict[str, int] = {}
+    for raw_category, quota in (quotas or {}).items():
+        category = _canonical_ai_category(raw_category)
+        normalized[category] = normalized.get(category, 0) + int(quota or 0)
+    return normalized
+
+
+def _normalized_ai_priority_categories(categories: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_category in (categories or []):
+        category = _canonical_ai_category(str(raw_category or ""))
+        if not category or category in {"기타", "unknown"}:
+            continue
+        if not GYULIM_KEYWORD_PROFILE.profile_for(category) and category != "경쟁사_역공략":
+            continue
+        if category not in normalized:
+            normalized.append(category)
+    return normalized
+
+
+def _normalized_ai_preferred_lenses(lenses: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_lens in (lenses or []):
+        lens = str(raw_lens or "").strip().lower()
+        if not lens:
+            continue
+        if lens not in normalized:
+            normalized.append(lens)
+    return normalized
+
+
+def _normalized_handoff_category_lenses(category_lenses: Optional[Iterable[str]]) -> List[str]:
+    normalized: List[str] = []
+    for raw_lane in (category_lenses or []):
+        category_part, _, lens_part = str(raw_lane or "").partition("::")
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category_part.strip())
+        lens = lens_part.strip().lower()
+        if not category or not lens:
+            continue
+        lane = f"{category}::{lens}"
+        if lane not in normalized:
+            normalized.append(lane)
+    return normalized
+
+
+def _boosted_ai_category_quotas(
+    boost_categories: Optional[Iterable[str]],
+    *,
+    top_n: int,
+    base_quotas: Optional[Dict[str, int]] = None,
+) -> Optional[Dict[str, int]]:
+    """Return AI category floors with audit-requested focus axes uplifted."""
+    boosted = _normalized_ai_priority_categories(boost_categories)
+    if not boosted:
+        return None
+
+    quotas = _normalized_ai_category_quotas(base_quotas or AI_CATEGORY_MIN_QUOTAS)
+    budget = max(1, int(top_n or 0))
+    min_boost_quota = max(1, int(math.ceil(budget * 0.12)))
+    for category in boosted:
+        current = int(quotas.get(category, 0) or 0)
+        if current <= 0:
+            current = max(1, int(math.ceil(budget * 0.05)))
+        quotas[category] = max(
+            current + max(1, int(math.ceil(current * 0.60))),
+            min_boost_quota,
+        )
+    return quotas
+
+
+def _handoff_audit_command_for_run(
+    run_started_at: str,
+    *,
+    source_scan_run_id: Optional[int] = None,
+    sample_per_lane: int = 2,
+) -> str:
+    """Build the exact post-run handoff audit command for this Viral Hunter run."""
+    timestamp = str(run_started_at or "").replace('"', '\\"')
+    safe_stamp = re.sub(r"[^0-9A-Za-z]+", "_", str(run_started_at or "")).strip("_") or "latest"
+    scan_prefix = f"scan{int(source_scan_run_id)}_" if source_scan_run_id else ""
+    out_path = f"reports/viral_handoff_audit_{scan_prefix}{safe_stamp}.json"
+    command = "python scripts/viral_handoff_audit.py"
+    if source_scan_run_id:
+        command += f" --scan-id {int(source_scan_run_id)}"
+    if timestamp:
+        command += f' --since "{timestamp}"'
+    command += f" --sample-per-lane {max(1, int(sample_per_lane or 1))}"
+    command += f" --out {out_path}"
+    return command
+
+
+AUDIT_ACTIONABLE_STATUSES = {"pending", "generated", "posted", "approved", "ai_approved"}
+AUDIT_SURVIVED_STATUSES = AUDIT_ACTIONABLE_STATUSES | {"raw_backlog"}
+AUDIT_REJECT_STATUS_BY_REASON = {
+    "advertorial": "filtered_out_ad",
+    "medical_promo": "filtered_out_ad",
+    "stale_window": "filtered_out_stale_window",
+    "journey_mismatch": "filtered_out_journey_mismatch",
+    "unqualified_lead": "filtered_out_unqualified_lead",
+    "clinic_mismatch": "filtered_out_clinic_mismatch",
+    "low_intent": "filtered_out_low_intent",
+    "low_opportunity": "filtered_out_low_opportunity",
+    "low_worksite_efficiency": "filtered_out_low_worksite_efficiency",
+}
+
+
+def _audit_current_reject_reason(score_breakdown: Dict[str, Any]) -> str:
+    if not isinstance(score_breakdown, dict):
+        return ""
+    for key in ("final_reject_reason", "pathfinder_fit_reject_reason"):
+        reason = str(score_breakdown.get(key) or "").strip()
+        if reason:
+            return reason
+    return ""
+
+
+def _audit_effective_current_status(status: object, score_breakdown: Dict[str, Any]) -> str:
+    """Count current-run rejections even when DB preserves historical work status."""
+    normalized = str(status or "pending").strip() or "pending"
+    if normalized not in AUDIT_SURVIVED_STATUSES:
+        return normalized
+    reason = _audit_current_reject_reason(score_breakdown)
+    if not reason:
+        return normalized
+    return AUDIT_REJECT_STATUS_BY_REASON.get(reason, "filtered_out")
+
+
+def _ordered_ai_floor_categories(
+    quotas: Dict[str, int],
+    priority_categories: Optional[Iterable[str]] = None,
+) -> List[str]:
+    priority_index = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+    boosted_order = {
+        category: idx
+        for idx, category in enumerate(_normalized_ai_priority_categories(priority_categories))
+    }
+
+    def sort_key(category: str) -> Tuple[Any, ...]:
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        weight = float(getattr(profile, "strategic_weight", 1.0) or 1.0) if profile else 1.0
+        return (
+            0 if category in boosted_order else 1,
+            boosted_order.get(category, len(boosted_order)),
+            priority_index.get(category, len(priority_index)),
+            -weight,
+            -int(quotas.get(category, 0) or 0),
+            category,
+        )
+
+    return sorted(
+        [category for category, quota in (quotas or {}).items() if int(quota or 0) > 0],
+        key=sort_key,
     )
-    return AI_CATEGORY_ALIASES.get(raw_category, raw_category)
+
+
+def _ai_target_execution_lens(target: "ViralTarget") -> str:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        breakdown = {}
+    lens = str(breakdown.get("pathfinder_execution_lens") or "").strip().lower()
+    return lens or "service"
+
+
+def _ai_target_breakdown_float(target: "ViralTarget", key: str) -> float:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+    try:
+        return float(breakdown.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+AI_EXECUTION_REPLY_READY_TIERS = {"assist_now", "good"}
+AI_EXECUTION_REPLY_READY_SIGNALS = {
+    "clear_question_shape",
+    "help_request_language",
+    "decision_or_service_task",
+    "local_actionable",
+    "unanswered_or_low_response",
+}
+AI_EXECUTION_SIGNATURE_GENERIC_TERMS = {
+    "청주",
+    "한의원",
+    "한방",
+    "한약",
+    "병원",
+    "의원",
+    "클리닉",
+    "치료",
+    "관리",
+    "추천",
+    "후기",
+    "상담",
+    "문의",
+    "비용",
+    "가격",
+    "예약",
+    "가능",
+    "피부",
+    "보험",
+    "교정",
+}
+AI_EXECUTION_PATIENT_SURFACE_TERMS = (
+    "?", "？", "추천", "후기", "경험", "궁금", "고민", "어디", "어떤",
+    "어떻게", "괜찮", "알려", "문의", "상담", "예약", "비용", "가격",
+    "얼마", "받아보", "해보", "다녀", "가보", "아시는", "계신가요",
+)
+AI_EXECUTION_PROVIDER_SURFACE_TERMS = (
+    "한의원입니다", "병원입니다", "의원입니다", "클리닉입니다", "대표원장",
+    "의료진", "내원해보세요", "예약하세요", "관리해드립니다", "청주점에서는",
+)
+AI_EXECUTION_LENS_ROUTE_TERMS: Dict[str, Tuple[str, ...]] = {
+    "review": (
+        "추천", "후기", "잘하는", "괜찮", "어디", "경험", "가본", "가보신",
+        "해보신", "받아보신", "다녀보신", "아시는", "아시는분",
+        "추천요", "추천주세요", "추천해주세요", "추천요청", "찾고있",
+        "찾아보고", "리뷰",
+    ),
+    "community": (
+        "추천", "후기", "어디", "경험", "가본", "가보신", "해보신",
+        "받아보신", "아시는", "아시는분", "궁금", "부탁", "괜찮",
+        "잘하는", "추천요", "추천주세요", "추천해주세요", "찾고있",
+        "찾아보고",
+    ),
+    "cost": (
+        "비용", "가격", "가격대", "금액", "얼마", "실비", "보험", "자보",
+        "치료비", "총비용", "부담", "부담되", "견적", "비싸", "저렴",
+    ),
+    "consultation": (
+        "상담", "문의", "처방", "진단", "상담받", "치료받", "검사받",
+        "궁금", "알고싶", "관리방법", "관리 방법", "치료방법",
+        "치료 방법", "도움될까요", "가능한곳", "가능한 곳",
+    ),
+    "availability": (
+        "예약", "예약가능", "야간", "주말", "진료시간", "당일진료",
+        "오늘", "당일", "당일예약", "위치", "주차", "근처", "가까운",
+        "입원실", "야간진료", "가능한곳", "가능한 곳",
+    ),
+    "safety": (
+        "부작용", "주의", "치료기간", "기간", "통증", "회복", "재발",
+        "안전", "효과", "걱정", "괜찮",
+    ),
+}
+AI_EXECUTION_ROUTE_BRIDGE_LENSES = {"cost", "consultation", "availability", "safety"}
+AI_EXECUTION_ROUTE_BRIDGE_TERMS: Tuple[str, ...] = (
+    "추천", "추천요", "추천주세요", "추천해주세요", "추천요청", "후기",
+    "잘하는", "괜찮은곳", "아시는", "아시는분", "찾고있", "찾아보고",
+    "관리방법", "관리 방법", "치료방법", "치료 방법", "도움될까요",
+    "가능한곳", "가능한 곳", "입원실", "야간진료", "얼마나", "횟수",
+)
+
+
+def _ai_target_breakdown_text(target: "ViralTarget", key: str) -> str:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return ""
+    return str(breakdown.get(key) or "").strip()
+
+
+def _ai_target_breakdown_terms(target: "ViralTarget", key: str) -> List[str]:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict):
+        raw_value = breakdown.get(key)
+        if isinstance(raw_value, (list, tuple, set)):
+            return [str(part or "").strip() for part in raw_value if str(part or "").strip()]
+    value = _ai_target_breakdown_text(target, key)
+    if not value:
+        return []
+    return [part.strip() for part in re.split(r"[,|]", value) if part.strip()]
+
+
+def _ai_target_content_text(target: "ViralTarget") -> str:
+    parts: List[str] = [
+        str(getattr(target, "title", "") or ""),
+        str(getattr(target, "content_preview", "") or ""),
+    ]
+    for keyword in getattr(target, "matched_keywords", None) or []:
+        parts.append(str(keyword or ""))
+    return " ".join(part for part in parts if part).lower()
+
+
+def _ai_text_has_any(compact_text: str, terms: Iterable[str]) -> bool:
+    for term in terms:
+        compact = _compact_query_text(str(term or ""))
+        if compact and compact in compact_text:
+            return True
+    return False
+
+
+def _ai_category_signature_terms(category: str) -> List[str]:
+    profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+    if not profile:
+        return []
+    generic = {_compact_query_text(term) for term in AI_EXECUTION_SIGNATURE_GENERIC_TERMS}
+    terms: List[str] = []
+    for term in (
+        tuple(getattr(profile, "core_tokens", ()) or ())
+        + tuple(getattr(profile, "category_terms", ()) or ())
+        + tuple(getattr(profile, "seed_terms", ()) or ())
+        + tuple(getattr(profile, "direct_service_anchors", ()) or ())
+    ):
+        clean = str(term or "").strip()
+        compact = _compact_query_text(str(term or ""))
+        if len(compact) < 2 or compact in generic:
+            continue
+        if clean and clean not in terms:
+            terms.append(clean)
+    terms.sort(key=lambda value: len(_compact_query_text(value)), reverse=True)
+    return terms
+
+
+def _ai_target_treatment_signal_terms(target: "ViralTarget", compact_text: Optional[str] = None) -> List[str]:
+    terms = _ai_category_signature_terms(_ai_quota_category(target))
+    if not terms:
+        return []
+
+    text_compact = compact_text if compact_text is not None else _compact_query_text(_ai_target_content_text(target))
+    matched = [
+        term for term in terms
+        if _compact_query_text(term) and _compact_query_text(term) in text_compact
+    ]
+    if matched:
+        return matched
+
+    breakdown_terms: List[str] = []
+    for key in ("treatment_signature_terms", "pathfinder_treatment_signature_terms"):
+        breakdown_terms.extend(_ai_target_breakdown_terms(target, key))
+    if not breakdown_terms:
+        return []
+
+    allowed = {_compact_query_text(term): term for term in terms}
+    fallback: List[str] = []
+    for term in breakdown_terms:
+        compact = _compact_query_text(term)
+        if compact in allowed and allowed[compact] not in fallback:
+            fallback.append(allowed[compact])
+    return fallback
+
+
+def _ai_target_treatment_signal_key(target: "ViralTarget") -> str:
+    terms = _ai_target_treatment_signal_terms(target)
+    if not terms:
+        return ""
+    return f"{_ai_quota_category(target)}::{_compact_query_text(terms[0])}"
+
+
+def _ai_target_treatment_subintent_text(target: "ViralTarget") -> str:
+    parts = [_ai_target_content_text(target)]
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict):
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            parts.append(str(raw_source))
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, (list, tuple, set)):
+            parts.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            parts.append(str(raw_sources))
+    for key in ("treatment_signature_terms", "pathfinder_treatment_signature_terms"):
+        parts.extend(_ai_target_breakdown_terms(target, key))
+    return " ".join(part for part in parts if str(part or "").strip())
+
+
+def _ai_target_treatment_subintent_buckets(target: "ViralTarget") -> List[str]:
+    category = _ai_quota_category(target)
+    buckets = AI_TREATMENT_SUBINTENT_BUCKETS.get(category) or {}
+    if not buckets:
+        return []
+    compact_text = _compact_query_text(_ai_target_treatment_subintent_text(target))
+    if not compact_text:
+        return []
+    matched: List[str] = []
+    for bucket, terms in buckets.items():
+        if any(_compact_query_text(term) and _compact_query_text(term) in compact_text for term in terms):
+            matched.append(bucket)
+    return matched
+
+
+def _ai_target_treatment_subintent_key(target: "ViralTarget") -> str:
+    buckets = _ai_target_treatment_subintent_buckets(target)
+    if not buckets:
+        return ""
+    return f"{_ai_quota_category(target)}::{buckets[0]}"
+
+
+def _ai_target_treatment_signature_matched(target: "ViralTarget", compact_text: str) -> bool:
+    return bool(_ai_target_treatment_signal_terms(target, compact_text))
+
+
+def _ai_target_local_intent_matched(target: "ViralTarget", compact_text: str) -> bool:
+    local_terms = (
+        (getattr(GYULIM_KEYWORD_PROFILE, "primary_region", "") or "",)
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()) or ())
+    )
+    if _ai_text_has_any(compact_text, local_terms):
+        return True
+    platform = str(getattr(target, "platform", "") or "").lower()
+    if platform not in {"cafe", "naver_cafe"}:
+        return False
+    author_compact = _compact_query_text(str(getattr(target, "author", "") or ""))
+    cheongju_terms = (
+        tuple(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()) or ())
+        + tuple(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()) or ())
+    )
+    return _ai_text_has_any(author_compact, cheongju_terms)
+
+
+def _ai_target_patient_surface_matched(target: "ViralTarget", text: str, compact_text: str) -> bool:
+    platform = str(getattr(target, "platform", "") or "").lower()
+    provider_author = _ai_text_has_any(
+        _compact_query_text(str(getattr(target, "author", "") or "")),
+        ("한의원", "병원", "의원", "클리닉", "피부과", "성형외과"),
+    )
+    provider_body = _ai_text_has_any(compact_text, AI_EXECUTION_PROVIDER_SURFACE_TERMS)
+    if platform in {"blog", "cafe", "naver_cafe"} and (provider_author or provider_body):
+        return False
+    if platform in {"kin", "naver_kin"}:
+        return True
+    return bool("?" in text or "？" in text or _ai_text_has_any(compact_text, AI_EXECUTION_PATIENT_SURFACE_TERMS))
+
+
+def _ai_target_route_bridge_variant(target: "ViralTarget", lens: str) -> bool:
+    variant = _ai_target_breakdown_text(target, "pathfinder_query_variant").lower()
+    expected_lens = str(lens or "").strip().lower()
+    if not variant:
+        return False
+    return bool(
+        variant == "community_base"
+        or variant.startswith(f"{expected_lens}_community:")
+        or variant.startswith("community")
+        or variant.startswith("patient_voice")
+        or variant.startswith("axis_")
+    )
+
+
+def _ai_target_route_source_lens_matched(target: "ViralTarget", lens: str) -> bool:
+    terms = AI_EXECUTION_LENS_ROUTE_TERMS.get(str(lens or "").strip().lower(), ())
+    if not terms:
+        return False
+
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    source_parts: List[str] = []
+    if isinstance(breakdown, dict):
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            source_parts.append(str(raw_source))
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, (list, tuple, set)):
+            source_parts.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            source_parts.append(str(raw_sources))
+    for attr in ("matched_keyword", "keyword"):
+        value = getattr(target, attr, "")
+        if value:
+            source_parts.append(str(value))
+    raw_keywords = getattr(target, "matched_keywords", None)
+    if isinstance(raw_keywords, (list, tuple, set)):
+        source_parts.extend(str(item) for item in raw_keywords if str(item or "").strip())
+    elif raw_keywords:
+        source_parts.append(str(raw_keywords))
+
+    compact_source = _compact_query_text(" ".join(source_parts))
+    return bool(compact_source and _ai_text_has_any(compact_source, terms))
+
+
+def _ai_target_viral_action_route_matched(target: "ViralTarget", compact_text: str) -> bool:
+    lens = _ai_target_execution_lens(target)
+    if lens == "service":
+        return True
+    if _ai_text_has_any(compact_text, AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ())):
+        return True
+    if lens not in AI_EXECUTION_ROUTE_BRIDGE_LENSES:
+        return False
+    if not _ai_text_has_any(compact_text, AI_EXECUTION_ROUTE_BRIDGE_TERMS):
+        return False
+    return bool(
+        _ai_target_route_bridge_variant(target, lens)
+        or _ai_target_route_source_lens_matched(target, lens)
+    )
+
+
+def _ai_target_reply_workability_ready(target: "ViralTarget") -> Tuple[bool, bool]:
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return False, False
+    score_present = "reply_opportunity_score" in breakdown
+    score = _ai_target_breakdown_float(target, "reply_opportunity_score")
+    tier = _ai_target_breakdown_text(target, "reply_opportunity_tier")
+    signals = set(_ai_target_breakdown_terms(target, "reply_opportunity_signals"))
+    risk_flags = set(_ai_target_breakdown_terms(target, "reply_risk_flags"))
+    risk_penalty = _ai_target_breakdown_float(target, "reply_risk_penalty")
+    manual_review = _ai_target_breakdown_float(target, "manual_review") > 0
+    metric_present = bool(score_present or tier or signals or risk_flags or manual_review)
+    if not metric_present:
+        return False, False
+    opportunity_ready = bool(
+        (score_present and score >= 55.0)
+        or tier in AI_EXECUTION_REPLY_READY_TIERS
+        or signals.intersection(AI_EXECUTION_REPLY_READY_SIGNALS)
+    )
+    risk_blocked = bool(risk_flags or risk_penalty <= -40.0 or manual_review)
+    return metric_present, bool(opportunity_ready and not risk_blocked)
+
+
+def _ai_target_needs_manual_review(target: "ViralTarget") -> bool:
+    """Return True when a target is suitable only after human compliance review."""
+    status = str(getattr(target, "comment_status", "") or "").strip().lower()
+    if status == "manual_review":
+        return True
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return False
+    return bool(
+        _ai_target_breakdown_float(target, "manual_review") > 0
+        or _ai_target_breakdown_terms(target, "reply_risk_flags")
+    )
+
+
+def _ai_target_execution_readiness_adjustment(target: "ViralTarget") -> float:
+    """Priority nudge for posts that are ready for one-pass Viral Hunter execution."""
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+    metric_keys = {
+        "pathfinder_axis_fit_score",
+        "pathfinder_lens_fit_score",
+        "clinic_treatment_fit_score",
+        "worksite_efficiency_score",
+        "reply_opportunity_score",
+        "reply_opportunity_tier",
+        "reply_opportunity_signals",
+    }
+    if not any(key in breakdown for key in metric_keys):
+        return 0.0
+
+    adjustment = 0.0
+    for key, good_bonus, weak_penalty in (
+        ("clinic_treatment_fit_score", 4.0, -10.0),
+        ("worksite_efficiency_score", 4.0, -10.0),
+        ("pathfinder_axis_fit_score", 3.0, -8.0),
+        ("pathfinder_lens_fit_score", 3.0, -8.0),
+    ):
+        if key not in breakdown:
+            continue
+        value = _ai_target_breakdown_float(target, key)
+        if value >= 75.0:
+            adjustment += good_bonus
+        elif value < 55.0:
+            adjustment += weak_penalty
+
+    reply_metric_present, reply_ready = _ai_target_reply_workability_ready(target)
+    if reply_metric_present:
+        adjustment += 16.0 if reply_ready else -24.0
+    elif any(
+        key in breakdown
+        for key in (
+            "pathfinder_axis_fit_score",
+            "pathfinder_lens_fit_score",
+            "clinic_treatment_fit_score",
+            "worksite_efficiency_score",
+        )
+    ):
+        adjustment -= 18.0
+
+    text = _ai_target_content_text(target)
+    compact_text = _compact_query_text(text)
+    if compact_text:
+        components = {
+            "treatment_signature": _ai_target_treatment_signature_matched(target, compact_text),
+            "local_intent": _ai_target_local_intent_matched(target, compact_text),
+            "patient_surface": _ai_target_patient_surface_matched(target, text, compact_text),
+            "viral_action_route": _ai_target_viral_action_route_matched(target, compact_text),
+        }
+        matched_count = sum(1 for matched in components.values() if matched)
+        adjustment += matched_count * 3.0
+        adjustment -= (len(components) - matched_count) * 4.0
+        if reply_ready and matched_count == len(components):
+            adjustment += 14.0
+        elif reply_ready and matched_count >= 3:
+            adjustment += 7.0
+
+    return round(max(-36.0, min(36.0, adjustment)), 4)
+
+
+def _ai_target_source_seed_audit_selection_adjustment(target: "ViralTarget") -> float:
+    """Bound source-seed audit feedback for final AI target ordering.
+
+    Seed ranking already consumes the audit. This smaller adjustment preserves the
+    signal through the Pathfinder -> Viral Hunter handoff without letting seed-level
+    history override current post fit.
+    """
+    raw = _ai_target_breakdown_float(target, "pathfinder_source_seed_audit_adjustment")
+    if raw:
+        return round(max(-16.0, min(8.0, raw * 0.25)), 4)
+
+    action = _ai_target_breakdown_text(target, "pathfinder_source_seed_audit_action")
+    if action == "scale_or_keep":
+        return 2.0
+    if action == "merge_or_keep_as_companion":
+        return -4.0
+    if action == "repair_query_shape":
+        return -7.0
+    if action == "retire_or_pause":
+        return -12.0
+    return 0.0
+
+
+def _ai_target_compliance_selection_adjustment(target: "ViralTarget") -> float:
+    """Demote targets that are fit matches but not safe for direct viral work."""
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if not isinstance(breakdown, dict):
+        return 0.0
+
+    flags = set(_ai_target_breakdown_terms(target, "reply_risk_flags"))
+    risk_penalty = _ai_target_breakdown_float(target, "reply_risk_penalty")
+    manual_review = _ai_target_breakdown_float(target, "manual_review") > 0
+    medical_ad_risk = _ai_target_breakdown_float(target, "pathfinder_medical_ad_risk_score")
+    reject_reason = _ai_target_breakdown_text(target, "final_reject_reason")
+    status = str(getattr(target, "comment_status", "") or "").strip().lower()
+
+    adjustment = 0.0
+    severe_flags = flags.intersection(AI_COMPLIANCE_SEVERE_REPLY_FLAGS)
+    review_flags = flags.intersection(AI_COMPLIANCE_REVIEW_REPLY_FLAGS)
+    unknown_flags = flags - severe_flags - review_flags
+
+    if reject_reason in {"advertorial", "medical_promo"}:
+        adjustment -= 90.0
+    if severe_flags or risk_penalty <= -40.0 or status == "manual_review":
+        adjustment -= 72.0
+    elif review_flags or unknown_flags or manual_review:
+        adjustment -= 36.0
+    if flags:
+        adjustment -= min(18.0, max(0, len(flags) - 1) * 6.0)
+
+    if medical_ad_risk >= 70.0:
+        adjustment -= 48.0
+    elif medical_ad_risk >= 50.0:
+        adjustment -= 24.0
+    elif medical_ad_risk >= 40.0:
+        adjustment -= 10.0
+
+    return round(max(-100.0, min(0.0, adjustment)), 4)
+
+
+def _ai_target_selection_score(target: "ViralTarget") -> float:
+    """AI budget ordering that favors Pathfinder-fit, clinic-fit candidates."""
+    priority = float(getattr(target, "priority_score", 0.0) or 0.0)
+    axis_fit = _ai_target_breakdown_float(target, "pathfinder_axis_fit_score")
+    lens_fit = _ai_target_breakdown_float(target, "pathfinder_lens_fit_score")
+    clinic_fit = _ai_target_breakdown_float(target, "clinic_treatment_fit_score")
+    worksite_fit = _ai_target_breakdown_float(target, "worksite_efficiency_score")
+    readiness = _ai_target_breakdown_float(target, "pathfinder_viral_readiness_score")
+    actionability = _ai_target_breakdown_float(target, "pathfinder_content_actionability_score")
+
+    fit_bonus = 0.0
+    if axis_fit:
+        fit_bonus += max(-18.0, min(18.0, (axis_fit - 55.0) * 0.16))
+    if lens_fit:
+        fit_bonus += max(-14.0, min(14.0, (lens_fit - 55.0) * 0.12))
+    if clinic_fit:
+        fit_bonus += max(-16.0, min(16.0, (clinic_fit - 55.0) * 0.12))
+    if worksite_fit:
+        fit_bonus += max(-12.0, min(12.0, (worksite_fit - 55.0) * 0.10))
+    if readiness:
+        fit_bonus += max(-6.0, min(8.0, (readiness - 60.0) * 0.08))
+    if actionability:
+        fit_bonus += max(-6.0, min(8.0, (actionability - 60.0) * 0.08))
+    breakdown = getattr(target, "score_breakdown", None) or {}
+    if isinstance(breakdown, dict) and "execution_readiness_selection_adjustment" in breakdown:
+        selection_adjustment = _ai_target_breakdown_float(target, "execution_readiness_selection_adjustment")
+        priority_adjustment = _ai_target_breakdown_float(target, "execution_readiness_priority_adjustment")
+        readiness_adjustment = selection_adjustment - priority_adjustment
+    elif isinstance(breakdown, dict) and "execution_readiness_priority_adjustment" in breakdown:
+        readiness_adjustment = 0.0
+    else:
+        readiness_adjustment = _ai_target_execution_readiness_adjustment(target)
+    seed_audit_adjustment = _ai_target_source_seed_audit_selection_adjustment(target)
+    compliance_adjustment = _ai_target_compliance_selection_adjustment(target)
+    return round(priority + fit_bonus + readiness_adjustment + seed_audit_adjustment + compliance_adjustment, 4)
+
+
+def _ai_target_sort_key(target: "ViralTarget") -> Tuple[float, float, float, float, float, str]:
+    return (
+        _ai_target_selection_score(target),
+        float(getattr(target, "priority_score", 0.0) or 0.0),
+        _ai_target_breakdown_float(target, "pathfinder_axis_fit_score"),
+        _ai_target_breakdown_float(target, "pathfinder_lens_fit_score"),
+        _ai_target_breakdown_float(target, "clinic_treatment_fit_score"),
+        str(getattr(target, "url", "") or getattr(target, "id", "")),
+    )
+
+
+def _ai_target_venue_key(target: "ViralTarget") -> str:
+    """카페/블로거 venue 식별자(author). KIN(author='')·미상은 캡 제외 — 읽기 큐의
+    `_venue_diversity_key` 와 동일 규칙(공급자-venue 게이트 의도적 제외와 일관)."""
+    author = str(getattr(target, "author", "") or "").strip().lower()
+    platform = str(getattr(target, "platform", "") or "").lower()
+    if not author or platform in {"kin", "naver_kin"}:
+        return ""
+    return author
+
+
+def _select_category_floor_targets(
+    targets: List["ViralTarget"],
+    *,
+    category: str,
+    quota: int,
+    selected_urls: set[str],
+    preferred_lenses: Optional[Iterable[str]] = None,
+    venue_counts: Optional[Dict[str, int]] = None,
+    venue_cap: Optional[int] = None,
+    signal_counts: Optional[Dict[str, int]] = None,
+    signal_cap: Optional[int] = None,
+    subintent_counts: Optional[Dict[str, int]] = None,
+    subintent_cap: Optional[int] = None,
+) -> List["ViralTarget"]:
+    """Pick a category floor while preserving Pathfinder execution-lens variety."""
+    if quota <= 0:
+        return []
+
+    candidates = [
+        target
+        for target in targets
+        if (target.url or target.id) not in selected_urls
+        and _ai_quota_category(target) == category
+    ]
+    if not candidates:
+        return []
+    candidates = sorted(candidates, key=_ai_target_sort_key, reverse=True)
+
+    picked: List[ViralTarget] = []
+    local_urls: set[str] = set()
+    covered_lenses: set[str] = set()
+    venue_counts = venue_counts if venue_counts is not None else {}
+    effective_venue_cap = max(1, int(venue_cap or max(2, math.ceil(quota * 0.25))))
+    signal_counts = signal_counts if signal_counts is not None else {}
+    effective_signal_cap = max(1, int(signal_cap or max(2, math.ceil(quota * 0.25))))
+    subintent_counts = subintent_counts if subintent_counts is not None else {}
+    effective_subintent_cap = max(1, int(subintent_cap or max(2, math.ceil(quota * 0.25))))
+    preferred_lens_order = [
+        lens for lens in _normalized_ai_preferred_lenses(preferred_lenses)
+        if lens != "service"
+    ]
+
+    def can_pick(
+        target: ViralTarget,
+        *,
+        enforce_venue: bool = True,
+        enforce_signal: bool = True,
+        enforce_subintent: bool = True,
+    ) -> bool:
+        url = target.url or target.id
+        if url in local_urls:
+            return False
+        if enforce_venue:
+            vk = _ai_target_venue_key(target)
+            if vk and int(venue_counts.get(vk, 0) or 0) >= effective_venue_cap:
+                return False
+        if enforce_signal:
+            signal_key = _ai_target_treatment_signal_key(target)
+            if signal_key and int(signal_counts.get(signal_key, 0) or 0) >= effective_signal_cap:
+                return False
+        if enforce_subintent:
+            subintent_key = _ai_target_treatment_subintent_key(target)
+            if (
+                subintent_key
+                and int(subintent_counts.get(subintent_key, 0) or 0) >= effective_subintent_cap
+            ):
+                return False
+        return True
+
+    def pick(target: ViralTarget) -> None:
+        url = target.url or target.id
+        picked.append(target)
+        local_urls.add(url)
+        vk = _ai_target_venue_key(target)
+        if vk:
+            venue_counts[vk] = int(venue_counts.get(vk, 0) or 0) + 1
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key:
+            signal_counts[signal_key] = int(signal_counts.get(signal_key, 0) or 0) + 1
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key:
+            subintent_counts[subintent_key] = int(subintent_counts.get(subintent_key, 0) or 0) + 1
+
+    for preferred_lens in preferred_lens_order:
+        if len(picked) >= quota:
+            break
+        target = next(
+            (
+                candidate for candidate in candidates
+                if _ai_target_execution_lens(candidate) == preferred_lens
+                and can_pick(candidate)
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        pick(target)
+        covered_lenses.add(preferred_lens)
+
+    # First reserve one high-ranked target per non-generic lens. This keeps
+    # Pathfinder's cost/consultation/safety discoveries from being crowded out
+    # by one dominant review lane inside the same treatment axis.
+    for target in candidates:
+        if len(picked) >= quota:
+            break
+        lens = _ai_target_execution_lens(target)
+        if lens == "service" or lens in covered_lenses:
+            continue
+        if not can_pick(target):
+            continue
+        pick(target)
+        covered_lenses.add(lens)
+
+    for target in candidates:
+        if len(picked) >= quota:
+            break
+        if not can_pick(target):
+            continue
+        pick(target)
+
+    fallback_modes = (
+        {"enforce_venue": False, "enforce_signal": True, "enforce_subintent": True},
+        {"enforce_venue": False, "enforce_signal": True, "enforce_subintent": False},
+        {"enforce_venue": False, "enforce_signal": False, "enforce_subintent": True},
+        {"enforce_venue": False, "enforce_signal": False, "enforce_subintent": False},
+    )
+    for mode in fallback_modes:
+        if len(picked) >= quota:
+            break
+        for target in candidates:
+            if len(picked) >= quota:
+                break
+            if not can_pick(target, **mode):
+                continue
+            pick(target)
+
+    return picked
 
 
 def split_ai_targets_with_category_floor(
     targets: List["ViralTarget"],
     top_n: int,
     category_min_quotas: Optional[Dict[str, int]] = None,
+    priority_categories: Optional[Iterable[str]] = None,
+    preferred_lenses: Optional[Iterable[str]] = None,
 ) -> Tuple[List["ViralTarget"], List["ViralTarget"]]:
     """Split AI candidates while keeping minority core categories represented.
 
@@ -98,37 +1151,137 @@ def split_ai_targets_with_category_floor(
     if len(targets) <= top_n:
         return list(targets), []
 
-    quotas = category_min_quotas or AI_CATEGORY_MIN_QUOTAS
+    quotas = _normalized_ai_category_quotas(
+        AI_CATEGORY_MIN_QUOTAS if category_min_quotas is None else category_min_quotas
+    )
     selected: List[ViralTarget] = []
     selected_urls: set[str] = set()
+    per_category_floor_cap = max(1, math.ceil(top_n * 0.4)) if len(quotas) > 1 else top_n
+    selected_category_counts: Dict[str, int] = {}
+    ordered_categories = _ordered_ai_floor_categories(quotas, priority_categories=priority_categories)
+    floor_venue_counts: Dict[str, int] = {}
+    floor_venue_cap = max(2, math.ceil(top_n * 0.12))
+    floor_signal_counts: Dict[str, int] = {}
+    floor_signal_cap = max(2, math.ceil(top_n * 0.10))
+    floor_subintent_counts: Dict[str, int] = {}
+    floor_subintent_cap = max(2, math.ceil(top_n * 0.10))
 
-    for category, quota in quotas.items():
+    # First pass: when the AI budget is small, guarantee one candidate for each
+    # available strategic axis before any high-volume category consumes its full
+    # floor. This prevents scar/asymmetry/diet/skin handoffs from being crowded
+    # out by whichever category appears first in the quota map.
+    for category in ordered_categories:
         if len(selected) >= top_n:
             break
-        remaining_quota = min(quota, top_n - len(selected))
-        picked = 0
-        for target in targets:
-            url = target.url or target.id
-            if url in selected_urls:
-                continue
-            if _ai_quota_category(target) != category:
-                continue
+        target = next(
+            iter(
+                _select_category_floor_targets(
+                    targets,
+                    category=category,
+                    quota=1,
+                    selected_urls=selected_urls,
+                    preferred_lenses=preferred_lenses,
+                    venue_counts=floor_venue_counts,
+                    venue_cap=floor_venue_cap,
+                    signal_counts=floor_signal_counts,
+                    signal_cap=floor_signal_cap,
+                    subintent_counts=floor_subintent_counts,
+                    subintent_cap=floor_subintent_cap,
+                )
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        selected.append(target)
+        selected_urls.add(target.url or target.id)
+        selected_category_counts[category] = selected_category_counts.get(category, 0) + 1
+
+    for category in ordered_categories:
+        if len(selected) >= top_n:
+            break
+        quota = int(quotas.get(category, 0) or 0)
+        already_selected = int(selected_category_counts.get(category, 0) or 0)
+        remaining_quota = min(quota, per_category_floor_cap, top_n - len(selected))
+        remaining_quota = max(0, remaining_quota - already_selected)
+        for target in _select_category_floor_targets(
+            targets,
+            category=category,
+            quota=remaining_quota,
+            selected_urls=selected_urls,
+            preferred_lenses=preferred_lenses,
+            venue_counts=floor_venue_counts,
+            venue_cap=floor_venue_cap,
+            signal_counts=floor_signal_counts,
+            signal_cap=floor_signal_cap,
+            subintent_counts=floor_subintent_counts,
+            subintent_cap=floor_subintent_cap,
+        ):
             selected.append(target)
-            selected_urls.add(url)
-            picked += 1
-            if picked >= remaining_quota or len(selected) >= top_n:
+            selected_urls.add(target.url or target.id)
+            selected_category_counts[category] = selected_category_counts.get(category, 0) + 1
+            if len(selected) >= top_n:
                 break
 
-    for target in targets:
+    # 잔여 AI 예산 채우기 — venue(카페/블로거) 다양성 선호. 카테고리 플로어(축 보장)는
+    # 위에서 이미 확정됐고, 잔여 채움이 순수 점수순이면 한 메가카페가 AI 예산을 독점해
+    # pending 풀 자체가 한 venue 로 쏠린다(라이브: cafe pending ~50%가 상위 2개 카페).
+    # pass1 은 venue 캡을 선호하되, pass2 로 예산을 굶기지 않게 보충한다 — 읽기 큐의
+    # 하드 캡과 달리 발견 풀 활용/AI 예산 소진이 우선이다(과도한 한-venue 작업은 읽기
+    # 큐의 venue 캡이 막는다). KIN(author='')은 캡 제외.
+    ranked_rest = sorted(targets, key=_ai_target_sort_key, reverse=True)
+    venue_counts: Dict[str, int] = {}
+    for target in selected:
+        vk = _ai_target_venue_key(target)
+        if vk:
+            venue_counts[vk] = venue_counts.get(vk, 0) + 1
+    ai_venue_cap = max(3, math.ceil(top_n * 0.15))
+    signal_counts: Dict[str, int] = {}
+    for target in selected:
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key:
+            signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
+    ai_signal_cap = max(3, math.ceil(top_n * 0.15))
+    subintent_counts: Dict[str, int] = {}
+    for target in selected:
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key:
+            subintent_counts[subintent_key] = subintent_counts.get(subintent_key, 0) + 1
+    ai_subintent_cap = max(3, math.ceil(top_n * 0.15))
+    for target in ranked_rest:
         if len(selected) >= top_n:
             break
         url = target.url or target.id
         if url in selected_urls:
             continue
+        vk = _ai_target_venue_key(target)
+        if vk and venue_counts.get(vk, 0) >= ai_venue_cap:
+            continue
+        signal_key = _ai_target_treatment_signal_key(target)
+        if signal_key and signal_counts.get(signal_key, 0) >= ai_signal_cap:
+            continue
+        subintent_key = _ai_target_treatment_subintent_key(target)
+        if subintent_key and subintent_counts.get(subintent_key, 0) >= ai_subintent_cap:
+            continue
         selected.append(target)
         selected_urls.add(url)
+        if vk:
+            venue_counts[vk] = venue_counts.get(vk, 0) + 1
+        if signal_key:
+            signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
+        if subintent_key:
+            subintent_counts[subintent_key] = subintent_counts.get(subintent_key, 0) + 1
+    if len(selected) < top_n:
+        for target in ranked_rest:
+            if len(selected) >= top_n:
+                break
+            url = target.url or target.id
+            if url in selected_urls:
+                continue
+            selected.append(target)
+            selected_urls.add(url)
 
-    selected.sort(key=lambda x: x.priority_score or 0, reverse=True)
+    selected.sort(key=_ai_target_sort_key, reverse=True)
     rest = [target for target in targets if (target.url or target.id) not in selected_urls]
     return selected, rest
 
@@ -136,6 +1289,37 @@ def split_ai_targets_with_category_floor(
 # ============================================
 # 데이터 클래스
 # ============================================
+def _canonical_viral_target_category(
+    raw_category: Optional[str],
+    *,
+    title: str = "",
+    content_preview: str = "",
+    matched_keywords: Optional[Iterable[str]] = None,
+) -> str:
+    """Normalize ViralTarget categories to the current Pathfinder taxonomy."""
+    raw = str(raw_category or "").strip()
+    focus_categories = set(getattr(GYULIM_KEYWORD_PROFILE, "focus_categories", ()) or ())
+    if raw in focus_categories or raw == "경쟁사_역공략":
+        return raw
+
+    text_parts = [
+        str(title or ""),
+        str(content_preview or ""),
+        *[str(keyword or "") for keyword in (matched_keywords or [])],
+    ]
+    text = " ".join(part for part in text_parts if part.strip())
+    detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+        GYULIM_KEYWORD_PROFILE.detect_category(text, default="") if text else ""
+    )
+    if detected in focus_categories or GYULIM_KEYWORD_PROFILE.profile_for(detected):
+        return detected
+
+    normalized = GYULIM_KEYWORD_PROFILE.normalize_category(raw)
+    if normalized in focus_categories or GYULIM_KEYWORD_PROFILE.profile_for(normalized):
+        return normalized
+    return GYULIM_KEYWORD_PROFILE.normalize_category("기타")
+
+
 @dataclass
 class ViralTarget:
     """바이럴 마케팅 타겟"""
@@ -177,37 +1361,15 @@ class ViralTarget:
     ai_post_type: str = ""
     ai_competitor: bool = False
     ai_competitor_name: str = ""
+    canonical_url: str = ""
 
     def __post_init__(self):
-        # [Q11/2026-04-28] 카테고리 자동 정규화 — title까지 보고 미용 카테고리(다이어트/피부/비대칭) 정확히 분류.
-        # 시드 키워드만 보면 "산후조리원/지역명"이 모두 "기타"로 떨어지는 문제 해결.
-        try:
-            from services.category_normalizer import normalize_category, STANDARD_CATEGORIES
-        except ImportError:
-            return
-
-        if self.category and self.category != "기타" and self.category in STANDARD_CATEGORIES:
-            return  # 명시적 표준 카테고리 그대로
-
-        # 비표준 값이면 정규화
-        if self.category and self.category != "기타":
-            self.category = normalize_category(self.category)
-            if self.category in STANDARD_CATEGORIES and self.category != "기타":
-                return
-
-        # "기타" 폴백 — title + matched_keywords[0] 둘 다 시도, 미용 카테고리 우선
-        candidates = []
-        if self.title:
-            candidates.append(self.title)
-        if self.matched_keywords:
-            candidates.append(self.matched_keywords[0])
-
-        for raw in candidates:
-            cat = normalize_category(raw)
-            if cat != "기타":
-                self.category = cat
-                return
-        self.category = "기타"
+        self.category = _canonical_viral_target_category(
+            self.category,
+            title=self.title,
+            content_preview=self.content_preview,
+            matched_keywords=self.matched_keywords,
+        )
 
     @property
     def id(self) -> str:
@@ -722,8 +1884,10 @@ class NaverUnifiedSearch:
             "current_delay": f"{self._adaptive_delay:.1f}초"
         }
 
-    def _cache_namespace(self, platform: str) -> str:
-        return f"{platform}:sortmix_v2"
+    def _cache_namespace(self, platform: str, max_results: int) -> str:
+        """Keep a shallow cached search from silently capping a deeper request."""
+        depth = max(1, int(max_results or 1))
+        return f"{platform}:sortmix_v3:depth={depth}"
 
     def _sorts_for_platform(self, platform: str) -> Tuple[str, ...]:
         return self.SORT_OPTIONS.get(platform, ("date",))
@@ -824,33 +1988,67 @@ class NaverUnifiedSearch:
         )
         return merged_targets[:max_results]
 
-    def _api_collect_multi_sort(self, platform: str, keyword: str, max_results: int) -> List[ViralTarget]:
+    def _api_collect_multi_sort(
+        self,
+        platform: str,
+        keyword: str,
+        max_results: int,
+        *,
+        start_at: int = 1,
+        exclude_urls: Optional[set[str]] = None,
+        max_pages: Optional[int] = None,
+    ) -> List[ViralTarget]:
         all_targets: List[ViralTarget] = []
         for sort_type in self._sorts_for_platform(platform):
-            all_targets.extend(self._api_collect(platform, keyword, max_results, sort_type=sort_type))
+            all_targets.extend(
+                self._api_collect(
+                    platform,
+                    keyword,
+                    max_results,
+                    sort_type=sort_type,
+                    start_at=start_at,
+                    exclude_urls=exclude_urls,
+                    max_pages=max_pages,
+                )
+            )
         return self._merge_sort_results(all_targets, max_results)
 
     def _api_collect(self, platform: str, keyword: str, max_results: int,
-                     sort_type: str = "date") -> List[ViralTarget]:
+                     sort_type: str = "date", *, start_at: int = 1,
+                     exclude_urls: Optional[set[str]] = None,
+                     max_pages: Optional[int] = None) -> List[ViralTarget]:
         """공식 API로 N개까지 수집. 페이지당 display=100, start는 1/101/201…"""
         targets: List[ViralTarget] = []
         seen = set()
+        excluded = set(exclude_urls or ())
         display = 100
         # Naver API는 start + display ≤ 1000까지만 허용
         max_results = min(max_results, 900)
 
-        start = 1
-        while len(targets) < max_results and start <= 1000:
+        start = max(1, min(1000, int(start_at or 1)))
+        pages_fetched = 0
+        while (
+            len(targets) < max_results
+            and start <= 1000
+            and (max_pages is None or pages_fetched < max_pages)
+        ):
             fetch_n = min(display, max_results - len(targets), 1001 - start)
             if fetch_n <= 0:
                 break
             items = self._api_fetch(platform, keyword, display=fetch_n, start=start, sort=sort_type)
+            pages_fetched += 1
             if not items:
                 break
 
+            before_add_count = len(targets)
+
             for idx, item in enumerate(items):
                 link = item.get('link', '') or ''
-                if not link or link in seen:
+                canonical_link = canonicalize_viral_url(link) or link
+                if not link or canonical_link in seen:
+                    continue
+                seen.add(canonical_link)
+                if link in excluded or canonical_link in excluded:
                     continue
                 title = self._strip_html(item.get('title', ''))
                 if not title or len(title) < 5:
@@ -864,7 +2062,6 @@ class NaverUnifiedSearch:
                 else:
                     author = ''
 
-                seen.add(link)
                 rank = start + idx
                 exposure_score = self._estimate_exposure_score(platform, rank, sort_type)
                 targets.append(ViralTarget(
@@ -885,6 +2082,11 @@ class NaverUnifiedSearch:
                 if len(targets) >= max_results:
                     break
 
+            # 이번 배치에서 추가된 유효 타겟이 하나도 없다면, 무의미한 페이징 호출 중단을 위해 조기 탈출
+            if len(targets) == before_add_count and not excluded:
+                logger.info(f"[{platform}] '{keyword}' {sort_type} 스캔 조기 종료: 신규 유효 타겟 없음 (누적: {len(targets)}/{max_results})")
+                break
+
             if len(items) < fetch_n:
                 break  # 결과 끝
             start += fetch_n
@@ -902,7 +2104,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("cafe"), keyword)
+            cached = self.cache.get(self._cache_namespace("cafe", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Cafe] '{keyword}' 캐시 히트")
@@ -913,7 +2115,7 @@ class NaverUnifiedSearch:
 
         # 캐시 저장
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("cafe"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("cafe", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Cafe] '{keyword}' -> {len(targets)}개 발견")
@@ -930,7 +2132,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("blog"), keyword)
+            cached = self.cache.get(self._cache_namespace("blog", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Blog] '{keyword}' 캐시 히트")
@@ -940,7 +2142,7 @@ class NaverUnifiedSearch:
         targets = self._api_collect_multi_sort("blog", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("blog"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("blog", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Blog] '{keyword}' -> {len(targets)}개 발견")
@@ -957,7 +2159,7 @@ class NaverUnifiedSearch:
         """
         # 캐시 체크
         if self.use_cache and self.cache:
-            cached = self.cache.get(self._cache_namespace("kin"), keyword)
+            cached = self.cache.get(self._cache_namespace("kin", max_results), keyword)
             if cached:
                 self._cache_hits += 1
                 logger.debug(f"[Kin] '{keyword}' 캐시 히트")
@@ -967,7 +2169,7 @@ class NaverUnifiedSearch:
         targets = self._api_collect_multi_sort("kin", keyword, max_results)
 
         if self.use_cache and self.cache and targets:
-            self.cache.set(self._cache_namespace("kin"), keyword, [t.to_dict() for t in targets])
+            self.cache.set(self._cache_namespace("kin", max_results), keyword, [t.to_dict() for t in targets])
 
         self._check_blocking_status(len(targets))
         logger.info(f"[Kin] '{keyword}' -> {len(targets)}개 발견")
@@ -978,6 +2180,7 @@ class NaverUnifiedSearch:
         keyword: str,
         max_per_platform: int = 100,
         include_blog: bool = True,
+        platform_limits: Optional[Dict[str, int]] = None,
     ) -> List[ViralTarget]:
         """카페·블로그·지식인 통합 검색.
 
@@ -985,16 +2188,20 @@ class NaverUnifiedSearch:
         다만 검색 노출 커버리지를 위해 기본 수집하되 플랫폼 가중치는 낮게 둔다.
         """
         all_targets = []
+        platform_limits = platform_limits or {}
+        cafe_limit = int(platform_limits.get("cafe", max_per_platform) or 0)
+        blog_limit = int(platform_limits.get("blog", max_per_platform) or 0)
+        kin_limit = int(platform_limits.get("kin", max_per_platform) or 0)
 
-        cafe_results = self.search_cafe(keyword, max_per_platform)
+        cafe_results = self.search_cafe(keyword, cafe_limit) if cafe_limit > 0 else []
         all_targets.extend(cafe_results)
 
         blog_results: List[ViralTarget] = []
-        if include_blog:
-            blog_results = self.search_blog(keyword, max_per_platform)
+        if include_blog and blog_limit > 0:
+            blog_results = self.search_blog(keyword, blog_limit)
             all_targets.extend(blog_results)
 
-        kin_results = self.search_kin(keyword, max_per_platform)
+        kin_results = self.search_kin(keyword, kin_limit) if kin_limit > 0 else []
         all_targets.extend(kin_results)
 
         logger.info(
@@ -1002,6 +2209,466 @@ class NaverUnifiedSearch:
             f"(카페:{len(cafe_results)}, 블로그:{len(blog_results)}, 지식인:{len(kin_results)})"
         )
         return all_targets
+
+    def search_all_novelty_backfill(
+        self,
+        keyword: str,
+        *,
+        include_blog: bool,
+        platform_limits: Dict[str, int],
+        exclude_urls: set[str],
+        per_platform_limit: int = 60,
+        max_pages_per_sort: int = 2,
+    ) -> List[ViralTarget]:
+        """Probe below a saturated first pass and return only unseen URLs.
+
+        This deliberately bypasses the 24-hour first-pass cache. ViralHunter
+        calls it only for a bounded number of high-overlap query plans.
+        """
+        all_targets: List[ViralTarget] = []
+        limits = dict(platform_limits or {})
+        for platform in ("cafe", "blog", "kin"):
+            if platform == "blog" and not include_blog:
+                continue
+            initial_limit = max(0, int(limits.get(platform, 0) or 0))
+            if initial_limit <= 0:
+                continue
+            start_at = min(1000, initial_limit + 1)
+            remaining_window = max(0, 1001 - start_at)
+            fetch_limit = min(
+                max(1, int(per_platform_limit or 1)),
+                max(20, int(math.ceil(initial_limit * 0.60))),
+                remaining_window,
+            )
+            if fetch_limit <= 0:
+                continue
+            all_targets.extend(
+                self._api_collect_multi_sort(
+                    platform,
+                    keyword,
+                    fetch_limit,
+                    start_at=start_at,
+                    exclude_urls=exclude_urls,
+                    max_pages=max(1, int(max_pages_per_sort or 1)),
+                )
+            )
+        unique_targets: List[ViralTarget] = []
+        seen_urls: set[str] = set()
+        for target in all_targets:
+            identity = canonicalize_viral_url(target.url) or target.url
+            if not identity or identity in seen_urls:
+                continue
+            seen_urls.add(identity)
+            unique_targets.append(target)
+        return unique_targets
+
+
+# ============================================
+# 공개 표면 본문 취득 (KIN/blog — 로그인 불필요)
+# ============================================
+NAVER_BODY_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+}
+
+
+def blog_postview_url(url: str) -> Optional[str]:
+    """blog.naver.com 글 URL을 iframe 없는 PostView URL로 변환. 비대상이면 None."""
+    text = url or ""
+    if "blog.naver.com" not in text:
+        return None
+    if "PostView.naver" in text and "blogId=" in text and "logNo=" in text:
+        return text
+    m = re.search(r"blog\.naver\.com/([^/?#]+)/(\d{6,})", text)
+    if not m:
+        m = re.search(r"blogId=([^&#]+).*?logNo=(\d{6,})", text)
+    if not m:
+        return None
+    return f"https://blog.naver.com/PostView.naver?blogId={m.group(1)}&logNo={m.group(2)}"
+
+
+def _fetched_node_text(node) -> str:
+    if node is None:
+        return ""
+    text = node.get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_kin_body_from_html(
+    html: str,
+    max_answers: int = 2,
+    question_chars: int = 600,
+    answer_chars: int = 260,
+) -> str:
+    """지식인 상세 HTML에서 질문 본문 + 상위 답변 요약을 추출.
+
+    답변 텍스트를 함께 싣는 이유: KIN 광고/업체 답변 신호 대부분이 질문이 아닌
+    답변 영역에 있어, snippet만으로는 광고 게이트와 AI 판정이 보지 못한다.
+    """
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    question = _fetched_node_text(soup.select_one(".questionDetail"))[:question_chars]
+    parts: List[str] = []
+    if question:
+        parts.append(question)
+    for idx, node in enumerate(soup.select(".answerDetail")[:max_answers], 1):
+        answer = _fetched_node_text(node)[:answer_chars]
+        if answer:
+            parts.append(f"[기존답변{idx}] {answer}")
+    return " ".join(parts).strip()
+
+
+def extract_blog_body_from_html(html: str, max_chars: int = 900) -> str:
+    """블로그 PostView HTML에서 본문 텍스트를 추출 (스마트에디터/구버전 모두)."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    node = soup.select_one(".se-main-container") or soup.select_one("#postViewArea")
+    return _fetched_node_text(node)[:max_chars]
+
+
+# 게시일 표기: "2026.05.25", "2026. 6. 10. 2:49" 등 (라이브 검증 2026-06-13)
+NAVER_POST_DATE_RE = re.compile(r"(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})")
+
+
+def _yyyymmdd_from_text(text: str) -> str:
+    m = NAVER_POST_DATE_RE.search(text or "")
+    if not m:
+        return ""
+    try:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        datetime(year, month, day)
+    except ValueError:
+        return ""
+    return f"{year:04d}{month:02d}{day:02d}"
+
+
+def extract_kin_post_date_from_html(html: str) -> str:
+    """지식인 상세 HTML에서 질문 작성일을 YYYYMMDD로 추출 (없으면 빈 문자열).
+
+    질문 메타: <span class="infoItem"><span class="blind">작성일</span>2026.05.25</span>
+    검색 API는 KIN 게시일을 주지 않아 sim 정렬로 발굴된 수년 전 질문이
+    '방금 발견 = 신선' 보너스를 받아왔다 — enrichment에서 실제 날짜를 복원한다.
+    """
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    for node in soup.select(".infoItem"):
+        blind = node.select_one(".blind")
+        if blind and "작성일" in blind.get_text():
+            return _yyyymmdd_from_text(node.get_text(" ", strip=True))
+    m = re.search(r"작성일</span>\s*([0-9.\s]{8,14})", html)
+    if m:
+        return _yyyymmdd_from_text(m.group(1))
+    return ""
+
+
+def extract_kin_view_count_from_html(html: str) -> Optional[int]:
+    """지식인 질문 메타의 '조회수 N'을 추출 (없으면 None)."""
+    if not html:
+        return None
+    m = re.search(r"조회수[^0-9]{0,10}([\d,]+)", html)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def extract_blog_post_date_from_html(html: str) -> str:
+    """블로그 PostView HTML에서 게시일을 YYYYMMDD로 추출 (없으면 빈 문자열)."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return ""
+    node = soup.select_one(".se_publishDate") or soup.select_one(".date")
+    return _yyyymmdd_from_text(_fetched_node_text(node))
+
+
+def cafe_article_api_url(url: str) -> Optional[str]:
+    """카페 글 URL을 공개 article JSON API URL로 변환. 비대상이면 None.
+
+    공개 카페는 로그인 없이 200 + contentHtml을 주고, 멤버 전용 카페는 401을
+    반환한다(라이브 검증: 청주맘 계열 공개 / cjcjmommy 멤버 전용) — 호출자는
+    빈 결과로 fail-soft한다.
+    """
+    text = url or ""
+    if "cafe.naver.com" not in text:
+        return None
+    m = re.search(r"clubid=(\d+).*?articleid=(\d+)", text, re.IGNORECASE)
+    if m:
+        return (
+            "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/"
+            f"cafes/{m.group(1)}/articles/{m.group(2)}?useCafeId=true"
+        )
+    m = re.search(r"cafe\.naver\.com/(?:ca-fe/web/cafes/)?([\w.-]+)(?:/articles)?/(\d{3,})", text)
+    if not m:
+        return None
+    return (
+        "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/"
+        f"cafes/{m.group(1)}/articles/{m.group(2)}?useCafeId=false"
+    )
+
+
+def _cafe_article_from_json(json_text: str) -> Dict[str, Any]:
+    """카페 article API 응답(JSON)에서 result.article dict를 추출 (실패 시 {})."""
+    if not json_text:
+        return {}
+    try:
+        data = json.loads(json_text)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    article = (data.get("result") or {}).get("article") or {}
+    return article if isinstance(article, dict) else {}
+
+
+def extract_cafe_body_from_json(json_text: str, max_chars: int = 900) -> str:
+    """카페 article API 응답(JSON)에서 본문 텍스트를 추출."""
+    article = _cafe_article_from_json(json_text)
+    content = article.get("contentHtml") or article.get("content") or ""
+    if not content:
+        return ""
+    try:
+        soup = BeautifulSoup(str(content), "html.parser")
+    except Exception:
+        return ""
+    return _fetched_node_text(soup)[:max_chars]
+
+
+def extract_cafe_post_date_from_json(json_text: str) -> str:
+    """카페 article API의 writeDate(epoch ms)를 YYYYMMDD로 변환 (없으면 빈 문자열)."""
+    write_date = _cafe_article_from_json(json_text).get("writeDate")
+    try:
+        millis = float(write_date)
+    except (TypeError, ValueError):
+        return ""
+    if millis <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(millis / 1000.0).strftime("%Y%m%d")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def fetch_naver_post_detail(
+    url: str,
+    platform: str,
+    timeout: float = 8.0,
+    fetcher=None,
+) -> Dict[str, Any]:
+    """KIN/blog/공개 cafe 페이지에서 본문 + 게시일 + 참여 지표를 한 번의 fetch로 취득.
+
+    반환: {"body": str, "posted_date": "YYYYMMDD"|"" , "comment_count": int|None,
+           "view_count": int|None}. 실패는 빈 값으로 fail-soft.
+    게시일/참여 지표가 필요한 이유: 검색 API는 KIN/cafe 게시일을 주지 않아
+    타이밍 윈도우 게이트가 구조적으로 장님이었다 (sim 정렬이 끌어온 수년 전
+    글이 '발견 직후 = 신선' 보너스를 받음 — 라이브 검증 2026-06-13).
+    """
+    platform = (platform or "").lower()
+    detail: Dict[str, Any] = {
+        "body": "", "posted_date": "", "comment_count": None, "view_count": None,
+    }
+
+    def _default_fetch(target_url: str) -> str:
+        headers = dict(NAVER_BODY_FETCH_HEADERS)
+        if "apis.naver.com" in target_url:
+            headers["Referer"] = "https://cafe.naver.com/"
+        response = requests.get(target_url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return ""
+        return response.text or ""
+
+    fetch = fetcher or _default_fetch
+    try:
+        if platform == "kin":
+            html = fetch(url)
+            detail["body"] = extract_kin_body_from_html(html)
+            detail["posted_date"] = extract_kin_post_date_from_html(html)
+            detail["view_count"] = extract_kin_view_count_from_html(html)
+            if html:
+                try:
+                    answer_nodes = BeautifulSoup(html, "html.parser").select(".answerDetail")
+                    detail["comment_count"] = len(answer_nodes)
+                except Exception:
+                    pass
+        elif platform == "blog":
+            postview = blog_postview_url(url)
+            if postview:
+                html = fetch(postview)
+                detail["body"] = extract_blog_body_from_html(html)
+                detail["posted_date"] = extract_blog_post_date_from_html(html)
+        elif platform in {"cafe", "naver_cafe"}:
+            api_url = cafe_article_api_url(url)
+            if api_url:
+                payload = fetch(api_url)
+                detail["body"] = extract_cafe_body_from_json(payload)
+                detail["posted_date"] = extract_cafe_post_date_from_json(payload)
+                article = _cafe_article_from_json(payload)
+                for src_key, dst_key in (("commentCount", "comment_count"), ("readCount", "view_count")):
+                    try:
+                        detail[dst_key] = int(article.get(src_key))
+                    except (TypeError, ValueError):
+                        pass
+    except Exception as e:
+        logger.debug(f"본문 취득 실패({platform}, {url[:60]}): {e}")
+    return detail
+
+
+def fetch_naver_post_body(
+    url: str,
+    platform: str,
+    timeout: float = 8.0,
+    fetcher=None,
+) -> str:
+    """KIN/blog/공개 cafe 페이지에서 본문 텍스트 취득. 실패는 빈 문자열로 fail-soft."""
+    return fetch_naver_post_detail(url, platform, timeout=timeout, fetcher=fetcher)["body"]
+
+
+# pending 큐 체류 TTL (일). 게시물 나이는 발견/enrichment 게이트(_assess_timing_window)가
+# 판정하고, 여기는 '큐에 들어온 뒤 직원이 손대지 않은 기간'만 판정한다 — 책임 분리.
+# cafe 댓글 스레드가 가장 빨리 식고, KIN은 검색 유입이 오래 가서 더 길다.
+# 라이브 근거(2026-06-13): pending 4,002건 중 3,484건(87%)이 31~90일 적체,
+# 그중 2,510건은 2026-04 분류 개선 이전의 '기타' 레거시 — TTL 부재가 원인.
+PENDING_TTL_DAYS = {
+    "cafe": 30,
+    "naver_cafe": 30,
+    "blog": 45,
+    "kin": 45,
+    "naver_kin": 45,
+}
+PENDING_TTL_DEFAULT_DAYS = 45
+
+# 게시물 자체 나이 상한. posted_at이 알려진 pending이 이 일수보다 오래된 글이면
+# 발견 시점(discovered_at)과 무관하게 만료한다 — 댓글 적시성 윈도우가 명백히 지난
+# 글. 라이브 근거(2026-06-13): 검색 sim 정렬이 2007~2016년 KIN 질문을 끌어와
+# pending에 잔류(53/73 이미 답변 완료). 270일은 보수적(계절성 후기 재유입 여지를
+# 남기되 1년+ 묵은 글은 확실히 차단).
+PENDING_POST_AGE_TTL_DAYS = 270
+
+# 디스커버리 감사의 "제로수율 시드" 판정 최소 신규 발견 수.
+# 한 런의 발견은 ~88%가 REdiscovery(이미 판정된 안정 상태 URL의 재발견)이므로
+# 전체 discovered 로 제로수율을 판정하면 신규 SERP 영역을 전혀 탐색하지 않고
+# 옛 URL만 재발견한 시드(예: 라이브 scan80에서 `청주 자동차사고 한의원` 발견 241/
+# 신규 0)나, 재발견된 posted 로 이미 가치를 실현한 성숙 시드(`청주 체형교정 추천`
+# 전체기간 23%·16건 posted)까지 "제로수율"로 잘못 표시된다(라이브: 25건 중 21건
+# 오탐). 신규 발견(fresh_discovered)이 이 임계 이상이고 작업 가능 산출(pending
+# 버킷=posted 포함)이 0인 시드만 — 즉 "실제 신규 영역을 탐색했는데 전환 0" 시드만 —
+# 제로수율로 본다. pending==0 조건이 재발견-posted 로 성숙한 시드를 그대로 보호한다.
+ZERO_YIELD_MIN_FRESH_DISCOVERED = 20
+
+
+def expire_stale_pending_targets(
+    db_path: str,
+    now: Optional[datetime] = None,
+    ttl_days: Optional[Dict[str, int]] = None,
+    default_ttl_days: int = PENDING_TTL_DEFAULT_DAYS,
+    post_age_ttl_days: int = PENDING_POST_AGE_TTL_DAYS,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """댓글 적시성 윈도우가 지난 pending 행을 filtered_out_stale_window로 만료.
+
+    두 축으로 만료한다 (책임 분리):
+    - queue-dwell: 발견 후 직원이 손대지 않은 채 plataform TTL(cafe 30 / blog·kin 45)이 지남
+    - post-age: posted_at이 알려졌고 게시물 자체가 post_age_ttl_days(270)보다 오래됨
+      — 검색 sim 정렬이 끌어온 수년 전 글이 enrichment fetch 예산/길이 가드를 비껴가
+      pending에 잔류하던 갭을 메운다.
+
+    rescue 레인은 raw_backlog/needs_ai_retry만 소비하므로 만료 행이 자동
+    재승격되는 루프는 없다. lineage는 score_breakdown에 보존한다 (삭제 금지).
+    """
+    now = now or datetime.now()
+    ttl_map = dict(PENDING_TTL_DAYS)
+    if ttl_days:
+        ttl_map.update(ttl_days)
+
+    stats: Dict[str, Any] = {
+        "checked": 0, "expired": 0, "expired_dwell": 0, "expired_post_age": 0,
+        "by_platform": {}, "by_category": {},
+    }
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, platform, category, discovered_at, first_seen_at,
+                   posted_at, score_breakdown
+              FROM viral_targets
+             WHERE comment_status = 'pending'
+            """
+        ).fetchall()
+        stats["checked"] = len(rows)
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        for row in rows:
+            discovered = CommentableFilter._parse_datetime(
+                row["discovered_at"] or row["first_seen_at"], now
+            )
+            ttl = ttl_map.get((row["platform"] or "").lower(), default_ttl_days)
+            dwell_age = (now - discovered).total_seconds() / 86400.0 if discovered else None
+
+            posted = CommentableFilter._parse_datetime(row["posted_at"], now)
+            post_age = (now - posted).total_seconds() / 86400.0 if posted else None
+
+            reason = None
+            if dwell_age is not None and dwell_age > ttl:
+                reason = "pending_ttl"
+            elif post_age is not None and post_age > post_age_ttl_days:
+                reason = "pending_post_age"
+            if reason is None:
+                continue
+
+            stats["expired"] += 1
+            stats["expired_dwell" if reason == "pending_ttl" else "expired_post_age"] += 1
+            platform = (row["platform"] or "?").lower()
+            category = row["category"] or "기타"
+            stats["by_platform"][platform] = stats["by_platform"].get(platform, 0) + 1
+            stats["by_category"][category] = stats["by_category"].get(category, 0) + 1
+            if dry_run:
+                continue
+            try:
+                breakdown = json.loads(row["score_breakdown"] or "{}") or {}
+            except (TypeError, ValueError):
+                breakdown = {}
+            breakdown.update({
+                "expired_from": "pending",
+                "expired_reason": reason,
+                "pending_age_days": round(dwell_age, 1) if dwell_age is not None else None,
+                "post_age_days": round(post_age, 1) if post_age is not None else None,
+                "pending_ttl_days": ttl,
+                "expired_at": now_str,
+            })
+            conn.execute(
+                """
+                UPDATE viral_targets
+                   SET comment_status = 'filtered_out_stale_window',
+                       is_commentable = 0,
+                       score_breakdown = ?,
+                       updated_at = ?
+                 WHERE id = ? AND comment_status = 'pending'
+                """,
+                (json.dumps(breakdown, ensure_ascii=False), now_str, row["id"]),
+            )
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    return stats
 
 
 # ============================================
@@ -1051,6 +2718,7 @@ class CommentableFilter:
         "배고플땐 먹기", "음식엔 죄가 없다", "빠지고 있다",
         "순서만 잘 지켜도", "왜 먹는데", "성공 비법", "이제 가능합니다",
         "부담없이 건강하게",
+        "차앤차는 전국", "전국 지점이 위치", "전국 지점",
     ]
 
     KIN_PROVIDER_ANSWER_PATTERNS = [
@@ -1084,19 +2752,34 @@ class CommentableFilter:
         "상담문의 :", "상담 문의 :", "open.kakao.com", "카카오톡 오픈채팅",
         "현재 할인가", "구입할수 있는 방법", "영양제 한눈에 보기", "필수 <다이어트>",
         "운영 중인", "전문블로거", "결론부터", "연락주시",
+        "환자분이 내원", "환자분이 내원해주시면", "처방 한의원",
+        "만족도가 상당히", "일반적으로 3개월", "3단계에 걸쳐",
+        "비용 절감 혜택", "네이버에서", "검색하셔서", "전화 상담",
+        "전화상담", "상담받아 보세요", "상담 받아 보세요",
+        "방문해서 상담", "전문의 소견", "방치하면 만성",
+        "초기에 한의원", "비용 부담 없이", "자동차보험으로 상담",
+        "차앤차는 전국", "전국 지점이 위치", "전국 지점",
+        "교통사고보험한의원", "교통사고후물리치료", "자보한의원",
     ]
 
     KIN_RECOMMENDATION_SPAM_PATTERNS = [
         "후기 잘보고", "부작용없고 효과", "효과 좋은 곳", "꼭 가보시길",
         "가격이 부담스럽지도", "무지 유명한 곳", "입소문난", "유명 다이어트한의원",
         "확실하게 좋은 곳", "도움 받았다는", "도움을 받았다는", "관리좀 받으려",
+        "효과 좋아요", "효과 좋았", "추천드려요", "추천드립니다",
+        "가격도 괜찮", "친절하고 가격", "금액이 대박", "무제한으로",
+        "비만패키지", "할인이벤트", "할인 이벤트", "잘 봐주시는",
+        "꼼꼼하고 친절", "상담 한번 받아", "상담받아 보세요",
+        "방문해서 상담", "유명하니", "유명한 곳으로",
     ]
 
     COMMERCIAL_CTA_PATTERNS = [
         "진료 예약", "예약하기", "예약 문의", "상담 신청", "상담문의", "문의주세요",
         "문의 주세요", "언제든 문의", "내원해보세요", "방문해보세요", "전화상담",
         "홈페이지", "바로가기", "지금 바로", "상담 가능", "방문 상담 가능",
-        "카카오톡 상담", "네이버 예약", "온라인 예약",
+        "카카오톡 상담", "네이버 예약", "온라인 예약", "전화로 예약",
+        "예약제로 운영", "문의하시면", "연락주세요", "상담 한번",
+        "상담받아 보세요", "상담 받아보세요", "검색하셔서",
     ]
 
     LOCAL_SEO_FOOTER_PATTERNS = [
@@ -1111,16 +2794,48 @@ class CommentableFilter:
         "본원에서는", "본원은", "치료를 진행", "치료 프로그램", "맞춤 처방",
         "회복을 위한", "관리가 가능한", "관리 가능한", "치료와 관리",
         "치료와 후유증 관리", "전인적", "종합적 관리", "한의치료",
+        "주소", "오시는 길", "오시는길", "진료시간", "영업시간",
+        "대표원장", "의료진 소개", "둘러보기", "위치 안내",
+    ]
+
+    ANSWER_SNIPPET_AD_REGEXES = [
+        r"(?:저도|저는|제가).{0,50}"
+        r"(?:효과\s*좋|먹고|복용|상담받고\s*치료|상담\s*받고\s*치료|"
+        r"치료받았|치료\s*받았|다녔|추천(?:드려|드립니다|합니다|하게|해요))",
+        r"(?<![가-힣A-Za-z0-9ㄱ-ㅎ])"
+        r"(?!(?:어느|어디|무슨|좋은|잘하는|근처|가까운)(?:한의원|한방병원|병원|내과|클리닉))"
+        r"[가-힣A-Za-z0-9ㄱ-ㅎ]{2,}(?:한의원|한방병원|병원|내과|클리닉)"
+        r"(?:이|가|은|는|도|에서|쪽|점).{0,80}"
+        r"(?:상담\s*한번|상담받아|방문해서\s*상담|네이버에서|검색하셔서|전화\s*상담|"
+        r"비용\s*부담\s*없이|자동차보험으로|잘\s*봐주|유명하니)",
+        r"(?:할인이벤트|할인\s*이벤트|비만패키지|금액이\s*대박|무제한|현재\s*할인가|"
+        r"비용\s*절감\s*혜택|최저가|할인\s*혜택).{0,80}"
+        r"(?:한의원|병원|카복시|고주파|다이어트|한약)",
+        r"(?:운동없이|운동\s*없이|요요없는|요요\s*없는).{0,60}"
+        r"(?:비만도\s*질병|무조건\s*빨리|전화\s*상담|검색하셔서)",
+        r"(?:규림한의원|ㄱㄹ한의원).{0,80}"
+        r"(?:추천|상담|치료|꼼꼼|친절|자동차보험|방문)",
     ]
 
     MEDICAL_PROVIDER_TERMS = [
         "병원", "한방병원", "한의원", "의원", "피부과", "클리닉",
+        "한약", "다이어트한약", "비만클리닉",
     ]
 
     MEDICAL_PROMO_TITLE_PATTERNS = [
         "회복을 위한", "관리를 위한", "관리 가능한", "관리가 가능한",
         "치료와 관리", "통증치료", "통증 치료", "후유증 관리",
         "한의치료", "맞춤치료", "맞춤 치료", "체계적인", "꼼꼼한",
+        "야간진료", "야간 진료", "주말진료", "주말 진료",
+        "예약가능", "예약 가능", "예약 가능해요", "진료 예약", "진료예약",
+        "결정적인 실수", "올바른 식습관", "건강을 잃기전에", "건강을 잃기 전에",
+        "찾아오세요", "유명한곳", "유명한 곳",
+    ]
+
+    BLOG_MEDICAL_SEO_TITLE_PATTERNS = [
+        "문제가 아닌", "이유", "원인", "증상", "필요성", "개선",
+        "치료 방법", "치료방법", "치료법", "관리법", "알아보기", "알아보세요",
+        "되찾", "균형", "체계적인", "정확한", "건강을 위한",
     ]
 
     LEGAL_PROMO_PATTERNS = [
@@ -1132,6 +2847,7 @@ class CommentableFilter:
     BRAND_PROMO_PATTERNS = [
         "쥬비스", "인치 감량", "부작용없는", "업력", "최저가로 파는",
         "처방병원", "비댓문의", "비댓 문의", "카페는 위고비", "나만의닥터",
+        "차앤차",
     ]
 
     STRONG_USER_INQUIRY_PATTERNS = [
@@ -1184,6 +2900,19 @@ class CommentableFilter:
         "여드름", "흉터", "후유증", "비만", "체중", "통증", "불면", "두통", "아토피",
     ]
 
+    # 1인칭 환자 경험담(직접 받아본 후기) 표지. 규림 바이럴 댓글은 '저도 다녀왔는데 좋았어요'
+    # 톤의 또래 경험 공유이므로, 질문/결정 의도가 없더라도 진짜 경험 공유 글은 댓글을 달
+    # 좋은 대상이다. 단독으로 의도 점수를 주지 않고 반드시 진료축 앵커와 함께만 가산한다
+    # (flat global prior 금지 — per-axis 증거).
+    FIRST_PERSON_EXPERIENCE_PATTERNS = [
+        "내돈내산",
+        "다녀왔", "다녀온", "다녔는데", "다녔어",
+        "받아봤", "받았는데", "받았어요", "받고나서", "받은 후", "받은후",
+        "치료받았", "치료했어", "맞아봤", "맞았어", "먹어봤", "해봤어", "해봤는데",
+        "효과 봤", "효과봤", "효과 좋았", "효과좋았", "후기 남겨", "후기남겨",
+        "후기 올려", "경험담", "성공후기", "성공 후기",
+    ]
+
     COMPARISON_EVALUATION_PATTERNS = [
         "나을까요", "좋을까요", "괜찮을까요", "효과", "후기", "비교",
         "피부과", "한의원", "병원", "한약", "양약", "보톡스", "위고비",
@@ -1199,6 +2928,38 @@ class CommentableFilter:
     MIN_TIMING_WINDOW_SCORE = 28
     MIN_JOURNEY_FIT_SCORE = 35
     MIN_QUALIFICATION_FIT_SCORE = 30
+    MIN_CLINIC_TREATMENT_FIT_SCORE = 34
+    MIN_WORKSITE_EFFICIENCY_SCORE = 36
+    FINAL_REJECT_STATUSES = {
+        "advertorial": "filtered_out_ad",
+        "medical_promo": "filtered_out_ad",
+        "stale_window": "filtered_out_stale_window",
+        "non_relevant": "filtered_out",
+        "off_domain": "filtered_out",
+        "route_navigation": "filtered_out",
+        "region_mismatch": "filtered_out",
+        "domain_mismatch": "filtered_out",
+        "source_context_mismatch": "filtered_out",
+        "lens_mismatch": "filtered_out",
+        "marketplace_sale": "filtered_out",
+        "response_restricted": "filtered_out",
+        "closed_review_surface": "filtered_out",
+        "self_target": "filtered_out",
+    }
+    FILTER_PASS_RESET_STATUSES = {
+        "filtered_out",
+        "filtered_out_ad",
+        "filtered_out_stale_window",
+        "filtered_out_journey_mismatch",
+        "filtered_out_unqualified_lead",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_low_worksite_efficiency",
+        "skipped",
+        "raw_backlog",
+    }
+    FILTER_PASS_REJECT_KEYS = ("final_reject_reason", "pathfinder_fit_reject_reason")
 
     INTERROGATIVE_PATTERNS = [
         "?", "어디", "어떻게", "어떤", "뭐", "무엇", "왜", "언제", "얼마",
@@ -1232,6 +2993,22 @@ class CommentableFilter:
     LOW_COMMUNITY_FIT_PATTERNS = [
         "잡담", "썰", "웃긴", "투표", "설문", "공유해요", "홍보합니다",
         "정보 공유", "정보공유", "기사", "보도자료",
+    ]
+
+    MARKETPLACE_SALE_PATTERNS = [
+        "팔아요", "팔아봅니다", "팝니다", "판매합니다", "판매해요",
+        "판매중", "판매 중", "판매완료", "판매 완료",
+        "양도합니다", "양도해요", "양도완료", "양도 완료",
+        "무료나눔", "무료 나눔", "나눔합니다",
+        "직거래", "택배거래", "택배 거래", "반값택배",
+        "당근거래", "당근 거래", "중고나라", "번개장터",
+        "가격네고", "가격 네고", "네고가능", "네고 가능",
+        "쿨거래", "급처",
+    ]
+    MARKETPLACE_SALE_REGEXES = [
+        r"(?:^|[\s\)\]\}.,!?])(?:판매|양도)\s*(?:완료|중|합니다|해요)",
+        r"(?:직|택배)\s*거래\s*(?:가능|원해요|합니다)?",
+        r"(?:가격\s*)?네고\s*(?:가능|불가)?",
     ]
 
     ROUTE_NAVIGATION_PATTERNS = [
@@ -1273,6 +3050,22 @@ class CommentableFilter:
         "해결했습니다", "해결됐", "결정했어요", "결정했습니다", "공유해요",
         "정보공유", "정보 공유", "내돈내산", "추천합니다",
     ]
+    CLOSED_REVIEW_SURFACE_PATTERNS = [
+        "내돈내산", "솔직후기", "솔직 후기", "찐후기", "찐 후기",
+        "등록 후기", "등록후기", "시술 후기", "관리 후기", "치료 후기",
+        "다녀왔어요", "다녀왔습니다", "받고 왔", "받고왔",
+        "후기 남", "후기남", "후기입니다",
+    ]
+    CLOSED_REVIEW_PROVIDER_SURFACE_PATTERNS = [
+        "청주점", "충북점", "분평점", "봉명점", "가경점", "복대점",
+        "의원", "병원", "한의원", "클리닉", "피부과", "성형외과",
+        "관리실", "피부관리실", "에스테틱", "센터", "스튜디오",
+    ]
+    CLOSED_REVIEW_PROVIDER_REGEXES = [
+        r"\([^)]*(?:점|의원|병원|한의원|클리닉|피부과|관리실|에스테틱)[^)]*\)",
+        r"\d+\s*회\s*등록",
+        r"\d+\s*회\s*(?:관리|시술)\s*후기",
+    ]
 
     RESPONSE_PERMISSION_POSITIVE_PATTERNS = [
         "댓글", "답변", "알려주세요", "부탁", "공유 부탁", "쪽지", "비댓",
@@ -1283,6 +3076,16 @@ class CommentableFilter:
         "홍보 금지", "홍보금지", "광고 금지", "광고금지", "업체 사절",
         "업체사절", "광고 사절", "광고사절", "쪽지 사절", "쪽지사절",
         "댓글 사절", "댓글사절", "영업 사절", "영업사절",
+    ]
+    RESPONSE_HARD_REJECTION_PATTERNS = [
+        "댓글 사절", "댓글사절", "댓글 달지", "댓글달지", "답글 사절",
+        "답글사절", "답변 사절", "답변사절", "쪽지 사절", "쪽지사절",
+        "쪽지 보내지", "비댓 사절", "비댓사절", "비밀댓글 사절",
+        "업체 사절", "업체사절", "업체분 사절", "업체분들 사절",
+        "병원 관계자 사절", "한의원 관계자 사절", "관계자 사절",
+        "브로커 사절", "영업 사절", "영업사절", "홍보 금지",
+        "홍보금지", "홍보 사절", "홍보사절", "광고 금지",
+        "광고금지", "광고 사절", "광고사절",
     ]
 
     DECISION_ACTOR_PATTERNS = [
@@ -1328,12 +3131,298 @@ class CommentableFilter:
         "붙임머리", "남자파마", "파마잘하는", "미용실", "헤어샵", "헤어클리닉",
         "펌 잘하는", "염색", "두피케어", "네일", "속눈썹", "왁싱",
         "보톡스", "땀주사", "두피주사", "모발이식",
+        "피부관리실", "피부관리샵", "피부샵", "에스테틱", "관리실",
+        "윤곽관리", "얼굴관리", "경락", "약손", "작은얼굴", "얼굴축소",
+        "눈썹문신", "반영구", "아이라인문신", "입술문신",
+        "led 마스크", "led마스크", "LED 마스크", "LED마스크", "마스크팩",
+    ]
+    NON_SERVICE_BEAUTY_TITLE_RESCUE_PATTERNS = [
+        "한의원", "한방", "한약", "새살침", "침치료", "치료", "상담",
+        "병원", "의원", "클리닉", "피부과",
+    ]
+    NON_HANBANG_FERTILITY_PATTERNS = [
+        "시험관", "인공수정", "난임병원", "난임 병원", "불임병원", "불임 병원",
+        "산부인과", "배아이식", "배아 이식", "난자채취", "난자 채취",
+    ]
+    HANBANG_FERTILITY_RESCUE_PATTERNS = [
+        "난임한의원", "난임 한의원", "한방난임", "한방 난임", "한의원",
+        "한방", "한약", "보약", "침치료", "약침", "뜸", "체질",
+    ]
+    PROVIDER_CASE_STORY_PATTERNS = [
+        "처음올때", "처음 올 때", "처음 내원", "내원 당시", "환자분",
+        "치료 사례", "관리 사례", "회복 사례", "호전 사례", "사례입니다",
+    ]
+    PROVIDER_CASE_STORY_REGEXES = [
+        r"[가-힣]00\s*\d{2}\s*세",
+        r"(?:남|여|남자|여자)\s*\d{2}\s*세",
+    ]
+
+    ASYMMETRY_HARD_OFF_AXIS_PATTERNS = [
+        "눈썹문신", "반영구", "아이라인문신", "입술문신", "속눈썹",
+        "미용실", "헤어샵", "메이크업", "왁싱", "네일",
+    ]
+    ASYMMETRY_BEAUTY_MANAGEMENT_PATTERNS = [
+        "윤곽관리", "얼굴관리", "경락", "약손", "작은얼굴", "얼굴축소",
+        "에스테틱", "피부관리실", "피부관리샵", "관리실", "관리샵",
+        "마사지", "마사지샵", "미다스뷰티", "비율에스테틱",
+    ]
+    ASYMMETRY_DENTAL_OR_ORTHO_NOISE_PATTERNS = [
+        "치과", "치아", "치열", "치아교정", "치열교정", "교정치과",
+        "덧니", "돌출입", "부정교합", "브라켓", "인비절라인",
+        "반듯한 배열", "치아 배열", "교정추천",
+    ]
+    ASYMMETRY_STRONG_AXIS_PATTERNS = [
+        "안면비대칭", "얼굴비대칭", "턱비대칭", "좌우비대칭", "두상비대칭",
+        "광대비대칭", "광대 비대칭", "광대좌우차이", "광대 좌우 차이",
+        "얼굴좌우차이", "얼굴 좌우 차이", "머리비대칭", "머리 비대칭",
+        "턱관절", "턱 교정", "턱교정", "안면교정", "얼굴교정",
+        "비대칭교정", "비대칭 교정", "얼굴 틀어짐", "얼굴틀어짐",
+        "턱 틀어짐", "턱틀어짐",
+    ]
+    ASYMMETRY_CLINIC_ACTION_PATTERNS = [
+        "한의원", "한방", "추나", "추나요법", "치료", "진료", "검사",
+        "상담", "교정", "병원", "의원", "클리닉",
+    ]
+
+    DIET_ACTIVITY_NOISE_PATTERNS = [
+        "태권도", "태권도장", "째즈댄스", "재즈댄스", "댄스학원",
+        "댄스 학원", "피트니스", "헬스장", "헬스클럽", "스포랜드",
+        "스포츠센터", "운동할만한곳", "운동 할만한곳", "운동 추천",
+        "운동 루틴", "pt샵", "pt 샵", "필라테스", "요가", "복싱장",
+        "복싱", "체육관", "수영장", "점핑", "크로스핏", "도장",
+        "줌바", "줌바댄스", "다이어트댄스", "다이어트 댄스",
+    ]
+    DIET_MEDICAL_INTENT_PATTERNS = [
+        "다이어트한약", "다이어트 한약", "한약", "한의원", "한방",
+        "비만", "감량", "체중", "식욕", "요요", "부종", "처방",
+        "상담", "진료", "치료", "약", "주사", "의원", "병원",
+        "클리닉", "탕약",
+    ]
+    DIET_NON_HANBANG_MEDICAL_NOISE_PATTERNS = [
+        "지방분해주사", "지방 분해 주사", "윤곽주사", "윤곽 주사",
+        "비만주사", "비만 주사", "다이어트주사", "다이어트 주사",
+        "달걀주사", "달걀 주사", "비비주사", "비비 주사",
+        "바디톡신", "클라투", "지방융해술", "비만클리닉",
+        "삭센다", "위고비", "마운자로",
+    ]
+    DIET_HANBANG_INTENT_PATTERNS = [
+        "다이어트한약", "다이어트 한약", "한약", "한의원", "한방",
+        "탕약", "감비", "감비환", "비움탕", "체질", "부항",
+        "침", "약침",
+    ]
+    SKIN_SALON_OR_INCIDENTAL_NOISE_PATTERNS = [
+        "스킨스파", "스킨앤스파", "hakskin", "학스킨", "피부관리실",
+        "피부관리샵", "피부샵", "에스테틱", "림프마사지", "마사지",
+        "피부 스케일링", "스킨케어", "압출관리", "피지관리",
+        "피부영양", "피부 영양",
+    ]
+    SKIN_HARD_SALON_PATTERNS = [
+        "스킨스파", "스킨앤스파", "hakskin", "학스킨", "림프마사지",
+        "피부관리실", "피부관리샵", "피부샵", "에스테틱",
+    ]
+    SKIN_CLINIC_RESCUE_PATTERNS = [
+        "한의원", "피부과", "병원", "의원", "클리닉", "치료",
+        "진료", "처방", "새살침", "약침", "침치료", "한약",
+        "여드름흉터", "패인흉터", "편평사마귀", "지루성피부염",
+    ]
+    SKIN_WESTERN_RX_NOISE_PATTERNS = [
+        "이소티논", "로아큐탄", "니메겐", "이소트레티노인", "isotretinoin",
+        "피지조절제", "피지 조절제", "여드름약", "여드름 약",
+        "피부과약", "피부과 약", "항생제", "독시사이클린", "미노씬",
+        "스티바", "디페린", "에피듀오", "크레오신",
+        "약처방", "약 처방", "처방전", "처방 병원", "처방해주는",
+        "처방 해주는", "처방받", "처방 받",
+    ]
+    SKIN_HANBANG_SERVICE_RESCUE_PATTERNS = [
+        "한의원", "피부한의원", "한방", "한약", "약침", "침치료",
+        "새살침", "침", "한방치료", "한방 치료", "규림",
+    ]
+    SCAR_USER_AXIS_ANCHOR_PATTERNS = [
+        "흉터", "여드름흉터", "여드름 흉터", "여드름자국", "여드름 자국",
+        "패인흉터", "패인 흉터", "모공흉터", "모공 흉터", "수두흉터",
+        "수두 흉터", "수술흉터", "수술 흉터", "상처흉터", "상처 흉터",
+        "켈로이드", "새살침", "흉터치료", "흉터 치료", "흉터새살침",
+        "피부재생", "색소침착", "붉은자국", "붉은 자국", "갈색자국",
+        "갈색 자국", "패인 자국", "패인자국",
+    ]
+    SKIN_USER_AXIS_ANCHOR_PATTERNS = [
+        "여드름", "성인여드름", "성인 여드름", "피부질환", "피부 질환",
+        "아토피", "지루성피부염", "지루성 피부염", "사마귀", "편평사마귀",
+        "편평 사마귀", "트러블", "피부염", "습진",
+    ]
+    LEGAL_OR_SCHOOL_VIOLENCE_PATTERNS = [
+        "학폭", "학교폭력", "피해학생", "가해학생", "법승", "변호사",
+        "법률", "소송", "고소", "신고", "재판", "합의", "형사",
+    ]
+    TRAFFIC_REPAIR_OR_PROPERTY_NOISE_PATTERNS = [
+        "광택", "코팅", "유리막", "판금", "도색", "공업사", "정비소",
+        "수리비", "차량수리", "차량 수리", "차체수리", "보수도장",
+        "렌트비", "렌터카", "렌트카", "대물", "대물보상", "부품값",
+        "블랙박스", "사고차", "보험료 할증", "할증", "폐차",
+    ]
+    TRAFFIC_LEGAL_COMPENSATION_NOISE_PATTERNS = [
+        "합의금", "합의건", "합의 건", "과실비율", "과실 비율", "손해보험사",
+        "손해 보험사", "휴업손해", "위자료", "보상받", "보상 받", "손해배상",
+        "소송", "민사", "형사", "변호사", "법률", "구상권", "분쟁조정",
+    ]
+    TRAFFIC_MEDICAL_CARE_RESCUE_PATTERNS = [
+        "입원", "통원", "통원치료", "입원치료", "한의원", "한방병원", "병원",
+        "정형외과", "재활의학과", "치료", "진료", "후유증", "통증", "아파",
+        "목통증", "허리통증", "어깨통증", "다리통증", "염좌", "추나",
+        "물리치료", "도수치료", "약침", "침치료", "한약", "엑스레이", "x-ray",
+        "mri", "응급실", "보험접수", "보험 접수",
+    ]
+    TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS = [
+        "입원가능", "입원 가능", "입원할수", "입원 할수", "통원치료",
+        "치료받", "치료 받", "진료받", "진료 받", "병원 추천", "한의원 추천",
+        "어디", "알려주세요", "아시는", "추천", "가야", "가볼", "받고싶",
+        "통증", "후유증", "아파", "목", "허리", "어깨",
+    ]
+    TRAFFIC_ANIMAL_OR_VET_NOISE_PATTERNS = [
+        "동물병원", "동물 병원", "수의사", "반려동물", "반려 동물",
+        "반려견", "강아지", "고양이", "애견", "펫병원", "펫 병원",
+        "닥스훈트", "말티즈", "푸들", "시츄", "포메라니안",
+    ]
+    BODY_USER_AXIS_ANCHOR_PATTERNS = [
+        "체형", "체형교정", "골반", "골반교정", "자세", "자세교정",
+        "거북목", "일자목", "척추", "측만", "추나", "추나요법",
+        "도수", "도수치료", "허리", "허리통증", "허리디스크",
+        "목디스크", "디스크", "경추", "어깨통증", "휜다리",
+        "라운드숄더",
+    ]
+    BODY_COMPANION_OFF_AXIS_PATTERNS = [
+        "adhd", "틱", "불안장애", "공황장애", "우울", "자율신경",
+        "두전증", "어지럼증", "두통", "편두통", "수면장애", "불면",
+        "감기", "비염", "소화불량", "소화", "피로", "보약", "공진단",
+        "아이한약", "어린이한약", "어린이 한약", "소아", "성장",
+        "한약 잘하는", "스트레스성두통", "이명", "족지간신경종",
+        "발목", "손목", "교통사고", "자동차보험", "자보", "사고후",
+        "사고 후", "입원", "통원",
+    ]
+    BODY_FITNESS_PROVIDER_NOISE_PATTERNS = [
+        "닥터짐", "헬스장", "헬스클럽", "pt", "피티", "퍼스널트레이닝",
+        "퍼스널 트레이닝", "스피닝", "운동센터", "운동은어디서",
+        "회원권", "센터 회원", "카카오톡 문의", "오픈카톡",
+    ]
+    BODY_MEDICAL_RESCUE_PATTERNS = [
+        "한의원", "한방", "추나", "추나요법", "도수치료", "도수 치료",
+        "정형외과", "재활의학과", "병원", "의원", "치료", "진료",
+        "통증", "디스크", "검사", "상담받", "상담 받",
+    ]
+    ASYMMETRY_USER_AXIS_ANCHOR_PATTERNS = ASYMMETRY_STRONG_AXIS_PATTERNS + [
+        "얼굴형", "턱", "광대", "교정",
+    ]
+    LIFTING_USER_AXIS_ANCHOR_PATTERNS = [
+        "리프팅", "한방리프팅", "매선", "탄력", "피부탄력",
+        "주름", "팔자", "처짐", "노화", "동안",
+    ]
+    LIFTING_NON_HANBANG_DEVICE_PATTERNS = [
+        "울쎄라", "써마지", "슈링크", "인모드", "실리프팅",
+        "실 리프팅", "필러", "보톡스", "엘란쎄", "리쥬란",
+        "쥬베룩", "스킨부스터", "레이저", "피부과",
+    ]
+    LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS = [
+        "한방리프팅", "한방 리프팅", "한방성형", "한방 성형",
+        "매선", "매선침", "매선 리프팅", "한의원", "침치료",
+        "약침",
+    ]
+    LIFTING_INCIDENTAL_COMMERCE_NOISE_PATTERNS = [
+        "홈플러스", "당당치킨", "강정", "식품 브랜드", "매장 성장",
+        "브랜드 출시", "론칭", "론칭제", "솥솥", "젠틀몬스터",
+        "안경", "패션", "신제품", "프랜차이즈",
+    ]
+    EXPLICIT_HANBANG_EXCLUSION_PATTERNS = [
+        "한의원은 추천안", "한의원은 추천 안", "한의원 추천안",
+        "한의원 추천 안", "한의원은 제외", "한의원 제외",
+        "한의원 말고", "한방 말고", "한약 말고", "침 말고",
+        "추나 말고", "한의원 상담이나 치료를 찾는 건 아니",
+        "한의원 상담이나 치료를 찾는건 아니",
+    ]
+    MULTI_REGION_ANSWER_FOOTER_REGIONS = [
+        "강남", "노원", "신림", "수원", "안양", "일산", "부천", "인천",
+        "대전", "청주", "천안", "광주", "대구", "부산", "울산", "포항",
+        "진주", "제주", "창원", "춘천", "구미", "전주", "원주",
+    ]
+    KIN_PROVIDER_FOOTER_PATTERNS = [
+        "피부 네트워크", "23지점", "전국 지점", "지점 의 피부",
+        "강남, 노원", "대전, 청주, 천안", "구미, 전주, 원주",
+    ]
+    PROVIDER_INFO_POST_PATTERNS = [
+        "치료비용입니다", "치료 비용입니다", "오셔서", "진행해보시길",
+        "진행해 보시길", "대표적인 한방 프로그램", "프로그램으로는",
+        "한의사입니다", "한의원입니다", "한의원에서는", "가격 차이",
+        "정리해봤습니다", "정리해 봤습니다", "브랜드 비용",
+        "운영 방식에 따라", "상담과 관리", "치료를 진행",
+        "치료를 진행해", "관리해드립니다", "관리해 드립니다",
+        "청주점에서는", "카카오톡 상담", "오픈카톡", "#청주한의원",
+        "전신을 바로잡", "최고 효과", "본 한의원", "의료진들은",
+        "풍부한 임상경험", "풍부한 임상 경험", "추천해 드리고 싶습니다",
+        "추천해드리고 싶습니다", "안심하시고 받으실",
+    ]
+    PROVIDER_INFO_TITLE_PATTERNS = [
+        "정리해봤습니다", "정리해 봤습니다", "가격 차이", "치료비용",
+        "치료 비용", "추나요법이란", "요법이란", "전신을 바로잡아",
+        "효과는 무엇일까", "통증을 사로잡는다", "차이점", "필요할까",
+        "어떤 상황에서", " - ",
+    ]
+    PROVIDER_EDUCATIONAL_TITLE_PATTERNS = (
+        "확인하세요", "확인하기", "체크하기", "체크하세요", "알아보기",
+        "접근법", "주의사항", "전 확인", "먼저 확인", "함께 알아",
+        "정리", "원인과", "치료 방법", "관리 방법",
+    )
+    PROVIDER_EDUCATIONAL_TITLE_RESCUE_PATTERNS = (
+        "추천 부탁", "추천부탁", "추천해", "추천 해", "어디", "괜찮은곳",
+        "괜찮은 곳", "궁금", "아시는", "있을까요", "될까요", "어떨까요",
+    )
+    PROVIDER_BODY_AUTHOR_PATTERNS = [
+        "본원", "본 한의원", "저희 병원", "저희 한의원", "저희 의원",
+        "저희 클리닉", "청주점에서는", "한의원입니다", "한의사입니다",
+        "대표원장", "의료진", "내원해보세요", "예약하세요",
+        "관리해드립니다", "관리해 드립니다",
+    ]
+    PROVIDER_BODY_REAL_USER_ASK_PATTERNS = [
+        "광고 말고", "업체 말고", "홍보 말고", "직접 경험", "경험 있으",
+        "해보신 분", "해보신분", "받아보신 분", "받아보신분",
+        "가보신 분", "가보신분", "다녀보신 분", "다녀보신분",
+        "아시는 분", "아시는분", "추천 부탁", "추천부탁",
+        "후기 부탁", "정보 부탁",
+    ]
+    # 카페 글은 author=카페명, 블로그는 author=블로거명 → 이 필드가 곧 '글이 올라온
+    # 곳의 정체성'이다. 카페명/블로거가 경쟁 의료기관(한의원/의원/클리닉 등)이거나
+    # 병원 디렉터리/홍보 카페면 환자 질문이 아니라 공급자 마케팅 표면이다. 본문 CTA가
+    # 미리보기(≈230자) 밖에 있어 _provider_cta_body_signal 을 빠져나가는 soft-SEO 글이
+    # 키워드가 풍부해 골든큐 최상위(점수 130~150)에 올라오던 문제를 막는다
+    # (2026-06-13 local-venue-anchor 의 공급자 측 대칭 — 그쪽은 커뮤니티 카페를 '가점',
+    # 이쪽은 공급자 카페를 '광고 처리').
+    PROVIDER_VENUE_AUTHOR_PATTERNS = [
+        "한의원", "한방병원", "의원", "클리닉", "피부과", "성형외과", "치과",
+        "길라잡이", "전국병원", "병원정보", "병원 정보", "병원추천", "병원 추천",
+        "의료정보", "병원안내", "병원 안내", "병원홍보", "닥터스",
+    ]
+    # 환자/지역 커뮤니티 카페는 공급자 토큰이 들어 있어도 보존(거짓양성 차단).
+    # 예: 척추질환 환우모임, 두통환우카페, 알고가자 동네병원, 메디컬정보 커뮤니티,
+    # 피부인 대표 피부카페. 가드를 먼저 검사해 과차단을 방지한다.
+    PROVIDER_VENUE_AUTHOR_COMMUNITY_GUARD = [
+        "환우", "환자회", "환자 모임", "동호회", "맘", "카페", "스터디",
+        "주민", "모여", "동네", "지역", "클럽", "모임", "커뮤니티", "회원", "육아",
+    ]
+    TRAFFIC_USER_CARE_ANCHOR_PATTERNS = [
+        "교통사고", "자동차사고", "차사고", "사고 후", "사고후",
+        "입원", "통원", "치료", "진료", "후유증", "염좌", "통증",
+        "목", "허리", "어깨", "자보", "자동차보험", "보험접수",
+    ]
+    TRAFFIC_TITLE_HARD_NOISE_PATTERNS = [
+        "보험료할증", "보험료 할증", "할증", "과실비율", "합의금",
+        "합의건", "합의 건", "광택", "코팅", "수리비", "대물",
+        "렌트비", "렌터카", "렌트카", "판금", "도색",
     ]
 
     # NON_RELEVANT: 비관련 업종 - 무조건 제외
     NON_RELEVANT_EXCLUDE = [
         # 기존
-        "강아지", "반려견", "성형외과", "분양", "아파트",
+        "강아지", "반려견", "동물병원", "동물 병원", "수의사",
+        "반려동물", "반려 동물", "고양이", "애견", "펫병원",
+        "성형외과", "분양", "아파트",
         "주식", "코인", "부동산", "매매", "임대",
         "케이크", "베이커리", "맛집",
         "성형", "쌍수", "코수술", "지방흡입",
@@ -1345,6 +3434,10 @@ class CommentableFilter:
         "자동차보험료", "자차보험", "차보험 견적",
         "자탐 모임", "템플스테이", "조계사", "수녀님", "교역자 필독서",
         "정책뉴스", "자격증취득", "국비지원무료교육",
+        "화상영어", "전화영어", "아이엘츠", "영어공부", "영어작문",
+        "작문 부탁", "내공50", "내공 50",
+        "배드민턴", "코트 대관", "천기저귀", "소창기저귀",
+        "광목", "커텐", "커튼", "이불",
     ]
 
     # 검색어는 맞지만 실제 상담 영역이 다른 글. 예: "교정"이 치과 교정 글에 걸리는 경우.
@@ -1361,7 +3454,7 @@ class CommentableFilter:
         "cosmetic_clinic": [
             "피부과", "프락셀", "레이저", "레이저토닝", "토닝", "필러",
             "보톡스", "슈링크", "인모드", "울쎄라", "리쥬란", "스킨부스터",
-            "쥬베룩", "포텐자", "피코토닝", "두피주사", "땀주사",
+            "쥬베룩", "엘란쎄", "포텐자", "피코토닝", "두피주사", "땀주사",
         ],
         "fitness": [
             "홈트레이닝", "홈트", "pt", "퍼스널트레이닝", "헬스장", "헬스",
@@ -1381,37 +3474,85 @@ class CommentableFilter:
         "diet": [
             "다이어트", "감량", "체중", "비만", "살빼", "식욕", "요요",
             "한약", "다이어트약", "체지방", "뱃살", "허벅지", "한의원", "한방",
+            "의원", "클리닉", "처방", "삭센다", "위고비", "마운자로",
         ],
         "traffic": [
             "교통사고", "자동차사고", "차사고", "사고", "자보", "자동차보험",
             "입원", "후유증", "염좌", "추나", "한의원", "한방병원",
         ],
         "scar_skin": [
-            "여드름", "흉터", "여드름흉터", "패인흉터", "새살침", "모공",
-            "트러블", "피부", "자국", "한의원", "한방",
+            "여드름", "흉터", "여드름흉터", "패인흉터", "모공흉터",
+            "수두흉터", "수술흉터", "상처흉터", "켈로이드", "새살침",
+            "흉터치료", "트러블", "피부", "자국", "한의원", "한방",
+            "의원", "클리닉", "피부과", "레이저", "시술", "스킨부스터",
+            "리쥬란", "쥬베룩", "포텐자",
         ],
         "asymmetry": [
             "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
             "얼굴", "광대", "턱", "추나", "한의원", "한방",
+            "의원", "클리닉", "상담", "분석", "검사",
         ],
         "body": [
             "체형", "체형교정", "골반", "골반교정", "척추", "측만", "자세",
             "거북목", "일자목", "추나", "통증", "한의원", "한방",
+            "의원", "클리닉", "바디라인", "승모근",
         ],
         "lifting": [
             "리프팅", "탄력", "주름", "매선", "한방리프팅", "피부탄력",
-            "노화", "한의원", "한방",
+            "노화", "한의원", "한방", "의원", "클리닉", "피부과",
+            "레이저", "스킨부스터", "리쥬란", "쥬베룩",
+        ],
+    }
+    STRICT_DOMAIN_ANCHORS = {
+        "asymmetry": [
+            "안면비대칭", "얼굴비대칭", "턱비대칭", "비대칭", "턱관절",
+            "턱 교정", "턱교정", "얼굴형", "광대비대칭", "광대 비대칭",
+            "광대좌우차이", "광대 좌우 차이", "좌우비대칭", "좌우 비대칭",
+            "얼굴좌우차이", "얼굴 좌우 차이", "두상비대칭", "두상 비대칭",
+            "머리비대칭", "머리 비대칭",
+            # 환자 어휘 — 키워드 용어(턱관절/비대칭) 없이 증상을 서술하는 질문 구제
+            # (라이브: '아래턱이 오른쪽으로 움직이는' 턱 틀어짐 질문이 앵커 미스로
+            # domain_mismatch). 치과 고착 글은 선행 dental off_domain 게이트가 거른다.
+            "아래턱", "턱이 돌아", "턱 돌아", "턱이 틀어", "턱 틀어",
+            "얼굴이 틀어", "얼굴 틀어", "턱이 비뚤", "얼굴 비뚤",
+        ],
+        "body": [
+            "체형", "체형교정", "골반", "골반교정", "자세", "자세교정",
+            "거북목", "일자목", "척추", "측만", "추나", "추나요법",
+            "도수", "도수치료", "어깨", "목통증", "허리통증", "목디스크",
+            "허리디스크", "디스크", "경추", "휜다리", "라운드숄더",
+        ],
+        "lifting": [
+            "리프팅", "한방리프팅", "매선", "탄력", "피부탄력",
+            "주름", "팔자", "처짐", "노화",
         ],
     }
 
     # 사업 권역 지역 키워드 (제목 또는 본문에 하나 이상 포함돼야 통과)
-    # 청주·세종·충주·제천·증평·보은·진천·옥천·영동·음성 및 동/지구 단위
-    REGION_KEYWORDS = [
-        "청주", "세종", "충주", "제천", "증평", "보은", "진천", "옥천", "영동", "음성",
-        "율량", "가경", "복대", "산남", "오창", "오송", "사창", "성안길",
-        "내덕", "우암", "흥덕", "용암", "용정", "개신", "분평", "수곡",
-        "상당", "서원", "흥덕", "청원", "용암동", "봉명",
-        "충북",
+    REGION_KEYWORDS = list(dict.fromkeys(
+        list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+    ))
+    AMBIGUOUS_CHEONGJU_REGION_STEMS = {"상당", "서원", "청원"}
+    DISTANT_REGION_KEYWORDS = [
+        "서울", "부산", "대구", "인천", "대전", "대전광역시", "세종", "세종특별자치시", "광주", "광주광역시", "울산",
+        "수원", "천안", "전주", "강남", "분당", "판교", "유성", "도안", "둔산", "노은",
+        "평택", "성남", "용인", "화성", "안산", "안양", "부천", "고양", "의정부",
+        "파주", "김포", "남양주", "하남", "의왕", "군포", "시흥", "오산", "광명",
+        "구리", "장안동", "아산", "탕정", "탕정면", "배방", "배방읍", "장재리",
+        "달서구",
+        "쌍용동", "불당동", "신불당동", "공주", "논산", "당진", "서산", "충주", "제천",
+        "홍성", "예산", "태안", "계룡", "부여", "서천", "금산",
+        # 서울/수도권 동네명 — 닥톡류 '(지역 카테고리)' 템플릿 질문이 city명 없이
+        # 동네명만 달고 들어와 지역 게이트를 통과하는 누수를 막는다 (라이브: 잠실).
+        "잠실", "잠원동", "압구정", "청담동", "신사동", "역삼동", "서초동", "송파",
+        "노원", "천호동", "목동", "왕십리", "건대", "영등포", "일산", "동탄",
+        "청라", "송도", "평촌", "산본",
+        "도봉구", "강북구", "관악구", "구로구", "동작구", "성북구", "중랑구",
+        "광진구", "강동구", "양천구",
+        "감삼동", "수성구", "동성로", "서면", "해운대",
+        "제주", "제주시", "서귀포",
     ]
 
     # 최소 본문 길이 (API content_preview는 300자 잘림이므로 100자면 충분한 의미)
@@ -1428,6 +3569,18 @@ class CommentableFilter:
         "임신", "수유", "소아", "아기", "영유아", "아이", "청소년", "약 부작용",
         "부작용", "스테로이드", "항생제", "당뇨", "고혈압", "암", "간수치", "신장",
         "신부전", "심장", "알레르기", "두드러기", "쇼크", "수술 후", "수술후",
+    ]
+    MEDICATION_ADVICE_PATTERNS = [
+        "먹어도 되", "먹어도될", "복용해도 되", "복용해도될", "복용 가능",
+        "같이 먹", "같이 복용", "함께 먹", "함께 복용", "병용", "동시에 먹",
+        "계속 먹어도", "계속 복용", "끊어야", "중단해야", "중단할까요",
+        "용량", "몇 알", "몇알", "하루 몇", "처방받아도", "처방 받아도",
+        "먹고 있는데", "복용 중", "복용중", "약 먹는 중", "약먹는중",
+    ]
+    ACUTE_SIDE_EFFECT_PATTERNS = [
+        "심장 두근", "두근거림", "두근거려", "가슴 두근", "숨이 답답",
+        "숨차", "호흡이 답답", "어지러", "어지럼", "실신", "기절",
+        "발진", "붓기", "부어오", "두드러기", "쇼크",
     ]
     TESTIMONIAL_SENSITIVE_KEYWORDS = [
         "후기", "경험담", "치료 경험", "효과", "완치", "보장", "전후", "비포애프터",
@@ -1481,12 +3634,10 @@ class CommentableFilter:
         "가격", "비용", "얼마", "저렴", "착한", "합리적"
     ]
 
-    # 🎯 경쟁사 키워드 (AI 탐지 참고용 - 실제 탐지는 AI가 수행)
-    # 아래 키워드는 AI 프롬프트에서 참조됨
-    COMPETITORS_REFERENCE = [
-        "자연과한의원", "경희한의원", "동의보감", "청주한방병원",
-        "수한의원", "참조은한의원", "보명한의원", "생기한의원", "자생한의원"
-    ]
+    # 🎯 경쟁사 참조는 더 이상 여기에 하드코딩하지 않는다 (stale 목록이 로랑/데이릴
+    # 같은 핵심 경쟁사를 누락시켜 역공략 레인을 무력화한 이력). 단일 소스는
+    # config/competitors.json이며 AICommentGenerator._load_curated_competitors()가
+    # 로드해 AI 프롬프트에 주입한다.
 
     # 건강 관련 키워드 (대폭 확장 - 양치기용)
     HEALTH_KEYWORDS = [
@@ -1514,18 +3665,22 @@ class CommentableFilter:
         "불면", "수면", "두통", "어지럼", "소화", "위염", "역류",
         "비염", "알레르기", "아토피", "탈모", "다한증", "땀",
         "스트레스", "우울", "불안", "긴장", "화병",
-        # 지역 키워드
-        "청주", "율량", "가경", "복대", "산남", "오창", "오송", "세종"
     ]
+    HEALTH_KEYWORDS = list(dict.fromkeys(
+        HEALTH_KEYWORDS
+        + list(getattr(GYULIM_KEYWORD_PROFILE, "hanbang_keywords", ()))
+        + REGION_KEYWORDS
+    ))
 
     # [Phase 2 개선] 키워드 티어별 가치 차등화
     KEYWORD_TIER1 = [  # 핵심 상품 (15점)
         "다이어트한약", "안면비대칭", "새살침", "체형교정", "골반교정",
-        "여드름흉터", "얼굴비대칭", "입원치료"
+        "여드름흉터", "패인흉터", "모공흉터", "수두흉터", "흉터치료",
+        "얼굴비대칭", "입원치료"
     ]
     KEYWORD_TIER2 = [  # 주요 서비스 (10점)
-        "교통사고", "다이어트", "여드름", "탈모", "비염", "갱년기",
-        "추나", "디스크", "산후조리", "공진단"
+        "교통사고", "다이어트", "여드름", "피부질환", "아토피", "지루성피부염",
+        "탈모", "비염", "갱년기", "추나", "디스크", "산후조리", "공진단"
     ]
     KEYWORD_TIER3 = [  # 일반 (5점)
         "한의원", "한약", "침", "뜸", "부항", "한방", "체질", "보약"
@@ -1544,27 +3699,1187 @@ class CommentableFilter:
                 score += 5
         return min(score, 40)  # 최대 40점
 
+    @staticmethod
+    def _score_breakdown_float(target: ViralTarget, key: str, default: float = 0.0) -> float:
+        try:
+            value = (target.score_breakdown or {}).get(key, default)
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _score_breakdown_text(target: ViralTarget, key: str, default: str = "") -> str:
+        value = (target.score_breakdown or {}).get(key, default)
+        return default if value is None else str(value)
+
     @classmethod
-    def _keyword_domain(cls, matched_keywords: List[str]) -> str:
+    def _pathfinder_execution_context(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Return Pathfinder execution signals attached to this candidate post."""
+        return {
+            "viral_readiness": cls._score_breakdown_float(target, "pathfinder_viral_readiness_score"),
+            "local_service_fit": cls._score_breakdown_float(target, "pathfinder_local_service_fit_score"),
+            "content_actionability": cls._score_breakdown_float(target, "pathfinder_content_actionability_score"),
+            "medical_ad_risk": cls._score_breakdown_float(target, "pathfinder_medical_ad_risk_score"),
+            "community_signal": cls._score_breakdown_float(target, "pathfinder_community_signal"),
+            "conversion_signal": cls._score_breakdown_float(target, "pathfinder_conversion_signal"),
+            "profile_action_signal": cls._score_breakdown_float(target, "pathfinder_profile_action_signal"),
+            "availability_intent_score": cls._score_breakdown_float(target, "pathfinder_availability_intent_score"),
+            "payment_coverage_score": cls._score_breakdown_float(target, "pathfinder_payment_coverage_score"),
+            "access_convenience_score": cls._score_breakdown_float(target, "pathfinder_access_convenience_score"),
+            "preferred_surface": cls._score_breakdown_text(target, "pathfinder_preferred_search_surface"),
+            "recommended_type": cls._score_breakdown_text(target, "pathfinder_recommended_content_type"),
+            "brand_intent_type": cls._score_breakdown_text(target, "pathfinder_brand_intent_type", "generic"),
+            "review_intent_type": cls._score_breakdown_text(target, "pathfinder_review_intent_type", "none"),
+            "execution_lens": cls._score_breakdown_text(target, "pathfinder_execution_lens"),
+        }
+
+    @classmethod
+    def _pathfinder_lens_post_fit(
+        cls,
+        target: ViralTarget,
+        *,
+        platform: Optional[str] = None,
+        text: str = "",
+    ) -> Tuple[float, str, List[str]]:
+        """Score whether a candidate post matches the Pathfinder seed's execution lens."""
+        lens = str(cls._pathfinder_execution_context(target).get("execution_lens") or "").strip().lower()
+        if not lens or lens == "service":
+            return 50.0, "neutral", []
+
+        text_lc = (text or "").lower()
+        platform_key = (platform or target.platform or "").lower()
+        lens_terms = {
+            "review": (
+                "\ucd94\ucc9c", "\ud6c4\uae30", "\uc798\ud558\ub294", "\uad1c\ucc2e", "\uc5b4\ub514",
+                "\uacbd\ud5d8", "\uac00\ubcf8", "\uc544\uc2dc\ub294", "review", "recommend",
+            ),
+            "community": (
+                "\ucd94\ucc9c", "\ud6c4\uae30", "\uc5b4\ub514", "\uacbd\ud5d8", "\uac00\ubcf8",
+                "\uc544\uc2dc\ub294", "\ubd84\ub4e4", "\uac19\uc740", "\uad81\uae08", "review", "recommend",
+            ),
+            "cost": (
+                "\ube44\uc6a9", "\uac00\uaca9", "\uc5bc\ub9c8", "\uc2e4\ube44", "\ubcf4\ud5d8",
+                "\uc790\ubcf4", "\uce58\ub8cc\ube44", "\ubd80\ub2f4", "cost", "price", "insurance",
+            ),
+            "consultation": (
+                "\uc0c1\ub2f4", "\ubb38\uc758", "\ucc98\ubc29", "\uc9c4\ub2e8",
+                "\uc0c1\ub2f4\ubc1b", "\uce58\ub8cc\ubc1b", "\uac80\uc0ac\ubc1b",
+                "\uad81\uae08", "\uc54c\uace0\uc2f6", "consult", "consultation", "inquiry",
+            ),
+            "availability": (
+                "\uc608\uc57d", "\uc608\uc57d\uac00\ub2a5", "\uc57c\uac04", "\uc8fc\ub9d0",
+                "\uc9c4\ub8cc\uc2dc\uac04", "\ub2f9\uc77c\uc9c4\ub8cc",
+                "\uc624\ub298", "\ub2f9\uc77c", "booking", "appointment",
+                "\uc704\uce58", "\uae38\ucc3e\uae30", "\uc8fc\ucc28", "\ub3c4\ubcf4",
+                "\uc5d8\ub9ac\ubca0\uc774\ud130", "\ud720\uccb4\uc5b4", "\ub300\uc911\uad50\ud1b5",
+                "\uadfc\ucc98", "\uac00\uae4c\uc6b4", "near", "hours", "parking",
+            ),
+            "safety": (
+                "\ubd80\uc791\uc6a9", "\uc8fc\uc758", "\uce58\ub8cc\uae30\uac04", "\ud1b5\uc99d", "\ud68c\ubcf5",
+                "\uc7ac\ubc1c", "\uc548\uc804", "\ud6a8\uacfc", "\uac71\uc815", "sideeffect", "side-effect",
+                "recovery", "safety",
+            ),
+        }
+        terms = lens_terms.get(lens)
+        if not terms:
+            return 50.0, "neutral", []
+
+        matched_terms = [term for term in terms if term and term in text_lc]
+        community_bridge_terms = (
+            "추천", "후기", "어디", "경험", "가본", "가보신", "해보신",
+            "아시는", "궁금", "부탁", "괜찮", "잘하는",
+        )
+        bridge_term_hits = [term for term in community_bridge_terms if term and term in text_lc]
+        query_variant = cls._pathfinder_query_variant(target)
+        bridge_variant = (
+            query_variant.startswith(f"{lens}_community:")
+            or (
+                lens in {"cost", "consultation", "availability", "safety"}
+                and (
+                    query_variant == "community_base"
+                    or query_variant.startswith("axis_")
+                    or query_variant in {"patient_voice_kin", "patient_voice_question_kin"}
+                )
+            )
+        )
+        signals: List[str] = []
+        score = 45.0
+
+        if matched_terms:
+            score += min(35.0, 18.0 + len(matched_terms) * 4.0)
+            signals.append(f"pathfinder_lens_{lens}_match")
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                score += 8.0
+                signals.append("pathfinder_lens_surface_match")
+        elif bridge_variant and bridge_term_hits:
+            score += min(22.0, 10.0 + len(bridge_term_hits) * 3.0)
+            signals.append(f"pathfinder_lens_{lens}_community_bridge")
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                score += 6.0
+                signals.append("pathfinder_lens_surface_match")
+        else:
+            score -= 18.0
+            signals.append(f"pathfinder_lens_{lens}_mismatch")
+            if platform_key == "blog" and lens in {"review", "community", "cost"}:
+                score -= 6.0
+                signals.append("pathfinder_lens_blog_weak_match")
+
+        if lens in {"review", "community"} and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            score += 5.0
+        if lens in {"cost", "consultation", "availability"} and cls._contains_region_terms(text_lc, cls.REGION_KEYWORDS):
+            score += 4.0
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 75.0:
+            tier = "strong"
+        elif score >= 55.0:
+            tier = "acceptable"
+        elif score >= 40.0:
+            tier = "weak"
+        else:
+            tier = "mismatch"
+        return score, tier, list(dict.fromkeys(signals))
+
+    @classmethod
+    def _pathfinder_source_specific_terms(cls, target: ViralTarget, category: str) -> List[str]:
+        """Specific source-seed terms that should survive into the candidate post."""
+        breakdown = target.score_breakdown or {}
+        seed_terms: List[str] = []
+        raw_sources = breakdown.get("pathfinder_source_keywords")
+        if isinstance(raw_sources, list):
+            seed_terms.extend(str(item) for item in raw_sources if str(item or "").strip())
+        elif raw_sources:
+            seed_terms.append(str(raw_sources))
+        raw_source = breakdown.get("pathfinder_source_keyword")
+        if raw_source:
+            seed_terms.append(str(raw_source))
+        seed_terms.extend(target.matched_keywords or [])
+        terms: List[str] = []
+        for seed_keyword in dict.fromkeys(seed_terms):
+            if not seed_keyword:
+                continue
+            terms.extend(_pathfinder_axis_specific_terms_for_keyword(seed_keyword, category, limit=3))
+        return list(dict.fromkeys(terms))
+
+    @classmethod
+    def _pathfinder_primary_source_specific_terms(cls, target: ViralTarget, category: str) -> List[str]:
+        """Specific terms from the primary Pathfinder seed, used for strict source-fit gates."""
+        breakdown = target.score_breakdown or {}
+        seed_keyword = str(breakdown.get("pathfinder_source_keyword") or "").strip()
+        if not seed_keyword:
+            raw_sources = breakdown.get("pathfinder_source_keywords")
+            if isinstance(raw_sources, list):
+                seed_keyword = str(next((item for item in raw_sources if str(item or "").strip()), "")).strip()
+            elif raw_sources:
+                seed_keyword = str(raw_sources or "").strip()
+        if not seed_keyword and target.matched_keywords:
+            seed_keyword = str(target.matched_keywords[0] or "").strip()
+        if not seed_keyword:
+            return []
+        return _pathfinder_axis_specific_terms_for_keyword(seed_keyword, category, limit=3)
+
+    PATHFINDER_SOURCE_TERM_ALIASES: Dict[str, Tuple[str, ...]] = {
+        "자동차보험": ("자동차 보험", "자보", "보험접수", "보험 접수", "자보처리", "자보 처리"),
+        "자보": ("자동차보험", "자동차 보험", "보험접수", "보험 접수", "자보처리", "자보 처리"),
+        "여드름자국": ("여드름 자국", "붉은자국", "붉은 자국", "갈색자국", "갈색 자국", "색소침착"),
+        "붉은자국": ("붉은 자국", "여드름자국", "여드름 자국", "색소침착", "갈색자국", "갈색 자국"),
+        "갈색자국": ("갈색 자국", "여드름자국", "여드름 자국", "색소침착", "붉은자국", "붉은 자국"),
+        "안면비대칭": ("얼굴비대칭", "얼굴 비대칭", "턱비대칭", "턱 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "얼굴비대칭": ("얼굴 비대칭", "안면비대칭", "턱비대칭", "턱 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "턱비대칭": ("턱 비대칭", "안면비대칭", "얼굴비대칭", "얼굴 비대칭", "좌우비대칭", "좌우 비대칭"),
+        "광대비대칭": ("광대 비대칭", "광대좌우차이", "광대 좌우 차이"),
+        "광대좌우차이": ("광대 좌우 차이", "광대비대칭", "광대 비대칭"),
+        "좌우비대칭": ("좌우 비대칭", "얼굴좌우차이", "얼굴 좌우 차이"),
+        "얼굴좌우차이": ("얼굴 좌우 차이", "좌우비대칭", "좌우 비대칭"),
+        "두상비대칭": ("두상 비대칭", "머리비대칭", "머리 비대칭"),
+        "머리비대칭": ("머리 비대칭", "두상비대칭", "두상 비대칭"),
+        "턱관절": ("턱 관절", "턱관절통증", "턱관절 통증", "턱통증", "턱 통증"),
+        "다이어트한약": ("다이어트 한약", "한방다이어트", "한방 다이어트", "감량한약", "감량 한약"),
+        "한방다이어트": ("한방 다이어트", "다이어트한약", "다이어트 한약", "감량한약", "감량 한약"),
+        "편평사마귀": ("편평 사마귀",),
+    }
+    PATHFINDER_SOURCE_NEGATION_AFTER_RE = re.compile(
+        r"^(?:은|는|이|가|도|쪽|쪽은|관련|관련은|치료|치료는|상담|상담은)?"
+        r"(?:아니고|아니라|아님|아닌|아닙|아니에|아니었|말고|말구|제외|빼고|"
+        r"안하고|안하|안되|안돼|안됨|못하|불가)"
+    )
+    PATHFINDER_SOURCE_NEGATION_BEFORE_TERMS: Tuple[str, ...] = (
+        "말고",
+        "말구",
+        "제외",
+        "제외하고",
+        "빼고",
+    )
+    PATHFINDER_STRICT_SOURCE_CONTEXT_TERMS: Dict[str, Tuple[str, ...]] = {
+        "흉터/여드름흉터": (
+            "여드름자국", "여드름 자국", "붉은자국", "붉은 자국",
+            "갈색자국", "갈색 자국", "색소침착", "수술흉터", "수술 흉터",
+            "수두흉터", "수두 흉터", "켈로이드", "패인흉터", "패인 흉터",
+            "모공흉터", "모공 흉터", "상처흉터", "상처 흉터",
+        ),
+        "피부/여드름": (
+            "성인여드름", "성인 여드름", "아토피", "지루성피부염",
+            "지루성 피부염", "편평사마귀", "편평 사마귀", "색소침착",
+        ),
+        "교통사고": (
+            "입원", "자보", "자동차보험", "자동차 보험", "보험접수", "보험 접수",
+            "후유증", "목통증", "허리통증",
+        ),
+        "안면비대칭": (
+            "턱관절", "턱 관절", "턱비대칭", "턱 비대칭", "광대비대칭",
+            "광대 비대칭", "광대좌우차이", "광대 좌우 차이",
+            "좌우비대칭", "좌우 비대칭", "얼굴좌우차이", "얼굴 좌우 차이",
+            "두상비대칭", "두상 비대칭", "머리비대칭", "머리 비대칭",
+        ),
+        "다이어트": (
+            "산후", "요요", "감량한약", "감량 한약",
+        ),
+    }
+
+    @classmethod
+    def _pathfinder_source_context_is_negated(
+        cls,
+        candidate: str,
+        *,
+        compact_text: str,
+        start_idx: int,
+    ) -> bool:
+        compact = _compact_query_text(candidate)
+        if not compact or start_idx < 0:
+            return False
+        before = compact_text[max(0, start_idx - 12):start_idx]
+        after = compact_text[start_idx + len(compact): start_idx + len(compact) + 16]
+        if cls.PATHFINDER_SOURCE_NEGATION_AFTER_RE.match(after):
+            return True
+        return any(before.endswith(_compact_query_text(term)) for term in cls.PATHFINDER_SOURCE_NEGATION_BEFORE_TERMS)
+
+    @classmethod
+    def _pathfinder_source_fit_text(cls, target: ViralTarget, text: str = "") -> str:
+        """Use user-authored text for source-specific fit so KIN answers do not inflate it."""
+        platform = (getattr(target, "platform", "") or "").lower()
+        preview = getattr(target, "content_preview", "") or ""
+        if platform in {"kin", "naver_kin"} or "[기존답변" in preview or "[기존 답변" in preview:
+            user_text = cls._user_need_text(target).lower()
+            if user_text:
+                return user_text
+        return (text or "").lower()
+
+    @classmethod
+    def _pathfinder_source_specific_term_matches(
+        cls,
+        term: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+    ) -> bool:
+        """Match a source-specific concept, allowing clinic-domain synonyms."""
+        candidates = [str(term or "").strip()]
+        candidates.extend(cls.PATHFINDER_SOURCE_TERM_ALIASES.get(str(term or "").strip(), ()))
+        for candidate in candidates:
+            clean = str(candidate or "").strip().lower()
+            if not clean:
+                continue
+            compact = re.sub(r"\s+", "", clean)
+            if not compact:
+                continue
+            start = 0
+            while True:
+                idx = compact_text.find(compact, start)
+                if idx < 0:
+                    break
+                if not cls._pathfinder_source_context_is_negated(
+                    clean,
+                    compact_text=compact_text,
+                    start_idx=idx,
+                ):
+                    return True
+                start = idx + max(1, len(compact))
+        return False
+
+    @classmethod
+    def _pathfinder_source_specific_coverage(
+        cls,
+        target: ViralTarget,
+        category: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+        source_specific_terms: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[str]]:
+        terms = list(dict.fromkeys(source_specific_terms or cls._pathfinder_source_specific_terms(target, category)))
+        hits = [
+            term for term in terms
+            if cls._pathfinder_source_specific_term_matches(
+                term,
+                text_lc=text_lc,
+                compact_text=compact_text,
+            )
+        ]
+        return terms, list(dict.fromkeys(hits))
+
+    @classmethod
+    def _pathfinder_source_specific_strict_gap(
+        cls,
+        target: ViralTarget,
+        category: str,
+        *,
+        text_lc: str,
+        compact_text: str,
+    ) -> bool:
+        strict_terms = cls.PATHFINDER_STRICT_SOURCE_CONTEXT_TERMS.get(category, ())
+        if not strict_terms:
+            return False
+        strict_compacts = {_compact_query_text(term) for term in strict_terms if str(term or "").strip()}
+        source_terms = cls._pathfinder_primary_source_specific_terms(target, category)
+        strict_source_terms = [
+            term for term in source_terms
+            if _compact_query_text(term) in strict_compacts
+        ]
+        if not strict_source_terms:
+            return False
+        _, strict_hits = cls._pathfinder_source_specific_coverage(
+            target,
+            category,
+            text_lc=text_lc,
+            compact_text=compact_text,
+            source_specific_terms=strict_source_terms,
+        )
+        if len(strict_source_terms) >= 2:
+            return len(strict_hits) < len(strict_source_terms)
+        return not strict_hits
+
+    @classmethod
+    def _pathfinder_axis_post_fit(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        text: str = "",
+    ) -> Tuple[float, str, List[str]]:
+        """Score whether the visible post body matches the Pathfinder treatment axis."""
+        raw_category = (
+            getattr(target, "matched_keyword_category", "") or
+            getattr(target, "category", "") or
+            GYULIM_KEYWORD_PROFILE.detect_category(" ".join(target.matched_keywords or []), default="")
+        )
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return 50.0, "neutral", []
+
+        text_lc = (text or "").lower()
+        compact_text = re.sub(r"\s+", "", text_lc)
+        source_text_lc = cls._pathfinder_source_fit_text(target, text_lc)
+        source_compact_text = re.sub(r"\s+", "", source_text_lc)
+
+        def matching_terms(terms: Iterable[str]) -> List[str]:
+            matches: List[str] = []
+            for term in terms:
+                clean = str(term or "").strip().lower()
+                if not clean:
+                    continue
+                compact = re.sub(r"\s+", "", clean)
+                if clean in text_lc or (compact and compact in compact_text):
+                    matches.append(str(term))
+            return list(dict.fromkeys(matches))
+
+        category_hits = matching_terms(profile.category_terms)
+        core_hits = matching_terms(profile.core_tokens)
+        anchor_hits = matching_terms(profile.direct_service_anchors)
+        low_value_hits = matching_terms(profile.low_business_value_terms)
+        primary_hits = list(dict.fromkeys(category_hits + core_hits))
+        source_specific_terms, source_specific_hits = cls._pathfinder_source_specific_coverage(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+        )
+        strict_source_gap = cls._pathfinder_source_specific_strict_gap(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+        )
+
+        score = 35.0
+        signals: List[str] = []
+        if category_hits:
+            score += min(28.0, 14.0 + len(category_hits) * 3.5)
+            signals.append("pathfinder_axis_category_match")
+        if core_hits:
+            score += min(24.0, 10.0 + len(core_hits) * 4.0)
+            signals.append("pathfinder_axis_core_match")
+        if anchor_hits:
+            score += min(12.0, 4.0 + len(anchor_hits) * 2.5)
+            signals.append("pathfinder_axis_service_anchor")
+        if low_value_hits:
+            score -= min(24.0, 10.0 + len(low_value_hits) * 5.0)
+            signals.append("pathfinder_axis_low_value_context")
+        if not primary_hits:
+            score -= 20.0
+            signals.append("pathfinder_axis_no_primary_terms")
+        if source_specific_terms:
+            if not source_specific_hits:
+                score -= 28.0
+                signals.append("pathfinder_axis_specific_context_missing")
+            else:
+                hit_count = len(source_specific_hits)
+                total_specific = max(1, len(source_specific_terms))
+                coverage = hit_count / total_specific
+                if hit_count == total_specific or coverage >= 0.8:
+                    score += min(14.0, 8.0 + hit_count * 3.0)
+                    signals.append("pathfinder_axis_specific_context_match")
+                    if total_specific > 1:
+                        signals.append("pathfinder_axis_specific_context_complete")
+                else:
+                    score += min(6.0, 2.0 + hit_count * 1.5)
+                    score -= min(14.0, (total_specific - hit_count) * 4.0)
+                    signals.append("pathfinder_axis_specific_context_partial")
+        if strict_source_gap:
+            score -= 18.0
+            signals.append("pathfinder_axis_specific_context_strict_gap")
+
+        region_score, region_signals = cls._region_fit_signal(
+            text_lc, local_venue=cls._has_local_venue_anchor(target)
+        )
+        if region_score > 0:
+            score += min(6.0, region_score * 0.20)
+            signals.append("pathfinder_axis_local_context")
+
+        competing_hits = 0
+        competing_categories: List[str] = []
+        for other_profile in getattr(GYULIM_KEYWORD_PROFILE, "profiles", ()):
+            if other_profile.category == profile.category:
+                continue
+            other_hits = matching_terms(other_profile.category_terms + other_profile.core_tokens)
+            if other_hits:
+                competing_hits += len(other_hits)
+                competing_categories.append(other_profile.category)
+        if competing_hits > max(1, len(primary_hits) + 1):
+            score -= min(18.0, 8.0 + competing_hits * 2.0)
+            signals.append("pathfinder_axis_cross_axis_noise")
+            if competing_categories:
+                signals.append(
+                    "pathfinder_axis_competes_with:" + ",".join(list(dict.fromkeys(competing_categories))[:3])
+                )
+
+        if domain != "general" and cls._has_domain_anchor(domain, text_lc):
+            score += 4.0
+            signals.append("pathfinder_axis_domain_anchor")
+
+        if strict_source_gap:
+            score = min(score, 54.0)
+
+        score = round(max(0.0, min(100.0, score)), 2)
+        if score >= 75.0:
+            tier = "strong"
+        elif score >= 55.0:
+            tier = "acceptable"
+        elif score >= 38.0:
+            tier = "weak"
+        else:
+            tier = "mismatch"
+        return score, tier, list(dict.fromkeys(signals + region_signals[:1]))
+
+    @classmethod
+    def _pathfinder_execution_adjustment(
+        cls,
+        target: ViralTarget,
+        *,
+        platform: Optional[str] = None,
+        text: str = "",
+    ) -> Tuple[float, List[str]]:
+        """Translate Pathfinder keyword readiness into post-level scoring signals."""
+        ctx = cls._pathfinder_execution_context(target)
+        readiness = float(ctx["viral_readiness"] or 0.0)
+        actionability = float(ctx["content_actionability"] or 0.0)
+        medical_risk = float(ctx["medical_ad_risk"] or 0.0)
+        local_fit = float(ctx["local_service_fit"] or 0.0)
+        community = float(ctx["community_signal"] or 0.0)
+        conversion = float(ctx["conversion_signal"] or 0.0)
+        profile_action = float(ctx["profile_action_signal"] or 0.0)
+        preferred_surface = str(ctx["preferred_surface"] or "")
+        recommended_type = str(ctx["recommended_type"] or "")
+        review_intent_type = str(ctx["review_intent_type"] or "none")
+        platform_key = (platform or target.platform or "").lower()
+        text_lc = (text or "").lower()
+
+        adjustment = 0.0
+        signals: List[str] = []
+
+        if readiness >= 75.0:
+            adjustment += min(12.0, (readiness - 60.0) * 0.32)
+            signals.append("pathfinder_ready_keyword")
+        elif 0.0 < readiness < 35.0:
+            adjustment -= min(10.0, (35.0 - readiness) * 0.28)
+            signals.append("pathfinder_low_readiness")
+
+        if actionability >= 75.0:
+            adjustment += min(8.0, (actionability - 60.0) * 0.24)
+            signals.append("pathfinder_actionable_content")
+        elif 0.0 < actionability < 45.0:
+            adjustment -= min(12.0, (45.0 - actionability) * 0.32)
+            signals.append("pathfinder_low_actionability")
+
+        if local_fit >= 75.0 and cls._contains_region_terms(text_lc, cls.REGION_KEYWORDS):
+            adjustment += min(6.0, (local_fit - 60.0) * 0.18)
+            signals.append("pathfinder_local_service_fit")
+        elif 0.0 < local_fit < 40.0:
+            adjustment -= min(10.0, (40.0 - local_fit) * 0.24)
+            signals.append("pathfinder_local_service_weak")
+
+        if community >= 60.0 and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            adjustment += min(7.0, (community - 50.0) * 0.20)
+            signals.append("pathfinder_community_surface_fit")
+        if conversion >= 55.0:
+            adjustment += min(6.0, (conversion - 45.0) * 0.18)
+            signals.append("pathfinder_conversion_signal")
+        if profile_action >= 55.0:
+            adjustment += min(5.0, (profile_action - 45.0) * 0.16)
+            signals.append("pathfinder_profile_action_signal")
+
+        if preferred_surface in {"hybrid_local_content", "profile_action", "local_pack"}:
+            if platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+                adjustment += 4.0
+                signals.append("pathfinder_surface_match")
+            elif platform_key == "blog":
+                adjustment += 1.5
+                signals.append("pathfinder_surface_partial_match")
+        if recommended_type in {"faq_safety", "service_landing", "access_landing"}:
+            adjustment += 3.0
+            signals.append("pathfinder_content_type_fit")
+        if review_intent_type not in {"", "none"} and platform_key in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            adjustment += 3.0
+            signals.append("pathfinder_review_intent_surface")
+
+        if medical_risk >= 70.0:
+            adjustment -= 18.0
+            signals.append("pathfinder_high_medical_ad_risk")
+        elif medical_risk >= 40.0:
+            adjustment -= 7.0
+            signals.append("pathfinder_medical_ad_review")
+
+        return round(max(-28.0, min(28.0, adjustment)), 2), list(dict.fromkeys(signals))
+
+    @classmethod
+    def _keyword_domain(cls, matched_keywords: List[str], category: str = "") -> str:
         """검색 키워드가 어느 진료 축에 속하는지 추정한다."""
         joined = " ".join(matched_keywords or []).lower()
         if any(k in joined for k in ["교통사고", "자동차사고", "자보", "입원"]):
             return "traffic"
-        if any(k in joined for k in ["다이어트", "비만", "감량", "체중"]):
+        if any(k in joined for k in ["다이어트", "다이어트한약", "한약", "비만", "감량", "체중"]):
             return "diet"
         if any(k in joined for k in ["여드름", "흉터", "새살침", "패인흉터", "모공"]):
             return "scar_skin"
-        if any(k in joined for k in ["안면비대칭", "얼굴비대칭", "비대칭"]):
+        if any(k in joined for k in ["안면비대칭", "얼굴비대칭", "비대칭", "턱관절", "턱교정", "두상비대칭"]):
             return "asymmetry"
         if any(k in joined for k in ["체형", "골반", "척추", "측만", "자세"]):
             return "body"
         if any(k in joined for k in ["리프팅", "탄력", "매선", "주름"]):
             return "lifting"
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        category_domain_map = {
+            "흉터/여드름흉터": "scar_skin",
+            "피부/여드름": "scar_skin",
+            "다이어트": "diet",
+            "안면비대칭": "asymmetry",
+            "체형교정": "body",
+            "통증/디스크": "body",
+            "교통사고": "traffic",
+            "리프팅/탄력": "lifting",
+        }
+        if category_key in category_domain_map:
+            return category_domain_map[category_key]
         return "general"
+
+    @classmethod
+    def _target_domain(cls, target: ViralTarget) -> str:
+        category = (
+            getattr(target, "matched_keyword_category", "") or
+            getattr(target, "category", "") or
+            ""
+        )
+        return cls._keyword_domain(getattr(target, "matched_keywords", []) or [], category=category)
+
+    @classmethod
+    def _own_content_domain(cls, target: ViralTarget) -> str:
+        """글 자체 텍스트로 감지한 진료축 도메인 (시드 lineage와 무관)."""
+        detected = cls._own_content_category(target)
+        if not detected:
+            return ""
+        return cls._keyword_domain([], category=detected)
+
+    @classmethod
+    def _own_content_category(cls, target: ViralTarget) -> str:
+        """글 자체 텍스트로 감지한 활성 프로필 진료축 카테고리."""
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(
+                f"{target.title or ''} {target.content_preview or ''}",
+                default="",
+            )
+        )
+        if not detected or not GYULIM_KEYWORD_PROFILE.profile_for(detected):
+            return ""
+        return detected
+
+    @classmethod
+    def _seed_profile_category(cls, target: ViralTarget) -> str:
+        """Return the concrete Pathfinder profile category attached to a target."""
+        raw_category = (
+            getattr(target, "matched_keyword_category", "")
+            or getattr(target, "category", "")
+            or ""
+        )
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(raw_category)
+        return category if category and GYULIM_KEYWORD_PROFILE.profile_for(category) else ""
+
+    USER_AXIS_FALLBACK_TERMS: Dict[str, Tuple[str, ...]] = {
+        # Naver Kin askers often say "무릎 잘 보는 병원" rather than the
+        # profile token "무릎통증". Keep these symptom stems narrow so a generic
+        # recommendation request is still routed to enrichment, not rejected.
+        "통증/디스크": (
+            "무릎", "허리", "목", "어깨", "관절", "디스크", "좌골", "손목",
+            "족저", "오십견", "테니스엘보", "통증",
+        ),
+    }
+
+    @classmethod
+    def _user_profile_axis_category(cls, target: ViralTarget) -> str:
+        """Detect a concrete profile axis from asker-facing wording only."""
+        user_text = cls._user_need_text(target).lower()
+        detected = GYULIM_KEYWORD_PROFILE.normalize_category(
+            GYULIM_KEYWORD_PROFILE.detect_category(user_text, default="")
+        )
+        if detected and GYULIM_KEYWORD_PROFILE.profile_for(detected):
+            return detected
+
+        compact_user_text = _compact_query_text(user_text)
+        for category, terms in cls.USER_AXIS_FALLBACK_TERMS.items():
+            if any(
+                _compact_query_text(term) in compact_user_text
+                for term in terms
+                if term
+            ):
+                return category
+        return ""
+
+    @classmethod
+    def _has_seed_profile_axis_anchor(cls, target: ViralTarget, category: str) -> bool:
+        """Check the asker-facing text for a concrete seed category anchor.
+
+        Generic service terms such as ``한의원`` and ``상담`` deliberately do
+        not count here. They describe a reply surface, not the treatment axis.
+        """
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+        if not profile:
+            return False
+        axis_terms = list(getattr(profile, "core_tokens", ()) or ()) + list(
+            getattr(profile, "category_terms", ()) or ()
+        )
+        user_text = cls._user_need_text(target).lower()
+        compact_user_text = _compact_query_text(user_text)
+        return cls._contains_any(user_text, axis_terms) or any(
+            _compact_query_text(term) in compact_user_text
+            for term in axis_terms
+            if term
+        )
+
+    @classmethod
+    def _has_incompatible_profile_axis(cls, target: ViralTarget) -> bool:
+        """Detect a concrete content axis that conflicts with the seed lineage.
+
+        This closes the gap for profile categories that historically mapped to
+        the broad ``general`` domain. A mismatch is returned only when the
+        asker-facing text has no seed-category anchor and another concrete
+        profile category is detected.
+        """
+        seed_category = cls._seed_profile_category(target)
+        own_category = cls._user_profile_axis_category(target)
+        if not seed_category or not own_category or seed_category == own_category:
+            return False
+
+        # Focused domains already pass through the established cross-axis rescue
+        # path below. This safeguard closes only the historical blind spot where
+        # a concrete profile category was collapsed into the broad general domain.
+        if cls._keyword_domain([], category=seed_category) != "general":
+            return False
+
+        # Skin and scar content share a care pathway, so profile-detector
+        # differences between the two must not reject a candidate.
+        if {seed_category, own_category} <= {"흉터/여드름흉터", "피부/여드름"}:
+            return False
+
+        return not cls._has_seed_profile_axis_anchor(target, seed_category)
+
+    @classmethod
+    def _cross_axis_reject_reason(cls, target: ViralTarget, *, seed_domain: str) -> Optional[str]:
+        """교차축 후보를 자기 축 기준으로 1회 재귀 평가.
+
+        시드 lineage를 글 자체 카테고리로 바꾼 clone에 전체 최종 게이트를 다시
+        돌린다 — 자기 축의 노이즈/광고/지역 검사를 전부 통과해야 None. 자기 축이
+        감지되지 않거나 시드 축과 같으면(재귀 종료 조건) 구제하지 않는다.
+        """
+        if (target.score_breakdown or {}).get("_cross_axis_eval"):
+            return "domain_mismatch"
+        # 사용자 질문 표면만 — blog 교차축 후보는 라이브 리뷰 결과 대부분 업체
+        # SEO/홍보 콘텐츠였다 (블로그는 자기 축 전용 레인으로만 들어온다).
+        if (target.platform or "").lower() not in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            return "domain_mismatch"
+        own_category = cls._own_content_category(target)
+        if not own_category:
+            return "domain_mismatch"
+        own_domain = cls._keyword_domain([], category=own_category)
+        if not own_domain or own_domain == seed_domain:
+            return "domain_mismatch"
+        import copy as _copy
+        clone = _copy.copy(target)
+        clone.matched_keyword_category = own_category
+        clone.category = own_category
+        # 시드 키워드 lineage를 비워 클론 도메인이 자기 카테고리로만 풀리게 한다 —
+        # 원본 키워드(예: 다이어트 시드)가 남으면 도메인이 다시 시드 축으로 돌아간다.
+        clone.matched_keywords = []
+        clone.score_breakdown = {**(target.score_breakdown or {}), "_cross_axis_eval": True}
+        # 자기 축의 user-axis 앵커(축별 정선 패턴)까지 요구 — detect_category의
+        # 우발 매칭(성형/운동 글의 체형·비대칭 단어 등)이 구제되는 것을 막는다.
+        if not cls._has_user_axis_anchor(clone, domain=own_domain, category=own_category):
+            return "domain_mismatch"
+        return cls.final_reject_reason(clone)
+
+    @classmethod
+    def _profile_categories_for_target(cls, target: ViralTarget, domain: str) -> List[str]:
+        """Return Pathfinder clinic profile categories that can explain this target."""
+        candidates = [
+            getattr(target, "matched_keyword_category", "") or "",
+            getattr(target, "category", "") or "",
+        ]
+        domain_map = {
+            "diet": "다이어트",
+            "traffic": "교통사고",
+            "asymmetry": "안면비대칭",
+            "body": "체형교정",
+            "lifting": "리프팅/탄력",
+        }
+        if domain == "scar_skin":
+            candidates.extend(["흉터/여드름흉터", "피부/여드름"])
+        if domain in domain_map:
+            candidates.append(domain_map[domain])
+
+        normalized: List[str] = []
+        for raw in candidates:
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(raw)
+            if category and category not in normalized:
+                normalized.append(category)
+            profile = GYULIM_KEYWORD_PROFILE.profile_for(raw)
+            if profile and profile.category not in normalized:
+                normalized.append(profile.category)
+        return normalized
+
+    _LOCAL_VENUE_TOKENS_CACHE: Optional[List[str]] = None
+
+    @classmethod
+    def _local_venue_tokens(cls) -> List[str]:
+        """청주 로컬 커뮤니티 식별 토큰(시·구·동). nearby(진천/증평 등)는 제외 —
+        진료권 정밀도를 위해 청주 본권만. 1글자/모호 토큰은 카페명 오매칭 방지로 제외."""
+        if cls._LOCAL_VENUE_TOKENS_CACHE is None:
+            toks: set = set()
+            for raw in (
+                list(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+                + list(GYULIM_KEYWORD_PROFILE.neighborhoods)
+            ):
+                token = (raw or "").strip()
+                if len(token) >= 2 and token not in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS:
+                    toks.add(token)
+            cls._LOCAL_VENUE_TOKENS_CACHE = sorted(toks, key=len, reverse=True)
+        return cls._LOCAL_VENUE_TOKENS_CACHE
+
+    @classmethod
+    def _has_local_venue_anchor(cls, target: ViralTarget) -> bool:
+        """카페 식별명이 청주 로컬 커뮤니티임을 나타내면 True.
+
+        환자는 user-surface 축(흉터/피부/비대칭) 질문에 지역을 거의 안 적지만,
+        '청주맘스캠프'·'러브인오송' 같은 카페 정체성 자체가 강한 지역 신호다.
+        텍스트-온리 지역 판정이 구조적으로 놓치던 recall 공백을 메운다(라이브
+        감사 2026-06-13: 핵심축 청주-카페 글 362건이 본문 무지역으로 저평가).
+        cafe만 사용 — 블로그 bloggername은 업체 SEO 비중이 높아 제외.
+        """
+        platform = (getattr(target, "platform", "") or "").lower()
+        if platform not in {"cafe", "naver_cafe"}:
+            return False
+        venue = getattr(target, "author", "") or ""
+        if not venue:
+            return False
+        return cls._contains_any(venue, cls._local_venue_tokens())
+
+    @classmethod
+    def _region_fit_signal(cls, text: str, local_venue: bool = False) -> Tuple[int, List[str]]:
+        """Score how close the post is to the clinic's real operating area."""
+        score = 0
+        signals: List[str] = []
+        area_signal = getattr(GYULIM_KEYWORD_PROFILE, "area_signal", "target_area")
+        neighborhood_signal = getattr(GYULIM_KEYWORD_PROFILE, "neighborhood_signal", "target_neighborhood")
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.cheongju_regions)):
+            score += 18
+            signals.append(area_signal)
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.neighborhoods)):
+            score += 12
+            signals.append(neighborhood_signal)
+        if cls._contains_region_terms(text, list(GYULIM_KEYWORD_PROFILE.nearby_regions)):
+            score += 7
+            signals.append("nearby_region")
+
+        # 카페 정체성 기반 로컬 앵커 — 본문에 지역 토큰이 없을 때만 보강(중복 가산 방지).
+        # '청주맘카페' 글이 지역명 없이도 로컬로 정당하게 평가받게 한다.
+        if local_venue and area_signal not in signals and neighborhood_signal not in signals:
+            score += 15
+            signals.append(area_signal)
+            signals.append("local_venue_anchor")
+
+        active_local_terms = set(GYULIM_KEYWORD_PROFILE.cheongju_regions) | set(GYULIM_KEYWORD_PROFILE.neighborhoods) | set(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        distant_regions = list(cls.DISTANT_REGION_KEYWORDS)
+        distant_regions = [region for region in distant_regions if region not in active_local_terms]
+        has_primary = any(s in signals for s in (area_signal, neighborhood_signal))
+        if distant_regions and cls._contains_any(text, distant_regions) and not has_primary:
+            score -= 24
+            signals.append("distant_region")
+        return score, signals
+
+    @classmethod
+    def _is_distant_local_target(cls, title: str, text: str, local_venue: bool = False) -> bool:
+        """Reject posts whose visible target market is outside the active clinic area."""
+        active_local_terms = (
+            set(GYULIM_KEYWORD_PROFILE.cheongju_regions)
+            | set(GYULIM_KEYWORD_PROFILE.neighborhoods)
+            | set(GYULIM_KEYWORD_PROFILE.nearby_regions)
+        )
+        distant_regions = [region for region in cls.DISTANT_REGION_KEYWORDS if region not in active_local_terms]
+        if not distant_regions:
+            return False
+
+        title_has_distant = cls._contains_any(title, distant_regions)
+        title_has_active = cls._contains_region_terms(title, active_local_terms)
+        if title_has_distant and not title_has_active:
+            # 제목이 명시적으로 타지역을 타겟 — 카페가 로컬이어도 그 글은 타지역 글.
+            return True
+
+        # 청주 로컬 카페 글은 본문이 우연히 타지역을 언급해도 로컬로 간주한다(앵커
+        # = 카페 정체성). 제목 명시 타겟 킬은 위에서 이미 처리했고, 업체 답변/광고
+        # 침투는 advertorial 게이트가 별도로 잡으므로 여기서 구멍이 나지 않는다.
+        if local_venue:
+            return False
+
+        text_has_distant = cls._contains_any(text, distant_regions)
+        text_has_active = cls._contains_region_terms(text, active_local_terms)
+        explicit_cheongju = cls._contains_region_terms(text, ["청주", "충북", "충청북도"])
+        if text_has_distant and not explicit_cheongju:
+            return True
+        return bool(text_has_distant and not text_has_active)
+
+    @classmethod
+    def _assess_clinic_treatment_fit(
+        cls,
+        target: ViralTarget,
+        domain: str,
+        text: str,
+        is_health: bool,
+    ) -> Tuple[int, str, List[str]]:
+        """Score whether the post fits the active clinic's actual treatment portfolio."""
+        score, signals = cls._region_fit_signal(
+            text, local_venue=cls._has_local_venue_anchor(target)
+        )
+        categories = cls._profile_categories_for_target(target, domain)
+        profiles = [
+            GYULIM_KEYWORD_PROFILE.profile_for(category)
+            for category in categories
+        ]
+        profiles = [profile for profile in profiles if profile]
+
+        if profiles:
+            best_profile_score = 0.0
+            compact_text = re.sub(r"\s+", "", text)
+
+            def matching_terms(terms: Iterable[str]) -> List[str]:
+                matches: List[str] = []
+                for term in terms:
+                    if not term:
+                        continue
+                    term_lower = term.lower()
+                    term_compact = re.sub(r"\s+", "", term_lower)
+                    if term_lower in text or (term_compact and term_compact in compact_text):
+                        matches.append(term)
+                return matches
+
+            for profile in profiles:
+                category_hits = matching_terms(profile.category_terms)
+                anchor_hits = matching_terms(profile.direct_service_anchors)
+                core_hits = matching_terms(profile.core_tokens)
+                low_value_hits = matching_terms(profile.low_business_value_terms)
+
+                profile_score = 0.0
+                if category_hits:
+                    profile_score += min(22.0, 8.0 + len(set(category_hits)) * 4.0)
+                if core_hits:
+                    profile_score += min(18.0, 6.0 + len(set(core_hits)) * 4.0)
+                if anchor_hits:
+                    profile_score += min(20.0, 8.0 + len(set(anchor_hits)) * 4.0)
+                if low_value_hits:
+                    profile_score -= min(28.0, 10.0 + len(set(low_value_hits)) * 6.0)
+                profile_score *= max(0.7, min(1.35, float(profile.strategic_weight or 1.0)))
+                best_profile_score = max(best_profile_score, profile_score)
+
+            score += int(round(best_profile_score))
+            signals.append(getattr(GYULIM_KEYWORD_PROFILE, "profile_match_signal", "clinic_profile_match"))
+            signals.append("clinic_profile_match")
+        elif domain != "general" and cls._has_domain_anchor(domain, text):
+            score += 24
+            signals.append("domain_anchor_match")
+        else:
+            score -= 18
+            signals.append("no_profile_match")
+
+        explicit_not_service = cls._contains_any(text, [
+            "치료를 찾는 건 아니", "치료를 찾는건 아니",
+            "상담이나 치료를 찾는 건 아니", "상담이나 치료를 찾는건 아니",
+            "한의원 상담이나 치료를 찾는 건 아니", "한의원 상담이나 치료를 찾는건 아니",
+        ])
+        product_only_context = cls._contains_any(text, [
+            "홈케어", "화장품", "제품 위주", "제품위주", "올리브영",
+        ]) and not cls._contains_any(text, [
+            "말고 한의원", "대신 한의원", "한의원으로", "한의원 상담",
+            "한의원 치료", "한의원 알아", "새살침", "한약", "치료받",
+            "치료 받", "상담받", "상담 받", "안 돼서", "안돼서",
+            "효과 없어서", "효과없어서",
+        ])
+        non_service_request = explicit_not_service or product_only_context
+        if non_service_request:
+            score -= 24
+            signals.append("non_service_request")
+
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)) and not non_service_request:
+            score += 12
+            signals.append("hanbang_service_anchor")
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.high_intent_terms)):
+            score += 10
+            signals.append("high_intent_modifier")
+        if target.matched_keyword_grade in {"S", "A"}:
+            score += 8
+            signals.append("pathfinder_top_grade")
+        elif target.matched_keyword_grade == "B":
+            score += 4
+            signals.append("pathfinder_b_grade")
+        if target.matched_keyword_priority >= 100:
+            score += 8
+            signals.append("pathfinder_high_priority")
+        elif target.matched_keyword_priority >= 70:
+            score += 4
+            signals.append("pathfinder_priority")
+        if is_health:
+            score += 4
+            signals.append("health_context")
+
+        if cls._contains_any(text, list(GYULIM_KEYWORD_PROFILE.medical_general_tokens)):
+            hanbang_skin_context = (
+                cls._contains_any(
+                    text,
+                    list(GYULIM_KEYWORD_PROFILE.hanbang_indicators)
+                    + ["한의원", "한방", "새살침", "침", "한약", "의원", "클리닉", "피부과", "레이저", "시술"],
+                )
+                and not non_service_request
+            )
+            if not hanbang_skin_context:
+                score -= 18
+                signals.append("western_provider_bias")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "excellent"
+        elif score >= 55:
+            tier = "strong"
+        elif score >= cls.MIN_CLINIC_TREATMENT_FIT_SCORE:
+            tier = "acceptable"
+        else:
+            tier = "weak"
+        return score, tier, list(dict.fromkeys(signals))
+
+    @classmethod
+    def _assess_worksite_efficiency(
+        cls,
+        target: ViralTarget,
+        clinic_treatment_fit_score: int,
+        viral_need_score: int,
+        viral_need_signals: List[str],
+        reply_opportunity_score: int,
+        reply_opportunity_signals: List[str],
+        timing_window_score: int,
+        timing_window_signals: List[str],
+        journey_fit_score: int,
+        journey_stage: str,
+        qualification_fit_score: int,
+        risk_flags: List[str],
+    ) -> Tuple[int, str, List[str]]:
+        """Score how efficient this exact public surface is for a helpful reply."""
+        platform = (target.platform or "").lower()
+        score = 30
+        signals: List[str] = []
+        need_set = set(viral_need_signals or [])
+        reply_set = set(reply_opportunity_signals or [])
+        timing_set = set(timing_window_signals or [])
+
+        if platform in {"cafe", "naver_cafe"}:
+            score += 18
+            signals.append("community_surface")
+        elif platform in {"kin", "naver_kin"}:
+            score += 15
+            signals.append("qa_surface")
+        elif platform == "blog":
+            score -= 12
+            signals.append("blog_low_comment_efficiency")
+        elif platform in {"instagram", "tiktok", "youtube"}:
+            score -= 6
+            signals.append("social_thread_lower_intent")
+
+        comment_count = max(0, int(getattr(target, "comment_count", 0) or 0))
+        view_count = max(0, int(getattr(target, "view_count", 0) or 0))
+        if comment_count == 0:
+            score += 16
+            signals.append("unanswered_thread")
+        elif comment_count <= 2:
+            score += 9
+            signals.append("low_response_thread")
+        elif comment_count >= 8:
+            score -= 16
+            signals.append("saturated_thread")
+        if view_count >= 100 and comment_count <= 2:
+            score += 8
+            signals.append("visible_gap")
+
+        if clinic_treatment_fit_score >= 75:
+            score += 14
+            signals.append("excellent_clinic_fit")
+        elif clinic_treatment_fit_score >= 55:
+            score += 8
+            signals.append("strong_clinic_fit")
+        elif clinic_treatment_fit_score < cls.MIN_CLINIC_TREATMENT_FIT_SCORE:
+            score -= 22
+            signals.append("weak_clinic_fit")
+
+        if reply_opportunity_score >= 75:
+            score += 12
+            signals.append("reply_welcome")
+        elif reply_opportunity_score < 45:
+            score -= 12
+            signals.append("weak_reply_opening")
+        if timing_window_score >= 75:
+            score += 12
+            signals.append("fresh_response_window")
+        elif timing_window_score < 45:
+            score -= 12
+            signals.append("aging_response_window")
+        if journey_stage == "decision":
+            score += 10
+            signals.append("decision_stage")
+        elif journey_stage == "consideration":
+            score += 6
+            signals.append("consideration_stage")
+        elif journey_stage in {"awareness", "post_service"}:
+            score -= 14
+            signals.append("low_conversion_stage")
+        if qualification_fit_score >= 75:
+            score += 10
+            signals.append("qualified_lead_context")
+        elif qualification_fit_score < 45:
+            score -= 10
+            signals.append("thin_lead_context")
+
+        if need_set & {"recommendation_request", "ready_to_act", "cost_decision"}:
+            score += 8
+            signals.append("actionable_need")
+        if "help_request_language" in reply_set or "clear_question_shape" in reply_set:
+            score += 6
+            signals.append("natural_reply_opening")
+        if "anti_ad_request" in need_set or "anti_ad_request" in reply_set:
+            score -= 6
+            signals.append("transparency_sensitive")
+        if cls._is_response_restricted_surface(target):
+            score -= 45
+            signals.append("response_restricted_surface")
+        if "posted_over_30d" in timing_set or "stale_language" in timing_set:
+            score -= 14
+            signals.append("stale_context")
+        if risk_flags:
+            score -= min(22, 7 * len(risk_flags))
+            signals.append("medical_guardrail_load")
+
+        score = max(0, min(100, score))
+        if score >= 75:
+            tier = "high_efficiency"
+        elif score >= 55:
+            tier = "efficient"
+        elif score >= cls.MIN_WORKSITE_EFFICIENCY_SCORE:
+            tier = "manual_selective"
+        else:
+            tier = "inefficient"
+        return score, tier, list(dict.fromkeys(signals))
 
     @staticmethod
     def _contains_any(text: str, patterns: List[str]) -> bool:
         return any(pattern in text for pattern in patterns)
+
+    @classmethod
+    def _is_marketplace_sale(cls, text: str) -> bool:
+        if cls._contains_any(text, cls.MARKETPLACE_SALE_PATTERNS):
+            return True
+        compact = re.sub(r"\s+", "", text)
+        if cls._contains_any(compact, ["판매중", "판매완료", "양도완료", "무료나눔", "가격네고", "네고가능"]):
+            return True
+        return any(re.search(pattern, text) for pattern in cls.MARKETPLACE_SALE_REGEXES)
+
+    @classmethod
+    def _region_term_matches(cls, text: str, term: str) -> bool:
+        """Match local tokens without treating common Korean words as Cheongju areas."""
+        text_lc = (text or "").lower()
+        term_lc = str(term or "").strip().lower()
+        if not term_lc:
+            return False
+        if term_lc in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS:
+            escaped = re.escape(term_lc)
+            return bool(
+                re.search(rf"(?:청주(?:시)?\s*)?{escaped}구", text_lc)
+                or re.search(rf"청주(?:시)?\s*{escaped}(?:\s|$|쪽|일대|근처|지역)", text_lc)
+            )
+        return term_lc in text_lc
+
+    @classmethod
+    def _contains_region_terms(cls, text: str, patterns: Iterable[str]) -> bool:
+        return any(cls._region_term_matches(text, pattern) for pattern in patterns if pattern)
+
+    @classmethod
+    def _has_ambiguous_region_false_positive(cls, text: str) -> bool:
+        text_lc = (text or "").lower()
+        return any(
+            stem in text_lc and not cls._region_term_matches(text_lc, stem)
+            for stem in cls.AMBIGUOUS_CHEONGJU_REGION_STEMS
+        )
+
+    @classmethod
+    def _has_active_region_anchor(
+        cls,
+        target: Optional[ViralTarget],
+        text: str,
+        *,
+        local_venue: Optional[bool] = None,
+    ) -> bool:
+        active_terms = (
+            list(getattr(GYULIM_KEYWORD_PROFILE, "cheongju_regions", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "neighborhoods", ()))
+            + list(getattr(GYULIM_KEYWORD_PROFILE, "nearby_regions", ()))
+        )
+        if cls._contains_region_terms(text, active_terms):
+            return True
+        if local_venue is None and target is not None:
+            local_venue = cls._has_local_venue_anchor(target)
+        return bool(local_venue)
 
     @staticmethod
     def _strip_internal_labels(text: str) -> str:
@@ -1572,21 +4887,160 @@ class CommentableFilter:
         return re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", text or "").strip()
 
     @classmethod
+    def _kin_question_segment_body(cls, target: ViralTarget) -> str:
+        """Return likely asker-authored KIN body without appended answer snippets.
+
+        Search snippets often concatenate the original question and one or more
+        answers without the `[기존답변N]` labels added by our detail fetcher.  Local
+        gates should judge whether the question is worth sending to AI; planted
+        Q&A and competitor-answer handling remains the AI gate's job.
+        """
+        body = target.content_preview or ""
+        if (target.platform or "").lower() not in {"kin", "naver_kin"}:
+            return cls._strip_internal_labels(body)
+
+        hard_split_markers = [
+            "[기존답변",
+            "[기존 답변",
+            "기존답변",
+            "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
+            "안녕하세요, 닥톡", "안녕하세요. 닥톡",
+            "답변드립니다", "답변 드립니다",
+        ]
+        soft_split_markers = ["안녕하세요,", "안녕하세요."]
+        unlabeled_answer_markers = [
+            "질문자분",
+            "문의하신",
+            "말씀하신",
+            "가까운 한의원",
+            "가까운 병원",
+            "내원해",
+            "내원하",
+            "진료를 보는",
+            "진료를 받아",
+            "상담 한번",
+            "상담을 받아",
+            "권장해",
+            "추천드립니다",
+            "도움이 될 수",
+            "방치하면",
+            "초기에",
+            "받으시는 게 좋",
+            "성안길 쪽",
+            "규림한의원",
+            "치료를 적용",
+            "한방 다이어트는",
+            "여드름은 보통",
+            "여드름 흉터를 최소화",
+            "리프팅은 본인의",
+            "안면비대칭의 경우",
+            "추나요법이",
+        ]
+
+        raw_lc = body.lower()
+        cut_points = [raw_lc.find(marker.lower()) for marker in hard_split_markers]
+        cut_points = [idx for idx in cut_points if idx >= 0]
+
+        stripped = cls._strip_internal_labels(body)
+        stripped_lc = stripped.lower()
+        cut_points.extend(
+            idx for idx in (stripped_lc.find(marker.lower()) for marker in soft_split_markers)
+            if idx > 20
+        )
+
+        question_evidence_terms = (
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS
+        )
+        title_text = (target.title or "").lower()
+        for marker in unlabeled_answer_markers:
+            idx = stripped_lc.find(marker.lower())
+            if idx <= 24:
+                continue
+            prefix = f"{title_text} {stripped_lc[:idx]}"
+            if re.search(r"[?？]", prefix) or cls._contains_any(prefix, question_evidence_terms):
+                cut_points.append(idx)
+
+        if cut_points:
+            cut = min(cut_points)
+            if cut >= 0:
+                source = body if cut in [raw_lc.find(marker.lower()) for marker in hard_split_markers] else stripped
+                body = source[:cut]
+
+        return cls._strip_internal_labels(body)
+
+    @classmethod
     def _user_need_text(cls, target: ViralTarget) -> str:
         """Return the part most likely written by the person asking for help."""
-        body = cls._strip_internal_labels(target.content_preview or "")
         platform = (target.platform or "").lower()
         if platform in {"kin", "naver_kin"}:
-            split_markers = [
-                "# 병원 위치", "# 진료 예약", "# 병원 홈페이지", "# 프로필 보기",
-                "안녕하세요, 닥톡", "안녕하세요. 닥톡", "안녕하세요,",
-                "안녕하세요.", "답변드립니다", "답변 드립니다",
-            ]
-            cut_points = [body.lower().find(marker.lower()) for marker in split_markers]
-            cut_points = [idx for idx in cut_points if idx > 20]
-            if cut_points:
-                body = body[:min(cut_points)]
+            body = cls._kin_question_segment_body(target)
+        else:
+            body = cls._strip_internal_labels(target.content_preview or "")
         return f"{target.title or ''} {body}".strip()
+
+    @classmethod
+    def _is_response_restricted_surface(cls, target: ViralTarget, text: str = "") -> bool:
+        """Reject posts where the author explicitly closes public/provider responses."""
+        user_text = cls._user_need_text(target).lower()
+        evidence = f"{text or ''} {user_text}".lower()
+        return cls._contains_any(evidence, cls.RESPONSE_HARD_REJECTION_PATTERNS)
+
+    @classmethod
+    def _axis_user_segment_text(cls, target: ViralTarget, *, max_body_chars: int = 150) -> str:
+        """Short user-authored segment used for strict axis checks.
+
+        Search snippets can include answer/provider text. For Pathfinder companion
+        queries, full-snippet anchors are too permissive, so use title plus the
+        opening body segment before giving a low-supply axis rescue.
+        """
+        title = (target.title or "").lower()
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        platform = (target.platform or "").lower()
+        if platform in {"kin", "naver_kin"}:
+            # Naver Kin snippets often append provider answers; axis checks should
+            # stay close to the asker's own wording.
+            user_text = cls._user_need_text(target).lower()
+            if title and user_text.startswith(title):
+                body = user_text[len(title):].strip()
+            else:
+                body = user_text
+            max_body_chars = min(max_body_chars, 70)
+        return f"{title} {body[:max_body_chars]}".strip()
+
+    @classmethod
+    def _pathfinder_query_variant(cls, target: ViralTarget) -> str:
+        return cls._score_breakdown_text(target, "pathfinder_query_variant", "")
+
+    @classmethod
+    def _is_axis_companion_variant(cls, target: ViralTarget, prefix: str) -> bool:
+        return cls._pathfinder_query_variant(target).startswith(prefix)
+
+    @classmethod
+    def _has_user_axis_anchor(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        category: str,
+    ) -> bool:
+        user_text = cls._axis_user_segment_text(target)
+        if category == "체형교정" or domain == "body":
+            return cls._contains_any(user_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "안면비대칭" or domain == "asymmetry":
+            return cls._contains_any(user_text, cls.ASYMMETRY_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "리프팅/탄력" or domain == "lifting":
+            return cls._contains_any(user_text, cls.LIFTING_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "교통사고" or domain == "traffic":
+            return cls._contains_any(user_text, cls.TRAFFIC_USER_CARE_ANCHOR_PATTERNS)
+        if category == "흉터/여드름흉터":
+            return cls._contains_any(user_text, cls.SCAR_USER_AXIS_ANCHOR_PATTERNS)
+        if category == "피부/여드름":
+            return cls._contains_any(user_text, cls.SKIN_USER_AXIS_ANCHOR_PATTERNS)
+        return True
 
     @classmethod
     def _assess_viral_need(
@@ -1624,6 +5078,17 @@ class CommentableFilter:
         )
         high_intent = service_intent or problem_intent
 
+        # 또래 경험담 기회: 1인칭 경험 공유 글(다녀왔/받아봤/효과 봤 + 진료축 앵커)은
+        # 질문/결정 의도가 없어도 '저도 다녀왔는데...' 댓글이 자연스럽게 붙는 좋은 대상이다.
+        # 진료축 앵커(증상어 OR 도메인)와 함께만 인정해 flat prior 가 되지 않게 한다.
+        first_person_experience = (
+            cls._contains_any(user_text, cls.FIRST_PERSON_EXPERIENCE_PATTERNS)
+            and (
+                cls._contains_any(user_text, cls.CONDITION_TERMS)
+                or (domain != "general" and cls._has_domain_anchor(domain, user_text))
+            )
+        )
+
         if recommendation_request:
             score += 32
             signals.append("recommendation_request")
@@ -1641,13 +5106,16 @@ class CommentableFilter:
         if comparison_eval:
             score += 12
             signals.append("comparison_or_evaluation")
+        if first_person_experience:
+            score += 12
+            signals.append("peer_experience_opportunity")
         if is_inquiry:
             score += 10
             signals.append("explicit_question")
         if is_health:
             score += 6
             signals.append("domain_health")
-        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+        if cls._contains_region_terms(user_text, cls.REGION_KEYWORDS):
             score += 8
             signals.append("local_fit")
         if cls._has_domain_anchor(domain, user_text):
@@ -1678,7 +5146,11 @@ class CommentableFilter:
         if (target.category or "").strip() in cls.GENERIC_CATEGORY_NAMES:
             score -= 8
             signals.append("generic_category")
-        if not high_intent and not (is_inquiry and cls._has_domain_anchor(domain, user_text)):
+        if (
+            not high_intent
+            and not (is_inquiry and cls._has_domain_anchor(domain, user_text))
+            and not first_person_experience
+        ):
             score -= 12
             signals.append("no_clear_need")
 
@@ -1733,7 +5205,7 @@ class CommentableFilter:
         if problem_signal:
             score += 12
             signals.append("situational_problem")
-        if cls._contains_any(user_text, cls.REGION_KEYWORDS):
+        if cls._contains_region_terms(user_text, cls.REGION_KEYWORDS):
             score += 10
             signals.append("local_actionable")
         if domain != "general" and cls._has_domain_anchor(domain, user_text):
@@ -1826,8 +5298,41 @@ class CommentableFilter:
         ]
         if raw in {"방금", "방금 전", "방금전", "지금"}:
             return now
+        relative_day_time = re.fullmatch(
+            r"(오늘|어제|그제)(?:\s*작성)?\s+(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})",
+            raw,
+        )
+        if relative_day_time:
+            day_word, ampm, hour_text, minute_text = relative_day_time.groups()
+            day_delta = {"오늘": 0, "어제": 1, "그제": 2}.get(day_word, 0)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if ampm == "오후" and hour < 12:
+                hour += 12
+            if ampm == "오전" and hour == 12:
+                hour = 0
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                base = now - timedelta(days=day_delta)
+                return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if raw in {"오늘", "오늘 작성"}:
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
         if raw in {"어제", "어제 작성"}:
             return now - timedelta(days=1)
+        if raw in {"그제", "그제 작성"}:
+            return now - timedelta(days=2)
+
+        time_only = re.fullmatch(r"(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})", raw)
+        if time_only:
+            ampm, hour_text, minute_text = time_only.groups()
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if ampm == "오후" and hour < 12:
+                hour += 12
+            if ampm == "오전" and hour == 12:
+                hour = 0
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
         for pattern, unit in relative_patterns:
             match = re.search(pattern, raw)
             if not match:
@@ -1852,6 +5357,29 @@ class CommentableFilter:
                 return datetime.strptime(compact, "%Y%m%d")
             except ValueError:
                 return None
+        naver_date = NAVER_POST_DATE_RE.search(compact)
+        if naver_date:
+            try:
+                year = int(naver_date.group(1))
+                month = int(naver_date.group(2))
+                day = int(naver_date.group(3))
+                date_base = datetime(year, month, day)
+            except ValueError:
+                return None
+            tail = compact[naver_date.end():].strip(" .")
+            tail_time = re.match(r"(?:(오전|오후)\s*)?(\d{1,2})\s*:\s*(\d{2})(?::\s*(\d{2}))?", tail)
+            if tail_time:
+                ampm, hour_text, minute_text, second_text = tail_time.groups()
+                hour = int(hour_text)
+                minute = int(minute_text)
+                second = int(second_text or 0)
+                if ampm == "오후" and hour < 12:
+                    hour += 12
+                if ampm == "오전" and hour == 12:
+                    hour = 0
+                if 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59:
+                    return date_base.replace(hour=hour, minute=minute, second=second)
+            return date_base
         compact = compact.rstrip(".")
         for fmt in (
             "%Y-%m-%d %H:%M:%S.%f",
@@ -1900,6 +5428,13 @@ class CommentableFilter:
 
         posted_source = target.date_str or getattr(target, "posted_at", "") or ""
         posted_hours = cls._hours_since(posted_source, now)
+        # 게시물 자체가 post-age TTL(PENDING_POST_AGE_TTL_DAYS=270d)을 넘으면 댓글 적시성이
+        # 없다 — 미답변/노출 같은 참여 신호로 되살리지 않고 즉시 하드페일한다. (>30d 페널티가
+        # -34로 평탄해, 17년 전 글도 unanswered_gap+qa_window_fit 등으로 MIN(28)을 넘겨
+        # pending에 진입하던 갭. 이제 enrichment 단계에서 차단해 post-age TTL의 270d
+        # 하드컷과 정합.) posted_hours가 None(날짜 미상)이면 영향 없음 — dwell TTL이 별도 보호.
+        if posted_hours is not None and posted_hours > PENDING_POST_AGE_TTL_DAYS * 24:
+            return 0, "stale", ["post_age_exceeds_ttl"]
         discovered_hours = cls._hours_since(target.discovered_at or target.first_seen_at, now)
         last_scanned_hours = cls._hours_since(target.last_scanned_at, now)
         comment_count = max(0, int(getattr(target, "comment_count", 0) or 0))
@@ -2150,7 +5685,7 @@ class CommentableFilter:
         def has(patterns: List[str]) -> bool:
             return any(pattern.lower() in user_text for pattern in patterns if pattern)
 
-        local_fit = cls._contains_any(user_text, cls.REGION_KEYWORDS)
+        local_fit = cls._contains_region_terms(user_text, cls.REGION_KEYWORDS)
         service_line_context = cls._contains_any(user_text, cls.QUALIFIED_SERVICE_LINE_PATTERNS)
         service_fit = (domain != "general" and cls._has_domain_anchor(domain, user_text)) or service_line_context
         actor_context = has(cls.DECISION_ACTOR_PATTERNS) or bool(
@@ -2266,17 +5801,84 @@ class CommentableFilter:
         return score, tier, signals
 
     @classmethod
+    def _provider_cta_body_signal(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str]]:
+        """Detect provider-authored blog/cafe bodies that wear question/review titles."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False, []
+
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        signal_text = body or text
+        if not signal_text:
+            return False, []
+
+        def hits(patterns: List[str]) -> List[str]:
+            return [pattern for pattern in patterns if pattern and pattern.lower() in signal_text]
+
+        provider_info = hits(cls.PROVIDER_INFO_POST_PATTERNS)
+        provider_author = hits(cls.PROVIDER_BODY_AUTHOR_PATTERNS)
+        cta = hits(cls.COMMERCIAL_CTA_PATTERNS)
+        medical_promo = hits(cls.PROMOTIONAL_MEDICAL_PATTERNS)
+        blog_structural = hits(cls.BLOG_AD_STRUCTURAL_PATTERNS)
+
+        groups = {
+            "provider_info": provider_info,
+            "provider_author": provider_author,
+            "commercial_cta": cta,
+            "medical_promo": medical_promo,
+            "blog_ad_structure": blog_structural,
+        }
+        present_groups = [name for name, values in groups.items() if values]
+        has_provider_voice = bool(provider_info or provider_author or (medical_promo and blog_structural))
+        has_action_or_footer = bool(cta or blog_structural)
+        if not (has_provider_voice and has_action_or_footer and len(present_groups) >= 2):
+            return False, []
+
+        user_text = cls._user_need_text(target).lower()
+        real_user_ask = cls._contains_any(user_text, cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+        if real_user_ask and not provider_author:
+            return False, []
+
+        return True, present_groups
+
+    @classmethod
+    def _provider_venue_author_signal(cls, target: ViralTarget) -> Tuple[bool, str]:
+        """카페명/블로거 정체성이 공급자(경쟁 의료기관·병원 디렉터리)면 광고 신호로 본다.
+
+        지식인은 author=질문자 닉네임이라 제외(환자가 어떤 닉네임이든 가능). 카페/블로그만
+        author 가 '글이 올라온 곳의 정체성'이므로 적용한다. 커뮤니티 가드를 먼저 검사해
+        환우모임·맘카페·동네 정보 커뮤니티 같은 진짜 환자 공간은 보존한다.
+        """
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False, ""
+        author = (getattr(target, "author", "") or "").lower()
+        if not author:
+            return False, ""
+        if any(guard.lower() in author for guard in cls.PROVIDER_VENUE_AUTHOR_COMMUNITY_GUARD):
+            return False, ""
+        for token in cls.PROVIDER_VENUE_AUTHOR_PATTERNS:
+            if token and token.lower() in author:
+                return True, token
+        return False, ""
+
+    @classmethod
     def _detect_advertorial(cls, target: ViralTarget, text: str) -> Tuple[bool, List[str], int]:
         """Detect provider/SEO/brand ads that imitate question or review posts."""
         platform = (target.platform or "").lower()
         signals: List[str] = []
         score = 0
+        domain = cls._target_domain(target)
 
         def matched(patterns: List[str]) -> List[str]:
             return [pattern for pattern in patterns if pattern and pattern.lower() in text]
 
-        clean_body = cls._strip_internal_labels(target.content_preview or "").lower()
         title_text = (target.title or "").lower()
+        if platform in {"kin", "naver_kin"}:
+            clean_body = cls._kin_question_segment_body(target).lower()
+            text = f"{title_text} {clean_body}"
+        else:
+            clean_body = cls._strip_internal_labels(target.content_preview or "").lower()
         strong_inquiry = matched(cls.STRONG_USER_INQUIRY_PATTERNS)
 
         kin_provider = matched(cls.KIN_PROVIDER_ANSWER_PATTERNS)
@@ -2302,6 +5904,14 @@ class CommentableFilter:
             signals.append("kin_recommendation_spam")
             score += 3 + min(3, len(kin_recommendation_spam))
 
+        answer_snippet_ads = [
+            pattern for pattern in cls.ANSWER_SNIPPET_AD_REGEXES
+            if re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        ]
+        if answer_snippet_ads:
+            signals.append("answer_snippet_ad")
+            score += 4 + min(5, len(answer_snippet_ads) * 2)
+
         if platform in {"blog", "cafe", "naver_cafe"}:
             provider_bracket_title = bool(
                 re.search(r"[\[\(【][^\]\)】]{0,30}(?:병원|한방병원|한의원|의원|피부과|클리닉)[^\]\)】]{0,30}[\]\)】]", title_text)
@@ -2310,14 +5920,46 @@ class CommentableFilter:
                 signals.append("provider_bracket_title")
                 score += 2 if strong_inquiry else 5
 
-            local_provider_promo_title = (
-                cls._contains_any(title_text, cls.REGION_KEYWORDS)
+            local_provider_domain_title = (
+                cls._contains_region_terms(title_text, cls.REGION_KEYWORDS)
                 and cls._contains_any(title_text, cls.MEDICAL_PROVIDER_TERMS)
+                and cls._has_domain_anchor(domain, text)
+            )
+            local_provider_promo_title = (
+                local_provider_domain_title
                 and cls._contains_any(title_text, cls.MEDICAL_PROMO_TITLE_PATTERNS)
             )
             if local_provider_promo_title:
                 signals.append("local_provider_promo_title")
                 score += 2 if strong_inquiry else 5
+
+            blog_medical_seo_title = (
+                platform == "blog"
+                and local_provider_domain_title
+                and cls._contains_any(title_text, cls.BLOG_MEDICAL_SEO_TITLE_PATTERNS)
+                and not strong_inquiry
+            )
+            if blog_medical_seo_title:
+                signals.append("blog_medical_seo_title")
+                score += 5
+
+            title_question_like = bool(re.search(r"[?？]", title_text)) or cls._contains_any(
+                title_text,
+                cls.RECOMMENDATION_REQUEST_PATTERNS,
+            )
+            local_provider_service_title = (
+                platform in {"blog", "cafe", "naver_cafe"}
+                and local_provider_domain_title
+                and not strong_inquiry
+                and not title_question_like
+            )
+            if local_provider_service_title:
+                signals.append(
+                    "blog_local_provider_service_title"
+                    if platform == "blog"
+                    else "local_provider_service_title"
+                )
+                score += 4 if platform == "blog" else 5
 
         legal = matched(cls.LEGAL_PROMO_PATTERNS)
         if legal:
@@ -2344,6 +5986,59 @@ class CommentableFilter:
             signals.append("blog_ad_structure")
             score += 2 + min(3, len(blog_structural))
 
+        provider_cta_body, provider_cta_groups = cls._provider_cta_body_signal(target, text)
+        if provider_cta_body:
+            signals.append("provider_cta_body")
+            score += 5
+            if provider_cta_groups:
+                signals.extend(f"provider_cta_body_{group}" for group in provider_cta_groups)
+
+        # 카페명/블로거 정체성이 공급자면 본문 CTA가 미리보기 밖에 있어도 광고로 본다.
+        # 클리닉 브랜드 카페는 질문을 흉내 낸 SEO 글이어도 환자 글이 아니므로 strong_inquiry
+        # 감점(-2)을 넘어 무조건 임계값을 넘기도록 강한 점수(+7)를 준다.
+        provider_venue_author, provider_venue_token = cls._provider_venue_author_signal(target)
+        if provider_venue_author:
+            signals.append("provider_venue_author")
+            signals.append(f"provider_venue_author_{provider_venue_token}")
+            score += 7
+
+        diet_provider_context = domain == "diet" and cls._contains_any(
+            text,
+            ["한의원", "한약", "다이어트한약", "비움탕", "감비환", "비만클리닉"],
+        )
+        diet_testimonial_marker = cls._contains_any(
+            text,
+            ["내돈내산", "성공후기", "성공 후기", "다이어트후기", "다이어트 후기", "감량 후기"],
+        ) or bool(re.search(r"\d+\s*(?:kg|키로|킬로).{0,20}(?:성공|후기|감량|빠졌)", text))
+        if diet_provider_context and diet_testimonial_marker and not strong_inquiry:
+            # 1인칭 환자 본인 후기('제가/저는 ... 받았어요')이면서 광고 보강신호(공급자
+            # 브랜드 카페·본문 CTA)가 없으면 광고가 아니라 또래 경험 공유 글일 확률이 높다 —
+            # 규림이 댓글을 달 대상이므로 광고 가산을 보류한다. 진짜 어드버토리얼은
+            # provider_venue_author(+7)/provider_cta_body(+5)가 이미 임계값을 넘긴다.
+            genuine_first_person = (
+                cls._contains_any(text, ["제가", "저는", "저도", "제 경험", "직접"])
+                and not provider_venue_author
+                and not provider_cta_body
+            )
+            if not genuine_first_person:
+                signals.append("diet_testimonial_promo")
+                score += 5
+
+        medical_price_event_context = cls._contains_any(
+            text,
+            [
+                "치료", "시술", "한의원", "병원", "의원", "피부과", "클리닉",
+                "여드름", "흉터", "사마귀", "다이어트", "한약", "리프팅",
+            ],
+        )
+        medical_price_event_marker = cls._contains_any(
+            text,
+            ["무제한", "성지", "할인이벤트", "할인 이벤트", "이벤트", "최저가"],
+        ) or bool(re.search(r"\d+\s*만원.{0,20}(?:이벤트|혜택|할인|무제한)", text))
+        if medical_price_event_context and medical_price_event_marker and not strong_inquiry:
+            signals.append("medical_price_event_promo")
+            score += 5
+
         local_footer_hits = matched(cls.LOCAL_SEO_FOOTER_PATTERNS)
         local_area_hits = [hit for hit in local_footer_hits if hit in cls.REGION_KEYWORDS]
         local_phrase_hits = [hit for hit in local_footer_hits if hit not in cls.REGION_KEYWORDS]
@@ -2352,7 +6047,11 @@ class CommentableFilter:
             score += 4
 
         kin_answer_like = platform == "kin" and (
-            bool(kin_provider) or bool(kin_answer_ad) or bool(kin_recommendation_spam) or kin_answer_transition
+            bool(kin_provider)
+            or bool(kin_answer_ad)
+            or bool(kin_recommendation_spam)
+            or bool(answer_snippet_ads)
+            or kin_answer_transition
         )
         if strong_inquiry and not kin_answer_like:
             score -= 2
@@ -2381,18 +6080,133 @@ class CommentableFilter:
         """'교정'처럼 넓은 단어만으로 통과하지 않도록 핵심 맥락을 요구한다."""
         if domain == "general":
             return True
+        if domain in cls.STRICT_DOMAIN_ANCHORS:
+            return cls._contains_any(text, cls.STRICT_DOMAIN_ANCHORS[domain])
         return cls._contains_any(text, cls.DOMAIN_ANCHORS.get(domain, []))
 
+    SCAR_PATIENT_EXPLORATION_PATTERNS = [
+        "고민", "할지", "싶어서", "싶은데", "싶어요", "추천", "후기", "어떡", "어쩌",
+        "방법", "알려주", "찾고", "찾아보", "스트레스", "자신감",
+    ]
+    TMJ_PATIENT_CARE_PATTERNS = (
+        "턱관절", "턱 관절", "턱관절통증", "턱관절 통증", "턱통증", "턱 통증",
+        "악관절", "입이 안벌", "입이 안 벌", "입벌릴", "입 벌릴", "입 벌리",
+        "턱에서 소리", "턱 소리", "귀에서 소리", "딱딱 소리",
+    )
+    TMJ_DENTAL_ONLY_PATTERNS = (
+        "치아교정", "치열교정", "교정치과", "덧니", "충치", "임플란트",
+        "신경치료", "사랑니", "치아", "치열", "브라켓", "인비절라인",
+    )
+
     @classmethod
-    def _is_off_domain(cls, domain: str, text: str) -> bool:
+    def _is_scar_patient_exploration(cls, text: str, title: str = "") -> bool:
+        """흉터 환자의 탐색 질문 구제 — 시술 단어가 본문 비교 맥락으로만 등장하는 경우.
+
+        흉터 환자가 한방 용어를 자발적으로 쓰는 일은 드물다. '레이저 종류도 많고'
+        같은 탐색 언급까지 모두 잘라내면 새살침 대안을 소개할 핵심 공급이 사라진다
+        (라이브 리뷰: 흉터 축 전 기간 91건, 68% filtered_out — 이 규칙이 1순위
+        축 기근의 구조 원인이었다). 제목 자체가 시술/피부과 주제인 글(프락셀 후기
+        요청 등)은 구제하지 않는다. 광고/지역/한방거부/AI 게이트는 이후 단계에서
+        계속 돈다.
+        """
+        if not cls._contains_any(text, cls.SCAR_USER_AXIS_ANCHOR_PATTERNS):
+            return False
+        if title and cls._contains_any(title, cls.OFF_DOMAIN_PATTERNS["cosmetic_clinic"]):
+            return False
+        return cls._contains_any(text, cls.INTERROGATIVE_PATTERNS) or cls._contains_any(
+            text, cls.SCAR_PATIENT_EXPLORATION_PATTERNS
+        )
+
+    @classmethod
+    def _is_tmj_patient_care_question(
+        cls,
+        target: Optional[ViralTarget],
+        text: str,
+        title: str = "",
+    ) -> bool:
+        """Allow TMJ care questions even when KIN answers mention dental terms."""
+        if target is None:
+            return False
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "asymmetry" and category != "안면비대칭":
+            return False
+
+        title_lc = (title or getattr(target, "title", "") or "").lower()
+        if cls._contains_any(title_lc, cls.TMJ_DENTAL_ONLY_PATTERNS) and not cls._contains_any(
+            title_lc,
+            cls.TMJ_PATIENT_CARE_PATTERNS,
+        ):
+            return False
+
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            body_segment = cls._kin_question_segment_body(target)
+        else:
+            body_segment = cls._strip_internal_labels(target.content_preview or "")
+        opening_evidence = f"{title or ''} {body_segment[:90] or ''}".lower()
+        if not cls._contains_any(opening_evidence, cls.TMJ_PATIENT_CARE_PATTERNS):
+            return False
+
+        evidence = f"{title or ''} {body_segment[:220] or ''}".lower()
+        direct_ask_patterns = (
+            tuple(cls.RECOMMENDATION_REQUEST_PATTERNS)
+            + tuple(cls.HELP_REQUEST_PATTERNS)
+            + tuple(cls.READY_TO_ACT_PATTERNS)
+            + tuple(cls.INTERROGATIVE_PATTERNS)
+            + (
+                "치료", "병원", "한의원", "의원", "추천", "어디", "괜찮",
+                "잘하는", "상담", "문의", "통증", "소리", "입이 안", "입벌",
+            )
+        )
+        if not (re.search(r"[?？]", evidence) or cls._contains_any(evidence, direct_ask_patterns)):
+            return False
+
+        has_dental_only_noise = cls._contains_any(evidence, cls.TMJ_DENTAL_ONLY_PATTERNS)
+        has_explicit_tmj_symptom = cls._contains_any(
+            evidence,
+            (
+                "턱관절", "턱 관절", "턱통증", "턱 통증", "악관절",
+                "입이 안벌", "입이 안 벌", "입벌릴", "입 벌릴",
+                "턱에서 소리", "귀에서 소리", "딱딱 소리",
+            ),
+        )
+        return bool(not has_dental_only_noise or has_explicit_tmj_symptom)
+
+    @classmethod
+    def _is_off_domain(
+        cls,
+        domain: str,
+        text: str,
+        title: str = "",
+        target: Optional[ViralTarget] = None,
+    ) -> bool:
         """핵심 키워드와 무관한 업종/시술 글을 저장 전 제외한다."""
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["dental"]):
+            if cls._is_tmj_patient_care_question(target, text, title=title):
+                return False
             return domain in {"asymmetry", "body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["golf"]):
             return domain in {"body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["cosmetic_clinic"]):
+            if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+                recover_skin_context = cls._contains_any(
+                    text,
+                    [
+                        "흉터", "여드름", "피부", "모공", "색소", "리프팅", "탄력",
+                        "주름", "스킨부스터", "리쥬란", "쥬베룩", "레이저", "클리닉", "의원",
+                    ],
+                )
+                return domain not in {"scar_skin", "lifting", "general"} and not recover_skin_context
+            if domain in {"asymmetry", "body", "traffic", "diet"}:
+                return True
             hanbang_skin_context = cls._contains_any(text, ["새살침", "한의원", "한방", "침치료"])
-            return domain in {"scar_skin", "lifting", "general"} and not hanbang_skin_context
+            if domain not in {"scar_skin", "lifting", "general"} or hanbang_skin_context:
+                return False
+            if domain == "scar_skin" and cls._is_scar_patient_exploration(text, title):
+                return False
+            return True
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["fitness"]):
             medical_diet_context = cls._contains_any(
                 text, ["한약", "한의원", "한방", "처방", "마운자로", "위고비", "삭센다", "비만"]
@@ -2401,10 +6215,719 @@ class CommentableFilter:
                 return not medical_diet_context
             return domain in {"body", "general"}
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["surgery"]):
+            if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+                post_surgery_scar_context = cls._contains_any(
+                    text,
+                    ["수술흉터", "수술 흉터", "흉터", "켈로이드", "절개흉터", "상처자국"],
+                )
+                if post_surgery_scar_context and domain in {"scar_skin", "general"}:
+                    return False
             return True
         if cls._contains_any(text, cls.OFF_DOMAIN_PATTERNS["urology"]):
             return True
         return False
+
+    @classmethod
+    def _is_non_service_beauty_target(cls, domain: str, text: str) -> bool:
+        """Exclude home-care or salon beauty posts that are not clinic-service leads."""
+        if domain not in {"scar_skin", "asymmetry", "body", "lifting", "general"}:
+            return False
+        if not cls._contains_any(text, cls.NON_SERVICE_BEAUTY_PATTERNS):
+            return False
+
+        service_rescue = cls._contains_any(
+            text,
+            [
+                "한의원", "한방", "한약", "새살침", "침치료", "추나", "치료",
+                "상담", "병원", "의원", "클리닉",
+            ],
+        )
+        product_or_salon_context = cls._contains_any(
+            text,
+            [
+                "제품", "홈케어", "마스크팩", "led", "피부관리실", "피부관리샵",
+                "피부샵", "에스테틱", "관리실", "미용실", "헤어샵", "네일",
+            ],
+        )
+        return bool(product_or_salon_context or not service_rescue)
+
+    @classmethod
+    def _is_title_non_service_beauty_target(cls, title: str) -> bool:
+        """Reject obvious salon/beauty-service titles even when snippets contain clinic terms."""
+        title_lc = (title or "").lower()
+        if not cls._contains_any(title_lc, cls.NON_SERVICE_BEAUTY_PATTERNS):
+            return False
+        return not cls._contains_any(title_lc, cls.NON_SERVICE_BEAUTY_TITLE_RESCUE_PATTERNS)
+
+    @classmethod
+    def _is_non_hanbang_fertility_target(cls, text: str) -> bool:
+        """Reject IVF/IUI clinic recommendations unless the post asks about Korean medicine support."""
+        text_lc = (text or "").lower()
+        if not cls._contains_any(text_lc, cls.NON_HANBANG_FERTILITY_PATTERNS):
+            return False
+        return not cls._contains_any(text_lc, cls.HANBANG_FERTILITY_RESCUE_PATTERNS)
+
+    @classmethod
+    def _is_provider_case_story_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject de-identified provider case stories that are not public help requests."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        has_case_shape = cls._contains_any(user_text, cls.PROVIDER_CASE_STORY_PATTERNS) or any(
+            re.search(pattern, user_text) for pattern in cls.PROVIDER_CASE_STORY_REGEXES
+        )
+        if not has_case_shape:
+            return False
+
+        direct_ask = cls._contains_any(
+            user_text,
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS
+            + cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS,
+        )
+        if direct_ask:
+            return False
+        return not cls._contains_any(text, cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+
+    @classmethod
+    def _is_asymmetry_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject face/asymmetry seeds that actually point to beauty, brow, dental, or esthetic services."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "asymmetry" and category != "안면비대칭":
+            return False
+
+        text_lc = (text or "").lower()
+        compact = re.sub(r"\s+", "", text_lc)
+
+        def has_any(terms: Iterable[str]) -> bool:
+            for term in terms:
+                clean = str(term or "").strip().lower()
+                if not clean:
+                    continue
+                if clean in text_lc:
+                    return True
+                compact_term = re.sub(r"\s+", "", clean)
+                if compact_term and compact_term in compact:
+                    return True
+            return False
+
+        if has_any(cls.ASYMMETRY_HARD_OFF_AXIS_PATTERNS):
+            return True
+
+        strong_axis = has_any(cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
+        clinic_action = has_any(cls.ASYMMETRY_CLINIC_ACTION_PATTERNS)
+
+        if has_any(cls.ASYMMETRY_DENTAL_OR_ORTHO_NOISE_PATTERNS) and not strong_axis:
+            return True
+        if has_any(cls.ASYMMETRY_BEAUTY_MANAGEMENT_PATTERNS) and not (strong_axis and clinic_action):
+            return True
+
+        ambiguous_face_shape = has_any(["얼굴형", "윤곽", "페이스라인", "얼굴라인"])
+        if ambiguous_face_shape and not strong_axis and not clinic_action:
+            return True
+
+        if cls._is_axis_companion_variant(target, "axis_asymmetry:") and not cls._has_user_axis_anchor(
+            target,
+            domain=domain,
+            category=category,
+        ):
+            return True
+
+        return False
+
+    @classmethod
+    def _is_body_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject broad body/Chuna companion hits whose user question is really another condition."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "body" and category != "체형교정":
+            return False
+
+        user_text = cls._axis_user_segment_text(target)
+        title_text = (target.title or "").lower()
+        title_has_body_anchor = cls._contains_any(title_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        user_has_body_anchor = cls._contains_any(user_text, cls.BODY_USER_AXIS_ANCHOR_PATTERNS)
+        has_fitness_provider_noise = cls._contains_any(text, cls.BODY_FITNESS_PROVIDER_NOISE_PATTERNS)
+        has_medical_rescue = cls._contains_any(text, cls.BODY_MEDICAL_RESCUE_PATTERNS)
+
+        if has_fitness_provider_noise and not has_medical_rescue:
+            return True
+
+        if cls._contains_any(title_text, cls.BODY_COMPANION_OFF_AXIS_PATTERNS) and not title_has_body_anchor:
+            return True
+        if cls._contains_any(user_text, cls.BODY_COMPANION_OFF_AXIS_PATTERNS) and not title_has_body_anchor:
+            return True
+        if cls._is_axis_companion_variant(target, "axis_body:") and not user_has_body_anchor:
+            return True
+        return False
+
+    @classmethod
+    def _is_diet_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject broad diet seeds that are actually gyms, sports classes, or exercise venue questions."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "diet" and category != "다이어트":
+            return False
+
+        has_non_hanbang_medical_noise = cls._contains_any(text, cls.DIET_NON_HANBANG_MEDICAL_NOISE_PATTERNS)
+        if has_non_hanbang_medical_noise and not cls._contains_any(text, cls.DIET_HANBANG_INTENT_PATTERNS):
+            return True
+
+        has_activity_noise = cls._contains_any(text, cls.DIET_ACTIVITY_NOISE_PATTERNS)
+        if not has_activity_noise:
+            return False
+        has_medical_intent = cls._contains_any(text, cls.DIET_MEDICAL_INTENT_PATTERNS)
+        return not has_medical_intent
+
+    @classmethod
+    def _is_skin_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject skin/acne seeds where the skin term is incidental or salon-only."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "scar_skin" and category not in {"흉터/여드름흉터", "피부/여드름"}:
+            return False
+
+        user_has_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+        if category == "흉터/여드름흉터" and not user_has_axis_anchor:
+            return True
+        if cls._is_axis_companion_variant(target, "axis_skin:") and not user_has_axis_anchor:
+            return True
+
+        if cls._contains_any(text, cls.SKIN_WESTERN_RX_NOISE_PATTERNS):
+            return not cls._contains_any(text, cls.SKIN_HANBANG_SERVICE_RESCUE_PATTERNS)
+
+        if cls._contains_any(text, cls.LEGAL_OR_SCHOOL_VIOLENCE_PATTERNS):
+            has_clinic_rescue = cls._contains_any(text, cls.SKIN_CLINIC_RESCUE_PATTERNS)
+            return not has_clinic_rescue
+
+        if cls._contains_any(text, cls.SKIN_HARD_SALON_PATTERNS):
+            return True
+
+        has_salon_noise = cls._contains_any(text, cls.SKIN_SALON_OR_INCIDENTAL_NOISE_PATTERNS)
+        if not has_salon_noise:
+            return False
+        has_clinic_rescue = cls._contains_any(text, cls.SKIN_CLINIC_RESCUE_PATTERNS)
+        return not has_clinic_rescue
+
+    @classmethod
+    def _is_lifting_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject lifting companion hits unless the user text is actually about lifting/elasticity."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "lifting" and category != "리프팅/탄력":
+            return False
+        if cls._contains_any(text, cls.LIFTING_INCIDENTAL_COMMERCE_NOISE_PATTERNS) and not cls._contains_any(
+            text,
+            cls.LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS,
+        ):
+            return True
+        if cls._contains_any(text, cls.LIFTING_NON_HANBANG_DEVICE_PATTERNS) and not cls._contains_any(
+            text,
+            cls.LIFTING_HANBANG_SERVICE_RESCUE_PATTERNS,
+        ):
+            return True
+        return not cls._has_user_axis_anchor(target, domain=domain, category=category)
+
+    @classmethod
+    def _is_explicit_hanbang_exclusion(cls, target: ViralTarget, text: str) -> bool:
+        """Reject targets where the asker explicitly excludes Korean-medicine care."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain not in {"diet", "scar_skin", "asymmetry", "body", "lifting", "traffic"} and category not in {
+            "다이어트", "흉터/여드름흉터", "피부/여드름", "안면비대칭", "체형교정", "리프팅/탄력", "교통사고",
+        }:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        check_text = user_text or text
+        return cls._contains_any(check_text, cls.EXPLICIT_HANBANG_EXCLUSION_PATTERNS)
+
+    @classmethod
+    def _is_kin_answer_footer_region_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject Kin hits where Cheongju appears only in a provider's multi-branch footer."""
+        if (target.platform or "").lower() not in {"kin", "naver_kin"}:
+            return False
+
+        user_opening = cls._axis_user_segment_text(target, max_body_chars=70)
+        if cls._contains_region_terms(user_opening, cls.REGION_KEYWORDS):
+            return False
+
+        footer_region_hits = sum(1 for region in cls.MULTI_REGION_ANSWER_FOOTER_REGIONS if region in text)
+        footer_shape = footer_region_hits >= 6 or cls._contains_any(text, cls.KIN_PROVIDER_FOOTER_PATTERNS)
+        return bool(footer_shape and cls._contains_region_terms(text, cls.REGION_KEYWORDS))
+
+    @classmethod
+    def _is_provider_info_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject provider-authored info/price posts that are not natural public reply targets."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        title = (target.title or "").lower()
+        user_text = cls._user_need_text(target).lower()
+        has_provider_cta_body, _ = cls._provider_cta_body_signal(target, text)
+        if has_provider_cta_body:
+            return True
+
+        has_educational_title = cls._contains_any(title, cls.PROVIDER_EDUCATIONAL_TITLE_PATTERNS)
+        if has_educational_title:
+            title_has_real_request = bool(re.search(r"[?？]", title)) or cls._contains_any(
+                title,
+                cls.PROVIDER_EDUCATIONAL_TITLE_RESCUE_PATTERNS,
+            )
+            user_text_has_real_request = cls._contains_any(
+                user_text,
+                cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS,
+            )
+            if not (title_has_real_request or user_text_has_real_request):
+                return True
+
+        has_provider_info = cls._contains_any(text, cls.PROVIDER_INFO_POST_PATTERNS)
+        has_info_title = cls._contains_any(title, cls.PROVIDER_INFO_TITLE_PATTERNS)
+        if not (has_provider_info or has_info_title):
+            return False
+
+        direct_ask = cls._contains_any(
+            user_text,
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.HELP_REQUEST_PATTERNS
+            + cls.READY_TO_ACT_PATTERNS
+            + cls.COST_DECISION_PATTERNS
+            + cls.INTERROGATIVE_PATTERNS,
+        )
+        testimonial_context = cls._contains_any(user_text, ["내돈내산", "후기", "경험", "해보신", "가보신"])
+        if direct_ask and testimonial_context and not has_info_title:
+            return False
+        return True
+
+    @classmethod
+    def _is_closed_review_surface_without_user_ask(cls, target: ViralTarget, text: str) -> bool:
+        """Reject closed venue/registration reviews that are not asking for public help."""
+        platform = (target.platform or "").lower()
+        if platform not in {"blog", "cafe", "naver_cafe"}:
+            return False
+
+        user_text = cls._user_need_text(target).lower()
+        if not user_text:
+            return False
+
+        direct_ask_patterns = (
+            cls.RECOMMENDATION_REQUEST_PATTERNS
+            + cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS
+            + [
+                "궁금", "고민", "찾고", "찾아보고", "알려주세요", "알려 주세요",
+                "부탁", "조언", "아시는분", "아시는 분", "해보신", "가보신",
+                "계실까요", "있나요", "있을까요",
+            ]
+        )
+        if re.search(r"[?？]", user_text) or cls._contains_any(user_text, direct_ask_patterns):
+            return False
+
+        has_closed_review = cls._contains_any(user_text, cls.CLOSED_REVIEW_SURFACE_PATTERNS)
+        if not has_closed_review:
+            return False
+
+        compact_user_text = re.sub(r"\s+", "", user_text)
+        provider_shape = cls._contains_any(user_text, cls.CLOSED_REVIEW_PROVIDER_SURFACE_PATTERNS)
+        provider_shape = provider_shape or any(
+            re.search(pattern, user_text) or re.search(pattern, compact_user_text)
+            for pattern in cls.CLOSED_REVIEW_PROVIDER_REGEXES
+        )
+        return bool(provider_shape)
+
+    @classmethod
+    def _is_traffic_axis_noise(cls, target: ViralTarget, text: str) -> bool:
+        """Reject accident seeds that are about unrelated care, repair, property, or legal issues."""
+        domain = cls._target_domain(target)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        if domain != "traffic" and category != "교통사고":
+            return False
+
+        title_text = (target.title or "").lower()
+        user_text = cls._axis_user_segment_text(target)
+        source_text = " ".join(getattr(target, "matched_keywords", ()) or ()).lower()
+        traffic_context_patterns = (
+            "교통사고",
+            "자동차사고",
+            "후유증",
+            "자보",
+            "자동차보험",
+            "교통사고보험",
+            "추돌",
+            "사고후통증",
+        )
+        # Pathfinder may classify a bare "입원 병원" query as traffic because
+        # admission is a traffic-care term.  Do not let that broad query turn
+        # unrelated psychiatric, rehabilitation, or nursing-hospital threads
+        # into high-fit traffic candidates.  A genuine accident post remains
+        # eligible when the post itself carries a traffic-specific anchor.
+        if (
+            source_text
+            and not cls._contains_any(source_text, traffic_context_patterns)
+            and not cls._contains_any(f"{title_text} {user_text}", traffic_context_patterns)
+        ):
+            return True
+        if cls._contains_any(f"{title_text} {user_text}", cls.TRAFFIC_ANIMAL_OR_VET_NOISE_PATTERNS):
+            return True
+        if cls._contains_any(title_text, cls.TRAFFIC_TITLE_HARD_NOISE_PATTERNS) and not cls._contains_any(
+            user_text,
+            cls.TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS,
+        ):
+            return True
+
+        has_repair_noise = cls._contains_any(user_text, cls.TRAFFIC_REPAIR_OR_PROPERTY_NOISE_PATTERNS)
+        has_legal_noise = cls._contains_any(user_text, cls.TRAFFIC_LEGAL_COMPENSATION_NOISE_PATTERNS)
+        has_medical_context = cls._contains_any(user_text, cls.TRAFFIC_MEDICAL_CARE_RESCUE_PATTERNS)
+        has_active_care_intent = cls._contains_any(user_text, cls.TRAFFIC_ACTIVE_CARE_INTENT_PATTERNS)
+
+        if has_repair_noise and not has_medical_context:
+            return True
+        if has_legal_noise and not has_active_care_intent:
+            return True
+        return False
+
+    PATHFINDER_SOURCE_CONTEXT_RESCUE_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "안면비대칭",
+    }
+
+    @classmethod
+    def _pathfinder_source_context_rescue_allowed(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        category: str,
+        text: str,
+        axis_fit_score: float,
+        lens_fit_score: float,
+        lens_fit_tier: str = "",
+        is_advertorial: bool = False,
+        viral_need_score: Optional[float] = None,
+        reply_opportunity_score: Optional[float] = None,
+        timing_window_score: Optional[float] = None,
+        journey_fit_score: Optional[float] = None,
+        qualification_fit_score: Optional[float] = None,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
+    ) -> bool:
+        """Rescue strong patient asks when source-specific seed terms are too narrow."""
+        if is_advertorial:
+            return False
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(category)
+        if category not in cls.PATHFINDER_SOURCE_CONTEXT_RESCUE_CATEGORIES and domain not in {
+            "scar_skin",
+            "asymmetry",
+        }:
+            return False
+
+        platform = (target.platform or "").lower()
+        if platform not in {"cafe", "naver_cafe", "kin", "naver_kin"}:
+            return False
+
+        def metric(value: Optional[float], key: str, default: float = 0.0) -> float:
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+            return cls._score_breakdown_float(target, key, default)
+
+        axis_score = float(axis_fit_score or 0.0)
+        lens_score = float(lens_fit_score or 0.0)
+        viral_score = metric(viral_need_score, "viral_need_score")
+        reply_score = metric(reply_opportunity_score, "reply_opportunity_score")
+        timing_score = metric(timing_window_score, "timing_window_score")
+        journey_score = metric(journey_fit_score, "journey_fit_score")
+        qualification_score = metric(qualification_fit_score, "qualification_fit_score")
+        clinic_score = metric(clinic_treatment_fit_score, "clinic_treatment_fit_score")
+        worksite_score = metric(worksite_efficiency_score, "worksite_efficiency_score")
+
+        if axis_score < 92.0:
+            return False
+        if viral_score < 65.0 or reply_score < 88.0:
+            return False
+        if timing_score and timing_score < 50.0:
+            return False
+        if journey_score and journey_score < 58.0:
+            return False
+        if qualification_score and qualification_score < 55.0:
+            return False
+        if clinic_score < 80.0 or worksite_score < 85.0:
+            return False
+
+        lens = str(cls._pathfinder_execution_context(target).get("execution_lens") or "").strip().lower()
+        if str(lens_fit_tier or "") == "mismatch" and lens_score and lens_score < 50.0:
+            if lens in {"cost", "availability", "safety"}:
+                return False
+
+        user_text = cls._user_need_text(target).lower()
+        user_axis_text = cls._axis_user_segment_text(target, max_body_chars=260).lower()
+        evidence = f"{target.title or ''} {user_axis_text}".lower()
+        if not cls._has_active_region_anchor(target, evidence):
+            return False
+        if not cls._has_domain_anchor(domain, evidence):
+            return False
+        if not cls._has_user_axis_anchor(target, domain=domain, category=category):
+            return False
+
+        direct_ask_patterns = (
+            tuple(cls.RECOMMENDATION_REQUEST_PATTERNS)
+            + tuple(cls.HELP_REQUEST_PATTERNS)
+            + tuple(cls.READY_TO_ACT_PATTERNS)
+            + tuple(cls.COST_DECISION_PATTERNS)
+            + tuple(cls.INTERROGATIVE_PATTERNS)
+            + tuple(cls.PROVIDER_BODY_REAL_USER_ASK_PATTERNS)
+            + (
+                "궁금", "고민", "문의", "알려주", "찾고", "찾아보",
+                "어디", "괜찮", "잘하는", "받고 싶", "치료받고",
+            )
+        )
+        if not (re.search(r"[?？]", evidence) or cls._contains_any(evidence, direct_ask_patterns)):
+            return False
+
+        provider_noise_patterns = (
+            tuple(cls.PROVIDER_INFO_POST_PATTERNS)
+            + tuple(cls.PROVIDER_BODY_AUTHOR_PATTERNS)
+            + tuple(cls.COMMERCIAL_CTA_PATTERNS)
+            + tuple(cls.BLOG_AD_STRUCTURAL_PATTERNS)
+        )
+        if platform in {"cafe", "naver_cafe"} and cls._contains_any(user_text, provider_noise_patterns):
+            return False
+        if cls._is_closed_review_surface_without_user_ask(target, text):
+            return False
+        if cls._is_provider_case_story_without_user_ask(target, text):
+            return False
+
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "pathfinder_source_context_rescue": True,
+        }
+        return True
+
+    @classmethod
+    def _semantic_axis_rescue(cls, target: ViralTarget, *, text: str, category: str, domain: str) -> bool:
+        """어휘로는 진료축 mismatch 인 글을 의미 유사도(BGE-M3)로 구제할지 판정.
+
+        구어/패러프레이즈 환자글('얼굴 짝짝이'=안면비대칭, '팬자국/구덩이'=흉터)을 회수한다.
+        매처가 비활성(모델 부재/opt-in off)이면 즉시 False → 완전 no-op (어휘 동작 그대로).
+        진료축 어휘 불일치만 덮으며 region/광고/self/noise 게이트는 호출부에서 그대로 적용.
+        """
+        matcher = _SEMANTIC_AXIS_MATCHER
+        if matcher is None or not matcher.available():
+            return False
+        axis = (category or "").strip()
+        if not axis:
+            return False
+        profile = GYULIM_KEYWORD_PROFILE.profile_for(axis)
+        if not profile:
+            return False
+        ref_terms = tuple(
+            dict.fromkeys(
+                tuple(getattr(profile, "core_tokens", ()) or ())
+                + tuple(getattr(profile, "category_terms", ()) or ())
+            )
+        )[:12]
+        if not ref_terms:
+            return False
+        user_text = (text or cls._user_need_text(target) or "").strip()
+        if not user_text:
+            return False
+        sim = matcher.similarity(user_text, ref_terms, ref_key=f"axis::{axis}")
+        if sim is None:
+            return False
+        rescued = bool(sim >= matcher.threshold)
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "semantic_axis_score": round(float(sim), 4),
+            "semantic_axis_rescue": rescued,
+        }
+        return rescued
+
+    @classmethod
+    def _pathfinder_fit_reject_reason(
+        cls,
+        target: ViralTarget,
+        *,
+        domain: str,
+        text: str,
+        axis_fit_score: Optional[float] = None,
+        axis_fit_tier: str = "",
+        lens_fit_score: Optional[float] = None,
+        lens_fit_tier: str = "",
+        viral_need_score: Optional[float] = None,
+        reply_opportunity_score: Optional[float] = None,
+        timing_window_score: Optional[float] = None,
+        journey_fit_score: Optional[float] = None,
+        qualification_fit_score: Optional[float] = None,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
+    ) -> Optional[str]:
+        """Final Pathfinder axis/lens fit gate for lanes that historically over-collect noise."""
+        if cls._is_asymmetry_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_body_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_diet_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_skin_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_lifting_axis_noise(target, text):
+            return "off_domain"
+        if cls._is_traffic_axis_noise(target, text):
+            return "off_domain"
+
+        ctx = cls._pathfinder_execution_context(target)
+        lens = str(ctx.get("execution_lens") or "").strip().lower()
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(
+            getattr(target, "matched_keyword_category", "") or getattr(target, "category", "")
+        )
+        axis_score = float(axis_fit_score if axis_fit_score is not None else 0.0)
+        lens_score = float(lens_fit_score if lens_fit_score is not None else 0.0)
+        axis_tier = str(axis_fit_tier or "")
+        lens_tier = str(lens_fit_tier or "")
+        text_lc = (text or "").lower()
+        compact_text = re.sub(r"\s+", "", text_lc)
+        source_text_lc = cls._pathfinder_source_fit_text(target, text_lc)
+        source_compact_text = re.sub(r"\s+", "", source_text_lc)
+
+        conversion_lens = lens in {"cost", "consultation", "availability"}
+        guarded_lens = lens in {"cost", "consultation", "availability", "safety"}
+        community_rescue = cls._contains_any(
+            text,
+            [
+                "추천", "어디", "괜찮은", "잘하는", "경험", "해보신",
+                "가보신", "아시는", "궁금", "후기", "부탁",
+            ],
+        )
+        lens_mismatch = guarded_lens and (lens_tier == "mismatch" or (0.0 < lens_score < 50.0))
+        if lens_mismatch:
+            if lens in {"cost", "availability"}:
+                user_lens_text = f"{getattr(target, 'title', '') or ''} {cls._user_need_text(target) or ''}".lower()
+                has_direct_lens_route = _ai_text_has_any(
+                    _compact_query_text(user_lens_text),
+                    AI_EXECUTION_LENS_ROUTE_TERMS.get(lens, ()),
+                )
+                if not has_direct_lens_route:
+                    return "lens_mismatch"
+            if not community_rescue:
+                return "lens_mismatch"
+        is_advertorial, _, _ = cls._detect_advertorial(target, text)
+        if (
+            not is_advertorial
+            and cls._has_domain_anchor(domain, text_lc)
+            and cls._pathfinder_source_specific_strict_gap(
+            target,
+            category,
+            text_lc=source_text_lc,
+            compact_text=source_compact_text,
+            )
+        ):
+            if not cls._pathfinder_source_context_rescue_allowed(
+                target,
+                domain=domain,
+                category=category,
+                text=text,
+                axis_fit_score=axis_score,
+                lens_fit_score=lens_score,
+                lens_fit_tier=lens_tier,
+                is_advertorial=is_advertorial,
+                viral_need_score=viral_need_score,
+                reply_opportunity_score=reply_opportunity_score,
+                timing_window_score=timing_window_score,
+                journey_fit_score=journey_fit_score,
+                qualification_fit_score=qualification_fit_score,
+                clinic_treatment_fit_score=clinic_treatment_fit_score,
+                worksite_efficiency_score=worksite_efficiency_score,
+            ):
+                return "source_context_mismatch"
+
+        # 의미기반 진료축 구제(BGE-M3): 어휘로는 mismatch 여도 글이 해당 축과 의미적으로
+        # 가까우면 구어/패러프레이즈 환자글('얼굴 짝짝이'=안면비대칭, '팬자국'=흉터)을 회수.
+        # mismatch 가 실제 발생할 때만 1회 계산(지연 평가·캐시) → 비활성 시 비용 0,
+        # 정상 통과글은 임베딩하지 않는다. axis 어휘 불일치만 덮고 noise/region/ad 는 위에서
+        # 이미 적용됨(정밀도 보존).
+        _sem_cache: Dict[str, bool] = {}
+
+        def _semantic_rescue() -> bool:
+            if "v" not in _sem_cache:
+                _sem_cache["v"] = cls._semantic_axis_rescue(
+                    target,
+                    text=cls._user_need_text(target),
+                    category=category,
+                    domain=domain,
+                )
+            return _sem_cache["v"]
+
+        if category == "안면비대칭" or domain == "asymmetry":
+            has_strong_axis_text = cls._contains_any(text, cls.ASYMMETRY_STRONG_AXIS_PATTERNS)
+            if (axis_tier == "mismatch" or (0.0 < axis_score < 55.0 and not has_strong_axis_text)) and not _semantic_rescue():
+                return "domain_mismatch"
+            if conversion_lens and axis_score and axis_score < 60.0 and not _semantic_rescue():
+                return "domain_mismatch"
+
+        if category in {"체형교정", "리프팅/탄력", "교통사고"} or domain in {"body", "lifting", "traffic"}:
+            has_axis_anchor = cls._has_domain_anchor(domain, text)
+            has_user_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+            axis_rescue = (
+                has_axis_anchor
+                and has_user_axis_anchor
+                and community_rescue
+                and lens in {"review", "community", "consultation"}
+            )
+            if axis_tier == "mismatch" and not axis_rescue and not _semantic_rescue():
+                return "domain_mismatch"
+            if 0.0 < axis_score < 55.0 and not has_axis_anchor and not _semantic_rescue():
+                return "domain_mismatch"
+            if guarded_lens and axis_score and axis_score < 60.0 and not axis_rescue and not _semantic_rescue():
+                return "domain_mismatch"
+
+        if category in {"흉터/여드름흉터", "피부/여드름"} or domain == "scar_skin":
+            has_axis_anchor = cls._has_user_axis_anchor(target, domain=domain, category=category)
+            if axis_tier == "mismatch" and not has_axis_anchor and not _semantic_rescue():
+                return "domain_mismatch"
+            if guarded_lens and axis_score and axis_score < 55.0 and not has_axis_anchor and not _semantic_rescue():
+                return "domain_mismatch"
+
+        return None
+
+    @classmethod
+    def _non_relevant_exclude_terms(cls, text: str = "") -> List[str]:
+        terms = list(cls.NON_RELEVANT_EXCLUDE)
+        if getattr(GYULIM_KEYWORD_PROFILE, "cosmetic_clinic_terms_on_scope", False):
+            scar_context = cls._contains_any(
+                text,
+                [
+                    "흉터", "수술흉터", "수술 흉터", "절개흉터", "절개 흉터",
+                    "켈로이드", "상처자국", "상처 자국", "패인흉터", "여드름흉터",
+                ],
+            )
+            allowed_cosmetic_context_terms = {"성형외과"}
+            if scar_context:
+                allowed_cosmetic_context_terms.update({"성형", "쌍수", "코수술", "지방흡입"})
+            terms = [term for term in terms if term not in allowed_cosmetic_context_terms]
+        return terms
 
     @classmethod
     def _is_route_navigation(cls, text: str) -> bool:
@@ -2417,29 +6940,164 @@ class CommentableFilter:
         ])
         return bool(route_terms and route_shape and not accident_or_health_context)
 
+    HARD_OFF_DOMAIN_LEGAL_SERVICE_PATTERNS = (
+        "행정사", "법무사", "변호사", "노무사", "손해사정", "손해사정사",
+        "형사합의", "민사소송", "고소장", "탄원서", "내용증명",
+    )
+    HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS = (
+        "출장마사지", "출장 마사지", "마사지샵", "마사지 샵", "스웨디시",
+        "타이마사지", "타이 마사지", "아로마마사지", "아로마 마사지",
+        "왁싱샵", "왁싱 샵", "네일샵", "네일 샵", "에스테틱",
+        "피부관리실", "피부 관리실", "마사지",
+    )
+    HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS = (
+        "한의원", "한방", "추나", "침", "약침", "한약", "치료",
+        "진료", "병원", "의원", "입원", "통증", "후유증", "교통사고",
+        "디스크", "턱관절", "피부과",
+    )
+
+    @classmethod
+    def _is_hard_off_domain_service_target(cls, target: ViralTarget, text: str, title: str = "") -> bool:
+        """Reject non-clinic local/legal service requests that broad recommendation queries can pull in."""
+        haystack = f"{title or ''} {text or ''}".lower()
+        if cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LEGAL_SERVICE_PATTERNS):
+            return True
+
+        title_lc = (title or "").lower()
+        if cls._contains_any(title_lc, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS):
+            return not cls._contains_any(title_lc, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS)
+
+        if cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_PATTERNS):
+            domain = cls._target_domain(target)
+            if domain in {"traffic", "general", "body", "diet", "scar_skin", "asymmetry", "lifting"}:
+                return not cls._contains_any(haystack, cls.HARD_OFF_DOMAIN_LOCAL_SERVICE_RESCUE_PATTERNS)
+        return False
+
     @classmethod
     def final_reject_reason(cls, target: ViralTarget) -> Optional[str]:
         """AI 적합 판정 이후 DB 저장 직전의 마지막 품질 게이트."""
+        # 보강된 KIN 본문의 [기존답변N] 구간은 글쓴이가 아닌 기존 답변이다. 답변 속
+        # 업체/치과/광고 텍스트가 자연 질문을 오살하지 않도록 게이트는 질문 세그먼트만
+        # 평가한다 — 하위 게이트 함수 다수가 target에서 텍스트를 재유도하므로 shallow
+        # clone의 preview를 질문 세그먼트로 바꿔 모든 경로(레스큐/사전 게이트/정화
+        # 스크립트 포함)에서 일관되게 만든다. 라벨 없는 검색 snippet 연결도 질문
+        # 세그먼트가 명확하면 로컬 게이트는 질문만 평가하고, planted Q&A·광고답변
+        # 판단은 AI 레이어가 원문을 보고 담당한다.
+        preview = target.content_preview or ""
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            question_segment = cls._kin_question_segment_body(target)
+            preview_without_labels = cls._strip_internal_labels(preview)
+            if question_segment and question_segment != preview_without_labels:
+                import copy as _copy
+                target = _copy.copy(target)
+                target.content_preview = question_segment
         title = (target.title or "").lower()
         body = cls._strip_internal_labels(target.content_preview or "").lower()
         text = f"{title} {body}"
-        domain = cls._keyword_domain(target.matched_keywords)
+        domain = cls._target_domain(target)
 
-        if cls._is_off_domain(domain, text):
+        if cls._is_self_target(target):
+            return "self_target"
+        posted_at = cls._parse_datetime(
+            getattr(target, "date_str", "") or getattr(target, "posted_at", ""),
+            datetime.now(),
+        )
+        if (
+            posted_at is not None
+            and (datetime.now() - posted_at).total_seconds() > PENDING_POST_AGE_TTL_DAYS * 86400
+        ):
+            return "stale_window"
+        if cls._is_marketplace_sale(text):
+            return "marketplace_sale"
+        if cls._is_hard_off_domain_service_target(target, text, title=title):
             return "off_domain"
+        if cls._is_title_non_service_beauty_target(title):
+            return "off_domain"
+        if cls._is_non_hanbang_fertility_target(text):
+            return "off_domain"
+        if cls._is_provider_case_story_without_user_ask(target, text):
+            return "advertorial"
+        if cls._is_off_domain(domain, text, title=title, target=target):
+            return "off_domain"
+        if cls._is_non_service_beauty_target(domain, text):
+            return "off_domain"
+        if cls._is_explicit_hanbang_exclusion(target, text):
+            return "off_domain"
+        if cls._is_kin_answer_footer_region_noise(target, text):
+            return "region_mismatch"
+        if cls._is_provider_info_without_user_ask(target, text):
+            return "advertorial"
+        if cls._is_response_restricted_surface(target, text):
+            return "response_restricted"
+        if cls._has_ambiguous_region_false_positive(text) and not cls._has_active_region_anchor(target, text):
+            return "region_mismatch"
+        pathfinder_reason = cls._pathfinder_fit_reject_reason(
+            target,
+            domain=domain,
+            text=text,
+            axis_fit_score=cls._score_breakdown_float(target, "pathfinder_axis_fit_score", 0.0),
+            axis_fit_tier=cls._score_breakdown_text(target, "pathfinder_axis_fit_tier", ""),
+            lens_fit_score=cls._score_breakdown_float(target, "pathfinder_lens_fit_score", 0.0),
+            lens_fit_tier=cls._score_breakdown_text(target, "pathfinder_lens_fit_tier", ""),
+            viral_need_score=cls._score_breakdown_float(target, "viral_need_score", 0.0),
+            reply_opportunity_score=cls._score_breakdown_float(target, "reply_opportunity_score", 0.0),
+            timing_window_score=cls._score_breakdown_float(target, "timing_window_score", 0.0),
+            journey_fit_score=cls._score_breakdown_float(target, "journey_fit_score", 0.0),
+            qualification_fit_score=cls._score_breakdown_float(target, "qualification_fit_score", 0.0),
+            clinic_treatment_fit_score=cls._score_breakdown_float(target, "clinic_treatment_fit_score", 0.0),
+            worksite_efficiency_score=cls._score_breakdown_float(target, "worksite_efficiency_score", 0.0),
+        )
+        if pathfinder_reason:
+            return pathfinder_reason
         if cls._is_route_navigation(text):
             return "route_navigation"
-        if cls._contains_any(text, cls.NON_RELEVANT_EXCLUDE):
+        if cls._is_distant_local_target(title, text, local_venue=cls._has_local_venue_anchor(target)):
+            return "region_mismatch"
+        if cls._contains_any(text, cls._non_relevant_exclude_terms(text)):
             return "non_relevant"
         is_advertorial, _, _ = cls._detect_advertorial(target, text)
         if is_advertorial:
             return "advertorial"
-        if not cls._has_domain_anchor(domain, text):
+        if cls._is_closed_review_surface_without_user_ask(target, text):
+            return "closed_review_surface"
+        if cls._has_incompatible_profile_axis(target):
             return "domain_mismatch"
+        if not cls._has_domain_anchor(domain, text):
+            # 교차축 발견 구제 — 시드 축과 다르더라도 글 자체가 다른 핵심 진료축의
+            # 글이면 유효한 발견이다 (라이브: 다이어트 시드가 찾은 청주 추나/자세
+            # 질문이 diet 앵커 미스로 탈락). 단, 자기 축 기준으로 전체 게이트를
+            # 1회 재귀 평가시켜 그 축의 노이즈 검사(필라테스/헬스/성형 등)까지
+            # 통과해야 구제한다 — 앵커만 보면 운동/성형 노이즈가 부활한다.
+            own_reject = cls._cross_axis_reject_reason(target, seed_domain=domain)
+            if own_reject is not None:
+                return "domain_mismatch"
         if cls._contains_any(text, cls.STRICT_MEDICAL_PROMO_PATTERNS):
             return "medical_promo"
         return None
 
+    @classmethod
+    def apply_final_reject(cls, target: ViralTarget) -> Optional[str]:
+        """Apply final gate result to the target so DB upsert persists the rejection."""
+        reason = cls.final_reject_reason(target)
+        if not reason:
+            return None
+
+        title = (target.title or "").lower()
+        body = cls._strip_internal_labels(target.content_preview or "").lower()
+        text = f"{title} {body}"
+        _is_ad, ad_signals, ad_signal_score = cls._detect_advertorial(target, text)
+
+        target.is_commentable = False
+        target.comment_status = cls.FINAL_REJECT_STATUSES.get(reason, "filtered_out")
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "final_reject_reason": reason,
+            "ad_signal_score": float(ad_signal_score),
+            "ad_signals": ",".join(ad_signals),
+        }
+        return reason
+
+    @staticmethod
     @staticmethod
     def _load_self_exclusion() -> Dict[str, List[str]]:
         """business_profile.json에서 자기 업체 제외 규칙 로드 (모듈 시작 시 1회)."""
@@ -2462,11 +7120,16 @@ class CommentableFilter:
             logger.warning(f"[CommentableFilter] self_exclusion 로드 실패: {e}")
             return {"blog_authors": [], "url_patterns": [], "title_keywords": []}
 
-    def _is_self_target(self, target: 'ViralTarget') -> bool:
+    @classmethod
+    def _self_exclusion_rules(cls) -> Dict[str, List[str]]:
+        if not hasattr(cls, "_self_exclusion"):
+            cls._self_exclusion = cls._load_self_exclusion()
+        return cls._self_exclusion
+
+    @classmethod
+    def _is_self_target(cls, target: 'ViralTarget') -> bool:
         """자기 한의원 블로그/콘텐츠인지 검사 (어뷰징 방지)."""
-        if not hasattr(self, "_self_exclusion"):
-            self._self_exclusion = CommentableFilter._load_self_exclusion()
-        se = self._self_exclusion
+        se = cls._self_exclusion_rules()
         url = (target.url or "").lower()
         title = (target.title or "").lower()
         author = (target.author or "").lower() if hasattr(target, "author") else ""
@@ -2494,6 +7157,18 @@ class CommentableFilter:
             flags.append("sensitive_medical")
             penalty -= 22
 
+        medication_advice_matches = [kw for kw in cls.MEDICATION_ADVICE_PATTERNS if kw in text]
+        if sensitive_matches and medication_advice_matches:
+            flags.append("medication_advice_request")
+            penalty -= 45
+
+        acute_side_effect_matches = [kw for kw in cls.ACUTE_SIDE_EFFECT_PATTERNS if kw in text]
+        if acute_side_effect_matches and (
+            sensitive_matches or cls._contains_any(text, ["한약", "약", "복용", "먹고", "처방"])
+        ):
+            flags.append("acute_side_effect")
+            penalty -= 55
+
         testimonial_matches = [kw for kw in cls.TESTIMONIAL_SENSITIVE_KEYWORDS if kw in text]
         if testimonial_matches:
             flags.append("testimonial_sensitive")
@@ -2504,7 +7179,8 @@ class CommentableFilter:
             flags.append("generic_category")
             penalty += cls.GENERIC_CATEGORY_PENALTY
 
-        return penalty, flags, bool(urgent_matches)
+        human_only = bool(urgent_matches or (sensitive_matches and medication_advice_matches) or acute_side_effect_matches)
+        return penalty, flags, human_only
 
     @staticmethod
     def _fallback_exposure_score(target: ViralTarget) -> float:
@@ -2525,7 +7201,39 @@ class CommentableFilter:
         return round(min(150.0, platform_base + engagement), 2)
 
     @staticmethod
-    def _compose_priority_score(exposure_score: float, workability_score: float, conversion_fit_score: float) -> float:
+    def _compress_operational_score(raw_score: float, *, softness: float = 110.0) -> float:
+        """Map additive evidence onto a usable 0-150 range without ceiling pileups.
+
+        The discovery filter collects many partially-correlated positive signals.
+        A simple hard cap made nearly every viable post look equally perfect, which
+        hid the evidence differences that matter for staff prioritisation.
+        """
+        raw = max(0.0, float(raw_score or 0.0))
+        scale = max(1.0, float(softness or 1.0))
+        return round(min(150.0, 150.0 * (1.0 - math.exp(-raw / scale))), 2)
+
+    @staticmethod
+    def _compose_priority_score(
+        exposure_score: float,
+        workability_score: float,
+        conversion_fit_score: float,
+        clinic_treatment_fit_score: Optional[float] = None,
+        worksite_efficiency_score: Optional[float] = None,
+    ) -> float:
+        if clinic_treatment_fit_score is not None or worksite_efficiency_score is not None:
+            clinic_scaled = min(150.0, max(0.0, float(clinic_treatment_fit_score or 0.0)) * 1.5)
+            worksite_scaled = min(150.0, max(0.0, float(worksite_efficiency_score or 0.0)) * 1.5)
+            return round(
+                max(0.0, min(
+                    150.0,
+                    (exposure_score * 0.35)
+                    + (workability_score * 0.25)
+                    + (conversion_fit_score * 0.20)
+                    + (clinic_scaled * 0.12)
+                    + (worksite_scaled * 0.08),
+                )),
+                2,
+            )
         return round(
             max(0.0, min(
                 150.0,
@@ -2535,6 +7243,54 @@ class CommentableFilter:
             )),
             2,
         )
+
+    @classmethod
+    def _execution_data_quality(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Assess whether a discovered row has enough evidence for an execution queue."""
+        breakdown = target.score_breakdown or {}
+        body = cls._strip_internal_labels(target.content_preview or "")
+        has_substantive_body = len(body) >= cls.MIN_CONTENT_LENGTH
+        posted_value = str(
+            target.date_str or breakdown.get("post_date_enriched") or ""
+        ).strip()
+        has_posted_date = bool(cls._parse_datetime(posted_value, datetime.now()))
+        has_author = bool(str(target.author or "").strip())
+        ai_reviewed = bool(getattr(target, "ai_reviewed", False))
+        has_activity_metadata = bool(
+            int(getattr(target, "search_rank", 0) or 0) > 0
+            or int(getattr(target, "view_count", 0) or 0) > 0
+            or int(getattr(target, "comment_count", 0) or 0) > 0
+        )
+
+        missing: List[str] = []
+        if not has_substantive_body:
+            missing.append("content")
+        if not has_posted_date:
+            missing.append("posted_at")
+        if not has_author:
+            missing.append("author")
+        if not ai_reviewed:
+            missing.append("ai_review")
+        if not has_activity_metadata:
+            missing.append("activity_metadata")
+
+        score = (
+            (45.0 if has_substantive_body else 0.0)
+            + (25.0 if has_posted_date else 0.0)
+            + (10.0 if has_author else 0.0)
+            + (15.0 if ai_reviewed else 0.0)
+            + (5.0 if has_activity_metadata else 0.0)
+        )
+        auto_ready = has_substantive_body and has_posted_date and ai_reviewed
+        tier = "verified" if auto_ready and score >= 85.0 else (
+            "partial" if score >= 50.0 else "insufficient"
+        )
+        return {
+            "score": round(score, 1),
+            "tier": tier,
+            "missing": missing,
+            "auto_ready": auto_ready,
+        }
 
     def filter(self, targets: List[ViralTarget]) -> List[ViralTarget]:
         """
@@ -2548,21 +7304,69 @@ class CommentableFilter:
                  'no_region': 0, 'title_only': 0, 'domain_mismatch': 0,
                  'off_domain': 0, 'not_inquiry_health': 0, 'medical_risk': 0,
                  'advertorial': 0, 'low_intent': 0, 'low_opportunity': 0,
-                 'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0}
+                 'stale_window': 0, 'journey_mismatch': 0, 'unqualified': 0,
+                 'clinic_mismatch': 0, 'low_worksite_efficiency': 0,
+                 'pathfinder_mismatch': 0, 'response_restricted': 0,
+                 'marketplace_sale': 0}
 
         for target in targets:
             # 0. [의료광고법 + 어뷰징 방지] 자기 업체 자동 제외 (최우선)
             if self._is_self_target(target):
                 stats['self_excluded'] += 1
                 target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("self_target", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "self_target",
+                }
                 continue
 
             title_lower = (target.title or '').lower()
-            body_clean = self._strip_internal_labels(target.content_preview or '')
+            original_body_clean = self._strip_internal_labels(target.content_preview or '')
+            local_gate_text_mode = "full"
+            local_gate_preserved_answer_tail = False
+            if (target.platform or "").lower() in {"kin", "naver_kin"}:
+                body_clean = self._kin_question_segment_body(target)
+                local_gate_text_mode = "kin_question_segment"
+                local_gate_preserved_answer_tail = bool(
+                    body_clean and body_clean != original_body_clean
+                )
+            else:
+                body_clean = original_body_clean
             body_lower = body_clean.lower()
             text = f"{title_lower} {body_lower}"
-            domain = self._keyword_domain(target.matched_keywords)
+            domain = self._target_domain(target)
             early_is_inquiry = any(pat in text for pat in self.REAL_INQUIRY_PATTERNS)
+
+            if self._is_marketplace_sale(text):
+                stats['marketplace_sale'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("marketplace_sale", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "marketplace_sale",
+                }
+                continue
+
+            if self._is_hard_off_domain_service_target(target, text, title=title_lower):
+                stats['off_domain'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get("off_domain", "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "off_domain",
+                }
+                continue
+
+            if self._is_title_non_service_beauty_target(title_lower):
+                stats['off_domain'] += 1
+                continue
+            if self._is_non_hanbang_fertility_target(text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_provider_case_story_without_user_ask(target, text):
+                stats['advertorial'] += 1
+                continue
 
             # 1. 광고글 제외 (STRICT만 제외, SOFT는 감점)
             if any(ad in text for ad in self.STRICT_AD_PATTERNS):
@@ -2585,19 +7389,58 @@ class CommentableFilter:
                     "ad_signals": ",".join(ad_signals),
                 }
                 continue
-            if any(ad in text for ad in self.NON_RELEVANT_EXCLUDE):
+            if any(ad in text for ad in self._non_relevant_exclude_terms(text)):
                 stats['non_relevant'] += 1
                 continue
-            if self._is_off_domain(domain, text):
+            if self._is_off_domain(domain, text, title=(target.title or "").lower(), target=target):
+                stats['off_domain'] += 1
+                continue
+            if self._is_non_service_beauty_target(domain, text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_explicit_hanbang_exclusion(target, text):
+                stats['off_domain'] += 1
+                continue
+            if self._is_kin_answer_footer_region_noise(target, text):
+                stats['no_region'] += 1
+                continue
+            if self._is_provider_info_without_user_ask(target, text):
+                stats['advertorial'] += 1
+                continue
+            if self._is_response_restricted_surface(target, text):
+                stats['response_restricted'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": "response_restricted",
+                }
+                continue
+            if self._is_asymmetry_axis_noise(target, text):
                 stats['off_domain'] += 1
                 continue
             if self._is_route_navigation(text):
                 stats['non_relevant'] += 1
                 continue
+            if self._is_distant_local_target(title_lower, text, local_venue=self._has_local_venue_anchor(target)):
+                stats['no_region'] += 1
+                continue
 
             early_is_health = any(kw in text for kw in self.HEALTH_KEYWORDS)
             early_viral_need_score, early_viral_need_tier, early_viral_need_signals = self._assess_viral_need(
                 target, domain, early_is_inquiry, early_is_health
+            )
+            pathfinder_ctx = self._pathfinder_execution_context(target)
+            pathfinder_short_actionable = (
+                float(pathfinder_ctx.get("viral_readiness") or 0.0) >= 78.0
+                and float(pathfinder_ctx.get("content_actionability") or 0.0) >= 70.0
+                and float(pathfinder_ctx.get("medical_ad_risk") or 0.0) < 40.0
+                and (
+                    float(pathfinder_ctx.get("community_signal") or 0.0) >= 60.0
+                    or float(pathfinder_ctx.get("conversion_signal") or 0.0) >= 50.0
+                )
+                and self._has_active_region_anchor(target, text)
+                and (domain != "general" or target.matched_keyword_grade in {"S", "A"})
             )
             short_actionable = (
                 early_viral_need_score >= 55
@@ -2605,7 +7448,7 @@ class CommentableFilter:
                     signal in early_viral_need_signals
                     for signal in ("recommendation_request", "ready_to_act", "cost_decision")
                 )
-            )
+            ) or pathfinder_short_actionable
 
             # 2. 본문 최소 길이
             if len(body_clean) < self.MIN_CONTENT_LENGTH and not short_actionable:
@@ -2613,7 +7456,7 @@ class CommentableFilter:
                 continue
 
             # 3. 지역 키워드 필수 (제목 OR 본문)
-            if not any(rk in text for rk in self.REGION_KEYWORDS):
+            if not self._has_active_region_anchor(target, text):
                 stats['no_region'] += 1
                 continue
 
@@ -2784,6 +7627,83 @@ class CommentableFilter:
                 }
                 continue
 
+            clinic_treatment_fit_score, clinic_treatment_fit_tier, clinic_treatment_fit_signals = self._assess_clinic_treatment_fit(
+                target,
+                domain,
+                text,
+                is_health,
+            )
+            if clinic_treatment_fit_score < self.MIN_CLINIC_TREATMENT_FIT_SCORE:
+                stats['clinic_mismatch'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_clinic_mismatch"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                    "qualification_fit_score": float(qualification_fit_score),
+                    "qualification_tier": qualification_tier,
+                    "qualification_signals": ",".join(qualification_signals),
+                    "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                    "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                    "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                }
+                continue
+
+            worksite_efficiency_score, worksite_efficiency_tier, worksite_efficiency_signals = self._assess_worksite_efficiency(
+                target,
+                clinic_treatment_fit_score,
+                viral_need_score,
+                viral_need_signals,
+                reply_opportunity_score,
+                reply_opportunity_signals,
+                timing_window_score,
+                timing_window_signals,
+                journey_fit_score,
+                journey_stage,
+                qualification_fit_score,
+                risk_flags,
+            )
+            if worksite_efficiency_score < self.MIN_WORKSITE_EFFICIENCY_SCORE:
+                stats['low_worksite_efficiency'] += 1
+                target.is_commentable = False
+                target.comment_status = "filtered_out_low_worksite_efficiency"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "viral_need_score": float(viral_need_score),
+                    "viral_need_tier": viral_need_tier,
+                    "viral_need_signals": ",".join(viral_need_signals),
+                    "reply_opportunity_score": float(reply_opportunity_score),
+                    "reply_opportunity_tier": reply_opportunity_tier,
+                    "reply_opportunity_signals": ",".join(reply_opportunity_signals),
+                    "timing_window_score": float(timing_window_score),
+                    "timing_window_tier": timing_window_tier,
+                    "timing_window_signals": ",".join(timing_window_signals),
+                    "journey_fit_score": float(journey_fit_score),
+                    "journey_stage": journey_stage,
+                    "journey_signals": ",".join(journey_signals),
+                    "qualification_fit_score": float(qualification_fit_score),
+                    "qualification_tier": qualification_tier,
+                    "qualification_signals": ",".join(qualification_signals),
+                    "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                    "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                    "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                    "worksite_efficiency_score": float(worksite_efficiency_score),
+                    "worksite_efficiency_tier": worksite_efficiency_tier,
+                    "worksite_efficiency_signals": ",".join(worksite_efficiency_signals),
+                }
+                continue
+
             # 5. 우선순위 점수 계산 (개선됨: 150점 캡, 세분화된 가중치)
             score = 0
             tags = []  # 태그 수집
@@ -2843,6 +7763,64 @@ class CommentableFilter:
             timing_window_adjustment = max(-20, min(18, (timing_window_score - 50) * 0.35))
             journey_fit_adjustment = max(-16, min(10, (journey_fit_score - 50) * 0.22))
             qualification_fit_adjustment = max(-18, min(12, (qualification_fit_score - 50) * 0.24))
+            clinic_treatment_adjustment = max(-24, min(18, (clinic_treatment_fit_score - 55) * 0.32))
+            worksite_efficiency_adjustment = max(-20, min(20, (worksite_efficiency_score - 55) * 0.35))
+            pathfinder_axis_fit_score, pathfinder_axis_fit_tier, pathfinder_axis_fit_signals = (
+                self._pathfinder_axis_post_fit(
+                    target,
+                    domain=domain,
+                    text=text,
+                )
+            )
+            pathfinder_axis_adjustment = 0.0
+            if pathfinder_axis_fit_tier != "neutral":
+                pathfinder_axis_adjustment = max(-18.0, min(12.0, (pathfinder_axis_fit_score - 55.0) * 0.28))
+            pathfinder_lens_fit_score, pathfinder_lens_fit_tier, pathfinder_lens_fit_signals = (
+                self._pathfinder_lens_post_fit(
+                    target,
+                    platform=target.platform,
+                    text=text,
+                )
+            )
+            pathfinder_lens_adjustment = 0.0
+            if pathfinder_lens_fit_tier != "neutral":
+                pathfinder_lens_adjustment = max(-14.0, min(12.0, (pathfinder_lens_fit_score - 55.0) * 0.30))
+            pathfinder_execution_adjustment, pathfinder_execution_signals = self._pathfinder_execution_adjustment(
+                target,
+                platform=target.platform,
+                text=text,
+            )
+            pathfinder_fit_reject_reason = self._pathfinder_fit_reject_reason(
+                target,
+                domain=domain,
+                text=text,
+                axis_fit_score=pathfinder_axis_fit_score,
+                axis_fit_tier=pathfinder_axis_fit_tier,
+                lens_fit_score=pathfinder_lens_fit_score,
+                lens_fit_tier=pathfinder_lens_fit_tier,
+                viral_need_score=viral_need_score,
+                reply_opportunity_score=reply_opportunity_score,
+                timing_window_score=timing_window_score,
+                journey_fit_score=journey_fit_score,
+                qualification_fit_score=qualification_fit_score,
+                clinic_treatment_fit_score=clinic_treatment_fit_score,
+                worksite_efficiency_score=worksite_efficiency_score,
+            )
+            if pathfinder_fit_reject_reason:
+                stats['pathfinder_mismatch'] += 1
+                target.is_commentable = False
+                target.comment_status = self.FINAL_REJECT_STATUSES.get(pathfinder_fit_reject_reason, "filtered_out")
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "final_reject_reason": pathfinder_fit_reject_reason,
+                    "pathfinder_axis_fit_score": float(pathfinder_axis_fit_score),
+                    "pathfinder_axis_fit_tier": pathfinder_axis_fit_tier,
+                    "pathfinder_axis_fit_signals": ",".join(pathfinder_axis_fit_signals),
+                    "pathfinder_lens_fit_score": float(pathfinder_lens_fit_score),
+                    "pathfinder_lens_fit_tier": pathfinder_lens_fit_tier,
+                    "pathfinder_lens_fit_signals": ",".join(pathfinder_lens_fit_signals),
+                }
+                continue
             score += soft_ad_penalty  # 음수 값이므로 감점됨
             score += risk_penalty
             score += viral_need_bonus
@@ -2850,6 +7828,11 @@ class CommentableFilter:
             score += timing_window_adjustment
             score += journey_fit_adjustment
             score += qualification_fit_adjustment
+            score += clinic_treatment_adjustment
+            score += worksite_efficiency_adjustment
+            score += pathfinder_axis_adjustment
+            score += pathfinder_execution_adjustment
+            score += pathfinder_lens_adjustment
 
             if reply_opportunity_score >= 75:
                 tags.append("🎯도움")
@@ -2859,14 +7842,22 @@ class CommentableFilter:
                 tags.append("🧭결정")
             if qualification_fit_score >= 75:
                 tags.append("✅자격")
+            if clinic_treatment_fit_score >= 75:
+                tags.append("🏷️진료적합")
+            if worksite_efficiency_score >= 75:
+                tags.append("📍작업효율")
 
             # 태그 정보 저장 (content_preview 앞에 추가)
             if tags:
                 tag_str = " ".join(tags)
-                target.content_preview = f"[{tag_str}] {body_clean}"
+                preview_body = original_body_clean if local_gate_preserved_answer_tail else body_clean
+                target.content_preview = f"[{tag_str}] {preview_body}"
 
             # Workability is the operational "can we comment here?" score.
-            target.workability_score = max(0, min(score, 150))
+            workability_raw_score = max(0.0, float(score or 0.0))
+            target.workability_score = self._compress_operational_score(
+                workability_raw_score,
+            )
             if not target.exposure_score:
                 target.exposure_score = self._fallback_exposure_score(target)
 
@@ -2889,13 +7880,25 @@ class CommentableFilter:
             conversion_fit += min(24, timing_window_score * 0.24)
             conversion_fit += min(14, journey_fit_score * 0.14)
             conversion_fit += min(22, qualification_fit_score * 0.22)
-            target.conversion_fit_score = max(0, min(conversion_fit, 150))
+            conversion_fit += min(30, clinic_treatment_fit_score * 0.30)
+            conversion_fit += min(22, worksite_efficiency_score * 0.22)
+            if pathfinder_axis_fit_tier != "neutral":
+                conversion_fit += max(-18, min(18, (pathfinder_axis_fit_score - 55) * 0.22))
+            if pathfinder_lens_fit_tier != "neutral":
+                conversion_fit += max(-18, min(18, (pathfinder_lens_fit_score - 55) * 0.24))
+            conversion_fit_raw_score = max(0.0, float(conversion_fit or 0.0))
+            target.conversion_fit_score = self._compress_operational_score(
+                conversion_fit_raw_score,
+            )
 
             target.score_breakdown = {
                 **(target.score_breakdown or {}),
                 "exposure": target.exposure_score,
                 "workability": target.workability_score,
+                "workability_raw_score": workability_raw_score,
                 "conversion_fit": target.conversion_fit_score,
+                "conversion_fit_raw_score": conversion_fit_raw_score,
+                "operational_score_calibration": "exp_v1",
                 "keyword_bonus": float(keyword_bonus),
                 "soft_ad_penalty": float(soft_ad_penalty),
                 "ad_signal_score": float(ad_signal_score),
@@ -2919,14 +7922,39 @@ class CommentableFilter:
                 "qualification_tier": qualification_tier,
                 "qualification_signals": ",".join(qualification_signals),
                 "qualification_fit_adjustment": float(qualification_fit_adjustment),
+                "clinic_treatment_fit_score": float(clinic_treatment_fit_score),
+                "clinic_treatment_fit_tier": clinic_treatment_fit_tier,
+                "clinic_treatment_fit_signals": ",".join(clinic_treatment_fit_signals),
+                "clinic_treatment_adjustment": float(clinic_treatment_adjustment),
+                "worksite_efficiency_score": float(worksite_efficiency_score),
+                "worksite_efficiency_tier": worksite_efficiency_tier,
+                "worksite_efficiency_signals": ",".join(worksite_efficiency_signals),
+                "worksite_efficiency_adjustment": float(worksite_efficiency_adjustment),
+                "pathfinder_axis_fit_score": float(pathfinder_axis_fit_score),
+                "pathfinder_axis_fit_tier": pathfinder_axis_fit_tier,
+                "pathfinder_axis_fit_signals": ",".join(pathfinder_axis_fit_signals),
+                "pathfinder_axis_adjustment": float(pathfinder_axis_adjustment),
+                "pathfinder_lens_fit_score": float(pathfinder_lens_fit_score),
+                "pathfinder_lens_fit_tier": pathfinder_lens_fit_tier,
+                "pathfinder_lens_fit_signals": ",".join(pathfinder_lens_fit_signals),
+                "pathfinder_lens_adjustment": float(pathfinder_lens_adjustment),
+                "pathfinder_execution_adjustment": float(pathfinder_execution_adjustment),
+                "pathfinder_execution_signals": ",".join(pathfinder_execution_signals),
+                "local_gate_text_mode": local_gate_text_mode,
+                "local_gate_preserved_answer_tail": bool(local_gate_preserved_answer_tail),
+                "local_gate_question_segment": body_clean[:700] if local_gate_preserved_answer_tail else "",
                 "reply_risk_penalty": float(risk_penalty),
                 "manual_review": 1.0 if risk_flags else 0.0,
                 "reply_risk_flags": ",".join(risk_flags),
             }
+            if risk_flags:
+                target.comment_status = "manual_review"
             target.priority_score = self._compose_priority_score(
                 target.exposure_score,
                 target.workability_score,
                 target.conversion_fit_score,
+                clinic_treatment_fit_score,
+                worksite_efficiency_score,
             )
             if timing_window_score < 55:
                 timing_priority_adjustment = -min(22.0, (55 - timing_window_score) * 0.75)
@@ -2946,6 +7974,17 @@ class CommentableFilter:
                 qualification_priority_adjustment = min(5.0, (qualification_fit_score - 75) * 0.16)
             else:
                 qualification_priority_adjustment = 0.0
+            pathfinder_priority_adjustment = max(
+                -18.0,
+                min(
+                    14.0,
+                    pathfinder_execution_adjustment * 0.45
+                    + pathfinder_lens_adjustment * 0.35
+                    + pathfinder_axis_adjustment * 0.30,
+                ),
+            )
+            execution_readiness_selection_adjustment = _ai_target_execution_readiness_adjustment(target)
+            execution_readiness_priority_adjustment = min(0.0, execution_readiness_selection_adjustment)
             target.priority_score = round(
                 max(
                     0.0,
@@ -2954,14 +7993,61 @@ class CommentableFilter:
                         target.priority_score
                         + timing_priority_adjustment
                         + journey_priority_adjustment
-                        + qualification_priority_adjustment,
+                        + qualification_priority_adjustment
+                        + pathfinder_priority_adjustment,
                     ),
                 ),
+                2,
+            )
+            target.priority_score = round(
+                max(
+                    0.0,
+                    min(150.0, target.priority_score + execution_readiness_priority_adjustment),
+                ),
+                2,
+            )
+            data_quality = self._execution_data_quality(target)
+            data_quality_score = float(data_quality["score"])
+            # Search snippets are valid discovery signals, but missing date/body/AI
+            # evidence must not tie verified posts at the priority ceiling.
+            data_quality_adjustment = -min(16.0, max(0.0, 85.0 - data_quality_score) * 0.22)
+            data_quality_cap = 150.0
+            if "content" in data_quality["missing"]:
+                # Explicit short question forms are valid discovery leads, but
+                # remain below fully evidenced execution candidates.
+                data_quality_cap = min(data_quality_cap, 120.0)
+            if "posted_at" in data_quality["missing"]:
+                data_quality_cap = min(data_quality_cap, 138.0)
+            if "ai_review" in data_quality["missing"]:
+                data_quality_cap = min(data_quality_cap, 142.0)
+            target.priority_score = round(
+                max(0.0, min(data_quality_cap, target.priority_score + data_quality_adjustment)),
                 2,
             )
             target.score_breakdown["timing_priority_adjustment"] = float(timing_priority_adjustment)
             target.score_breakdown["journey_priority_adjustment"] = float(journey_priority_adjustment)
             target.score_breakdown["qualification_priority_adjustment"] = float(qualification_priority_adjustment)
+            target.score_breakdown["pathfinder_priority_adjustment"] = float(pathfinder_priority_adjustment)
+            target.score_breakdown["execution_readiness_selection_adjustment"] = float(
+                execution_readiness_selection_adjustment
+            )
+            target.score_breakdown["execution_readiness_priority_adjustment"] = float(
+                execution_readiness_priority_adjustment
+            )
+            target.score_breakdown["execution_data_quality_score"] = data_quality_score
+            target.score_breakdown["execution_data_quality_tier"] = data_quality["tier"]
+            target.score_breakdown["execution_data_quality_missing"] = ",".join(data_quality["missing"])
+            target.score_breakdown["execution_auto_ready"] = bool(data_quality["auto_ready"] and not risk_flags)
+            target.score_breakdown["execution_data_quality_adjustment"] = float(data_quality_adjustment)
+            target.score_breakdown["execution_data_quality_cap"] = float(data_quality_cap)
+            current_status = str(target.comment_status or "").strip().lower()
+            if current_status in self.FILTER_PASS_RESET_STATUSES:
+                target.comment_status = "pending"
+            target.score_breakdown = {
+                key: value
+                for key, value in (target.score_breakdown or {}).items()
+                if key not in self.FILTER_PASS_REJECT_KEYS
+            }
             target.is_commentable = True
             filtered.append(target)
 
@@ -2977,9 +8063,82 @@ class CommentableFilter:
             f"의료주의 {stats['medical_risk']}, 광고성 {stats['advertorial']}, "
             f"저의도 {stats['low_intent']}, 저응답적합 {stats['low_opportunity']}, "
             f"타이밍만료 {stats['stale_window']}, 여정불일치 {stats['journey_mismatch']}, "
-            f"자격부족 {stats['unqualified']}]"
+            f"자격부족 {stats['unqualified']}, 진료불일치 {stats['clinic_mismatch']}, "
+            f"응답거부 {stats['response_restricted']}, "
+            f"거래글 {stats['marketplace_sale']}, "
+            f"작업효율낮음 {stats['low_worksite_efficiency']}, "
+            f"Pathfinder불일치 {stats['pathfinder_mismatch']}]"
         )
+        # 디스커버리 정직성: 퍼널 거절 사유를 인스턴스에 누적해 영속 감사에서 가시화한다.
+        # (조용한 continue 거절도 stats 에 집계되지만 지금까지 로그로만 흘러가 사라졌다.)
+        cum = getattr(self, "cumulative_reject_stats", None)
+        if cum is None:
+            cum = {}
+            self.cumulative_reject_stats = cum
+        for _reason, _count in stats.items():
+            cum[_reason] = cum.get(_reason, 0) + int(_count)
+        self.filter_input_count = int(getattr(self, "filter_input_count", 0) or 0) + len(targets)
+        self.filter_survivor_count = int(getattr(self, "filter_survivor_count", 0) or 0) + len(filtered)
         return filtered
+
+
+# ── 바이럴 댓글 표현 변주 (댓글 간 중복/스팸지문 방지) ─────────────────────
+# 동일 업체의 댓글들이 같은 상투구·지역어를 반복하면 (1) 네이버 스팸/조작후기 탐지에
+# 지문이 잡혀 삭제·페널티 위험, (2) '실제 다녀온 후기' 신뢰도 저하. 댓글 톤(1인칭 경험담)
+# 은 건드리지 않고 표현·지역어·구조만 타겟마다 결정적으로 변주해 중복을 줄인다.
+# 라이브 근거(2026-06-19): "성안길" 49.9% / "꼼꼼하게 봐주" 9.9% / "체질에 맞춰" 6.1%
+# / "상담받아" 18.3% / "만족" 12.2% 의 상투구 반복.
+VIRAL_COMMENT_OVERUSED_PHRASES = [
+    "원장님이 꼼꼼", "꼼꼼하게 봐주", "꼼꼼하게 잘", "체질에 맞춰",
+    "상담 한번 받아보", "만족도가 높", "도움 되실", "입소문", "세심하게 봐",
+]
+# 규림한의원 실제 위치(청주 성안길/중앙동, 상당구 시내)를 사실 범위 안에서 다르게 표현.
+VIRAL_COMMENT_LOCATION_VARIANTS = [
+    "성안길 쪽", "청주 시내", "시내 중심가", "청주 상당구 쪽", "성안길 근처", "청주 성안길",
+]
+VIRAL_COMMENT_PHRASING_ANGLES = [
+    "문장 구조와 어휘를 흔한 한의원 댓글과 다르게 잡아 변주하세요.",
+    "상투적 추천 문구 대신, 작성자 글의 구체적 단서 한 가지에 반응하세요.",
+    "1~2문장으로 짧고 담백하게, 군더더기 수식어를 빼세요.",
+    "지역·접근성 언급보다 상담 때 확인할 포인트를 먼저 자연스럽게 녹이세요.",
+    "뻔한 공감 표현(예: 'ㅠㅠ 고민되시죠')은 피하고, 공감은 한 번만 자연스럽게 쓰세요.",
+]
+# 1인칭 경험담 프레임 자체가 매번 같은 구조('저도 ... 다녀왔는데 좋았어요')로 수렴하면
+# 네이버 조작후기 탐지 지문이 된다(1인칭을 켠 2026-06-21 이후 신규 리스크). 페르소나
+# (1인칭 환자 경험담·정식 명칭 규림한의원)는 유지하되, '시작 방식·전개 순서'만 회전해
+# 프레임 중복 지문을 줄인다.
+VIRAL_COMMENT_PERSONA_FRAMES = [
+    "1인칭 경험을 '저도 비슷한 고민으로 다녀왔던' 맥락으로 시작하세요.",
+    "1인칭 경험을 '저 갔을 때는 ~했어요' 식 담담한 회상 톤으로 쓰세요.",
+    "결론('좋았어요')부터 말하지 말고 '고민 → 방문 → 느낀 점' 순서로 풀어내세요.",
+    "1인칭 경험을 '저는 ~한 편이었는데' 식으로 단정 없이 표현하세요.",
+    "방문 경험은 길게 늘어놓지 말고 한 가지 인상만 짧게 언급하세요.",
+    "작성자 글의 구체적 단서에 먼저 반응한 뒤 1인칭 경험을 자연스럽게 녹이세요.",
+]
+
+# 시그니처(차별화) 진료축 — routers/viral.py SIGNATURE_ROUTING_AXES 와 동일 집합(레이어
+# 분리상 의도적 중복; 수정 시 양쪽 동기화). 로컬 환자 글이 구조적으로 희소해 일반 백로그
+# 레스큐(category-blind + 21일 윈도우)에서 굶는 축이다. raw_backlog는 이미 commentable
+# 게이트를 통과한 '예산-기아' 공급이므로, 확장 윈도우 + 카테고리 우선 별도 레인으로 끌어오면
+# 전환 효율이 높다. _load_backlog_rescue_targets(categories=, days=) 로 공급한다.
+SIGNATURE_BACKLOG_AXES = ("흉터/여드름흉터", "안면비대칭")
+# 시그니처 레인 최근성 윈도우(일) — 일반 레스큐(21일)보다 길게. 시그니처 글은 드물어
+# 오래된 raw_backlog도 직원 작업가치가 유지된다(빈도<신선도 우선).
+SIGNATURE_BACKLOG_RESCUE_DAYS = 180
+
+# AI 생성 실패/차단 sentinel 문자열. 이것이 댓글로 저장되면 (1) 직원이 "[AI] generation
+# blocked…" 같은 오류문을 댓글로 보게 되고 (2) comment_status가 'generated'로 바뀌며
+# 골든큐(pending)에서 사라져 실제 바이럴 타겟이 조용히 유실된다. generate()는 이런
+# 결과를 빈 문자열로 반환해, 모든 호출부(if comment 가드)가 저장·상태전환을 건너뛰고
+# 타겟을 pending으로 보존하도록 한다.
+VIRAL_COMMENT_FAILED_SENTINELS = (
+    "[ai error]",
+    "[생성 실패]",
+    "generation blocked",
+    "blocked by medical advertising",
+    "codex cli is unavailable",
+    "생성 차단됨",
+)
 
 
 # ============================================
@@ -2993,6 +8152,37 @@ class AICommentGenerator:
     카테고리별 프롬프트 템플릿
     """
 
+    UNIFIED_ANALYSIS_PREVIEW_CHARS = 700
+    # An AI "unsuitable" result with no stated rationale is not a reliable
+    # enough reason to permanently discard a locally relevant, high-intent
+    # post.  These thresholds deliberately route only strong deterministic
+    # candidates to human review; they never make a target auto-executable.
+    AI_UNCERTAIN_REVIEW_MIN_PRIORITY = 85.0
+    AI_UNCERTAIN_REVIEW_MIN_AXIS_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_LENS_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_CLINIC_FIT = 70.0
+    AI_UNCERTAIN_REVIEW_MIN_REPLY_SCORE = 75.0
+    AI_UNCERTAIN_REVIEW_MIN_QUALIFICATION_FIT = 75.0
+    UNIFIED_AD_SAFETY_NOTE = """
+
+[추가 제외 기준]
+- 검색 스니펫이 원 질문 뒤에 기존 답변/댓글을 라벨 없이 이어 붙인 경우, 뒤쪽 답변에 특정 병원/한의원/제품 추천, 예약/위치/전화/상담/가격/이벤트/홈페이지/카카오톡 안내가 보이면 SUITABLE=false로 판정하세요.
+- 단, 본문에 "[기존답변N]" 라벨이 있으면 질문과 이미 달린 답변이 구분된 것입니다. 이때 SUITABLE 판단은 라벨 앞의 질문 부분 기준입니다: 질문이 자연스러운 환자 글이면 답변에 업체 홍보가 있어도 SUITABLE=true일 수 있습니다. 답변에 특정 한의원/병원 추천이 보이면 COMPETITOR=true와 COMPETITOR_NAME으로 보고하세요.
+- 질문 자체가 특정 업체를 칭찬하거나, 질문과 답변이 같은 업체를 짜맞춘 자문자답 마케팅으로 보이면 SUITABLE=false.
+- "저도 ... 효과", "성안길/지웰시티 쪽 OO한의원", "상담 한번 받아보세요", "네이버에서 검색", "비용 부담 없이", "할인이벤트/무제한/패키지" 같은 문구는 자연 질문이 아니라 광고성 답변 스니펫 신호입니다.
+- 제목이 질문형이어도 본문 대부분이 매끄러운 병원 홍보, 후기 가장, 기존 답변 추천이면 promotion/review/other로 제외하세요.
+"""
+
+    UNIFIED_AD_SAFETY_NOTE += """
+
+[USER_QUESTION_SEGMENT 우선 판정 원칙]
+- 포맷에 "사용자 질문 세그먼트:"가 있으면 그 문장을 작성자 본인의 질문/고민으로 보고 SUITABLE 판단의 1차 기준으로 사용하세요.
+- "내용:"에는 검색 스니펫이나 상세 수집 과정에서 붙은 기존 답변, 추천 댓글, 경쟁사/자기업체 언급이 함께 들어 있을 수 있습니다. 이 답변 꼬리만으로 자연스러운 질문글을 SUITABLE=false로 만들지 마세요.
+- 답변 꼬리에 병원 추천, 예약/위치/전화/상담 안내가 있으면 COMPETITOR/COMPETITOR_NAME, planted Q&A risk, advertorial evidence로 보고하되, 질문 세그먼트가 실제 환자 질문이면 SUITABLE=true를 유지할 수 있습니다.
+- 단, 질문 세그먼트 자체가 업체 칭찬/추천 유도문이거나 질문과 답변이 같은 업체를 짜맞춘 자문자답처럼 보이면 SUITABLE=false로 판정하세요.
+- KIN/naver_kin에서는 댓글 생성도 사용자 질문 세그먼트에만 답해야 하므로, 적합성 판단도 질문 세그먼트와 답변 꼬리를 분리해서 설명하세요.
+"""
+
     def __init__(self):
         self.cfg = ConfigManager()
         logger.info("✅ AI Client 초기화 완료 (centralized ai_client)")
@@ -3005,17 +8195,346 @@ class AICommentGenerator:
         except Exception:
             return {}
 
+    @classmethod
+    def _should_route_uncertain_ai_rejection_to_manual_review(
+        cls,
+        target: ViralTarget,
+    ) -> bool:
+        """Keep an unexplained AI rejection from silently losing a strong lead.
+
+        This is intentionally a manual-review route, not an acceptance route.
+        Explicit final rejection reasons (advertorial, wrong region, restricted
+        surface, and so on) always remain terminal.
+        """
+        breakdown = target.score_breakdown or {}
+        if str(breakdown.get("ai_verdict") or "").strip().lower() != "unsuitable":
+            return False
+        if str(breakdown.get("ai_rejection_reason") or "").strip():
+            return False
+        if CommentableFilter.final_reject_reason(target):
+            return False
+
+        return (
+            float(target.priority_score or 0.0) >= cls.AI_UNCERTAIN_REVIEW_MIN_PRIORITY
+            and _ai_target_breakdown_float(target, "pathfinder_axis_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_AXIS_FIT
+            and _ai_target_breakdown_float(target, "pathfinder_lens_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_LENS_FIT
+            and _ai_target_breakdown_float(target, "clinic_treatment_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_CLINIC_FIT
+            and _ai_target_breakdown_float(target, "reply_opportunity_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_REPLY_SCORE
+            and _ai_target_breakdown_float(target, "qualification_fit_score")
+            >= cls.AI_UNCERTAIN_REVIEW_MIN_QUALIFICATION_FIT
+        )
+
+    @staticmethod
+    def _mark_uncertain_ai_rejection_for_manual_review(target: ViralTarget) -> None:
+        """Apply an auditable, non-executable manual-review state."""
+        target.ai_reviewed = True
+        target.is_commentable = True
+        target.comment_status = "manual_review"
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "manual_review": 1.0,
+            "reply_risk_flags": "ai_rejection_without_reason",
+            "ai_review_escalation": "high_signal_rejection_without_reason",
+            "execution_auto_ready": False,
+        }
+
+    # 경쟁사 탐지 참조는 단일 소스(config/competitors.json)에서 로드한다. 과거에는
+    # 프롬프트에 하드코딩된 stale 목록(로랑·데이릴 누락)을 AI에 줘서, 사용자의 #1
+    # 경쟁사(로랑/데이릴 안면비대칭)를 한 번도 못 잡고 엉뚱한 한의원만 플래그했다.
+    _curated_competitors_cache: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def _load_curated_competitors(cls) -> Dict[str, Any]:
+        """config/competitors.json + business_profile.json에서 경쟁사/자기업체 참조 로드.
+
+        반환: {'critical': [...], 'others': [...], 'self': [...], 'all': set(lower)}.
+        rank tracking·competitor analysis와 동일 소스라 목록이 다시 stale되지 않는다.
+        """
+        if cls._curated_competitors_cache is not None:
+            return cls._curated_competitors_cache
+        import os as _os
+        here = _os.path.dirname(_os.path.abspath(__file__))
+        critical: List[str] = []
+        others: List[str] = []
+        self_names: List[str] = []
+        try:
+            with open(_os.path.join(here, "config", "competitors.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            for _cat, info in (data.get("category_competitors") or {}).items():
+                for comp in (info.get("main_competitors") or []):
+                    name = str(comp.get("name") or "").strip()
+                    if not name:
+                        continue
+                    bucket = critical if comp.get("priority") == "critical" else others
+                    if name not in bucket:
+                        bucket.append(name)
+        except Exception as e:
+            logger.warning(f"[AICommentGenerator] competitors.json 로드 실패: {e}")
+        try:
+            with open(_os.path.join(here, "config", "business_profile.json"), encoding="utf-8") as f:
+                profile = json.load(f)
+            se = profile.get("self_exclusion", {}) or {}
+            self_names = [str(k).strip() for k in (se.get("title_keywords") or []) if str(k).strip()]
+        except Exception as e:
+            logger.warning(f"[AICommentGenerator] business_profile.json 로드 실패: {e}")
+        if not self_names:
+            self_names = ["규림", "kyurim"]
+        # critical에 들어간 이름이 others에 중복되지 않게
+        others = [n for n in others if n not in critical]
+        all_lower = {n.lower() for n in critical + others}
+        cls._curated_competitors_cache = {
+            "critical": critical,
+            "others": others,
+            "self": self_names,
+            "all": all_lower,
+        }
+        return cls._curated_competitors_cache
+
+    @classmethod
+    def _classify_competitor_name(cls, name: str) -> str:
+        """detected COMPETITOR_NAME → 'self' | 'critical' | 'known' | 'unknown'.
+
+        자기 업체 추천은 역공략 대상이 아니므로 분리하고, 큐레이트된 critical
+        경쟁사(로랑/데이릴 등)는 우선순위 부스트 대상으로 표시한다.
+        """
+        raw = (name or "").strip().lower()
+        if not raw or raw in {"n/a", "na", "none", "없음", "-"}:
+            return "unknown"
+        data = cls._load_curated_competitors()
+        for self_token in data["self"]:
+            if self_token and self_token.lower() in raw:
+                return "self"
+
+        def _matches(curated: List[str]) -> bool:
+            for c in curated:
+                cl = c.lower().strip()
+                if not cl:
+                    continue
+                core = cl.split()[0]  # "자연과한의원 청주점" → "자연과한의원"
+                if cl in raw or raw in cl or (len(core) >= 3 and core in raw):
+                    return True
+            return False
+
+        if _matches(data["critical"]):
+            return "critical"
+        if _matches(data["others"]):
+            return "known"
+        return "unknown"
+
+    @staticmethod
+    def _competitor_name_is_identifiable(name: str) -> bool:
+        """역공략(경쟁사 카운터)은 '어느 경쟁사를 카운터할지' 아는 것이 핵심이다.
+
+        AI가 COMPETITOR=true 를 보고해도 식별 가능한 경쟁사명이 없으면(N/A·빈값·미상)
+        카운터할 대상 자체가 없으므로 역공략이 성립하지 않는다 — 이때 프리미엄
+        경쟁사_역공략 레인 승격과 우선순위 가산(최대 +25)을 적용하면 안 된다.
+        라이브 근거: 전체 ai_competitor=true 706건 중 30%(211건)가 무명(N/A) competitor
+        였고 그중 164건이 직원에게 skip 되었다(레인 오염 + 미획득 부스트).
+        단, 큐레이트 목록에 없는 실제 한의원/병원명(_classify_competitor_name='unknown')은
+        유효한 역공략 대상이므로 통과시킨다 — placeholder 토큰만 거른다.
+        """
+        raw = (name or "").strip().lower()
+        if len(raw) < 2:
+            return False
+        placeholders = {
+            "n/a", "na", "none", "null", "unknown", "없음", "미상", "해당없음",
+            "불명", "알수없음", "확인불가", "확인안됨", "기타", "etc", "-", "--",
+        }
+        return raw not in placeholders
+
+    @classmethod
+    def _competitor_reference_note(cls) -> str:
+        """AI 프롬프트에 덧붙일 권위 있는 경쟁사 참조 블록 (자기업체 제외 지시 포함)."""
+        data = cls._load_curated_competitors()
+        critical = ", ".join(data["critical"]) or "(없음)"
+        others = ", ".join(data["others"]) or "(없음)"
+        self_names = ", ".join(data["self"]) or "규림"
+        return (
+            "\n\n[청주 경쟁사 참조 — 아래 목록을 권위 기준으로 사용]\n"
+            f"- 최우선 역공략 경쟁사(언급 시 COMPETITOR=true, COMPETITOR_NAME에 정식명 그대로): {critical}\n"
+            f"- 기타 청주 경쟁사: {others}\n"
+            f"- 목록에 없는 다른 한의원/병원이 추천돼도 COMPETITOR=true로 보고하되 COMPETITOR_NAME에 실제명을 적으세요.\n"
+            f"- ※ 다음은 '우리 한의원'입니다. 절대 COMPETITOR로 보고하지 마세요: {self_names}. "
+            "우리 한의원이 추천된 글은 COMPETITOR=false로 두세요.\n"
+        )
+
+    def _build_unified_prompt(self, template: str, posts_formatted: str) -> str:
+        """통합 분석 프롬프트 조립 — 두 호출 경로(순차/병렬)가 공유.
+
+        competitor_reference 플레이스홀더가 있으면 채우고, 없으면(구버전 템플릿)
+        권위 블록을 안전하게 append 한다. 광고 안전 노트도 항상 덧붙인다.
+        """
+        comp_note = self._competitor_reference_note()
+        try:
+            body = template.format(
+                posts_formatted=posts_formatted,
+                competitor_reference=comp_note,
+            )
+            if "{competitor_reference}" not in template:
+                body += comp_note
+        except (KeyError, IndexError):
+            body = template.format(posts_formatted=posts_formatted) + comp_note
+        return body + self.UNIFIED_AD_SAFETY_NOTE
+
+    @classmethod
+    def _format_unified_target(cls, post_id: int, target: ViralTarget) -> str:
+        body = CommentableFilter._strip_internal_labels(target.content_preview or "")
+        body = re.sub(r"\s+", " ", body).strip()
+        preview = body[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS] if body else "(없음)"
+        question_segment_line = ""
+        if (target.platform or "").lower() in {"kin", "naver_kin"}:
+            question_segment = (
+                str((target.score_breakdown or {}).get("local_gate_question_segment") or "").strip()
+                or CommentableFilter._kin_question_segment_body(target)
+            )
+            question_segment = re.sub(r"\s+", " ", question_segment).strip()
+            if question_segment and question_segment != body:
+                question_segment_line = (
+                    f"사용자 질문 세그먼트: "
+                    f"{question_segment[:cls.UNIFIED_ANALYSIS_PREVIEW_CHARS]}\n"
+                )
+        breakdown = target.score_breakdown or {}
+        pathfinder_lines = []
+        if target.matched_keywords:
+            pathfinder_lines.append(f"PATHFINDER_KEYWORD: {', '.join(target.matched_keywords[:3])}")
+        if target.matched_keyword_category or target.category:
+            pathfinder_lines.append(
+                f"PATHFINDER_CATEGORY: {target.matched_keyword_category or target.category}"
+            )
+        search_query = str(breakdown.get("pathfinder_search_query") or "").strip()
+        context_keyword = str(breakdown.get("pathfinder_context_keyword") or "").strip()
+        source_keyword = str(breakdown.get("pathfinder_source_keyword") or "").strip()
+        query_variant = str(breakdown.get("pathfinder_query_variant") or "").strip()
+        source_keywords = cls._score_breakdown_terms(breakdown.get("pathfinder_source_keywords"), limit=4)
+        query_variants = cls._score_breakdown_terms(breakdown.get("pathfinder_query_variants"), limit=4)
+        if any((search_query, context_keyword, source_keyword, query_variant, source_keywords, query_variants)):
+            search_parts = []
+            if source_keyword:
+                search_parts.append(f"source={source_keyword}")
+            if search_query:
+                search_parts.append(f"query={search_query}")
+            if query_variant:
+                search_parts.append(f"variant={query_variant}")
+            if context_keyword and context_keyword not in {source_keyword, search_query}:
+                search_parts.append(f"context={context_keyword}")
+            if source_keywords and len(source_keywords) > 1:
+                search_parts.append(f"sources={', '.join(source_keywords)}")
+            if query_variants and len(query_variants) > 1:
+                search_parts.append(f"variants={', '.join(query_variants)}")
+            collision_count = breakdown.get("pathfinder_context_collision_count")
+            if collision_count not in (None, "", 0, 0.0):
+                search_parts.append(f"collisions={collision_count}")
+            pathfinder_lines.append("PATHFINDER_SEARCH: " + "; ".join(search_parts[:7]))
+        readiness = breakdown.get("pathfinder_viral_readiness_score")
+        actionability = breakdown.get("pathfinder_content_actionability_score")
+        medical_risk = breakdown.get("pathfinder_medical_ad_risk_score")
+        if any(value not in (None, "", 0, 0.0) for value in (readiness, actionability, medical_risk)):
+            pathfinder_lines.append(
+                "PATHFINDER_EXECUTION: "
+                f"readiness={readiness or 0}, "
+                f"actionability={actionability or 0}, "
+                f"medical_ad_risk={medical_risk or 0}, "
+                f"surface={breakdown.get('pathfinder_preferred_search_surface') or ''}, "
+                f"type={breakdown.get('pathfinder_recommended_content_type') or ''}, "
+                f"lens={breakdown.get('pathfinder_execution_lens') or ''}"
+            )
+        source_signals = cls._score_breakdown_list(breakdown.get("pathfinder_source_signals"))
+        quality_flags = cls._score_breakdown_list(breakdown.get("pathfinder_quality_flags"))
+        if source_signals or quality_flags:
+            pathfinder_lines.append(
+                "PATHFINDER_SIGNALS: "
+                f"sources={', '.join(source_signals[:4]) or 'none'}; "
+                f"flags={', '.join(quality_flags[:3]) or 'none'}"
+            )
+        audit_action = str(breakdown.get("pathfinder_source_seed_audit_action") or "").strip()
+        audit_actions = cls._score_breakdown_terms(
+            breakdown.get("pathfinder_source_seed_audit_actions"),
+            limit=4,
+        )
+        audit_adjustment = breakdown.get("pathfinder_source_seed_audit_adjustment")
+        audit_recat = str(breakdown.get("pathfinder_source_seed_audit_recategorized_category") or "").strip()
+        if audit_action or audit_actions or audit_adjustment not in (None, "", 0, 0.0) or audit_recat:
+            audit_parts = []
+            if audit_action:
+                audit_parts.append(f"action={audit_action}")
+            if audit_actions and (len(audit_actions) > 1 or audit_actions[0] != audit_action):
+                audit_parts.append(f"actions={', '.join(audit_actions)}")
+            if audit_adjustment not in (None, "", 0, 0.0):
+                audit_parts.append(f"adjustment={audit_adjustment}")
+            if audit_recat:
+                audit_parts.append(f"recategorized={audit_recat}")
+            pathfinder_lines.append("PATHFINDER_AUDIT: " + "; ".join(audit_parts))
+        insight_brief = str(breakdown.get("pathfinder_insight_brief") or "").strip()
+        if insight_brief:
+            pathfinder_lines.append(f"PATHFINDER_BRIEF: {insight_brief}")
+        axis_score = breakdown.get("pathfinder_axis_fit_score")
+        lens_score = breakdown.get("pathfinder_lens_fit_score")
+        if any(value not in (None, "", 0, 0.0) for value in (axis_score, lens_score)):
+            axis_tier = str(breakdown.get("pathfinder_axis_fit_tier") or "").strip()
+            lens_tier = str(breakdown.get("pathfinder_lens_fit_tier") or "").strip()
+            axis_signals = cls._score_breakdown_terms(breakdown.get("pathfinder_axis_fit_signals"), limit=3)
+            lens_signals = cls._score_breakdown_terms(breakdown.get("pathfinder_lens_fit_signals"), limit=3)
+            fit_parts = []
+            if axis_score not in (None, "", 0, 0.0):
+                fit_parts.append(f"axis={axis_score}/{axis_tier or 'unknown'}")
+            if lens_score not in (None, "", 0, 0.0):
+                fit_parts.append(f"lens={lens_score}/{lens_tier or 'unknown'}")
+            if axis_signals:
+                fit_parts.append(f"axis_signals={', '.join(axis_signals)}")
+            if lens_signals:
+                fit_parts.append(f"lens_signals={', '.join(lens_signals)}")
+            pathfinder_lines.append("PATHFINDER_FIT: " + "; ".join(fit_parts))
+        pathfinder_context = ("\n" + "\n".join(pathfinder_lines)) if pathfinder_lines else ""
+        return (
+            f"\n---\nPOST_ID: {post_id}\n플랫폼: {target.platform}\n"
+            f"제목: {target.title}\n"
+            f"{question_segment_line}"
+            f"내용: {preview}{pathfinder_context}\n---\n"
+        )
+
+    @staticmethod
+    def _score_breakdown_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item not in (None, "")]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return [value] if value.strip() else []
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item not in (None, "")]
+            if parsed:
+                return [str(parsed)]
+        return [str(value)] if value else []
+
+    @classmethod
+    def _score_breakdown_terms(cls, value: Any, limit: int = 6) -> List[str]:
+        terms: List[str] = []
+        for item in cls._score_breakdown_list(value):
+            for part in re.split(r"[,;]", str(item)):
+                clean = part.strip()
+                if clean:
+                    terms.append(clean)
+        return list(dict.fromkeys(terms))[: max(0, int(limit or 0))]
+
     @staticmethod
     def _compliance_guardrail(target: ViralTarget) -> str:
         risk_flags = ""
         if target.score_breakdown:
             risk_flags = str(target.score_breakdown.get("reply_risk_flags", ""))
+        clinic_name = "리커버의원" if GYULIM_KEYWORD_PROFILE.profile_key == "recover_gangnam" else "규림한의원"
         return f"""
 [필수 운영 원칙]
-- 댓글은 도움이 되는 정보성 답변이어야 하며 광고, 후기 가장, 잠입, 사칭처럼 보이면 안 됩니다.
-- 본인 또는 지인의 치료 경험, 방문 경험, 효과 경험을 지어내지 마세요.
+- 댓글은 도움이 되는 정보성·경험 공유 답변이어야 하며, 광고처럼 보이거나 업체 소속을 숨긴 잠입·사칭(이름을 가린 제3자 추천)처럼 보이면 안 됩니다.
+- '저도 {clinic_name} 다녀왔는데...' 같은 1인칭 방문·경험담 톤은 사용해도 되지만(정식 명칭 노출), 구체적 수치(몇 kg·며칠)·전후 결과·단정적 효과는 지어내지 마세요.
 - 병원/의원/한의원 이름을 숨기기 위해 초성, 은어, 모호한 표현을 쓰지 마세요.
-- 규림한의원을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
+- {clinic_name}을 언급할 때는 정식 명칭을 사용하고, 소속을 숨긴 제3자 추천처럼 쓰지 마세요.
 - 의료 효능 보장, 완치, 전후 비교, 최상급/비교 우위, 가격 유인, 이벤트성 문구를 쓰지 마세요.
 - 진단·처방처럼 단정하지 말고, 증상이 있으면 자격 있는 전문가 상담을 권하세요.
 - 댓글은 1~2문장으로 짧게 쓰고, AI/광고 고지 문구는 생성 후 자동 첨부되므로 제거를 유도하지 마세요.
@@ -3025,18 +8544,26 @@ class AICommentGenerator:
     @staticmethod
     def _normalize_transparency_terms(comment: str) -> str:
         """Replace old stealth-style clinic references with explicit naming."""
-        replacements = (
-            (r"성안길\s*ㄱㄹ\s*한의원", "규림한의원"),
-            (r"시내\s*ㄱㄹ\s*한의원", "규림한의원"),
-            (r"ㄱㄹ\s*한의원", "규림한의원"),
-            (r"성안길\s*ㄱㄹ", "규림한의원"),
-            (r"시내\s*ㄱㄹ", "규림한의원"),
-            (r"ㄱ으로\s*시작하는\s*한의원", "규림한의원"),
-            (r"ㄱ자\s*한의원", "규림한의원"),
-            (r"성안길\s*쪽\s*한의원", "규림한의원"),
-            (r"시내\s*그\s*한의원", "규림한의원"),
-            (r"(?<![가-힣A-Za-z0-9])ㄱㄹ(?![가-힣A-Za-z0-9])", "규림한의원"),
-        )
+        if GYULIM_KEYWORD_PROFILE.profile_key == "recover_gangnam":
+            replacements = (
+                (r"강남\s*ㄹㅋㅂ\s*(?:의원|클리닉)?", "리커버의원"),
+                (r"ㄹㅋㅂ\s*(?:의원|클리닉)?", "리커버의원"),
+                (r"리커버\s*클리닉", "리커버의원"),
+                (r"리커버\s*강남", "리커버의원"),
+            )
+        else:
+            replacements = (
+                (r"성안길\s*ㄱㄹ\s*한의원", "규림한의원"),
+                (r"시내\s*ㄱㄹ\s*한의원", "규림한의원"),
+                (r"ㄱㄹ\s*한의원", "규림한의원"),
+                (r"성안길\s*ㄱㄹ", "규림한의원"),
+                (r"시내\s*ㄱㄹ", "규림한의원"),
+                (r"ㄱ으로\s*시작하는\s*한의원", "규림한의원"),
+                (r"ㄱ자\s*한의원", "규림한의원"),
+                (r"성안길\s*쪽\s*한의원", "규림한의원"),
+                (r"시내\s*그\s*한의원", "규림한의원"),
+                (r"(?<![가-힣A-Za-z0-9])ㄱㄹ(?![가-힣A-Za-z0-9])", "규림한의원"),
+            )
         normalized = comment
         for pattern, replacement in replacements:
             normalized = re.sub(pattern, replacement, normalized)
@@ -3067,8 +8594,60 @@ class AICommentGenerator:
             flags=re.IGNORECASE,
         )
         normalized = normalized.replace("도움이 될 수어요", "도움이 될 수 있습니다")
-        normalized = re.sub(r"(규림한의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
+        normalized = re.sub(r"(규림한의원|리커버의원)(?:\s*(?:도|이랑|와|과)?\s*)\1", r"\1", normalized)
         return normalized
+
+    @staticmethod
+    def _is_failed_comment_text(text: str) -> bool:
+        """AI 생성 실패/차단 sentinel(또는 빈 결과)인지 판별. 댓글로 저장되어선 안 되며
+        (오류문 노출 + 'generated' 상태전환으로 타겟 유실), generate()에서 ''로 치환된다."""
+        if not text or not text.strip():
+            return True
+        low = text.strip().lower()
+        return any(s in low for s in VIRAL_COMMENT_FAILED_SENTINELS)
+
+    @staticmethod
+    def _phrasing_variation_directive(target: "ViralTarget") -> str:
+        """타겟마다 결정적으로 회전하는 표현-변주 지시.
+
+        댓글 톤/페르소나(1인칭 경험담)는 건드리지 않고 상투구·지역어·구조만 다양화해
+        댓글 간 중복 지문을 줄인다. target id/url 기반 안정 해시로 회전 → 같은 글은 항상
+        같은 변주, 다른 글끼리는 고르게 분산.
+        """
+        seed_src = str(
+            getattr(target, "id", "") or getattr(target, "url", "") or getattr(target, "title", "")
+        )
+        seed = int(hashlib.md5(seed_src.encode("utf-8")).hexdigest(), 16) if seed_src else 0
+        loc = VIRAL_COMMENT_LOCATION_VARIANTS[seed % len(VIRAL_COMMENT_LOCATION_VARIANTS)]
+        angle = VIRAL_COMMENT_PHRASING_ANGLES[(seed // 7) % len(VIRAL_COMMENT_PHRASING_ANGLES)]
+        frame = VIRAL_COMMENT_PERSONA_FRAMES[(seed // 13) % len(VIRAL_COMMENT_PERSONA_FRAMES)]
+        banned = ", ".join(f'"{p}"' for p in VIRAL_COMMENT_OVERUSED_PHRASES)
+        return (
+            "\n[표현 변주 — 댓글 간 중복/스팸지문 방지]\n"
+            f"- 다음 상투구는 그대로 반복하지 말고 매번 다른 말로 표현하세요: {banned}.\n"
+            f"- 규림한의원 위치를 언급한다면 이번엔 '{loc}' 식으로 표현하세요(매번 같은 지역어 반복 금지).\n"
+            f"- {angle}\n"
+            f"- 1인칭 경험담 시작 방식 변주: {frame} (단, 정식 명칭 '규림한의원'은 유지)\n"
+        )
+
+    @staticmethod
+    def _comment_input_text(target: "ViralTarget", max_chars: int = 500) -> str:
+        """댓글 프롬프트에 넣을 사용자 질문 본문.
+
+        KIN `[기존답변N]` 이후의 경쟁사/타인 답변을 잘라낸다 — 댓글은 '사용자 질문'에
+        응답해야 하는데, raw content_preview[:300]는 (1) 짧은 질문일 때 창이 경쟁사 답변으로
+        채워져 댓글이 답변에 휩쓸리거나 경쟁사 정보를 끌어오고, (2) 긴 질문(>300자)은 잘려
+        맥락이 누락됐다. 게이트의 질문-세그먼트 분리(2026-06-12)와 동일 철학을 댓글 생성에도
+        적용해, 질문 세그먼트를 더 넉넉히(max_chars) 전달한다. `[기존답변]`이 없으면 전체
+        preview를 사용하고, 세그먼트가 비정상적으로 짧으면 원본으로 폴백(fail-soft)."""
+        preview = (getattr(target, "content_preview", "") or "")
+        if (getattr(target, "platform", "") or "").lower() in {"kin", "naver_kin"}:
+            question = CommentableFilter._kin_question_segment_body(target).strip()
+        else:
+            question = preview.split("[기존답변", 1)[0].strip()
+        if len(question) < 10:
+            question = preview.strip()
+        return question[:max_chars]
 
     def generate(self, target: ViralTarget, style: str = "default") -> str:
         """
@@ -3104,7 +8683,7 @@ class AICommentGenerator:
 [댓글 작성 가이드]
 1. 작성자 고민에 먼저 공감하고, 확인하면 좋은 기준을 한 가지만 알려주세요.
 2. 규림한의원을 언급할 때는 정식 명칭을 쓰고 소속을 숨긴 추천처럼 쓰지 마세요.
-3. 본인·가족·지인의 경험담이나 치료 효과를 꾸며내지 마세요.
+3. '저도 규림한의원 다녀왔는데...' 같은 1인칭 방문 경험담 톤은 괜찮지만, 구체 수치·전후 결과·단정 효과는 꾸며내지 마세요.
 4. 효과를 단정하지 말고 가능성 표현으로 1~2문장만 작성하세요.
 
 댓글:"""
@@ -3113,7 +8692,8 @@ class AICommentGenerator:
             prompt = prompt_template.format(
                 platform=target.platform,
                 title=target.title,
-                content_preview=target.content_preview[:300],
+                # 사용자 질문 세그먼트만 전달([기존답변] 경쟁사 답변 제거, 질문은 더 넉넉히).
+                content_preview=self._comment_input_text(target),
                 keywords=', '.join(target.matched_keywords)
             )
 
@@ -3133,14 +8713,17 @@ class AICommentGenerator:
                 )
             except Exception as e:
                 pathfinder_context = f"[Pathfinder Insight Handoff unavailable: {e}]"
+            variation = self._phrasing_variation_directive(target)
             prompt = (
                 f"{guardrail}\n{prompt}\n"
+                f"{variation}"
                 f"\n[Pathfinder Insight Handoff]\n{pathfinder_context}\n"
                 "[최종 확인] 위 필수 운영 원칙을 우선 적용하고, 허위 경험담/사칭/은폐성 광고는 절대 작성하지 마세요."
             )
             comment = ai_generate_korean(
                 prompt,
-                temperature=0.6,
+                # 표현 다양성을 위해 약간 높임(0.6→0.72). 컴플라이언스 스크린/재시도가 계속 가드.
+                temperature=0.72,
                 max_tokens=800,
                 task="viral_comment",
                 call_site="viral_hunter.generate",
@@ -3152,11 +8735,18 @@ class AICommentGenerator:
             comment = comment.replace("```", "").strip()
             comment = self._normalize_transparency_terms(comment)
 
+            # AI 에러/컴플라이언스 차단 sentinel을 댓글로 저장하지 않는다 — 빈 문자열을
+            # 반환하면 호출부(if comment 가드)가 저장·'generated' 전환을 건너뛰고 타겟을
+            # pending으로 보존(재시도 가능). web UI 단건은 500 "댓글 생성 실패"로 응답.
+            if self._is_failed_comment_text(comment):
+                logger.warning("댓글 생성 실패/차단 sentinel 감지 — 빈 결과 반환(타겟 pending 보존)")
+                return ""
+
             return comment
 
         except Exception as e:
             logger.error(f"댓글 생성 실패: {e}")
-            return "[생성 실패] 수동 작성 필요"
+            return ""
 
     def batch_generate(self, targets: List[ViralTarget], limit: int = 10) -> List[ViralTarget]:
         """
@@ -3295,6 +8885,13 @@ POST_ID: {i}
                 name_match = re.search(r'COMPETITOR_NAME:\s*(.+?)(?:\n|$)', post_result)
                 comp_name = name_match.group(1).strip() if name_match else "N/A"
 
+                # 식별 가능한 경쟁사명이 없거나(N/A·빈값) 자기 업체(규림/리커버)면
+                # 역공략이 성립하지 않으므로 프리미엄 레인 승격·우선순위 가산을 생략한다
+                # (글은 본래 진료축 카테고리를 유지).
+                if (not self._competitor_name_is_identifiable(comp_name)
+                        or self._classify_competitor_name(comp_name) == "self"):
+                    continue
+
                 # 타겟 업데이트
                 target.category = "경쟁사_역공략"
 
@@ -3428,21 +9025,21 @@ POST_ID: {i}
             # 게시글 포맷팅
             posts_formatted = ""
             for i, target in enumerate(batch, 1):
-                posts_formatted += f"""
----
-POST_ID: {i}
-플랫폼: {target.platform}
-제목: {target.title}
-내용: {target.content_preview[:150] if target.content_preview else '(없음)'}
----
-"""
+                posts_formatted += self._format_unified_target(i, target)
 
             try:
-                prompt = template.format(posts_formatted=posts_formatted)
+                prompt = self._build_unified_prompt(template, posts_formatted)
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
 
                 # 결과 파싱
                 batch_suitable, batch_unsuitable, batch_competitor = self._parse_unified_results(batch, result_text)
+                final_suitable = []
+                for target in batch_suitable:
+                    if CommentableFilter.apply_final_reject(target):
+                        batch_unsuitable += 1
+                        continue
+                    final_suitable.append(target)
+                batch_suitable = final_suitable
                 suitable_targets.extend(batch_suitable)
                 unsuitable_count += batch_unsuitable
                 competitor_count += batch_competitor
@@ -3507,16 +9104,68 @@ POST_ID: {i}
         def run_batch(batch_idx: int, batch: List[ViralTarget]):
             posts_formatted = ""
             for i, t in enumerate(batch, 1):
-                posts_formatted += (
-                    f"\n---\nPOST_ID: {i}\n플랫폼: {t.platform}\n"
-                    f"제목: {t.title}\n"
-                    f"내용: {t.content_preview[:150] if t.content_preview else '(없음)'}\n---\n"
-                )
+                posts_formatted += self._format_unified_target(i, t)
             try:
-                prompt = template.format(posts_formatted=posts_formatted)
+                prompt = self._build_unified_prompt(template, posts_formatted)
                 result_text = ai_generate(prompt, temperature=0.3, task="structured")
                 suitable, unsuit, comp = self._parse_unified_results(batch, result_text)
-                return batch_idx, suitable, unsuit, comp, None
+
+                # A multi-post response can be cut short while still containing
+                # valid decisions for its first few posts.  Preserve those
+                # decisions, then make one bounded single-post retry only for
+                # the omitted rows.  This is fail-closed: a second incomplete
+                # answer remains ``needs_ai_retry`` downstream rather than
+                # being treated as an AI rejection or execution candidate.
+                unparsed_targets = [
+                    target
+                    for target in batch
+                    if str((target.score_breakdown or {}).get("ai_verdict") or "").strip().lower()
+                    == "unparsed"
+                ]
+                if unparsed_targets and len(batch) > 1:
+                    retry_suitable: List[ViralTarget] = []
+                    retry_unsuitable = 0
+                    retry_competitors = 0
+                    for target in unparsed_targets:
+                        try:
+                            retry_prompt = self._build_unified_prompt(
+                                template,
+                                self._format_unified_target(1, target),
+                            )
+                            retry_text = ai_generate(retry_prompt, temperature=0.3, task="structured")
+                            retried_suitable, retried_unsuitable, retried_competitors = (
+                                self._parse_unified_results([target], retry_text)
+                            )
+                            target.score_breakdown = {
+                                **(target.score_breakdown or {}),
+                                "ai_parse_retry_attempted": True,
+                                "ai_parse_retry_count": 1,
+                            }
+                            retry_suitable.extend(retried_suitable)
+                            retry_unsuitable += retried_unsuitable
+                            retry_competitors += retried_competitors
+                        except Exception as retry_error:
+                            target.score_breakdown = {
+                                **(target.score_breakdown or {}),
+                                "ai_verdict": "unparsed",
+                                "ai_parse_error": "single_post_retry_failed",
+                                "ai_parse_retry_attempted": True,
+                                "ai_parse_retry_count": 1,
+                                "ai_parse_retry_error": str(retry_error)[:240],
+                            }
+                    suitable.extend(retry_suitable)
+                    # The first parser includes every unparsed row in its
+                    # unsuitable count. Replace only that portion with the
+                    # bounded retry outcomes so run-funnel metrics stay exact.
+                    unsuit = max(0, unsuit - len(unparsed_targets)) + retry_unsuitable
+                    comp += retry_competitors
+                    logger.info(
+                        "   AI incomplete response: retried %s omitted post(s) singly; "
+                        "recovered suitable=%s",
+                        len(unparsed_targets),
+                        len(retry_suitable),
+                    )
+                return batch_idx, suitable, unsuit, comp, None, list(batch)
             except Exception as e:
                 return batch_idx, [], 0, 0, e, list(batch)
 
@@ -3540,9 +9189,10 @@ POST_ID: {i}
                 result = fut.result()
                 if len(result) == 5:
                     batch_idx, suitable, unsuit, comp, err = result
-                    failed_batch = []
+                    batch_targets = []
                 else:
-                    batch_idx, suitable, unsuit, comp, err, failed_batch = result
+                    batch_idx, suitable, unsuit, comp, err, batch_targets = result
+                failed_batch = batch_targets if err else []
                 if err:
                     self.last_failed_ai_batches.add(batch_idx)
                     retry_saved = 0
@@ -3560,12 +9210,64 @@ POST_ID: {i}
                     )
                     continue
 
+                # AI 부적합 판정 영속화 — 침묵 폐기하면 부적합 행이 DB에 남지 않아
+                # 구조/시드 수율 피드백의 분모와 디스커버리 감사가 왜곡되고,
+                # 레스큐된 raw_backlog 행은 매 런 재레스큐되는 루프가 생긴다.
+                ai_unsuitable_saved = 0
+                ai_retry_saved = 0
+                ai_manual_review_saved = 0
+                if db is not None and batch_targets:
+                    parsed_suitable_keys = {(t.url or t.id) for t in suitable}
+                    for t in batch_targets:
+                        if (t.url or t.id) in parsed_suitable_keys:
+                            continue
+                        verdict = str((t.score_breakdown or {}).get("ai_verdict") or "").strip().lower()
+                        if verdict == "unparsed":
+                            # An incomplete model response must be retried, not
+                            # persisted as a permanent AI rejection.
+                            t.ai_reviewed = False
+                            t.is_commentable = True
+                            t.comment_status = "needs_ai_retry"
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    ai_retry_saved += 1
+                            except Exception as e:
+                                logger.warning(f"AI parse-retry status persistence failed: {e}")
+                            continue
+                        if self._should_route_uncertain_ai_rejection_to_manual_review(t):
+                            self._mark_uncertain_ai_rejection_for_manual_review(t)
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    ai_manual_review_saved += 1
+                            except Exception as e:
+                                logger.warning(f"AI uncertain-review persistence failed: {e}")
+                            continue
+                        t.ai_reviewed = True
+                        t.is_commentable = False
+                        t.comment_status = "filtered_out_ai"
+                        t.score_breakdown = {
+                            **(t.score_breakdown or {}),
+                            "ai_verdict": "unsuitable",
+                        }
+                        try:
+                            if db.insert_viral_target(t.to_dict()):
+                                ai_unsuitable_saved += 1
+                        except Exception as e:
+                            logger.warning(f"AI 부적합 상태 저장 실패: {e}")
+
                 final_suitable = []
                 final_rejected = 0
+                final_reject_saved = 0
                 for t in suitable:
-                    reject_reason = CommentableFilter.final_reject_reason(t)
+                    reject_reason = CommentableFilter.apply_final_reject(t)
                     if reject_reason:
                         final_rejected += 1
+                        if db is not None:
+                            try:
+                                if db.insert_viral_target(t.to_dict()):
+                                    final_reject_saved += 1
+                            except Exception as e:
+                                logger.warning(f"최종 게이트 제외 상태 저장 실패: {e}")
                         logger.debug(f"최종 게이트 제외({reject_reason}): {t.title[:60]}")
                         continue
                     final_suitable.append(t)
@@ -3575,6 +9277,7 @@ POST_ID: {i}
                 newly_saved = 0
                 if db is not None:
                     for t in suitable:
+                        ViralHunter._sync_execution_quality(t)
                         try:
                             if db.insert_viral_target(t.to_dict()):
                                 newly_saved += 1
@@ -3588,7 +9291,9 @@ POST_ID: {i}
                     logger.info(
                         f"   ✅ 배치 {batch_idx}/{total_batches} 완료 "
                         f"(적합 {len(suitable)}, 최종제외 {final_rejected}, "
-                        f"부적합 {unsuit}, 경쟁사 {comp}, 저장 {newly_saved}) "
+                        f"최종제외저장 {final_reject_saved}, 부적합 {unsuit}, "
+                        f"부적합저장 {ai_unsuitable_saved}, "
+                        f"경쟁사 {comp}, 저장 {newly_saved}) "
                         f"[누적 {len(done_batches)}/{total_batches}]"
                     )
                     # 체크포인트 저장
@@ -3657,7 +9362,17 @@ POST_ID: {i}
 
             # SUITABLE 추출
             suitable_match = re.search(r'SUITABLE:\s*(true|false)', post_result, re.IGNORECASE)
-            is_suitable = suitable_match.group(1).lower() == 'true' if suitable_match else False
+            if not suitable_match:
+                # POST_ID alone is not a model decision. Keep the row retriable
+                # while retaining the existing fail-closed return behaviour.
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unparsed",
+                    "ai_parse_error": "missing_suitable_verdict",
+                }
+                unsuitable_count += 1
+                continue
+            is_suitable = suitable_match.group(1).lower() == 'true'
 
             # SCORE 추출
             score_match = re.search(r'SCORE:\s*(\d+)', post_result)
@@ -3675,11 +9390,40 @@ POST_ID: {i}
             name_match = re.search(r'COMPETITOR_NAME:\s*(.+?)(?:\n|$)', post_result)
             comp_name = name_match.group(1).strip() if name_match else "N/A"
 
+            # 식별 가능한 경쟁사명이 없으면(N/A·빈값) 역공략이 성립하지 않는다 —
+            # 카운터할 대상이 없는데 프리미엄 레인 승격·우선순위 가산이 붙던 결함 방지.
+            # 글 자체는 SUITABLE이면 본래 진료축에서 정상 노출된다(공급 손실 없음).
+            if has_competitor and not self._competitor_name_is_identifiable(comp_name):
+                has_competitor = False
+            # 자기 업체(규림/리커버) 추천은 역공략 대상이 아니다 — competitor 플래그 해제.
+            # critical(로랑/데이릴 등)은 우선순위 부스트 대상으로 분류.
+            comp_class = self._classify_competitor_name(comp_name) if has_competitor else "unknown"
+            if comp_class == "self":
+                has_competitor = False
+
             # COUNTER_SCORE 추출
             counter_match = re.search(r'COUNTER_SCORE:\s*(\d+)', post_result)
             counter_score = int(counter_match.group(1)) if counter_match else 0
 
+            # Preserve the model's rationale. Without it, an AI false result is
+            # indistinguishable from an incomplete response during later audits.
+            reason_match = re.search(r'REASON:\s*(.+?)(?:\n|$)', post_result)
+            ai_reason = reason_match.group(1).strip() if reason_match else ""
+
             if is_suitable:
+                # ``needs_ai_retry`` represents an incomplete model response,
+                # not a content verdict.  Once a complete suitable result is
+                # obtained, return the target to the normal final-gate path.
+                # It can still be rejected or held by those gates below.
+                if str(target.comment_status or "").strip().lower() == "needs_ai_retry":
+                    target.comment_status = "pending"
+                    resolved_breakdown = {
+                        **(target.score_breakdown or {}),
+                        "ai_retry_resolved": True,
+                    }
+                    resolved_breakdown.pop("ai_parse_error", None)
+                    resolved_breakdown.pop("ai_parse_retry_error", None)
+                    target.score_breakdown = resolved_breakdown
                 target.ai_reviewed = True
                 target.ai_infiltration_score = infiltration_score
                 target.ai_post_type = post_type
@@ -3691,9 +9435,13 @@ POST_ID: {i}
                 target.priority_score = min((target.priority_score or 0) + bonus, 150)
                 target.score_breakdown = {
                     **(target.score_breakdown or {}),
+                    "ai_verdict": "suitable",
+                    "ai_infiltration_reason": ai_reason,
                     "ai_infiltration_bonus": float(bonus),
                     "ai_infiltration_score": float(infiltration_score),
                 }
+                if _ai_target_needs_manual_review(target):
+                    target.comment_status = "manual_review"
 
                 # 타입별 태그 추가
                 type_tags = {
@@ -3719,18 +9467,37 @@ POST_ID: {i}
                         **(target.score_breakdown or {}),
                         "ai_counter_bonus": float(counter_bonus),
                         "ai_counter_score": float(counter_score),
+                        "competitor_class": comp_class,
                     }
 
+                    # 큐레이트된 critical 경쟁사(사용자 #1 위협: 로랑/데이릴 안면비대칭 등)
+                    # 가로채기는 직원 큐 최상단으로 끌어올린다.
+                    if comp_class == "critical":
+                        crit_boost = 10
+                        target.priority_score = min((target.priority_score or 0) + crit_boost, 150)
+                        target.score_breakdown["competitor_critical_boost"] = float(crit_boost)
+
                     if comp_name and comp_name != "N/A" and "⚔️" not in target.content_preview:
-                        target.content_preview = f"[⚔️{comp_name}] {target.content_preview}"
+                        flag = "⚔️🎯" if comp_class == "critical" else "⚔️"
+                        target.content_preview = f"[{flag}{comp_name}] {target.content_preview}"
 
                 suitable.append(target)
             else:
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unsuitable",
+                    "ai_rejection_reason": ai_reason,
+                }
                 unsuitable_count += 1
 
         # 파싱되지 않은 타겟은 pending에 넣지 않는다.
         for i, target in enumerate(targets):
             if i not in processed_ids:
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "ai_verdict": "unparsed",
+                    "ai_parse_error": "missing_or_invalid_post_result",
+                }
                 unsuitable_count += 1
 
         return suitable, unsuitable_count, competitor_count
@@ -3845,6 +9612,123 @@ class ViralHunter:
     - 댓글 생성 (generate_comments)
     - DB 저장/조회
     """
+    USER_SURFACE_HEAVY_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "다이어트",
+        "안면비대칭",
+        "체형교정",
+        "리프팅/탄력",
+    }
+    AXIS_COMPANION_EXPANDED_CATEGORIES = {
+        "흉터/여드름흉터",
+        "피부/여드름",
+        "다이어트",
+        "안면비대칭",
+        "체형교정",
+        "리프팅/탄력",
+        "교통사고",
+    }
+
+    # 의미기반 발견 2단계(구어 쿼리 확장): 환자가 임상어 없이 쓰는 구어/패러프레이즈로
+    # Naver 가 구어 환자글을 애초에 반환하도록 쿼리를 넓힌다('얼굴 짝짝이'=안면비대칭).
+    # 시드당 +1 슬롯으로 순환 추가되고 변형 yield 게이트가 자기조절(무수율 시 폐기)하므로
+    # 노이즈는 자동 가지치기된다. opt-in(MARKETING_BOT_SEMANTIC_DISCOVERY) — 사용자가
+    # 진료축 구어 어휘를 직접 확장/검수할 수 있도록 여기 단일 지점에 둔다.
+    COLLOQUIAL_AXIS_TERMS: Dict[str, Tuple[str, ...]] = {
+        "안면비대칭": ("얼굴 짝짝이", "얼굴 비뚤어짐", "턱 틀어짐", "얼굴 좌우 비대칭"),
+        "흉터/여드름흉터": ("여드름 자국", "얼굴 팬자국", "피부 구덩이", "여드름 흉터 자국"),
+        "피부/여드름": ("얼굴 트러블", "성인 여드름 고민", "피부 뒤집어짐"),
+        "다이어트": ("살이 안빠져요", "뱃살 빼는 법", "체중 안줄어"),
+        "체형교정": ("자세 틀어짐", "골반 틀어짐", "어깨 비대칭"),
+        "리프팅/탄력": ("얼굴 처짐", "피부 탄력 저하", "팔자주름 고민"),
+    }
+    PATIENT_VOICE_QUESTION_TERMS = (
+        "해보신분",
+        "가보신분",
+        "받아보신분",
+        "먹어보신분",
+        "다녀보신분",
+        "아시는분",
+        "계신가요",
+        "괜찮나요",
+        "어떤가요",
+        "어때요",
+        "추천부탁",
+        "후기궁금",
+        "있을까요",
+    )
+    PATIENT_VOICE_VARIANTS = {"patient_voice_kin", "patient_voice_question_kin"}
+    HANDOFF_VARIANT_QUALITY_ACTION_FACTORS: Dict[str, float] = {
+        "retire_or_pause": 0.0,
+        "retire_family_or_pause": 0.45,
+        "repair_query_shape": 0.55,
+        "repair_family_query_shape": 0.70,
+        "scale_or_keep": 1.18,
+        "scale_family_or_keep": 1.10,
+    }
+    HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY: Dict[str, int] = {
+        "scale_or_keep": 1,
+        "scale_family_or_keep": 1,
+        "repair_query_shape": 2,
+        "repair_family_query_shape": 2,
+        "retire_or_pause": 3,
+        "retire_family_or_pause": 3,
+    }
+    REDISCOVERED_RETRY_STATUSES = {
+        "filtered_out",
+        "filtered_out_ai",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_unqualified_lead",
+        "filtered_out_journey_mismatch",
+    }
+    REDISCOVERED_RETRY_MAX_CANDIDATES = 12
+    REDISCOVERED_RETRY_MIN_PRIORITY = 115.0
+    REDISCOVERED_RETRY_MIN_SELECTION_SCORE = 120.0
+    REDISCOVERED_RETRY_MIN_AXIS_FIT = 80.0
+    REDISCOVERED_RETRY_MIN_LENS_FIT = 70.0
+    REDISCOVERED_RETRY_MIN_REPLY_SCORE = 75.0
+    NOVELTY_BACKFILL_MIN_RESULTS = 20
+    NOVELTY_BACKFILL_MIN_OVERLAP_RATE = 0.75
+    NOVELTY_BACKFILL_MAX_PLANS = 60
+    NOVELTY_BACKFILL_PER_PLATFORM_LIMIT = 60
+    NOVELTY_BACKFILL_MAX_PAGES_PER_SORT = 3
+    DEFAULT_RESCUE_BACKLOG = 60
+    MAX_AUTO_RESCUE_BACKLOG = 300
+    EXECUTION_QUALITY_KEYS = (
+        "execution_data_quality_score",
+        "execution_data_quality_tier",
+        "execution_data_quality_missing",
+        "execution_auto_ready",
+        "execution_contextual_fit_ready",
+        "execution_contextual_fit_hold_reasons",
+    )
+    # A row is only auto-ready when its final evidence is complete *and* the
+    # contextual fit already cleared the stronger operational floor.  Discovery
+    # filtering intentionally uses lower floors to retain reviewable leads;
+    # those lower floors must not promote a weak-fit row into an execution CSV.
+    AUTO_READY_CONTEXTUAL_FIT_FLOORS = {
+        "clinic_treatment_fit_score": 55.0,
+        "journey_fit_score": 55.0,
+    }
+    # A discovery candidate can still be useful without complete evidence, but
+    # it must not outrank a verified, execution-safe target.
+    EXECUTION_PRIORITY_CAPS = {
+        "verified": 150.0,
+        "partial": 128.0,
+        "insufficient": 100.0,
+        "context_review": 112.0,
+        "manual_review": 112.0,
+        "blocked_status": 75.0,
+    }
+    EXECUTION_ACTIONABLE_STATUSES = {
+        "pending",
+        "generated",
+        "approved",
+        "ai_approved",
+    }
 
     def __init__(self):
         self.db = DatabaseManager()
@@ -3855,7 +9739,155 @@ class ViralHunter:
         self.seed_builder = ViralSeedBuilder()
         self.keyword_context: Dict[str, dict] = {}
 
-    def _load_keywords(self, use_latest_legion: bool = True) -> List[str]:
+    @classmethod
+    def _execution_contextual_fit_hold_reasons(cls, target: ViralTarget) -> List[str]:
+        """Return explicit final-queue holds for weak but filter-surviving fit.
+
+        Historical rows without the newer contextual scores remain compatible.
+        Newly filtered targets carry both scores, so a complete body/date/AI
+        record cannot become auto-ready when its treatment or journey fit is
+        only high enough for review rather than execution.
+        """
+        breakdown = target.score_breakdown or {}
+        reasons: List[str] = []
+        for metric, floor in cls.AUTO_READY_CONTEXTUAL_FIT_FLOORS.items():
+            if metric not in breakdown:
+                continue
+            try:
+                value = float(breakdown.get(metric))
+            except (TypeError, ValueError):
+                reasons.append(f"{metric}_missing")
+                continue
+            if value < floor:
+                reasons.append(f"{metric}_below_auto_ready_floor")
+        return reasons
+
+    @classmethod
+    def _sync_execution_quality(cls, target: ViralTarget) -> Dict[str, Any]:
+        """Recompute execution evidence after every merge, rescue, or AI pass.
+
+        AI enrichment and database-resume paths may construct a new target object
+        after the initial filter ran.  The final queue therefore cannot trust a
+        previously stored quality field.  This method is the single contract used
+        by persistence, exports, and alerts.
+        """
+        breakdown = dict(target.score_breakdown or {})
+        quality = CommentableFilter._execution_data_quality(target)
+        manual_review = cls._is_manual_review_target(target)
+        risk_flags = str(breakdown.get("reply_risk_flags") or "").strip()
+        status = str(getattr(target, "comment_status", "") or "pending").strip().lower() or "pending"
+        status_actionable = status in cls.EXECUTION_ACTIONABLE_STATUSES
+        contextual_fit_hold_reasons = cls._execution_contextual_fit_hold_reasons(target)
+        contextual_fit_ready = not contextual_fit_hold_reasons
+        auto_ready = bool(
+            quality["auto_ready"]
+            and status_actionable
+            and not manual_review
+            and not risk_flags
+            and contextual_fit_ready
+        )
+        tier = "verified" if auto_ready else str(quality["tier"] or "insufficient")
+        if manual_review:
+            tier = "manual_review"
+        elif not status_actionable:
+            tier = "blocked_status"
+        elif contextual_fit_hold_reasons:
+            tier = "context_review"
+
+        quality_score = float(quality["score"] or 0.0)
+        current_priority = max(0.0, float(getattr(target, "priority_score", 0.0) or 0.0))
+        # This final gate is intentionally invoked again after DB reconciliation.
+        # Reusing the already-capped score as the next base would compound the
+        # evidence multiplier every time a queue is reloaded.  Reuse the stored
+        # pre-quality score only when the target still carries the exact prior
+        # final value; a genuine upstream re-score remains a new base value.
+        priority_before = current_priority
+        try:
+            prior_before = float(breakdown.get("execution_priority_before_quality_cap"))
+            prior_after = float(breakdown.get("execution_priority_after_quality_cap"))
+            if (
+                math.isfinite(prior_before)
+                and math.isfinite(prior_after)
+                and prior_before >= 0.0
+                and abs(current_priority - prior_after) <= 0.01
+            ):
+                priority_before = prior_before
+        except (TypeError, ValueError):
+            pass
+        cap = float(cls.EXECUTION_PRIORITY_CAPS.get(tier, cls.EXECUTION_PRIORITY_CAPS["insufficient"]))
+        # Preserve score ordering while allowing evidence quality to be a hard,
+        # visible limiter.  At zero evidence, even a high AI score cannot exceed
+        # the enrichment queue band.
+        evidence_multiplier = 0.50 + (0.50 * min(100.0, quality_score) / 100.0)
+        priority_after = min(cap, priority_before * evidence_multiplier)
+        if auto_ready:
+            priority_after = min(cap, priority_before)
+        if manual_review:
+            priority_after = min(cap, priority_after)
+
+        missing = list(quality.get("missing") or [])
+        breakdown.update({
+            "execution_data_quality_score": round(quality_score, 1),
+            "execution_data_quality_tier": tier,
+            "execution_data_quality_missing": ",".join(missing),
+            "execution_auto_ready": auto_ready,
+            "execution_contextual_fit_ready": contextual_fit_ready,
+            "execution_contextual_fit_hold_reasons": ",".join(contextual_fit_hold_reasons),
+            "execution_quality_checked": True,
+            "execution_quality_contract": "final_queue_v2",
+            "execution_queue_status": status,
+            "execution_queue_status_actionable": status_actionable,
+            "execution_priority_before_quality_cap": round(priority_before, 2),
+            "execution_priority_after_quality_cap": round(priority_after, 2),
+            "execution_priority_cap": cap,
+        })
+        target.score_breakdown = breakdown
+        target.priority_score = round(max(0.0, priority_after), 2)
+        return {
+            "tier": tier,
+            "score": quality_score,
+            "auto_ready": auto_ready,
+            "manual_review": manual_review,
+            "missing": missing,
+            "priority_before": priority_before,
+            "priority_after": target.priority_score,
+        }
+
+    @classmethod
+    def _finalize_execution_queue(cls, targets: List[ViralTarget]) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """Apply the final evidence contract before alerts, storage, and exports."""
+        stats = {
+            "total": 0,
+            "auto_ready": 0,
+            "manual_review": 0,
+            "needs_enrichment": 0,
+            "quality_recomputed": 0,
+            "quality_missing": 0,
+        }
+        final_targets: List[ViralTarget] = []
+        for target in targets or []:
+            before = target.score_breakdown or {}
+            had_contract = all(key in before for key in cls.EXECUTION_QUALITY_KEYS)
+            quality = cls._sync_execution_quality(target)
+            stats["total"] += 1
+            stats["quality_recomputed"] += 1
+            stats["quality_missing"] += int(bool(quality["missing"]))
+            bucket = cls._execution_export_bucket(target)
+            stats[bucket] = stats.get(bucket, 0) + 1
+            if not had_contract:
+                logger.warning(
+                    "Final execution-quality contract repaired for target %s",
+                    (target.url or target.id or "unknown")[:120],
+                )
+            final_targets.append(target)
+        final_targets.sort(key=lambda item: item.priority_score or 0.0, reverse=True)
+        return final_targets, stats
+
+    def _load_keywords(
+        self,
+        use_latest_legion: bool = True,
+        source_scan_run_id: Optional[int] = None,
+    ) -> List[str]:
         """
         Pathfinder 전용 모드 - 검증된 키워드만 사용
 
@@ -3865,7 +9897,7 @@ class ViralHunter:
         - 자동 업데이트 지원
         """
         if use_latest_legion:
-            seeds = self.seed_builder.build()
+            seeds = self.seed_builder.build(scan_run_id=source_scan_run_id)
             if seeds:
                 self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
                 scan_id = seeds[0].scan_run_id
@@ -3878,6 +9910,11 @@ class ViralHunter:
                     logger.info(f"   • {category}: {count}개")
                 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 return [seed.keyword for seed in seeds]
+            if source_scan_run_id:
+                raise ValueError(
+                    f"Pathfinder scan #{source_scan_run_id} produced no eligible Viral seeds; "
+                    "refusing legacy keyword fallback for an explicitly pinned source scan"
+                )
             logger.warning("⚠️ 최신 Legion 기반 seed를 찾지 못해 legacy keyword loader로 폴백합니다")
 
         keywords = set()
@@ -4044,31 +10081,2865 @@ class ViralHunter:
         seeds = self.seed_builder.build()
         self.keyword_context = {seed.keyword: seed.to_context() for seed in seeds}
 
+    @staticmethod
+    def _handoff_lane_key(ctx: Dict[str, Any]) -> str:
+        """Group a seed by the treatment axis and execution lens it should cover."""
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+        lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+        return f"{category}::{lens}"
+
+    def _order_keywords_for_handoff_coverage(
+        self,
+        keywords: List[str],
+        *,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
+    ) -> List[str]:
+        """Round-robin keywords by Pathfinder handoff lane before applying run limits."""
+        if len(keywords) <= 1:
+            return list(keywords or [])
+
+        boosted_category_order = {
+            category: idx
+            for idx, category in enumerate(_normalized_ai_priority_categories(boost_categories))
+        }
+        boosted_lens_order = {
+            lens: idx
+            for idx, lens in enumerate(_normalized_ai_preferred_lenses(boost_lenses))
+        }
+        boosted_category_lens_order = {
+            lane: idx
+            for idx, lane in enumerate(_normalized_handoff_category_lenses(boost_category_lenses))
+        }
+        lanes: Dict[str, List[str]] = {}
+        lane_meta: Dict[str, Tuple[str, str]] = {}
+        ranked_lanes: List[str] = []
+        missing_context = 0
+        for keyword in keywords:
+            ctx = self.keyword_context.get(keyword) or {}
+            if not ctx:
+                missing_context += 1
+            lane_key = self._handoff_lane_key(ctx)
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+            lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+            if lane_key not in lanes:
+                lanes[lane_key] = []
+                lane_meta[lane_key] = (category, lens)
+                ranked_lanes.append(lane_key)
+            lanes[lane_key].append(keyword)
+
+        if len(ranked_lanes) <= 1 or missing_context == len(keywords):
+            return list(keywords)
+
+        if boosted_category_order or boosted_lens_order or boosted_category_lens_order:
+            lane_order = {lane_key: idx for idx, lane_key in enumerate(ranked_lanes)}
+            floor_priority = {category: idx for idx, category in enumerate(AI_CATEGORY_FLOOR_PRIORITY)}
+
+            def lane_sort_key(lane_key: str) -> Tuple[Any, ...]:
+                category, lens = lane_meta.get(lane_key, ("unknown", "service"))
+                category_lens_boosted = lane_key in boosted_category_lens_order
+                category_boosted = category in boosted_category_order
+                lens_boosted = lens in boosted_lens_order
+                if category_lens_boosted:
+                    boost_rank = 0
+                elif category_boosted:
+                    boost_rank = 1
+                elif lens_boosted:
+                    boost_rank = 2
+                else:
+                    boost_rank = 3
+                profile = GYULIM_KEYWORD_PROFILE.profile_for(category)
+                try:
+                    strategic_weight = float(getattr(profile, "strategic_weight", 1.0) or 1.0) if profile else 1.0
+                except (TypeError, ValueError):
+                    strategic_weight = 1.0
+                return (
+                    boost_rank,
+                    boosted_category_lens_order.get(lane_key, len(boosted_category_lens_order)),
+                    boosted_category_order.get(category, len(boosted_category_order)),
+                    floor_priority.get(category, len(floor_priority)),
+                    boosted_lens_order.get(lens, len(boosted_lens_order)),
+                    -strategic_weight,
+                    lane_order[lane_key],
+                )
+
+            ranked_lanes.sort(key=lane_sort_key)
+
+        ordered: List[str] = []
+        while len(ordered) < len(keywords):
+            progressed = False
+            for lane_key in ranked_lanes:
+                bucket = lanes.get(lane_key) or []
+                if not bucket:
+                    continue
+                ordered.append(bucket.pop(0))
+                progressed = True
+            if not progressed:
+                break
+
+        return ordered
+
+    def _load_handoff_playbook_boosts(self, max_audits: int = 6) -> Dict[str, List[str]]:
+        """Load latest handoff-audit lane boosts for closed-loop discovery ordering."""
+        cached = getattr(self, "_handoff_playbook_boost_cache", None)
+        if cached is not None:
+            return cached
+
+        boosts: Dict[str, List[str]] = {"categories": [], "lenses": [], "category_lenses": [], "sources": []}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def add_unique(key: str, value: str) -> None:
+            text = str(value or "").strip()
+            if text and text not in boosts[key]:
+                boosts[key].append(text)
+
+        def add_lane_boost(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            lane = str(item.get("category_lens") or item.get("lane") or "").strip()
+            category = str(item.get("category") or "").strip()
+            lens = str(item.get("lens") or "").strip().lower()
+            if (not category or not lens) and "::" in lane:
+                lane_category, _, lane_lens = lane.partition("::")
+                category = category or lane_category.strip()
+                lens = lens or lane_lens.strip().lower()
+            elif not category and not lens and ":" in lane:
+                lane_category, _, lane_lens = lane.rpartition(":")
+                category = lane_category.strip()
+                lens = lane_lens.strip().lower()
+            elif lane and "::" not in lane and ":" not in lane and not category:
+                category = lane
+
+            if category and lens:
+                add_unique("category_lenses", f"{category}::{lens}")
+                add_unique("categories", category)
+                add_unique("lenses", lens)
+            else:
+                if category:
+                    add_unique("categories", category)
+                if lens:
+                    add_unique("lenses", lens)
+
+        def add_gap_lane_boosts(container: Any) -> None:
+            if not isinstance(container, dict):
+                return
+            for key, value in container.items():
+                if not isinstance(value, list):
+                    continue
+                if key == "gaps" or key.endswith("_gaps"):
+                    for item in value[:10]:
+                        add_lane_boost(item)
+
+        quality_gap_sections = (
+            "patient_journey_coverage",
+            "work_queue_readiness",
+            "opportunity_diversity",
+            "engagement_hook_quality",
+            "treatment_signature_quality",
+            "treatment_signal_diversity_quality",
+            "seed_candidate_alignment_quality",
+            "local_intent_quality",
+            "patient_surface_quality",
+            "viral_action_route_quality",
+            "reply_workability_quality",
+            "compliance_work_mode_quality",
+            "execution_readiness_quality",
+            "execution_priority_alignment_quality",
+        )
+
+        for payload, source_name in audit_payloads:
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if not isinstance(playbook, dict):
+                playbook = {}
+
+            for item in (playbook.get("boost_categories") or [])[:10]:
+                if isinstance(item, dict):
+                    add_unique("categories", item.get("category") or "")
+                else:
+                    add_unique("categories", str(item or ""))
+            for item in (playbook.get("boost_lenses") or [])[:10]:
+                if isinstance(item, dict):
+                    add_unique("lenses", item.get("lens") or "")
+                else:
+                    add_unique("lenses", str(item or ""))
+            for item in (playbook.get("boost_category_lenses") or [])[:10]:
+                lane = item.get("category_lens") if isinstance(item, dict) else str(item or "")
+                lane = str(lane or "").strip()
+                category, _, lens = lane.partition("::")
+                if category and lens:
+                    add_unique("category_lenses", lane)
+                    add_unique("categories", category)
+                    add_unique("lenses", lens)
+            add_gap_lane_boosts(playbook)
+            for section_name in quality_gap_sections:
+                add_gap_lane_boosts(payload.get(section_name))
+
+            boosts["categories"] = _normalized_ai_priority_categories(boosts.get("categories") or [])
+            boosts["lenses"] = _normalized_ai_preferred_lenses(boosts.get("lenses") or [])
+            boosts["category_lenses"] = _normalized_handoff_category_lenses(boosts.get("category_lenses") or [])
+            if boosts["categories"] or boosts["lenses"] or boosts["category_lenses"]:
+                boosts["sources"] = [source_name]
+                break
+
+        self._handoff_playbook_boost_cache = boosts
+        return boosts
+
+    def _merge_handoff_playbook_boosts(
+        self,
+        *,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
+    ) -> Tuple[List[str], List[str], List[str]]:
+        explicit_categories = _normalized_ai_priority_categories(boost_categories)
+        explicit_lenses = _normalized_ai_preferred_lenses(boost_lenses)
+        explicit_category_lenses = _normalized_handoff_category_lenses(boost_category_lenses)
+        playbook = self._load_handoff_playbook_boosts()
+
+        def merge(explicit: List[str], automatic: Iterable[str]) -> List[str]:
+            merged = list(explicit)
+            for value in automatic or []:
+                if value not in merged:
+                    merged.append(value)
+            return merged
+
+        auto_categories = [value for value in playbook.get("categories", []) if value not in explicit_categories]
+        auto_lenses = [value for value in playbook.get("lenses", []) if value not in explicit_lenses]
+        auto_category_lenses = [
+            value for value in playbook.get("category_lenses", []) if value not in explicit_category_lenses
+        ]
+        self._handoff_playbook_auto_boosts = {
+            "categories": auto_categories,
+            "lenses": auto_lenses,
+            "category_lenses": auto_category_lenses,
+            "sources": list(playbook.get("sources", []) or []),
+        }
+        return (
+            merge(explicit_categories, auto_categories),
+            merge(explicit_lenses, auto_lenses),
+            merge(explicit_category_lenses, auto_category_lenses),
+        )
+
+    def _load_handoff_playbook_rescue_controls(self, max_audits: int = 6) -> Dict[str, Any]:
+        """Load latest handoff-audit rescue budget recommendations."""
+        cached = getattr(self, "_handoff_playbook_rescue_cache", None)
+        if cached is not None:
+            return cached
+
+        controls: Dict[str, Any] = {
+            "rescue_backlog": 0,
+            "sources": [],
+            "reanalysis_required": False,
+            "discarded_execution_required": False,
+        }
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def positive_int(value: Any) -> int:
+            try:
+                return max(0, int(float(value or 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        for payload, source_name in audit_payloads:
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if not isinstance(playbook, dict):
+                continue
+
+            reanalysis_required = bool(playbook.get("reanalysis_rescue_required"))
+            discarded_required = bool(playbook.get("discarded_execution_rescue_required"))
+            budgets: List[int] = []
+            if reanalysis_required:
+                budgets.append(positive_int(playbook.get("reanalysis_rescue_budget")))
+            if discarded_required:
+                budgets.append(positive_int(playbook.get("discarded_execution_rescue_budget")))
+
+            budget = max(budgets or [0])
+            if budget <= 0:
+                continue
+
+            controls = {
+                "rescue_backlog": min(int(self.MAX_AUTO_RESCUE_BACKLOG), budget),
+                "sources": [source_name],
+                "reanalysis_required": reanalysis_required,
+                "discarded_execution_required": discarded_required,
+            }
+            break
+
+        self._handoff_playbook_rescue_cache = controls
+        return controls
+
+    def _effective_rescue_backlog(self, configured: Optional[int]) -> int:
+        """Resolve explicit CLI value vs. automatic handoff-audit rescue budget."""
+        controls = self._load_handoff_playbook_rescue_controls()
+        suggested = int(controls.get("rescue_backlog") or 0)
+
+        if configured is not None:
+            try:
+                explicit = max(0, int(configured))
+            except (TypeError, ValueError):
+                explicit = int(self.DEFAULT_RESCUE_BACKLOG)
+            self._handoff_playbook_auto_rescue = {
+                **controls,
+                "configured": explicit,
+                "effective": explicit,
+                "applied": False,
+            }
+            return explicit
+
+        effective = max(int(self.DEFAULT_RESCUE_BACKLOG), suggested)
+        self._handoff_playbook_auto_rescue = {
+            **controls,
+            "configured": None,
+            "effective": effective,
+            "applied": suggested > int(self.DEFAULT_RESCUE_BACKLOG),
+        }
+        return effective
+
+    @staticmethod
+    def _checkpoint_boost_categories(categories: Optional[Iterable[str]]) -> List[str]:
+        return sorted(
+            {
+                GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+                for category in (categories or [])
+                if str(category or "").strip()
+            }
+        )
+
+    @staticmethod
+    def _checkpoint_boost_lenses(lenses: Optional[Iterable[str]]) -> List[str]:
+        return sorted(
+            {
+                str(lens or "").strip().lower()
+                for lens in (lenses or [])
+                if str(lens or "").strip()
+            }
+        )
+
+    @staticmethod
+    def _checkpoint_boost_category_lenses(category_lenses: Optional[Iterable[str]]) -> List[str]:
+        return sorted(_normalized_handoff_category_lenses(category_lenses))
+
+    def _checkpoint_hash_for_run(
+        self,
+        keywords: List[str],
+        *,
+        max_per_platform: int,
+        source_scan_run_id: Optional[int] = None,
+        boost_categories: Optional[Iterable[str]] = None,
+        boost_lenses: Optional[Iterable[str]] = None,
+        boost_category_lenses: Optional[Iterable[str]] = None,
+    ) -> str:
+        """Hash the exact Pathfinder handoff execution signature for resume safety."""
+        query_plans: List[Dict[str, Any]] = []
+        for idx, keyword in enumerate(keywords):
+            ctx = self._planning_context_for_keyword(keyword)
+            category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or "unknown"))
+            lens = str(ctx.get("execution_lens") or "service").strip().lower() or "service"
+            context_scan_id = int(ctx.get("scan_run_id") or source_scan_run_id or 0)
+            for plan in self._search_queries_for_keyword(keyword, max_per_platform):
+                query_plans.append({
+                    "position": idx,
+                    "keyword": keyword,
+                    "query": str(plan.get("query") or keyword),
+                    "variant": str(plan.get("variant") or "base"),
+                    "category": category,
+                    "execution_lens": lens,
+                    "scan_run_id": context_scan_id,
+                    "include_blog": bool(plan.get("include_blog")),
+                    "platform_limits": dict(plan.get("platform_limits") or {}),
+                })
+
+        signature = {
+            "version": 5,
+            "max_per_platform": int(max_per_platform or 0),
+            "source_scan_run_id": int(source_scan_run_id or 0),
+            "boost_categories": self._checkpoint_boost_categories(boost_categories),
+            "boost_lenses": self._checkpoint_boost_lenses(boost_lenses),
+            "boost_category_lenses": self._checkpoint_boost_category_lenses(boost_category_lenses),
+            "query_plans": query_plans,
+        }
+        raw = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _search_plan_cache_key(
+        search_plan: Dict[str, Any],
+        *,
+        max_per_platform: int,
+    ) -> Tuple[str, bool, Tuple[Tuple[str, int], ...]]:
+        query = re.sub(r"\s+", " ", str(search_plan.get("query") or "").strip())
+        limits = search_plan.get("platform_limits") or {}
+        platform_limits = tuple(
+            (platform, int((limits or {}).get(platform, 0) or 0))
+            for platform in ("cafe", "blog", "kin")
+        )
+        return (
+            query,
+            bool(search_plan.get("include_blog")),
+            platform_limits + (("max_per_platform", int(max_per_platform or 0)),),
+        )
+
+    @staticmethod
+    def _clone_search_targets(targets: List[ViralTarget]) -> List[ViralTarget]:
+        clones: List[ViralTarget] = []
+        for target in targets or []:
+            clone = replace(target)
+            clone.matched_keywords = list(target.matched_keywords or [])
+            clone.score_breakdown = dict(target.score_breakdown or {})
+            clone.sort_appearances = list(target.sort_appearances or [])
+            clones.append(clone)
+        return clones
+
+    @staticmethod
+    def _viral_url_identity_keys(url: str) -> set[str]:
+        raw_url = str(url or "").strip()
+        if not raw_url:
+            return set()
+        canonical = canonicalize_viral_url(raw_url)
+        return {value for value in (raw_url, canonical) if value}
+
+    def _load_existing_viral_url_keys(self) -> set[str]:
+        loader = getattr(getattr(self, "db", None), "get_all_existing_viral_url_keys", None)
+        if not callable(loader):
+            return set()
+        try:
+            return {str(value) for value in (loader() or set()) if str(value or "").strip()}
+        except Exception as exc:
+            logger.warning("Existing Viral URL preload failed; novelty backfill disabled: %s", exc)
+            return set()
+
+    @classmethod
+    def _novelty_overlap_stats(
+        cls,
+        targets: List[ViralTarget],
+        exclude_urls: set[str],
+    ) -> Dict[str, float]:
+        valid = 0
+        overlapping = 0
+        for target in targets or []:
+            identities = cls._viral_url_identity_keys(getattr(target, "url", ""))
+            if not identities:
+                continue
+            valid += 1
+            if identities & exclude_urls:
+                overlapping += 1
+        return {
+            "valid": valid,
+            "overlapping": overlapping,
+            "overlap_rate": (overlapping / valid) if valid else 0.0,
+        }
+
+    @classmethod
+    def _should_novelty_backfill(
+        cls,
+        targets: List[ViralTarget],
+        exclude_urls: set[str],
+    ) -> Tuple[bool, Dict[str, float]]:
+        stats = cls._novelty_overlap_stats(targets, exclude_urls)
+        should_backfill = (
+            int(stats["valid"]) >= cls.NOVELTY_BACKFILL_MIN_RESULTS
+            and float(stats["overlap_rate"]) >= cls.NOVELTY_BACKFILL_MIN_OVERLAP_RATE
+        )
+        return should_backfill, stats
+
+    @staticmethod
+    def _is_manual_review_target(target: ViralTarget) -> bool:
+        breakdown = target.score_breakdown or {}
+        try:
+            manual_review = float(breakdown.get("manual_review") or 0.0) > 0.0
+        except (TypeError, ValueError):
+            manual_review = bool(breakdown.get("manual_review"))
+        return (
+            str(getattr(target, "comment_status", "") or "").strip().lower() == "manual_review"
+            or manual_review
+            or bool(str(breakdown.get("reply_risk_flags") or "").strip())
+        )
+
+    @classmethod
+    def _execution_export_bucket(cls, target: ViralTarget) -> str:
+        if cls._is_manual_review_target(target):
+            return "manual_review"
+        status = str(getattr(target, "comment_status", "") or "pending").strip().lower() or "pending"
+        if status not in cls.EXECUTION_ACTIONABLE_STATUSES:
+            return "needs_enrichment"
+        # Never rely on a stale stored flag: body/date/AI state can change when a
+        # target is resumed, deduplicated, or enriched after filtering.
+        quality = CommentableFilter._execution_data_quality(target)
+        if (
+            bool((target.score_breakdown or {}).get("execution_auto_ready"))
+            and quality["auto_ready"]
+            and not cls._execution_contextual_fit_hold_reasons(target)
+        ):
+            return "auto_ready"
+        return "needs_enrichment"
+
+    @classmethod
+    def _partition_execution_export_targets(
+        cls,
+        targets: List[ViralTarget],
+    ) -> Dict[str, List[ViralTarget]]:
+        buckets = {
+            "auto_ready": [],
+            "manual_review": [],
+            "needs_enrichment": [],
+        }
+        for target in targets or []:
+            buckets[cls._execution_export_bucket(target)].append(target)
+        return buckets
+
+    @staticmethod
+    def _context_float(ctx: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        try:
+            return float(ctx.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _context_list(ctx: Dict[str, Any], key: str, limit: int = 6) -> List[str]:
+        values = ViralSeedBuilder._json_list(ctx.get(key))
+        return list(dict.fromkeys(value for value in values if value))[:limit]
+
+    @staticmethod
+    def _pathfinder_candidate_insight_brief(
+        ctx: Dict[str, Any],
+        source_signals: List[str],
+        quality_flags: List[str],
+    ) -> str:
+        """Compact why-this-seed-matters brief for per-target AI and audits."""
+        category = str(ctx.get("category") or "").strip()
+        lens = str(ctx.get("execution_lens") or "").strip().lower() or "service"
+        parts = []
+        if category:
+            parts.append(f"axis={category}")
+        parts.append(f"lens={lens}")
+        if ViralHunter._context_float(ctx, "community_signal") >= 40.0:
+            parts.append("community_demand")
+        if ViralHunter._context_float(ctx, "conversion_signal") >= 35.0:
+            parts.append("conversion_intent")
+        if ViralHunter._context_float(ctx, "profile_action_signal") >= 45.0:
+            parts.append("profile_action")
+        if source_signals:
+            parts.append("sources=" + ",".join(source_signals[:3]))
+        if quality_flags:
+            parts.append("flags=" + ",".join(quality_flags[:2]))
+        audit_action = str(ctx.get("source_seed_audit_action") or "").strip()
+        if audit_action:
+            parts.append(f"audit={audit_action}")
+        recategorized = str(ctx.get("source_seed_audit_recategorized_category") or "").strip()
+        if recategorized:
+            parts.append(f"recat={recategorized}")
+        return "; ".join(parts[:9])
+
+    @staticmethod
+    def _inferred_execution_lens_for_keyword(keyword: str, ctx: Optional[Dict[str, Any]] = None) -> str:
+        """Infer an execution lens from the keyword when Pathfinder context is partial."""
+        ctx = ctx or {}
+        row = {
+            "keyword": keyword,
+            "category": ctx.get("category") or "",
+            "review_intent_type": ctx.get("review_intent_type") or "none",
+            "recommended_content_type": ctx.get("recommended_content_type") or "",
+            "preferred_search_surface": ctx.get("preferred_search_surface") or "",
+            "community_signal": ctx.get("community_signal") or 0,
+            "conversion_signal": ctx.get("conversion_signal") or 0,
+            "availability_intent_score": ctx.get("availability_intent_score") or 0,
+            "payment_coverage_score": ctx.get("payment_coverage_score") or 0,
+            "access_convenience_score": ctx.get("access_convenience_score") or 0,
+            "source_signals_json": ctx.get("source_signals_json") or "[]",
+        }
+        return ViralSeedBuilder._keyword_execution_lens(row)
+
+    def _planning_context_for_keyword(self, keyword: str) -> Dict[str, Any]:
+        """Return usable query-planning context even for manual or legacy keywords."""
+        ctx = dict(self.keyword_context.get(keyword) or {})
+        category = canonical_category_for_keyword(keyword, str(ctx.get("category") or ""))
+        if category not in {"", "기타"}:
+            ctx["category"] = category
+
+        execution_lens = str(ctx.get("execution_lens") or "").strip().lower()
+        if execution_lens in {"", "service"}:
+            inferred_lens = self._inferred_execution_lens_for_keyword(keyword, ctx)
+            if inferred_lens and (inferred_lens != "service" or not execution_lens):
+                ctx["execution_lens"] = inferred_lens
+
+        if ctx:
+            existing = self.keyword_context.get(keyword)
+            if existing != ctx:
+                self.keyword_context[keyword] = ctx
+        return ctx
+
+    def _search_plan_for_keyword(self, keyword: str, max_per_platform: int) -> Dict[str, Any]:
+        """Tune discovery depth by Pathfinder execution signals without changing the public API."""
+        base_limit = max(1, int(max_per_platform or 100))
+        ctx = self._planning_context_for_keyword(keyword)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+        readiness = self._context_float(ctx, "viral_readiness_score")
+        community = self._context_float(ctx, "community_signal")
+        conversion = self._context_float(ctx, "conversion_signal")
+        profile_action = self._context_float(ctx, "profile_action_signal")
+        medical_risk = self._context_float(ctx, "medical_ad_risk_score")
+        content_actionability = self._context_float(ctx, "content_actionability_score")
+        preferred_surface = str(ctx.get("preferred_search_surface") or "")
+        recommended_type = str(ctx.get("recommended_content_type") or "")
+        review_intent_type = str(ctx.get("review_intent_type") or "none")
+        execution_lens = str(ctx.get("execution_lens") or "")
+
+        multiplier = 1.0
+        if readiness >= 80.0 or community >= 60.0 or conversion >= 50.0 or profile_action >= 60.0:
+            multiplier = 1.8
+        elif readiness >= 60.0 or community >= 40.0 or conversion >= 35.0 or profile_action >= 35.0:
+            multiplier = 1.35
+
+        if medical_risk >= 70.0 or (0.0 < content_actionability < 45.0):
+            multiplier = min(multiplier, 0.7)
+        elif medical_risk >= 50.0:
+            multiplier = min(multiplier, 1.0)
+
+        expanded_limit = max(20, min(320, int(round(base_limit * multiplier))))
+        conservative_limit = max(15, min(base_limit, int(round(base_limit * 0.65))))
+
+        if medical_risk >= 70.0 or (0.0 < content_actionability < 45.0):
+            limits = {
+                "cafe": conservative_limit,
+                "blog": max(10, int(round(conservative_limit * 0.5))),
+                "kin": conservative_limit,
+            }
+            include_blog = recommended_type in {"faq_safety", "service_landing", "access_landing"}
+        elif execution_lens in {"review", "community"} or community >= 40.0 or review_intent_type not in {"", "none"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(
+                    20,
+                    min(
+                        expanded_limit,
+                        int(round(base_limit * (0.65 if execution_lens in {"review", "community"} else 0.9))),
+                    ),
+                ),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif execution_lens in {"cost", "consultation", "availability", "safety"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(20, min(expanded_limit, int(round(base_limit * 0.65)))),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif preferred_surface in {"profile_action", "local_pack", "hybrid_local_content"}:
+            limits = {
+                "cafe": expanded_limit,
+                "blog": max(20, min(expanded_limit, int(round(base_limit * 0.75)))),
+                "kin": expanded_limit,
+            }
+            include_blog = True
+        elif recommended_type in {"faq_safety", "service_landing", "access_landing"}:
+            limits = {
+                "cafe": max(base_limit, int(round(expanded_limit * 0.8))),
+                "blog": expanded_limit,
+                "kin": max(base_limit, int(round(expanded_limit * 0.8))),
+            }
+            include_blog = True
+        else:
+            limits = {"cafe": expanded_limit, "blog": base_limit, "kin": expanded_limit}
+            include_blog = True
+
+        if category in self.USER_SURFACE_HEAVY_CATEGORIES:
+            # These axes are flooded by blog/provider SEO; cafe/Kin user questions are more workable.
+            limits["blog"] = max(10, min(int(limits.get("blog", 0) or 0), int(round(base_limit * 0.35))))
+            if execution_lens in {"review", "community", "consultation"} or review_intent_type not in {"", "none"}:
+                user_surface_limit = max(20, min(240, int(round(base_limit * 1.5))))
+                limits["cafe"] = max(int(limits.get("cafe", 0) or 0), user_surface_limit)
+                limits["kin"] = max(int(limits.get("kin", 0) or 0), user_surface_limit)
+
+        # 플랫폼 수율 게이트(증거 기반): 위의 카테고리/렌즈 튜닝 결과에 직원 수용률
+        # 가중치를 곱한다. 카테고리 룰이 못 보는 플랫폼-단위 ROI 격차(blog 0.4% 등)를
+        # 보정 — 카테고리 무관하게 적용되고, 바닥 limit가 탐사를 유지한다.
+        limits = self._apply_platform_yield_factors(limits)
+        limits = self._apply_platform_surface_feedback(limits, category=category)
+
+        return {
+            "include_blog": include_blog,
+            "platform_limits": limits,
+            "readiness": readiness,
+            "medical_risk": medical_risk,
+            "preferred_surface": preferred_surface,
+            "recommended_content_type": recommended_type,
+            "execution_lens": execution_lens,
+        }
+
+    @staticmethod
+    def _scaled_platform_limits(limits: Dict[str, int], factor: float, *, minimum: int = 10, maximum: int = 140) -> Dict[str, int]:
+        scaled: Dict[str, int] = {}
+        factor = float(factor or 0.0)
+        for platform, value in (limits or {}).items():
+            limit = int(value or 0)
+            scaled[platform] = (
+                0
+                if limit <= 0 or factor <= 0.0
+                else max(minimum, min(maximum, int(round(limit * factor))))
+            )
+        return scaled
+
+    @staticmethod
+    def _compact_query_text(text: str) -> str:
+        return re.sub(r"\s+", "", (text or "").lower())
+
+    def _load_variant_yield_history(self, max_runs: int = 12) -> Dict[str, Dict[str, int]]:
+        """최근 viral_scan_audits 런들의 query-variant 수율을 합산해 캐시.
+
+        전역 variant 수율과 category/lens/variant 수율을 함께 읽는다. 같은
+        `cost_community:추천`이라도 흉터 cost와 체형 cost의 수율은 다를 수
+        있으므로, 다음 런 게이트는 가능한 한 세분화된 증거를 먼저 쓴다.
+        """
+        cached = getattr(self, "_variant_yield_cache", None)
+        if cached is not None:
+            return cached
+        history: Dict[str, Dict[str, int]] = {}
+        rows = []
+        try:
+            import sqlite3 as _sql
+            conn = _sql.connect(self.db.db_path)
+            audit_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(viral_scan_audits)").fetchall()
+            }
+            if "source_scan_run_id" in audit_columns:
+                rows = conn.execute(
+                    """
+                    SELECT audit_json
+                    FROM viral_scan_audits
+                    WHERE id IN (
+                        SELECT MAX(id)
+                        FROM viral_scan_audits
+                        GROUP BY CASE
+                            WHEN COALESCE(source_scan_run_id, 0) > 0 THEN source_scan_run_id
+                            ELSE id
+                        END
+                    )
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (int(max_runs),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT audit_json FROM viral_scan_audits ORDER BY id DESC LIMIT ?",
+                    (int(max_runs),),
+                ).fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+        for (audit_json,) in rows:
+            try:
+                audit = json.loads(audit_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            per_variant = audit.get("per_query_variant") if isinstance(audit, dict) else None
+            if isinstance(per_variant, dict):
+                for variant, entry in per_variant.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    bucket = history.setdefault(
+                        str(variant),
+                        {
+                            "discovered": 0,
+                            "fresh_discovered": 0,
+                            "pending": 0,
+                            "fresh_pending": 0,
+                            "open_pending": 0,
+                            "rediscovered": 0,
+                            "rediscovered_pending": 0,
+                            "ad_filtered": 0,
+                            "runs": 0,
+                        },
+                    )
+                    bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                    bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
+                    bucket["pending"] += int(entry.get("pending", 0) or 0)
+                    bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                    bucket["open_pending"] += int(entry.get("open_pending", 0) or 0)
+                    bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
+                    bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
+                    bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
+                    if int(entry.get("discovered", 0) or 0) > 0:
+                        bucket["runs"] += 1
+            per_lane_variant = audit.get("per_category_lens_query_variant") if isinstance(audit, dict) else None
+            if not isinstance(per_lane_variant, dict):
+                continue
+            for lane_variant, entry in per_lane_variant.items():
+                if not isinstance(entry, dict):
+                    continue
+                bucket = history.setdefault(
+                    f"category_lens_variant:{lane_variant}",
+                    {
+                        "discovered": 0,
+                        "fresh_discovered": 0,
+                        "pending": 0,
+                        "fresh_pending": 0,
+                        "open_pending": 0,
+                        "rediscovered": 0,
+                        "rediscovered_pending": 0,
+                        "ad_filtered": 0,
+                        "runs": 0,
+                    },
+                )
+                bucket["discovered"] += int(entry.get("discovered", 0) or 0)
+                bucket["fresh_discovered"] += int(entry.get("fresh_discovered", 0) or 0)
+                bucket["pending"] += int(entry.get("pending", 0) or 0)
+                bucket["fresh_pending"] += int(entry.get("fresh_pending", 0) or 0)
+                bucket["open_pending"] += int(entry.get("open_pending", 0) or 0)
+                bucket["rediscovered"] += int(entry.get("rediscovered", 0) or 0)
+                bucket["rediscovered_pending"] += int(entry.get("rediscovered_pending", 0) or 0)
+                bucket["ad_filtered"] += int(entry.get("ad_filtered", 0) or 0)
+                if int(entry.get("discovered", 0) or 0) > 0:
+                    bucket["runs"] += 1
+        self._variant_yield_cache = history
+        return history
+
+    @staticmethod
+    def _category_lens_variant_history_key(category: str, lens: str, variant: str) -> str:
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        lens_key = str(lens or "service").strip().lower() or "service"
+        variant_key = str(variant or "").strip()
+        return f"category_lens_variant:{category_key}::{lens_key}::{variant_key}"
+
+    @staticmethod
+    def _category_lens_variant_quality_key(category: str, lens: str, variant: str) -> str:
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        lens_key = str(lens or "service").strip().lower() or "service"
+        variant_key = str(variant or "").strip()
+        return f"quality_category_lens_variant:{category_key}::{lens_key}::{variant_key}"
+
+    @staticmethod
+    def _query_variant_family(query_variant: str) -> str:
+        variant = str(query_variant or "").strip()
+        if variant in {"", "base", "(none)"}:
+            return "base"
+        if variant == "community_base":
+            return "community_base"
+        if variant in ViralHunter.PATIENT_VOICE_VARIANTS:
+            return "patient_voice"
+        if variant.startswith("colloquial:"):
+            return "colloquial"
+        if variant.startswith("axis_") and ":specific_" in variant:
+            return "axis_specific"
+        if variant.startswith("axis_"):
+            return "axis_companion"
+        if "_community:" in variant:
+            return "lens_community"
+        if ":" in variant:
+            return "lens_companion"
+        return "other"
+
+    @staticmethod
+    def _variant_feedback_int(entry: Dict[str, Any], key: str) -> int:
+        try:
+            return int(float(entry.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _variant_feedback_float(entry: Dict[str, Any], key: str) -> float:
+        try:
+            return float(entry.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _variant_quality_scale_supported(cls, entry: Dict[str, Any]) -> bool:
+        total = cls._variant_feedback_int(entry, "total")
+        strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+        actionable_strict = cls._variant_feedback_int(entry, "actionable_strict")
+        strict_fit_rate = cls._variant_feedback_float(entry, "strict_fit_rate")
+        actionable_strict_rate = cls._variant_feedback_float(entry, "actionable_strict_rate")
+
+        if strict_fit <= 0 and actionable_strict <= 0:
+            return False
+        if total < 30:
+            return True
+        if total < 80:
+            return (
+                (actionable_strict >= 2 and actionable_strict_rate >= 0.02)
+                or (strict_fit >= 3 and strict_fit_rate >= 0.05)
+            )
+        return (
+            actionable_strict >= 3
+            and actionable_strict_rate >= 0.015
+            and strict_fit_rate >= 0.02
+        )
+
+    def _load_variant_quality_feedback(self, max_audits: int = 6) -> Dict[str, Dict[str, Any]]:
+        """Load latest handoff-audit query-variant quality actions for planning."""
+        cached = getattr(self, "_variant_quality_feedback_cache", None)
+        if cached is not None:
+            return cached
+
+        feedback: Dict[str, Dict[str, Any]] = {}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(
+            getattr(self, "_variant_feedback_reports_root", "")
+            or getattr(cfg, "root_dir", "")
+            or ""
+        ).strip()
+
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+        audit_limit = max(1, int(max_audits))
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    # A scan can produce multiple audit snapshots (initial,
+                    # backfilled, final).  Only the newest snapshot for that
+                    # lineage should consume one feedback-history slot; otherwise
+                    # repeated files from the latest scan crowd out distinct,
+                    # older scan evidence.
+                    loaded_report_scan_ids: set[str] = set()
+                    for path in report_files:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        source_scan_run_id = str(payload.get("source_scan_run_id") or "").strip()
+                        if source_scan_run_id and source_scan_run_id in loaded_report_scan_ids:
+                            continue
+                        audit_payloads.append((payload, os.path.basename(path)))
+                        if source_scan_run_id:
+                            loaded_report_scan_ids.add(source_scan_run_id)
+                        if len(audit_payloads) >= audit_limit:
+                            break
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (audit_limit,),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        variant_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_variants", "retire_or_pause", 3),
+            ("repair_variants", "repair_query_shape", 2),
+            ("scale_variants", "scale_or_keep", 1),
+        )
+        lane_variant_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_category_lens_variants", "retire_or_pause", 3),
+            ("repair_category_lens_variants", "repair_query_shape", 2),
+            ("scale_category_lens_variants", "scale_or_keep", 1),
+        )
+        family_specs: Tuple[Tuple[str, str, int], ...] = (
+            ("retire_families", "retire_family_or_pause", 3),
+            ("repair_families", "repair_family_query_shape", 2),
+            ("scale_families", "scale_family_or_keep", 1),
+        )
+
+        def maybe_set(key: str, entry: Dict[str, Any], audit_rank: int, severity: int) -> None:
+            existing = feedback.get(key)
+            if existing:
+                existing_rank = int(existing.get("_audit_rank") or 0)
+                existing_severity = int(existing.get("_severity") or 0)
+                if existing_rank < audit_rank:
+                    return
+                if existing_rank == audit_rank and existing_severity >= severity:
+                    return
+            feedback[key] = entry
+
+        for audit_rank, (payload, source_name) in enumerate(audit_payloads):
+            raw_feedback = payload.get("variant_quality_feedback") if isinstance(payload, dict) else None
+            if not isinstance(raw_feedback, dict):
+                continue
+            for list_key, default_action, severity in variant_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    variant = str(item.get("variant") or "").strip()
+                    if not variant:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    entry = {
+                        **item,
+                        "type": "query_variant",
+                        "variant": variant,
+                        "variant_family": str(item.get("variant_family") or self._query_variant_family(variant)),
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(variant, entry, audit_rank, int(entry["_severity"]))
+            for list_key, default_action, severity in lane_variant_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    variant = str(item.get("variant") or "").strip()
+                    category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or ""))
+                    lens = str(item.get("lens") or "").strip().lower()
+                    if not category or not lens:
+                        category_lens = str(item.get("category_lens") or "")
+                        category_part, _, lens_part = category_lens.partition("::")
+                        category = GYULIM_KEYWORD_PROFILE.normalize_category(category_part)
+                        lens = lens_part.strip().lower()
+                    if not variant or not category or not lens:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    key = self._category_lens_variant_quality_key(category, lens, variant)
+                    entry = {
+                        **item,
+                        "type": "category_lens_query_variant",
+                        "category": category,
+                        "lens": lens,
+                        "category_lens": f"{category}::{lens}",
+                        "variant": variant,
+                        "variant_family": str(item.get("variant_family") or self._query_variant_family(variant)),
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(key, entry, audit_rank, int(entry["_severity"]))
+            for list_key, default_action, severity in family_specs:
+                items = raw_feedback.get(list_key) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    family = str(item.get("family") or "").strip()
+                    if not family:
+                        continue
+                    action = str(item.get("action") or default_action).strip() or default_action
+                    key = f"family:{family}"
+                    entry = {
+                        **item,
+                        "type": "variant_family",
+                        "family": family,
+                        "action": action,
+                        "_audit_rank": audit_rank,
+                        "_severity": self.HANDOFF_VARIANT_QUALITY_ACTION_SEVERITY.get(action, severity),
+                        "_source": source_name,
+                    }
+                    maybe_set(key, entry, audit_rank, int(entry["_severity"]))
+
+        self._variant_quality_feedback_cache = feedback
+        return feedback
+
+    @classmethod
+    def _variant_quality_feedback_for(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> Dict[str, Any]:
+        variant = str(variant or "").strip()
+        if not feedback or not variant:
+            return {}
+        if category or lens:
+            lane = feedback.get(cls._category_lens_variant_quality_key(category, lens, variant))
+            if isinstance(lane, dict):
+                return lane
+        if variant == "base":
+            return {}
+        exact = feedback.get(variant)
+        if isinstance(exact, dict):
+            return exact
+        family = feedback.get(f"family:{cls._query_variant_family(variant)}")
+        return family if isinstance(family, dict) else {}
+
+    @classmethod
+    def _variant_quality_gate_should_drop(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> bool:
+        entry = cls._variant_quality_feedback_for(feedback, category=category, lens=lens, variant=variant)
+        if not entry:
+            return False
+        if str(variant or "").strip() in {"", "base", "community_base"}:
+            return False
+        action = str(entry.get("action") or "")
+        entry_type = str(entry.get("type") or "")
+        if entry_type in {"query_variant", "category_lens_query_variant"}:
+            if action != "retire_or_pause":
+                return False
+        elif entry_type == "variant_family":
+            family = cls._query_variant_family(variant)
+            if family in {"base", "community_base", "patient_voice"}:
+                return False
+            if action != "retire_family_or_pause":
+                return False
+        else:
+            return False
+        total = cls._variant_feedback_int(entry, "total")
+        survived = cls._variant_feedback_int(entry, "survived")
+        strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+        minimum_total = 60 if entry_type == "variant_family" else 20
+        return total >= minimum_total and survived == 0 and strict_fit == 0
+
+    @classmethod
+    def _variant_quality_budget_factor(
+        cls,
+        feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str = "",
+        lens: str = "",
+        variant: str,
+    ) -> float:
+        entry = cls._variant_quality_feedback_for(feedback, category=category, lens=lens, variant=variant)
+        if not entry:
+            return 1.0
+        action = str(entry.get("action") or "").strip()
+        factor = cls.HANDOFF_VARIANT_QUALITY_ACTION_FACTORS.get(action, 1.0)
+        variant_name = str(variant or "").strip()
+        if variant_name in {"", "base", "community_base"}:
+            entry_type = str(entry.get("type") or "")
+            if variant_name == "base" and entry_type != "category_lens_query_variant":
+                return 1.0
+            if variant_name == "community_base" and entry_type not in {
+                "category_lens_query_variant",
+                "query_variant",
+                "variant_family",
+            }:
+                return 1.0
+            total = cls._variant_feedback_int(entry, "total")
+            survived = cls._variant_feedback_int(entry, "survived")
+            strict_fit = cls._variant_feedback_int(entry, "strict_fit")
+            zero_survival_lane = total >= 50 and survived == 0 and strict_fit == 0
+            if action in {"retire_or_pause", "retire_family_or_pause"}:
+                if variant_name == "base":
+                    if zero_survival_lane and total >= 80:
+                        return 0.0
+                    return 0.35 if zero_survival_lane else 0.60
+                return 0.25 if zero_survival_lane else 0.60
+            if action in {"repair_query_shape", "repair_family_query_shape"}:
+                if zero_survival_lane and total >= 180:
+                    return 0.25
+                if zero_survival_lane and total >= 120:
+                    return 0.40
+                return 0.50 if zero_survival_lane else 0.70
+            return 1.0
+        if action in {"scale_or_keep", "scale_family_or_keep"} and not cls._variant_quality_scale_supported(entry):
+            return 1.0
+        return max(0.0, min(1.25, float(factor or 1.0)))
+
+    @classmethod
+    def _variant_quality_entry_is_scale_signal(cls, entry: Dict[str, Any]) -> bool:
+        if not entry:
+            return False
+        action = str(entry.get("action") or "").strip().lower()
+        if action not in {"scale_or_keep", "scale_family_or_keep"}:
+            return False
+        return cls._variant_quality_scale_supported(entry)
+
+    @classmethod
+    def _variant_quality_entry_is_repair_signal(cls, entry: Dict[str, Any]) -> bool:
+        if not entry:
+            return False
+        action = str(entry.get("action") or "").strip().lower()
+        return action.startswith("repair") or action.startswith("retire")
+
+    def _variant_quality_has_scale_signal(
+        self,
+        quality_feedback: Dict[str, Dict[str, Any]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> bool:
+        entries = [
+            self._variant_quality_feedback_for(
+                quality_feedback,
+                category=category,
+                lens=lens,
+                variant=variant,
+            ),
+            self._variant_quality_feedback_for(quality_feedback, variant=variant),
+            quality_feedback.get(f"family:{self._query_variant_family(variant)}") or {},
+        ]
+        return any(self._variant_quality_entry_is_scale_signal(entry) for entry in entries)
+
+    def _handoff_repair_companion_query_variants(
+        self,
+        *,
+        keyword: Keyword,
+        category: str,
+        execution_lens: str,
+        core_query: str,
+        quality_feedback: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not quality_feedback:
+            return []
+
+        has_repair_signal = any(
+            self._variant_quality_entry_is_repair_signal(
+                self._variant_quality_feedback_for(
+                    quality_feedback,
+                    category=category,
+                    lens=execution_lens,
+                    variant=variant,
+                )
+            )
+            for variant in ("base", "community_base")
+        )
+        if not has_repair_signal:
+            return []
+
+        companions: List[Dict[str, Any]] = []
+        compact_core = self._compact_query_text(core_query)
+        community_surface = {"blog": 0, "cafe": 24, "kin": 42}
+
+        community_lane_entry = quality_feedback.get(
+            self._category_lens_variant_quality_key(category, execution_lens, "community:추천")
+        ) or {}
+        community_lane_blocked = self._variant_quality_entry_is_repair_signal(community_lane_entry)
+        community_companion_allowed = (
+            not community_lane_blocked
+            and (
+                self._variant_quality_entry_is_scale_signal(community_lane_entry)
+                or (
+                    execution_lens == "community"
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant="community:추천",
+                    )
+                )
+            )
+        )
+
+        if community_companion_allowed and "추천" not in compact_core:
+            companions.append(
+                {
+                    "query": f"{core_query} 추천",
+                    "variant": "community:추천",
+                    "source_keyword": keyword,
+                    "surface_override": dict(community_surface),
+                    "handoff_companion": True,
+                }
+            )
+
+        traffic_lane_entry = quality_feedback.get(
+            self._category_lens_variant_quality_key(
+                category,
+                execution_lens,
+                "axis_traffic:specific_후유증",
+            )
+        ) or {}
+        traffic_lane_blocked = self._variant_quality_entry_is_repair_signal(traffic_lane_entry)
+        traffic_companion_allowed = (
+            not traffic_lane_blocked
+            and (
+                self._variant_quality_entry_is_scale_signal(traffic_lane_entry)
+                or (
+                    execution_lens == "community"
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant="axis_traffic:specific_후유증",
+                    )
+                )
+            )
+        )
+
+        if (
+            category == "교통사고"
+            and traffic_companion_allowed
+            and "후유증" not in compact_core
+        ):
+            companions.append(
+                {
+                    "query": f"{core_query} 후유증 추천",
+                    "variant": "axis_traffic:specific_후유증",
+                    "source_keyword": keyword,
+                    "surface_override": dict(community_surface),
+                    "handoff_companion": True,
+                }
+            )
+
+        return companions
+
+    @classmethod
+    def _variant_gate_should_drop(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> bool:
+        """동반 변형을 다음 런에서 보낼지(차단할지) 결정.
+
+        granular한 per-(category,lens,variant) lane 증거를 우선하되, lane 버킷이
+        아직 cold-start(pending==0 & 제로수율 미증명)일 때 누적 글로벌 증거를
+        *버리지 않는다*. 그렇지 않으면 최근 도입된 lane 버킷이, 글로벌이 이미
+        제로수율로 증명한 변형을 조용히 재활성화(un-gate)한다 — variant 수율
+        게이트 전체를 무력화하는 회귀. base/community_base 기준 변형은 호출
+        자체가 안 되므로(첫 슬롯 항상 유지) 여기서 다루지 않는다.
+        """
+        variant = str(variant or "")
+
+        # patient_voice 계열은 진료축이 아니라 '질문 표면(지역어 제거 + KIN)' 자체가
+        # 수율을 좌우하는 CATEGORY-AGNOSTIC 변형이다. per-(category,lens) lane으로
+        # 쪼개면 증거가 사실상 누적되지 않으므로(여러 lens로 분산) 글로벌 누적으로
+        # 판정한다. 2-run cold-start는 _variant_proven_zero_yield_for_gate가 유지.
+        if variant in cls.PATIENT_VOICE_VARIANTS:
+            glob = history.get(variant)
+            return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
+
+        lane_key = cls._category_lens_variant_history_key(category, lens, variant)
+        lane = history.get(lane_key)
+
+        # 진짜 진료축-특정 질의 모양(axis ':specific_*')은 lane 증거로만 판정.
+        if ":specific_" in variant:
+            return bool(lane) and cls._variant_proven_zero_yield_for_gate(variant, lane)
+
+        # 동반/렌즈 변형: granular lane 우선, 단 lane cold-start면 글로벌로 폴백.
+        if lane:
+            if cls._variant_proven_zero_yield_for_gate(variant, lane):
+                return True  # lane이 제로수율 증명 → 차단
+            if int(lane.get("pending", 0) or 0) > 0:
+                return False  # lane이 실수율 보유 → 죽은 글로벌보다 우선 보존(심슨 역설 방어)
+            # lane은 있으나 pending==0 & 제로수율 미증명(cold start) → 글로벌 폴백.
+        glob = history.get(variant)
+        return bool(glob) and cls._variant_proven_zero_yield_for_gate(variant, glob)
+
+    @staticmethod
+    def _base_variant_budget_has_lane_signal(stats: Dict[str, int]) -> bool:
+        discovered = int(stats.get("discovered", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        runs = int(stats.get("runs", 0) or 0)
+        return discovered >= 80 or fresh_discovered >= 20 or runs >= 2
+
+    @classmethod
+    def _base_variant_budget_stats(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> Dict[str, int]:
+        lane_key = cls._category_lens_variant_history_key(category, lens, variant)
+        lane = history.get(lane_key) or {}
+        if lane and cls._base_variant_budget_has_lane_signal(lane):
+            return lane
+        return history.get(str(variant or "")) or lane or {}
+
+    @classmethod
+    def _base_variant_budget_factor(
+        cls,
+        history: Dict[str, Dict[str, int]],
+        *,
+        category: str,
+        lens: str,
+        variant: str,
+    ) -> float:
+        """Scale mandatory base query depth when recent audits show low fresh yield."""
+        variant = str(variant or "").strip()
+        if variant not in {"base", "community_base"}:
+            return 1.0
+        stats = cls._base_variant_budget_stats(history, category=category, lens=lens, variant=variant)
+        if not stats:
+            return 1.0
+
+        fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+        open_pending = int(stats.get("open_pending", 0) or 0)
+        if fresh_pending > 0:
+            return 1.0
+
+        discovered = int(stats.get("discovered", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        rediscovered = int(stats.get("rediscovered", 0) or 0)
+        ad_filtered = int(stats.get("ad_filtered", 0) or 0)
+        if discovered <= 0:
+            return 1.0
+
+        rediscovered_rate = rediscovered / discovered if discovered else 0.0
+        ad_rate = ad_filtered / discovered if discovered else 0.0
+        if open_pending > 0:
+            stale_open_only = (
+                fresh_discovered >= ZERO_YIELD_MIN_FRESH_DISCOVERED
+                and rediscovered_rate >= 0.75
+            )
+            saturated_surface = discovered >= 300 and rediscovered_rate >= 0.95
+            if not (stale_open_only or saturated_surface):
+                return 1.0
+
+        factor = 1.0
+
+        if fresh_discovered >= 80 and fresh_pending == 0:
+            factor = min(factor, 0.45)
+        elif fresh_discovered >= 40 and fresh_pending == 0 and (rediscovered_rate >= 0.75 or discovered >= 120):
+            factor = min(factor, 0.55)
+        if discovered >= 300 and rediscovered_rate >= 0.95:
+            factor = min(factor, 0.65)
+        if factor < 1.0 and ad_rate >= 0.35:
+            factor = min(factor, 0.50)
+        elif factor == 1.0 and ad_rate >= 0.45 and discovered >= 150:
+            factor = 0.80
+
+        return max(0.40, min(1.0, factor))
+
+    @staticmethod
+    def _variant_requires_lane_specific_yield(variant: str) -> bool:
+        variant = str(variant or "").strip()
+        return variant in ViralHunter.PATIENT_VOICE_VARIANTS or ":specific_" in variant
+
+    @staticmethod
+    def _variant_proven_zero_yield(stats: Dict[str, int]) -> bool:
+        """충분한 누적 증거가 있고 pending 전환이 사실상 0인 변형만 True.
+
+        보수적 임계 — 신생 변형의 탐사를 조기에 죽이지 않는다.
+        """
+        discovered = int(stats.get("discovered", 0) or 0)
+        pending = int(stats.get("pending", 0) or 0)
+        fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+        fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+        rediscovered = int(stats.get("rediscovered", 0) or 0)
+
+        # A query variant that mostly re-finds old URLs is not a fresh hunting
+        # surface, even if those old rows still sit in pending. Only apply this
+        # when the audit has enough fresh evidence; older audits without the
+        # fresh_* fields keep the legacy pending/discovered gate below.
+        if fresh_discovered >= 60 and fresh_pending == 0:
+            return True
+        if fresh_discovered >= 150 and (fresh_pending / fresh_discovered) < 0.004:
+            return True
+        if (
+            discovered >= 150
+            and fresh_discovered >= 40
+            and fresh_pending == 0
+            and (rediscovered / discovered) >= 0.75
+        ):
+            return True
+
+        if discovered >= 60 and pending == 0:
+            return True
+        if discovered >= 150 and (pending / discovered) < 0.004:
+            return True
+        return False
+
+    @classmethod
+    def _variant_proven_zero_yield_for_gate(cls, variant: str, stats: Dict[str, int]) -> bool:
+        """Zero-yield gate with extra cold-start protection for exploratory variants."""
+        if cls._variant_requires_lane_specific_yield(variant) and int(stats.get("runs", 0) or 0) < 2:
+            discovered = int(stats.get("discovered", 0) or 0)
+            pending = int(stats.get("pending", 0) or 0)
+            fresh_discovered = int(stats.get("fresh_discovered", 0) or 0)
+            fresh_pending = int(stats.get("fresh_pending", 0) or 0)
+            if variant in cls.PATIENT_VOICE_VARIANTS and (
+                (fresh_discovered >= 500 and fresh_pending == 0)
+                or (discovered >= 900 and pending == 0)
+                # Patient-voice queries are deliberately category-agnostic, so
+                # one run can spread evidence across many category/lens lanes.
+                # A run with this much genuinely new coverage and no survivor
+                # has already cleared the exploratory cold-start bar; waiting
+                # for 900 total results allowed the same zero-yield surface to
+                # consume another full run (#115 -> #125).
+                or (
+                    discovered >= 500
+                    and fresh_discovered >= 120
+                    and pending == 0
+                    and fresh_pending == 0
+                )
+            ):
+                return True
+            if ":specific_" in str(variant or "") and (
+                (fresh_discovered >= 120 and fresh_pending == 0)
+                or (discovered >= 180 and pending == 0)
+            ):
+                return True
+            return False
+        return cls._variant_proven_zero_yield(stats)
+
+    # 플랫폼별 staff 수용률 → 발견 예산 가중치. 변형 수율 게이트의 철학을
+    # 플랫폼 단위로 확장: 직원이 실제로 작업하는 비율(posted/generated vs skipped)에
+    # 발견 예산을 비례시킨다. 라이브 근거(2026-06-13): blog 0.4% vs kin 19.7%
+    # 수용률인데 발견량은 blog가 최대(21일 9,536)·kin이 최소(7,841)로 역전.
+    PLATFORM_YIELD_MIN_SAMPLE = 40   # 이 미만 staff 액션은 미개입(1.0)
+    PLATFORM_YIELD_FLOOR_LIMIT = 12  # 가중 후에도 최소 이만큼은 탐사 (완전 블라인드 방지)
+    PLATFORM_SURFACE_MIN_SAMPLE = 20
+    PLATFORM_SURFACE_FLOOR_LIMIT = 6
+    PLATFORM_SURFACE_GLOBAL_CATEGORY = "*"
+
+    @staticmethod
+    def _acceptance_to_yield_factor(accept_rate: float) -> float:
+        """staff 수용률을 발견 예산 가중치[0.2, 1.0]로 매핑 (증거 기반·바닥 보장)."""
+        if accept_rate >= 0.15:
+            return 1.0
+        if accept_rate >= 0.08:
+            return 0.85
+        if accept_rate >= 0.04:
+            return 0.6
+        if accept_rate >= 0.015:
+            return 0.35
+        return 0.2
+
+    def _load_platform_yield_factors(self) -> Dict[str, float]:
+        """플랫폼별 staff 수용률로 발견 예산 가중치를 산출 (런 단위 캐시).
+
+        수용률 = posted+generated / (posted+generated+skipped) — 직원에게 노출된
+        타겟 중 실제 작업 비율. 표본<MIN_SAMPLE 플랫폼은 dict에서 제외(=미개입,
+        1.0 취급). blog처럼 구조적으로 댓글 가치가 낮은 표면은 자동으로 바닥
+        가중치로 수렴하고, 바닥 limit가 탐사를 유지해 갑자기 가치가 생기면
+        수용률이 올라 가중치도 회복된다 (영구 사장 방지).
+        """
+        cached = getattr(self, "_platform_yield_cache", None)
+        if cached is not None:
+            return cached
+        factors: Dict[str, float] = {}
+        rows = []
+        try:
+            import sqlite3 as _sql
+            conn = _sql.connect(self.db.db_path)
+            rows = conn.execute(
+                """
+                SELECT LOWER(COALESCE(platform, '')) p,
+                       SUM(CASE WHEN comment_status IN ('posted', 'generated') THEN 1 ELSE 0 END) good,
+                       SUM(CASE WHEN comment_status = 'skipped' THEN 1 ELSE 0 END) skipped
+                FROM viral_targets
+                WHERE comment_status IN ('posted', 'generated', 'skipped')
+                GROUP BY LOWER(COALESCE(platform, ''))
+                """
+            ).fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+        for platform, good, skipped in rows:
+            good = int(good or 0)
+            skipped = int(skipped or 0)
+            sample = good + skipped
+            if not platform or sample < self.PLATFORM_YIELD_MIN_SAMPLE:
+                continue
+            factor = self._acceptance_to_yield_factor(good / sample)
+            if factor < 1.0:
+                factors[platform] = factor
+        self._platform_yield_cache = factors
+        return factors
+
+    def _apply_platform_yield_factors(self, limits: Dict[str, int]) -> Dict[str, int]:
+        """발견 예산에 플랫폼 수율 가중치를 적용. 차단량은 _platform_drop_counts에 집계."""
+        factors = self._load_platform_yield_factors()
+        if not factors:
+            return limits
+        drop_counts = getattr(self, "_platform_drop_counts", None)
+        if drop_counts is None:
+            drop_counts = {}
+            self._platform_drop_counts = drop_counts
+        for platform in list(limits.keys()):
+            original = int(limits.get(platform, 0) or 0)
+            factor = factors.get(platform)
+            if not factor or original <= 0:
+                continue
+            scaled = max(self.PLATFORM_YIELD_FLOOR_LIMIT, int(round(original * factor)))
+            scaled = min(original, scaled)
+            if scaled < original:
+                drop_counts[platform] = drop_counts.get(platform, 0) + (original - scaled)
+                limits[platform] = scaled
+        return limits
+
+    @staticmethod
+    def _handoff_platform_key(platform: str) -> str:
+        text = str(platform or "").strip().lower().replace("-", "_")
+        if not text:
+            return ""
+        if "kin" in text or "지식" in text:
+            return "kin"
+        if "cafe" in text or "카페" in text:
+            return "cafe"
+        if "blog" in text or "블로그" in text:
+            return "blog"
+        return text
+
+    @staticmethod
+    def _platform_surface_feedback_key(platform: str, category: str) -> str:
+        platform_key = ViralHunter._handoff_platform_key(platform)
+        category_text = str(category or "").strip()
+        category_key = (
+            ViralHunter.PLATFORM_SURFACE_GLOBAL_CATEGORY
+            if category_text == ViralHunter.PLATFORM_SURFACE_GLOBAL_CATEGORY
+            else GYULIM_KEYWORD_PROFILE.normalize_category(category_text)
+        )
+        return f"platform_surface:{platform_key}::{category_key}"
+
+    @staticmethod
+    def _platform_surface_float(entry: Dict[str, Any], key: str) -> float:
+        try:
+            return float(entry.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _platform_surface_budget_factor(cls, entry: Dict[str, Any]) -> float:
+        total = cls._variant_feedback_int(entry, "total")
+        if total < cls.PLATFORM_SURFACE_MIN_SAMPLE:
+            return 1.0
+
+        platform = cls._handoff_platform_key(str(entry.get("platform") or ""))
+        has_loss_rate = "loss_rate" in entry
+        has_survival_rate = "survival_rate" in entry
+        has_strict_fit_rate = "strict_fit_rate" in entry
+        loss_rate = cls._platform_surface_float(entry, "loss_rate")
+        survival_rate = cls._platform_surface_float(entry, "survival_rate")
+        strict_fit_rate = cls._platform_surface_float(entry, "strict_fit_rate")
+        dominant_loss = str(entry.get("dominant_loss_reason") or "").strip().lower()
+        raw_reasons = entry.get("reasons") or []
+        if isinstance(raw_reasons, str):
+            reasons = {raw_reasons}
+        else:
+            reasons = {str(reason or "") for reason in raw_reasons}
+
+        if (
+            platform == "blog"
+            and total >= 40
+            and has_loss_rate
+            and has_survival_rate
+            and has_strict_fit_rate
+            and loss_rate >= 0.98
+            and survival_rate < 0.005
+            and strict_fit_rate < 0.005
+            and (
+                dominant_loss in {"ad", "advertorial", "filtered", "medical_promo"}
+                or "high_platform_loss" in reasons
+            )
+        ):
+            return 0.0
+
+        factor = 1.0
+        if (
+            total >= 40
+            and has_loss_rate
+            and loss_rate >= 0.95
+            and (
+                (has_strict_fit_rate and strict_fit_rate < 0.005)
+                or (has_survival_rate and survival_rate < 0.005)
+            )
+        ):
+            factor = 0.50
+        elif total >= 30 and (
+            (has_strict_fit_rate and strict_fit_rate < 0.015)
+            or (has_loss_rate and loss_rate >= 0.98)
+        ):
+            factor = 0.65
+        elif total >= 20 and reasons.intersection(
+            {"low_platform_survival", "low_platform_strict_fit", "high_platform_loss"}
+        ):
+            factor = 0.80
+
+        if platform == "blog" and dominant_loss == "ad" and total >= 40 and (factor < 1.0 or loss_rate >= 0.90):
+            factor = min(factor, 0.45)
+        return max(0.35, min(1.0, factor))
+
+    def _load_platform_surface_feedback(self, max_audits: int = 6) -> Dict[str, Dict[str, Any]]:
+        """Load category-specific platform loss hotspots from recent handoff audits."""
+        cached = getattr(self, "_platform_surface_feedback_cache", None)
+        if cached is not None:
+            return cached
+
+        feedback: Dict[str, Dict[str, Any]] = {}
+        cfg = getattr(self, "cfg", None)
+        root_dir = str(getattr(cfg, "root_dir", "") or "").strip()
+        audit_payloads: List[Tuple[Dict[str, Any], str]] = []
+
+        if root_dir:
+            reports_dir = os.path.join(root_dir, "reports")
+            try:
+                if os.path.isdir(reports_dir):
+                    report_files = [
+                        os.path.join(reports_dir, name)
+                        for name in os.listdir(reports_dir)
+                        if name.startswith("viral_handoff_audit") and name.endswith(".json")
+                    ]
+                    report_files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                    for path in report_files[: max(1, int(max_audits))]:
+                        try:
+                            with open(path, "r", encoding="utf-8") as fh:
+                                payload = json.load(fh)
+                        except (OSError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict):
+                            audit_payloads.append((payload, os.path.basename(path)))
+            except OSError:
+                pass
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if db_path and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='viral_scan_audits'"
+                ).fetchone()
+                if table_exists:
+                    rows = conn.execute(
+                        "SELECT audit_json FROM viral_scan_audits ORDER BY rowid DESC LIMIT ?",
+                        (max(1, int(max_audits)),),
+                    ).fetchall()
+                else:
+                    rows = []
+                conn.close()
+            except sqlite3.Error:
+                rows = []
+            for (audit_json,) in rows:
+                try:
+                    payload = json.loads(audit_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    audit_payloads.append((payload, "viral_scan_audits"))
+
+        def maybe_set(key: str, entry: Dict[str, Any], audit_rank: int, factor: float) -> None:
+            existing = feedback.get(key)
+            if existing:
+                existing_rank = int(existing.get("_audit_rank") or 0)
+                existing_factor = float(existing.get("factor") or 1.0)
+                if existing_rank < audit_rank:
+                    return
+                if existing_rank == audit_rank and existing_factor <= factor:
+                    return
+            feedback[key] = entry
+
+        for audit_rank, (payload, source_name) in enumerate(audit_payloads):
+            candidates: List[Dict[str, Any]] = []
+            surface_quality = payload.get("platform_surface_quality") if isinstance(payload, dict) else None
+            if isinstance(surface_quality, dict):
+                for list_key in ("priority_focus_hotspots", "hotspots"):
+                    items = surface_quality.get(list_key) or []
+                    if isinstance(items, list):
+                        candidates.extend(item for item in items if isinstance(item, dict))
+            playbook = payload.get("next_run_playbook") if isinstance(payload, dict) else None
+            if isinstance(playbook, dict):
+                items = playbook.get("platform_surface_hotspots") or []
+                if isinstance(items, list):
+                    candidates.extend(item for item in items if isinstance(item, dict))
+            by_platform = payload.get("by_platform") if isinstance(payload, dict) else None
+            if isinstance(by_platform, dict):
+                for platform, metrics in by_platform.items():
+                    if isinstance(metrics, dict):
+                        candidates.append({
+                            **metrics,
+                            "type": "platform_global",
+                            "platform": platform,
+                            "category": self.PLATFORM_SURFACE_GLOBAL_CATEGORY,
+                        })
+
+            for item in candidates:
+                item_type = str(item.get("type") or "").strip()
+                lane = str(item.get("lane") or "")
+                lane_platform, _, lane_category = lane.partition("::")
+                platform = self._handoff_platform_key(str(item.get("platform") or lane_platform))
+                if item_type == "platform_global":
+                    category = self.PLATFORM_SURFACE_GLOBAL_CATEGORY
+                else:
+                    category = GYULIM_KEYWORD_PROFILE.normalize_category(str(item.get("category") or lane_category))
+                if item_type and item_type not in {"platform_category", "platform_global"}:
+                    continue
+                if not platform or not category:
+                    continue
+                factor = self._platform_surface_budget_factor({**item, "platform": platform})
+                if factor >= 0.999:
+                    continue
+                key = self._platform_surface_feedback_key(platform, category)
+                entry = {
+                    **item,
+                    "type": "platform_global" if category == self.PLATFORM_SURFACE_GLOBAL_CATEGORY else "platform_category",
+                    "platform": platform,
+                    "category": category,
+                    "factor": factor,
+                    "action": "reduce_platform_surface_budget",
+                    "_audit_rank": audit_rank,
+                    "_source": source_name,
+                }
+                maybe_set(key, entry, audit_rank, factor)
+
+        self._platform_surface_feedback_cache = feedback
+        return feedback
+
+    def _apply_platform_surface_feedback(self, limits: Dict[str, int], *, category: str) -> Dict[str, int]:
+        feedback = self._load_platform_surface_feedback()
+        category_key = GYULIM_KEYWORD_PROFILE.normalize_category(str(category or ""))
+        if not feedback or not category_key:
+            return limits
+
+        scale_counts = getattr(self, "_platform_surface_budget_scale_counts", None)
+        if scale_counts is None:
+            scale_counts = {}
+            self._platform_surface_budget_scale_counts = scale_counts
+
+        for platform in list((limits or {}).keys()):
+            platform_key = self._handoff_platform_key(platform)
+            entry = feedback.get(self._platform_surface_feedback_key(platform_key, category_key))
+            global_entry = feedback.get(
+                self._platform_surface_feedback_key(platform_key, self.PLATFORM_SURFACE_GLOBAL_CATEGORY)
+            )
+            if isinstance(global_entry, dict):
+                if not isinstance(entry, dict):
+                    entry = global_entry
+                else:
+                    try:
+                        entry_factor = float(entry.get("factor", 1.0))
+                    except (TypeError, ValueError):
+                        entry_factor = 1.0
+                    try:
+                        global_factor = float(global_entry.get("factor", 1.0))
+                    except (TypeError, ValueError):
+                        global_factor = 1.0
+                    if global_factor < entry_factor:
+                        entry = global_entry
+            if not isinstance(entry, dict):
+                continue
+            try:
+                factor = float(entry.get("factor", 1.0))
+            except (TypeError, ValueError):
+                factor = 1.0
+            original = int(limits.get(platform, 0) or 0)
+            if factor >= 0.999 or original <= 0:
+                continue
+            if factor <= 0.0:
+                scaled = 0
+            else:
+                scaled = max(self.PLATFORM_SURFACE_FLOOR_LIMIT, int(round(original * factor)))
+            scaled = min(original, scaled)
+            if scaled < original:
+                limits[platform] = scaled
+                scale_category_key = str(entry.get("category") or category_key)
+                scale_key = f"{platform_key}::{scale_category_key}:{factor:.2f}"
+                scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
+        return limits
+
+    def _patient_voice_kin_variant(
+        self,
+        keyword: str,
+        category: str,
+        core_query: str,
+    ) -> Optional[Dict[str, Any]]:
+        """지역 앵커 없는 환자 질문(지식인) 표면 탐사 변형.
+
+        지식인 질문 대부분은 제목/검색 텍스트에 지역명이 없어 청주-앵커 쿼리로는
+        구조적으로 잡히지 않는다. 사용자-표면 중심 축에 한해 지역 토큰을 제거하되,
+        단순 서비스 코어가 아니라 "해보신분" 같은 환자 질문형 표면으로 보낸다.
+        수율은 새 변형 이름(patient_voice_question_kin)으로 측정한다. 기존
+        patient_voice_kin은 지역 제거 코어만 보내던 구형 표면이라, 나쁜 과거
+        수율이 질문형 탐사를 조기에 죽이지 않도록 분리한다.
+        """
+        if category not in self.USER_SURFACE_HEAVY_CATEGORIES:
+            return None
+        stripped = strip_region_tokens(core_query)
+        if not stripped or len(self._compact_query_text(stripped)) < 4:
+            return None
+        if self._compact_query_text(stripped) == self._compact_query_text(core_query):
+            return None  # 지역 토큰이 없던 시드 — 이미 비지역 쿼리라 중복
+        question_query = self._patient_voice_question_query(stripped)
+        return {
+            "query": question_query,
+            "variant": "patient_voice_question_kin",
+            "source_keyword": keyword,
+            "surface_override": {"cafe": 15, "blog": 0, "kin": 40},
+        }
+
+    @classmethod
+    def _patient_voice_question_query(cls, stripped_core: str) -> str:
+        core = re.sub(r"\s+", " ", str(stripped_core or "").strip())
+        if not core:
+            return ""
+        compact = cls._compact_query_text(core)
+        if any(cls._compact_query_text(term) in compact for term in cls.PATIENT_VOICE_QUESTION_TERMS):
+            return core
+        return f"{core} 해보신분"
+
+    AXIS_COMPANION_GENERIC_TERMS = PATHFINDER_AXIS_COMPANION_GENERIC_TERMS
+    AXIS_COMPANION_VARIANT_PREFIX = PATHFINDER_AXIS_COMPANION_VARIANT_PREFIX
+
+    @staticmethod
+    def _axis_specific_terms_for_keyword(keyword: str, category: str, limit: int = 2) -> List[str]:
+        """Return specific treatment/context terms from the active Pathfinder profile.
+
+        Fixed companion queries cover the canonical axis. This keeps newer Pathfinder
+        discoveries such as 수술흉터, 켈로이드, 아토피, 산후, 라운드숄더, 팔자주름 from
+        being collapsed back to a generic category companion.
+        """
+        return _pathfinder_axis_specific_terms_for_keyword(keyword, category, limit=limit)
+
+    @staticmethod
+    def _axis_specific_companion_query(keyword: str, category: str, term: str) -> str:
+        term = re.sub(r"\s+", " ", str(term or "").strip())
+        compact_keyword = ViralHunter._compact_query_text(keyword)
+        if not term:
+            return ""
+
+        if category == "흉터/여드름흉터":
+            service = term
+            if "새살침" in compact_keyword and "새살침" not in ViralHunter._compact_query_text(term):
+                service = f"{term} 새살침"
+            elif "한의원" not in ViralHunter._compact_query_text(term):
+                service = f"{term} 한의원"
+            return f"청주 {service} 후기"
+
+        if category == "피부/여드름":
+            service = term if "한의원" in ViralHunter._compact_query_text(term) else f"{term} 한의원"
+            return f"청주 {service} 후기"
+
+        if category == "다이어트":
+            if "식욕" in term:
+                service = f"{term} 한약"
+            elif "다이어트" in term:
+                service = term
+            else:
+                service = f"{term} 다이어트 한약"
+            return f"청주 {service} 후기"
+
+        if category == "안면비대칭":
+            if "턱관절" in term:
+                service = f"{term} 안면비대칭 한의원"
+            elif "교정" in term:
+                service = f"{term} 한의원"
+            else:
+                service = f"{term} 안면비대칭 한의원"
+            return f"청주 {service} 추천"
+
+        if category == "체형교정":
+            service = term if "한의원" in ViralHunter._compact_query_text(term) else f"{term} 추나 한의원"
+            return f"청주 {service} 추천"
+
+        if category == "리프팅/탄력":
+            if "리프팅" in term:
+                service = term
+            else:
+                service = f"{term} 한방리프팅"
+            return f"청주 {service} 후기"
+
+        if category == "교통사고":
+            compact_term = ViralHunter._compact_query_text(term)
+            if compact_term in {"입원", "입원가능한"}:
+                service = "교통사고 입원 한의원"
+            elif compact_term in {"자보", "자동차보험"}:
+                service = "교통사고 자동차보험 한의원"
+            elif "후유증" in compact_term:
+                service = "교통사고 후유증 한의원"
+            elif "합의" in compact_term:
+                service = "교통사고 합의전 한의원"
+            elif compact_term in {"목통증", "허리통증", "두통"}:
+                service = f"교통사고 {term} 한의원"
+            else:
+                service = f"교통사고 {term} 한의원"
+            return f"청주 {service} 추천"
+
+        return f"청주 {term} 한의원 추천"
+
+    @staticmethod
+    def _dynamic_axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
+        prefix = ViralHunter.AXIS_COMPANION_VARIANT_PREFIX.get(category)
+        if not prefix:
+            return []
+        variants: List[Dict[str, Any]] = []
+        for term in ViralHunter._axis_specific_terms_for_keyword(keyword, category):
+            query = ViralHunter._axis_specific_companion_query(keyword, category, term)
+            query_compact = ViralHunter._compact_query_text(query)
+            if not query_compact:
+                continue
+            term_key = re.sub(r"\s+", "", term)
+            variants.append({
+                "query": query,
+                "variant": f"{prefix}:specific_{term_key}",
+                "source_keyword": keyword,
+            })
+        return variants
+
+    def _search_query_variants_for_keyword(self, keyword: str) -> List[Dict[str, Any]]:
+        """Create a bounded set of lens-aware search queries for one Pathfinder seed."""
+        ctx = self._planning_context_for_keyword(keyword)
+        execution_lens = str(ctx.get("execution_lens") or "")
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+
+        # Live scan evidence (14d window): transactional-suffix queries (예약/비용/
+        # 상담 가능한곳 등) surfaced 51% advertorial supply with 0.3% pending yield,
+        # while the same service cores in plain form converted at plain-seed rates.
+        # The suffix keeps driving lens scoring and lineage; only the search surface
+        # sent to Naver changes.
+        core_query = strip_transactional_suffix(keyword)
+        base_variant = "community_base" if core_query != keyword else "base"
+        compact = self._compact_query_text(core_query)
+        variants: List[Dict[str, Any]] = [{"query": core_query, "variant": base_variant, "source_keyword": keyword}]
+
+        # Decision lenses (cost/consultation/availability/safety) probe the community
+        # surface too: their literal companions (비용/예약/상담/부작용) measured 0~0.5%
+        # pending vs 4.5~31.7% for 추천-style companions in the same scans.
+        lens_terms = {
+            "review": ("추천", "후기", "어디"),
+            "community": ("추천", "후기", "어디"),
+            "cost": ("추천", "후기"),
+            "consultation": ("추천", "어디"),
+            "availability": ("추천", "어디"),
+            "safety": ("후기", "추천"),
+        }
+        community_lens_labels = {
+            "cost": "cost_community",
+            "consultation": "consultation_community",
+            "availability": "availability_community",
+            "safety": "safety_community",
+        }
+        terms = lens_terms.get(execution_lens, ())
+        lens_label = community_lens_labels.get(execution_lens, execution_lens or "conversion")
+        if not terms and float(ctx.get("conversion_signal") or 0.0) >= 55.0:
+            terms = ("추천",)
+            lens_label = "conversion_community"
+
+        if not any(self._compact_query_text(term) in compact for term in terms):
+            for term in terms:
+                term_compact = self._compact_query_text(term)
+                if term_compact and term_compact not in compact:
+                    variants.append({
+                        "query": f"{core_query} {term}",
+                        "variant": f"{lens_label}:{term}",
+                        "source_keyword": keyword,
+                    })
+                    break
+
+        quality_feedback = self._load_variant_quality_feedback()
+        handoff_companion_count = 0
+        for companion in self._handoff_repair_companion_query_variants(
+            keyword=keyword,
+            category=category,
+            execution_lens=execution_lens,
+            core_query=core_query,
+            quality_feedback=quality_feedback,
+        ):
+            query_compact = self._compact_query_text(companion["query"])
+            if not query_compact:
+                continue
+            duplicate_index = next(
+                (
+                    idx
+                    for idx, item in enumerate(variants)
+                    if query_compact == self._compact_query_text(item["query"])
+                ),
+                None,
+            )
+            if duplicate_index is None:
+                variants.append(companion)
+            else:
+                current_variant = str(variants[duplicate_index].get("variant") or "")
+                if current_variant == str(companion.get("variant") or ""):
+                    if not companion.get("surface_override"):
+                        continue
+                    variants[duplicate_index] = {
+                        **variants[duplicate_index],
+                        "surface_override": companion.get("surface_override"),
+                        "handoff_companion": True,
+                    }
+                else:
+                    variants[duplicate_index] = {
+                        **variants[duplicate_index],
+                        **companion,
+                        "source_keyword": variants[duplicate_index].get("source_keyword") or keyword,
+                    }
+            handoff_companion_count += 1
+            companion_counts = getattr(self, "_handoff_repair_companion_counts", None)
+            if companion_counts is None:
+                companion_counts = {}
+                self._handoff_repair_companion_counts = companion_counts
+            companion_name = str(companion.get("variant") or "")
+            companion_counts[companion_name] = companion_counts.get(companion_name, 0) + 1
+
+        max_variants = 3 if category in self.AXIS_COMPANION_EXPANDED_CATEGORIES else 2
+        if handoff_companion_count:
+            max_variants += min(1, handoff_companion_count)
+        for variant in self._axis_companion_query_variants(keyword, category):
+            if len(variants) >= max_variants:
+                break
+            query_compact = self._compact_query_text(variant["query"])
+            if query_compact and all(query_compact != self._compact_query_text(item["query"]) for item in variants):
+                variants.append(variant)
+        variants = variants[:max_variants]
+
+        # 비지역 환자 질문 표면은 별도 +1 슬롯 — kin 위주 한정 예산이라 SERP 비용이 작다.
+        patient_voice = self._patient_voice_kin_variant(keyword, category, core_query)
+        if patient_voice is not None:
+            pv_compact = self._compact_query_text(patient_voice["query"])
+            if pv_compact and all(pv_compact != self._compact_query_text(item["query"]) for item in variants):
+                variants.append(patient_voice)
+
+        # 의미기반 발견 2단계: 구어/패러프레이즈 쿼리 +1 슬롯(opt-in). Naver 가 임상어 없는
+        # 구어 환자글을 반환하도록 넓힌다. 변형 yield 게이트가 자기조절하므로 무수율 표현은
+        # 다음 런부터 자동 폐기된다(매칭측 의미 구제와 시너지 — 끌어온 구어글이 어휘 게이트에
+        # 다시 안 잘린다).
+        if semantic_discovery_enabled():
+            for colloquial in self._colloquial_query_variants(keyword, category, core_query):
+                cq_compact = self._compact_query_text(colloquial["query"])
+                if cq_compact and all(cq_compact != self._compact_query_text(item["query"]) for item in variants):
+                    variants.append(colloquial)
+
+        # 변형 수율 게이트 — 누적 증거로 제로수율이 증명된 동반 변형은 보내지 않는다.
+        # 기준(base/community_base) 변형은 절대 끄지 않는다.
+        history = self._load_variant_yield_history()
+        if history and len(variants) > 1:
+            kept = [variants[0]]
+            for variant in variants[1:]:
+                name = str(variant.get("variant") or "")
+                lane_quality_entry = quality_feedback.get(
+                    self._category_lens_variant_quality_key(category, execution_lens, name)
+                ) if quality_feedback else {}
+                exact_scale_override = (
+                    execution_lens == "community"
+                    and not self._variant_quality_entry_is_repair_signal(lane_quality_entry or {})
+                    and self._variant_quality_has_scale_signal(
+                        quality_feedback,
+                        category=category,
+                        lens=execution_lens,
+                        variant=name,
+                    )
+                ) if quality_feedback else False
+                if self._variant_quality_entry_is_scale_signal(lane_quality_entry or {}) or exact_scale_override:
+                    kept.append(variant)
+                    continue
+                if self._variant_gate_should_drop(
+                    history,
+                    category=category,
+                    lens=execution_lens,
+                    variant=name,
+                ):
+                    drop_counts = getattr(self, "_variant_drop_counts", None)
+                    if drop_counts is None:
+                        drop_counts = {}
+                        self._variant_drop_counts = drop_counts
+                    drop_counts[name] = drop_counts.get(name, 0) + 1
+                    continue
+                kept.append(variant)
+            variants = kept
+
+        quality_feedback = self._load_variant_quality_feedback()
+        if quality_feedback and len(variants) > 1:
+            kept = [variants[0]]
+            for variant in variants[1:]:
+                name = str(variant.get("variant") or "")
+                if self._variant_quality_gate_should_drop(
+                    quality_feedback,
+                    category=category,
+                    lens=execution_lens,
+                    variant=name,
+                ):
+                    drop_counts = getattr(self, "_variant_quality_drop_counts", None)
+                    if drop_counts is None:
+                        drop_counts = {}
+                        self._variant_quality_drop_counts = drop_counts
+                    drop_counts[name] = drop_counts.get(name, 0) + 1
+                    continue
+                kept.append(variant)
+            variants = kept
+
+        return variants
+
+    @staticmethod
+    def _context_rank_value(ctx: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+        """Rank Pathfinder contexts when multiple seeds produce the same query variant."""
+        def num(key: str) -> float:
+            try:
+                return float((ctx or {}).get(key) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        return (
+            num("priority_v3"),
+            num("viral_readiness_score"),
+            num("content_actionability_score"),
+            num("local_service_fit_score"),
+            num("community_signal") + num("conversion_signal") + num("profile_action_signal"),
+        )
+
+    @staticmethod
+    def _context_lineage_values(ctx: Dict[str, Any], list_key: str, single_key: str) -> List[str]:
+        values: List[str] = []
+        raw_list = (ctx or {}).get(list_key)
+        if isinstance(raw_list, list):
+            values.extend(str(item) for item in raw_list if str(item or "").strip())
+        elif raw_list:
+            values.append(str(raw_list))
+        raw_single = (ctx or {}).get(single_key)
+        if raw_single:
+            values.append(str(raw_single))
+        return [value for value in dict.fromkeys(values) if value]
+
+    def _register_variant_keyword_context(
+        self,
+        *,
+        source_keyword: str,
+        query: str,
+        query_variant: str,
+        quality_feedback_action: str = "",
+        quality_feedback_factor: float = 1.0,
+    ) -> None:
+        """Store variant query context without losing stronger source-seed lineage."""
+        if not query or query == source_keyword or source_keyword not in self.keyword_context:
+            return
+
+        new_context = dict(self.keyword_context[source_keyword])
+        new_context["pathfinder_source_keyword"] = source_keyword
+        new_context["pathfinder_query_variant"] = query_variant
+        if quality_feedback_action:
+            new_context["pathfinder_query_variant_feedback_action"] = quality_feedback_action
+            new_context["pathfinder_query_variant_feedback_factor"] = float(quality_feedback_factor or 1.0)
+        existing = self.keyword_context.get(query)
+
+        if not isinstance(existing, dict):
+            new_context["pathfinder_source_keywords"] = [source_keyword]
+            new_context["pathfinder_query_variants"] = [query_variant]
+            new_context["pathfinder_context_collision_count"] = 1
+            self.keyword_context[query] = new_context
+            return
+
+        sources = list(dict.fromkeys(
+            self._context_lineage_values(existing, "pathfinder_source_keywords", "pathfinder_source_keyword")
+            + [source_keyword]
+        ))
+        variants = list(dict.fromkeys(
+            self._context_lineage_values(existing, "pathfinder_query_variants", "pathfinder_query_variant")
+            + [query_variant]
+        ))
+        prefer_new = self._context_rank_value(new_context) > self._context_rank_value(existing)
+        merged = {**existing, **new_context} if prefer_new else dict(existing)
+        merged["pathfinder_source_keywords"] = sources
+        merged["pathfinder_query_variants"] = variants
+        merged["pathfinder_context_collision_count"] = len(sources)
+        if prefer_new:
+            merged["pathfinder_source_keyword"] = source_keyword
+            merged["pathfinder_query_variant"] = query_variant
+        self.keyword_context[query] = merged
+
+    @staticmethod
+    def _colloquial_query_variants(keyword: str, category: str, core_query: str) -> List[Dict[str, Any]]:
+        """구어/패러프레이즈 환자 표현으로 1개 지역 앵커 쿼리 생성(의미기반 발견 2단계).
+
+        시드별로 구어 표현을 순환 선택 → 시드 포트폴리오 전체에서 모든 구어 변형을 커버하되
+        시드당 +1 쿼리로 비용을 묶는다. 반환 변형은 `colloquial:` 로 명명돼 변형 yield
+        게이트가 추적/자기조절한다(무수율 시 폐기). 진료축에 구어 어휘가 없으면 빈 리스트.
+        """
+        terms = ViralHunter.COLLOQUIAL_AXIS_TERMS.get(category)
+        if not terms:
+            return []
+        region = str(getattr(GYULIM_KEYWORD_PROFILE, "primary_region", "청주") or "청주").strip()
+        core_compact = ViralHunter._compact_query_text(core_query)
+        # 결정적 시드 회전(파이썬 hash 는 런마다 솔트되므로 안정적 합 사용).
+        rotate = sum(ord(ch) for ch in (keyword or ""))
+        n = len(terms)
+        for i in range(n):
+            term = terms[(rotate + i) % n]
+            term_compact = ViralHunter._compact_query_text(term)
+            if not term_compact or term_compact in core_compact:
+                continue
+            query = f"{region} {term}".strip() if region else term
+            return [{
+                "query": query,
+                "variant": f"colloquial:{term.replace(' ', '')}",
+                "source_keyword": keyword,
+            }]
+        return []
+
+    @staticmethod
+    def _axis_companion_query_variants(keyword: str, category: str) -> List[Dict[str, Any]]:
+        """Add one axis-specific user-question query for categories with thin organic supply."""
+        compact = ViralHunter._compact_query_text(keyword)
+        candidates: List[Tuple[str, str]] = []
+        if category == "흉터/여드름흉터":
+            candidates = [
+                ("청주 여드름흉터 새살침 후기", "axis_scar:새살침후기"),
+                ("청주 패인흉터 한의원 추천", "axis_scar:패인흉터추천"),
+                ("청주 여드름자국 흉터 한의원 추천", "axis_scar:여드름자국추천"),
+            ]
+        elif category == "피부/여드름":
+            candidates = [
+                ("청주 여드름 한의원 추천", "axis_skin:여드름추천"),
+                ("청주 피부질환 한의원 추천", "axis_skin:피부질환추천"),
+                ("청주 아토피 한의원 후기", "axis_skin:아토피후기"),
+            ]
+        elif category == "다이어트":
+            candidates = [
+                ("청주 다이어트한약 후기", "axis_diet:한약후기"),
+                ("청주 한방다이어트 한의원 추천", "axis_diet:한방다이어트추천"),
+                ("청주 감량 한약 상담 후기", "axis_diet:감량상담후기"),
+            ]
+        elif category == "체형교정":
+            candidates = [
+                ("청주 체형교정 추나 한의원 추천", "axis_body:체형추나추천"),
+                ("청주 골반교정 추나 한의원 추천", "axis_body:골반교정추천"),
+                ("청주 거북목 일자목 한의원 추천", "axis_body:거북목추천"),
+            ]
+        elif category == "안면비대칭":
+            candidates = [
+                ("청주 턱관절 안면비대칭 한의원 추천", "axis_asymmetry:턱관절비대칭추천"),
+                ("청주 안면비대칭 교정 한의원 추천", "axis_asymmetry:교정추천"),
+            ]
+        elif category == "리프팅/탄력":
+            candidates = [
+                ("청주 매선 한방리프팅 후기", "axis_lifting:매선한방후기"),
+                ("청주 팔자주름 한방리프팅 후기", "axis_lifting:팔자주름후기"),
+                ("청주 피부탄력 매선 리프팅 후기", "axis_lifting:피부탄력매선후기"),
+            ]
+        elif category == "교통사고":
+            candidates = [
+                ("청주 교통사고 후유증 한의원 추천", "axis_traffic:후유증추천"),
+                ("청주 교통사고 입원 한의원 추천", "axis_traffic:입원추천"),
+                ("청주 자동차보험 한의원 상담", "axis_traffic:자동차보험상담"),
+            ]
+
+        variants: List[Dict[str, Any]] = []
+        for dynamic_variant in ViralHunter._dynamic_axis_companion_query_variants(keyword, category):
+            query_compact = ViralHunter._compact_query_text(str(dynamic_variant.get("query") or ""))
+            if query_compact and query_compact != compact:
+                variants.append(dynamic_variant)
+        for query, variant_name in candidates:
+            query_compact = ViralHunter._compact_query_text(query)
+            if query_compact and query_compact != compact:
+                variants.append({
+                    "query": query,
+                    "variant": variant_name,
+                    "source_keyword": keyword,
+                })
+        return variants
+
+    def _search_queries_for_keyword(self, keyword: str, max_per_platform: int) -> List[Dict[str, Any]]:
+        """Return query plans for a seed while preserving its Pathfinder lineage."""
+        base_plan = self._search_plan_for_keyword(keyword, max_per_platform)
+        variants = self._search_query_variants_for_keyword(keyword)
+        ctx = self._planning_context_for_keyword(keyword)
+        category = GYULIM_KEYWORD_PROFILE.normalize_category(str(ctx.get("category") or ""))
+        execution_lens = str(ctx.get("execution_lens") or "")
+        history = self._load_variant_yield_history()
+        quality_feedback = self._load_variant_quality_feedback()
+        plans: List[Dict[str, Any]] = []
+
+        for idx, variant in enumerate(variants):
+            plan = dict(base_plan)
+            plan.update(variant)
+            variant_name = str(variant.get("variant") or "")
+            if idx > 0:
+                surface_override = variant.get("surface_override")
+                if surface_override:
+                    # kin 전용 등 표면 지정 변형은 비율 스케일 대신 고정 한도를 쓴다.
+                    plan["platform_limits"] = dict(surface_override)
+                else:
+                    plan["platform_limits"] = self._scaled_platform_limits(
+                        base_plan.get("platform_limits") or {},
+                        0.45,
+                    )
+                plan["query_variant_of"] = keyword
+            else:
+                factor = self._base_variant_budget_factor(
+                    history,
+                    category=category,
+                    lens=execution_lens,
+                    variant=variant_name,
+                )
+                if factor < 0.999:
+                    plan["platform_limits"] = self._scaled_platform_limits(
+                        plan.get("platform_limits") or {},
+                        factor,
+                        minimum=8,
+                        maximum=180,
+                    )
+                    scale_counts = getattr(self, "_base_variant_budget_scale_counts", None)
+                    if scale_counts is None:
+                        scale_counts = {}
+                        self._base_variant_budget_scale_counts = scale_counts
+                    scale_key = f"{variant.get('variant') or 'base'}:{factor:.2f}"
+                    scale_counts[scale_key] = scale_counts.get(scale_key, 0) + 1
+            quality_entry = self._variant_quality_feedback_for(
+                quality_feedback,
+                category=category,
+                lens=execution_lens,
+                variant=variant_name,
+            )
+            quality_action = str(quality_entry.get("action") or "").strip()
+            quality_factor = self._variant_quality_budget_factor(
+                quality_feedback,
+                category=category,
+                lens=execution_lens,
+                variant=variant_name,
+            )
+            if quality_action and abs(quality_factor - 1.0) > 0.001:
+                plan["platform_limits"] = self._scaled_platform_limits(
+                    plan.get("platform_limits") or {},
+                    quality_factor,
+                    minimum=8 if idx == 0 else 6,
+                    maximum=max(160, int(max_per_platform * 2)),
+                )
+                quality_scale_counts = getattr(self, "_variant_quality_budget_scale_counts", None)
+                if quality_scale_counts is None:
+                    quality_scale_counts = {}
+                    self._variant_quality_budget_scale_counts = quality_scale_counts
+                scale_key = f"{variant_name}:{quality_action}:{quality_factor:.2f}"
+                quality_scale_counts[scale_key] = quality_scale_counts.get(scale_key, 0) + 1
+            if quality_action:
+                plan["handoff_variant_quality_action"] = quality_action
+                plan["handoff_variant_quality_factor"] = quality_factor
+            self._register_variant_keyword_context(
+                source_keyword=keyword,
+                query=variant["query"],
+                query_variant=variant["variant"],
+                quality_feedback_action=quality_action,
+                quality_feedback_factor=quality_factor,
+            )
+            plans.append(plan)
+
+        return plans
+
+    @staticmethod
+    def _attach_search_query_lineage(
+        target: ViralTarget,
+        *,
+        source_keyword: str,
+        search_query: str,
+        query_variant: str,
+        quality_feedback_action: str = "",
+        quality_feedback_factor: float = 1.0,
+    ) -> ViralTarget:
+        lineage_keywords = [source_keyword]
+        if search_query and search_query != source_keyword:
+            lineage_keywords.append(search_query)
+        target.matched_keywords = [
+            keyword
+            for keyword in dict.fromkeys(lineage_keywords + list(target.matched_keywords or []))
+            if keyword
+        ]
+        target.score_breakdown = {
+            **(target.score_breakdown or {}),
+            "pathfinder_source_keyword": source_keyword or "",
+            "pathfinder_search_query": search_query or "",
+            "pathfinder_query_variant": query_variant or "base",
+            "pathfinder_query_variant_feedback_action": quality_feedback_action or "",
+            "pathfinder_query_variant_feedback_factor": float(quality_feedback_factor or 1.0),
+        }
+        return target
+
+    @staticmethod
+    def _pathfinder_variant_strength(variant: str) -> int:
+        variant = str(variant or "").strip()
+        if ":specific_" in variant:
+            return 55
+        if variant.startswith("axis_"):
+            return 45
+        if variant and variant not in {"base", "community_base", "(none)"}:
+            return 30
+        if variant == "community_base":
+            return 20
+        if variant == "base":
+            return 10
+        return 0
+
+    @staticmethod
+    def _breakdown_lineage_values(
+        breakdown: Dict[str, Any],
+        list_key: str,
+        single_key: str,
+    ) -> List[str]:
+        values: List[str] = []
+        raw_list = (breakdown or {}).get(list_key)
+        if isinstance(raw_list, list):
+            values.extend(str(item) for item in raw_list if str(item or "").strip())
+        elif raw_list:
+            values.append(str(raw_list))
+        raw_single = (breakdown or {}).get(single_key)
+        if raw_single:
+            values.append(str(raw_single))
+        return [item for item in dict.fromkeys(values) if item]
+
+    @classmethod
+    def _merge_duplicate_search_target(
+        cls,
+        current: ViralTarget,
+        incoming: ViralTarget,
+    ) -> ViralTarget:
+        """Merge an in-run duplicate URL without losing query-variant lineage."""
+        current_breakdown = current.score_breakdown or {}
+        incoming_breakdown = incoming.score_breakdown or {}
+        current_variant = str(current_breakdown.get("pathfinder_query_variant") or "base")
+        incoming_variant = str(incoming_breakdown.get("pathfinder_query_variant") or "base")
+        current_strength = cls._pathfinder_variant_strength(current_variant)
+        incoming_strength = cls._pathfinder_variant_strength(incoming_variant)
+        prefer_incoming = (
+            incoming_strength > current_strength
+            or (
+                incoming_strength == current_strength
+                and (incoming.exposure_score or incoming.priority_score or 0)
+                > (current.exposure_score or current.priority_score or 0)
+            )
+        )
+        preferred_breakdown = incoming_breakdown if prefer_incoming else current_breakdown
+
+        variants = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_query_variants", "pathfinder_query_variant")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_query_variants", "pathfinder_query_variant")
+        ))
+        queries = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_search_queries", "pathfinder_search_query")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_search_queries", "pathfinder_search_query")
+        ))
+        sources = list(dict.fromkeys(
+            cls._breakdown_lineage_values(current_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
+            + cls._breakdown_lineage_values(incoming_breakdown, "pathfinder_source_keywords", "pathfinder_source_keyword")
+        ))
+        audit_actions = list(dict.fromkeys(
+            cls._breakdown_lineage_values(
+                current_breakdown,
+                "pathfinder_source_seed_audit_actions",
+                "pathfinder_source_seed_audit_action",
+            )
+            + cls._breakdown_lineage_values(
+                incoming_breakdown,
+                "pathfinder_source_seed_audit_actions",
+                "pathfinder_source_seed_audit_action",
+            )
+        ))
+        audit_recategorized_categories = list(dict.fromkeys(
+            cls._breakdown_lineage_values(
+                current_breakdown,
+                "pathfinder_source_seed_audit_recategorized_categories",
+                "pathfinder_source_seed_audit_recategorized_category",
+            )
+            + cls._breakdown_lineage_values(
+                incoming_breakdown,
+                "pathfinder_source_seed_audit_recategorized_categories",
+                "pathfinder_source_seed_audit_recategorized_category",
+            )
+        ))
+
+        primary_source = str(preferred_breakdown.get("pathfinder_source_keyword") or "")
+        primary_query = str(preferred_breakdown.get("pathfinder_search_query") or "")
+        primary_keywords = [primary_source]
+        if primary_query and primary_query != primary_source:
+            primary_keywords.append(primary_query)
+        current.matched_keywords = [
+            keyword
+            for keyword in dict.fromkeys(
+                primary_keywords + list(current.matched_keywords or []) + list(incoming.matched_keywords or [])
+            )
+            if keyword
+        ]
+
+        appearances = list(dict.fromkeys((current.sort_appearances or []) + (incoming.sort_appearances or [])))
+        current.sort_appearances = appearances
+        best_rank = min(
+            [rank for rank in (current.search_rank or 0, incoming.search_rank or 0) if rank > 0],
+            default=current.search_rank or incoming.search_rank or 0,
+        )
+        current.search_rank = best_rank
+        current.exposure_score = max(current.exposure_score or 0, incoming.exposure_score or 0)
+        current.priority_score = max(current.priority_score or 0, incoming.priority_score or 0)
+        current.like_count = max(current.like_count or 0, incoming.like_count or 0)
+        current.comment_count = max(current.comment_count or 0, incoming.comment_count or 0)
+        current.view_count = max(current.view_count or 0, incoming.view_count or 0)
+        current.search_total = max(current.search_total or 0, incoming.search_total or 0)
+        if prefer_incoming:
+            current.title = incoming.title or current.title
+            current.content_preview = incoming.content_preview or current.content_preview
+            current.search_sort = incoming.search_sort or current.search_sort
+            current.search_start = incoming.search_start or current.search_start
+            current.author = incoming.author or current.author
+            current.date_str = incoming.date_str or current.date_str
+
+        merged_breakdown = {**current_breakdown, **incoming_breakdown}
+        preferred_lineage_keys = (
+            "pathfinder_source_keyword",
+            "pathfinder_search_query",
+            "pathfinder_query_variant",
+            "pathfinder_query_variant_feedback_action",
+            "pathfinder_query_variant_feedback_factor",
+            "pathfinder_source_seed_audit_action",
+            "pathfinder_source_seed_audit_adjustment",
+            "pathfinder_source_seed_audit_recategorized_category",
+        )
+        if not prefer_incoming:
+            for key in preferred_lineage_keys:
+                if key in current_breakdown:
+                    merged_breakdown[key] = current_breakdown[key]
+        for key in preferred_lineage_keys:
+            if key in preferred_breakdown:
+                merged_breakdown[key] = preferred_breakdown[key]
+        merged_breakdown["pathfinder_query_variants"] = variants
+        merged_breakdown["pathfinder_search_queries"] = queries
+        merged_breakdown["pathfinder_source_keywords"] = sources
+        if audit_actions:
+            merged_breakdown["pathfinder_source_seed_audit_actions"] = audit_actions
+        if audit_recategorized_categories:
+            merged_breakdown["pathfinder_source_seed_audit_recategorized_categories"] = audit_recategorized_categories
+        merged_breakdown["pathfinder_duplicate_query_count"] = len(variants)
+        current.score_breakdown = merged_breakdown
+        return current
+
     def _apply_keyword_context(self, target: ViralTarget) -> ViralTarget:
         """Attach Pathfinder lineage to a search result before filtering/storage."""
         if not target.matched_keywords:
             return target
 
         ctx = None
+        source_keyword = ""
         for keyword in target.matched_keywords:
             ctx = self.keyword_context.get(keyword)
             if ctx:
+                source_keyword = keyword
                 break
         if not ctx:
-            self.keyword_context.update(self.seed_builder.keyword_context_for(target.matched_keywords))
+            if hasattr(self, "seed_builder") and self.seed_builder:
+                self.keyword_context.update(self.seed_builder.keyword_context_for(target.matched_keywords))
             for keyword in target.matched_keywords:
                 ctx = self.keyword_context.get(keyword)
                 if ctx:
+                    source_keyword = keyword
+                    break
+        if not ctx:
+            for keyword in target.matched_keywords:
+                ctx = self._planning_context_for_keyword(keyword)
+                if ctx:
+                    source_keyword = keyword
                     break
         if not ctx:
             return target
+        context_keyword = source_keyword or (target.matched_keywords[0] if target.matched_keywords else "")
+        context_source_keyword = str(ctx.get("pathfinder_source_keyword") or "").strip()
+        source_keyword = context_source_keyword or context_keyword
+        if source_keyword and source_keyword not in (target.matched_keywords or []):
+            target.matched_keywords = [
+                keyword
+                for keyword in dict.fromkeys([source_keyword] + list(target.matched_keywords or []))
+                if keyword
+            ]
+        source_signals = self._context_list(ctx, "source_signals_json")
+        quality_flags = self._context_list(ctx, "quality_flags_json")
+        insight_brief = self._pathfinder_candidate_insight_brief(ctx, source_signals, quality_flags)
+        existing_breakdown = target.score_breakdown or {}
+
+        def first_float(*values: Any, default: float = 0.0) -> float:
+            for value in values:
+                if value is None or value == "":
+                    continue
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+            return float(default)
+
+        local_service_fit = first_float(ctx.get("local_service_fit_score"))
+        content_actionability = first_float(ctx.get("content_actionability_score"))
+        axis_fit_score = first_float(
+            existing_breakdown.get("pathfinder_axis_fit_score"),
+            ctx.get("pathfinder_axis_fit_score"),
+            ctx.get("axis_fit_score"),
+            local_service_fit,
+        )
+        lens_fit_score = first_float(
+            existing_breakdown.get("pathfinder_lens_fit_score"),
+            ctx.get("pathfinder_lens_fit_score"),
+            ctx.get("lens_fit_score"),
+            content_actionability,
+        )
         target.source_scan_run_id = int(ctx.get("scan_run_id") or 0)
         target.matched_keyword_grade = ctx.get("grade") or ""
         target.matched_keyword_kei = float(ctx.get("kei") or 0)
         target.matched_keyword_priority = float(ctx.get("priority_v3") or 0)
-        target.matched_keyword_category = ctx.get("category") or ""
-        if (not target.category or target.category == "기타") and target.matched_keyword_category:
+        target.matched_keyword_category = canonical_category_for_keyword(
+            source_keyword,
+            ctx.get("category") or "",
+        )
+        current_category = GYULIM_KEYWORD_PROFILE.normalize_category(target.category or "")
+        canonical_target_category = canonical_category_for_keyword(
+            source_keyword,
+            current_category,
+        )
+        if (
+            target.matched_keyword_category
+            and (
+                not target.category
+                or current_category in {"기타", "한의원일반"}
+                or canonical_target_category == target.matched_keyword_category
+                or not GYULIM_KEYWORD_PROFILE.profile_for(current_category)
+            )
+        ):
             target.category = target.matched_keyword_category
+        target.score_breakdown = {
+            **existing_breakdown,
+            "pathfinder_source_keyword": source_keyword,
+            "pathfinder_context_keyword": context_keyword,
+            "pathfinder_search_query": (
+                existing_breakdown.get("pathfinder_search_query")
+                or (context_keyword if context_keyword != source_keyword else "")
+            ),
+            "pathfinder_query_variant": (
+                existing_breakdown.get("pathfinder_query_variant")
+                or ctx.get("pathfinder_query_variant")
+                or ""
+            ),
+            "pathfinder_viral_readiness_score": float(ctx.get("viral_readiness_score") or 0),
+            "pathfinder_local_service_fit_score": local_service_fit,
+            "pathfinder_content_actionability_score": content_actionability,
+            "pathfinder_axis_fit_score": axis_fit_score,
+            "pathfinder_lens_fit_score": lens_fit_score,
+            "pathfinder_medical_ad_risk_score": float(ctx.get("medical_ad_risk_score") or 0),
+            "pathfinder_community_signal": float(ctx.get("community_signal") or 0),
+            "pathfinder_conversion_signal": float(ctx.get("conversion_signal") or 0),
+            "pathfinder_profile_action_signal": float(ctx.get("profile_action_signal") or 0),
+            "pathfinder_availability_intent_score": float(ctx.get("availability_intent_score") or 0),
+            "pathfinder_payment_coverage_score": float(ctx.get("payment_coverage_score") or 0),
+            "pathfinder_access_convenience_score": float(ctx.get("access_convenience_score") or 0),
+            "pathfinder_preferred_search_surface": ctx.get("preferred_search_surface") or "",
+            "pathfinder_recommended_content_type": ctx.get("recommended_content_type") or "",
+            "pathfinder_brand_intent_type": ctx.get("brand_intent_type") or "generic",
+            "pathfinder_review_intent_type": ctx.get("review_intent_type") or "none",
+            "pathfinder_execution_lens": ctx.get("execution_lens") or "",
+            "pathfinder_source_signals": source_signals,
+            "pathfinder_quality_flags": quality_flags,
+            "pathfinder_insight_brief": insight_brief,
+            "pathfinder_staff_reviewed_count": int(ctx.get("historical_staff_reviewed_count") or 0),
+            "pathfinder_staff_accept_rate": float(ctx.get("historical_staff_accept_rate") or 0.0),
+            "pathfinder_staff_outcome_adjustment": float(ctx.get("staff_outcome_adjustment") or 0.0),
+            "pathfinder_source_seed_audit_action": ctx.get("source_seed_audit_action") or "",
+            "pathfinder_source_seed_audit_adjustment": float(ctx.get("source_seed_audit_adjustment") or 0.0),
+            "pathfinder_source_seed_audit_recategorized_category": (
+                ctx.get("source_seed_audit_recategorized_category") or ""
+            ),
+            "pathfinder_query_variant_feedback_action": (
+                existing_breakdown.get("pathfinder_query_variant_feedback_action")
+                or ctx.get("pathfinder_query_variant_feedback_action")
+                or ""
+            ),
+            "pathfinder_query_variant_feedback_factor": float(
+                existing_breakdown.get("pathfinder_query_variant_feedback_factor")
+                or ctx.get("pathfinder_query_variant_feedback_factor")
+                or 1.0
+            ),
+        }
         return target
 
     # ── 체크포인트 유틸 ────────────────────────────────────────────────
@@ -4291,6 +13162,699 @@ class ViralHunter:
                 break
         return loaded
 
+    BACKLOG_RESCUE_FILTERED_RETRY_STATUSES = {"filtered_out"}
+    BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES = {
+        "filtered_out_ad",
+        "filtered_out_ai",
+        "filtered_out_clinic_mismatch",
+        "filtered_out_journey_mismatch",
+        "filtered_out_low_intent",
+        "filtered_out_low_opportunity",
+        "filtered_out_stale_window",
+        "filtered_out_unqualified_lead",
+    }
+    BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE = 55.0
+    BACKLOG_DISCARDED_RETRY_MIN_SELECTION_SCORE = 120.0
+
+    @staticmethod
+    def _rescue_prior_status(target: ViralTarget, default: str = "raw_backlog") -> str:
+        """Return the original stored status for backlog/rediscovery rescue lineage."""
+        breakdown = target.score_breakdown if isinstance(target.score_breakdown, dict) else {}
+        for key in ("backlog_rescue_prior_status", "rediscovered_prior_status"):
+            status = str(breakdown.get(key) or "").strip()
+            if status:
+                return status
+        status = str(getattr(target, "comment_status", "") or "").strip()
+        return status or default
+
+    @staticmethod
+    def _rescue_cleaned_breakdown(score_breakdown: object) -> Tuple[str, Dict[str, Any]]:
+        """Preserve stale reject lineage while letting the current gate re-evaluate."""
+        breakdown = dict(score_breakdown or {}) if isinstance(score_breakdown, dict) else {}
+        prior_reject = _audit_current_reject_reason(breakdown)
+        for key in (
+            "final_reject_reason",
+            "pathfinder_fit_reject_reason",
+            "ad_signal_score",
+            "ad_signals",
+        ):
+            breakdown.pop(key, None)
+        return prior_reject, breakdown
+
+    @classmethod
+    def _backlog_discarded_retry_candidate_ready(
+        cls,
+        target: ViralTarget,
+        prior_status: str,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Strictly revive execution-ready rows that were discarded by status."""
+        status = str(prior_status or "").strip().lower()
+        if status not in cls.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES:
+            return False, "", {}
+
+        prior_reject, cleaned_breakdown = cls._rescue_cleaned_breakdown(target.score_breakdown)
+        import copy as _copy
+
+        retry_target = _copy.copy(target)
+        retry_target.score_breakdown = cleaned_breakdown
+        if CommentableFilter.final_reject_reason(retry_target):
+            return False, prior_reject, cleaned_breakdown
+
+        if float(getattr(retry_target, "priority_score", 0.0) or 0.0) < cls.REDISCOVERED_RETRY_MIN_PRIORITY:
+            return False, prior_reject, cleaned_breakdown
+        if _ai_target_breakdown_float(retry_target, "pathfinder_axis_fit_score") < cls.REDISCOVERED_RETRY_MIN_AXIS_FIT:
+            return False, prior_reject, cleaned_breakdown
+        if _ai_target_breakdown_float(retry_target, "pathfinder_lens_fit_score") < cls.REDISCOVERED_RETRY_MIN_LENS_FIT:
+            return False, prior_reject, cleaned_breakdown
+        if (
+            _ai_target_breakdown_float(retry_target, "reply_opportunity_score")
+            < cls.BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE
+        ):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_breakdown_text(retry_target, "pathfinder_source_keyword"):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_breakdown_text(retry_target, "pathfinder_query_variant"):
+            return False, prior_reject, cleaned_breakdown
+
+        _reply_metric_present, reply_ready = _ai_target_reply_workability_ready(retry_target)
+        if not reply_ready:
+            return False, prior_reject, cleaned_breakdown
+
+        text = _ai_target_content_text(retry_target)
+        compact_text = _compact_query_text(text)
+        if not compact_text:
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_treatment_signature_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_local_intent_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_patient_surface_matched(retry_target, text, compact_text):
+            return False, prior_reject, cleaned_breakdown
+        if not _ai_target_viral_action_route_matched(retry_target, compact_text):
+            return False, prior_reject, cleaned_breakdown
+
+        if _ai_target_selection_score(retry_target) < cls.BACKLOG_DISCARDED_RETRY_MIN_SELECTION_SCORE:
+            return False, prior_reject, cleaned_breakdown
+        return True, prior_reject, cleaned_breakdown
+
+    def _load_backlog_rescue_targets(
+        self,
+        limit: int,
+        exclude_urls: Optional[set] = None,
+        days: int = 21,
+        categories: Optional[Iterable[str]] = None,
+        source_scan_run_id: Optional[int] = None,
+    ) -> List[ViralTarget]:
+        """최근 raw_backlog/needs_ai_retry/무사유 고점 filtered_out을 AI 재심사 후보로 로드.
+
+        AI top-N 예산에 밀려 저장만 된 공급이 영구 사장되는 갭을 메운다. 점수순
+        정렬 후 `split_ai_targets_with_category_floor`로 카테고리 균형을 강제해
+        피부/교통사고 물량이 레스큐 예산까지 독식하지 못하게 한다. 재심사 결과는
+        AI 적합 → pending 승격, 부적합 → filtered_out_ai 영속화로 끝나므로 같은
+        행이 매 런 재레스큐되는 루프는 생기지 않는다. 기존 URL은 discovered_at이
+        오래되어도 현재 scan에서 last_scanned_at/source_scan_run_id가 갱신될 수
+        있으므로 최신성은 last_scanned_at을 우선한다.
+
+        무사유 filtered_out은 Pathfinder/로컬 필터가 이미 높은 축·렌즈·댓글기회
+        점수를 준 경우만 `_rediscovered_retry_candidate_ready`로 한 번 더 검증해
+        포함한다. 명시적인 광고/지역/오프도메인 탈락은 계속 제외한다.
+
+        ``categories`` 를 주면 해당 진료축으로 한정해 로드한다(시그니처 백로그 레인).
+        category-blind 정렬에서는 피부/다이어트 물량에 밀려 굶는 희소 축을, 확장
+        ``days`` 윈도우와 함께 별도 공급하는 용도. 카테고리명은 바인딩 파라미터로만
+        전달(상수이지만 인젝션 방지).
+        """
+        if limit <= 0:
+            return []
+        import sqlite3 as _sql
+
+        cats = [str(c).strip() for c in (categories or ()) if str(c).strip()]
+        cat_clause = ""
+        scan_clause = ""
+        discarded_retry_statuses = sorted(self.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES)
+        params: list = [
+            float(self.REDISCOVERED_RETRY_MIN_PRIORITY),
+            float(self.REDISCOVERED_RETRY_MIN_AXIS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_LENS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_REPLY_SCORE),
+            *discarded_retry_statuses,
+            float(self.REDISCOVERED_RETRY_MIN_PRIORITY),
+            float(self.REDISCOVERED_RETRY_MIN_AXIS_FIT),
+            float(self.REDISCOVERED_RETRY_MIN_LENS_FIT),
+            float(self.BACKLOG_DISCARDED_RETRY_MIN_REPLY_SCORE),
+            f"-{int(days)} days",
+        ]
+        if cats:
+            cat_clause = " AND COALESCE(NULLIF(matched_keyword_category, ''), NULLIF(category, ''), '') IN (%s)" % (
+                ",".join("?" * len(cats))
+            )
+            params.extend(cats)
+        if source_scan_run_id is not None:
+            scan_clause = " AND COALESCE(source_scan_run_id, 0) = ?"
+            params.append(int(source_scan_run_id or 0))
+        params.append(max(int(limit) * 6, 200))
+
+        rows = []
+        try:
+            conn = _sql.connect(self.db.db_path)
+            conn.row_factory = _sql.Row
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM viral_targets
+                WHERE (
+                    (
+                        COALESCE(comment_status, 'pending') IN ('raw_backlog', 'needs_ai_retry')
+                        AND COALESCE(is_commentable, 1) = 1
+                    )
+                    OR (
+                        COALESCE(comment_status, '') = 'filtered_out'
+                        AND COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.final_reject_reason')
+                            END,
+                            ''
+                        ) = ''
+                        AND COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_fit_reject_reason')
+                            END,
+                            ''
+                        ) = ''
+                        AND CAST(COALESCE(priority_score, 0) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_axis_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_lens_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.reply_opportunity_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                    )
+                    OR (
+                        COALESCE(comment_status, '') IN ({",".join("?" for _ in discarded_retry_statuses)})
+                        AND CAST(COALESCE(priority_score, 0) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_axis_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.pathfinder_lens_fit_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                        AND CAST(COALESCE(
+                            CASE WHEN json_valid(COALESCE(score_breakdown, '{{}}'))
+                                 THEN json_extract(score_breakdown, '$.reply_opportunity_score')
+                            END,
+                            0
+                        ) AS REAL) >= ?
+                    )
+                )
+                  AND REPLACE(
+                        COALESCE(NULLIF(last_scanned_at, ''), NULLIF(discovered_at, ''), ''),
+                        'T',
+                        ' '
+                      ) >= datetime('now', ?){cat_clause}
+                  {scan_clause}
+                ORDER BY COALESCE(priority_score, 0) DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"백로그 레스큐 후보 로드 실패: {e}")
+            return []
+
+        excluded = exclude_urls or set()
+        candidates: List[ViralTarget] = []
+        seen_keys: set = set()
+        for row in rows:
+            target = self._viral_target_from_db_row(row)
+            if not target.url:
+                continue
+            prior_status = str(row["comment_status"] or "").strip().lower()
+            if prior_status in self.BACKLOG_RESCUE_FILTERED_RETRY_STATUSES:
+                if not self._rediscovered_retry_candidate_ready(target, prior_status):
+                    continue
+                target.comment_status = "needs_ai_retry"
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "backlog_filtered_retry_lane": True,
+                    "backlog_rescue_prior_status": prior_status,
+                }
+            elif prior_status in self.BACKLOG_RESCUE_DISCARDED_RETRY_STATUSES:
+                ready, prior_reject, cleaned_breakdown = self._backlog_discarded_retry_candidate_ready(
+                    target,
+                    prior_status,
+                )
+                if not ready:
+                    continue
+                target.comment_status = "needs_ai_retry"
+                target.score_breakdown = {
+                    **cleaned_breakdown,
+                    "backlog_discarded_retry_lane": True,
+                    "backlog_rescue_prior_status": prior_status,
+                    "backlog_rescue_prior_reject_reason": prior_reject,
+                }
+            key = canonicalize_viral_url(target.url) or target.url
+            if key in excluded or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            candidates.append(target)
+
+        # 레스큐 예산(기본 60)은 top-N(300) 기준 floor보다 훨씬 작아, 원본 쿼터를
+        # 그대로 쓰면 피부/교통사고 floor가 예산을 다 소진해 희소축(안면비대칭,
+        # 통증/디스크)이 한 건도 못 들어온다 — 예산 비례로 floor를 축소한다.
+        scale = min(1.0, int(limit) / 300.0)
+        scaled_quotas = {
+            category: max(2, int(round(quota * scale)))
+            for category, quota in AI_CATEGORY_MIN_QUOTAS.items()
+        }
+        selected, _rest = split_ai_targets_with_category_floor(
+            candidates,
+            int(limit),
+            category_min_quotas=scaled_quotas,
+        )
+        return selected
+
+    ENRICHABLE_BODY_PLATFORMS = {"kin", "blog", "cafe", "naver_cafe"}
+
+    def _enrich_and_regate_ai_targets(
+        self,
+        ai_targets: List[ViralTarget],
+        *,
+        max_fetch: int = 120,
+        time_budget_sec: float = 150.0,
+        min_existing_chars: int = 300,
+        fetcher=None,
+        sleep_sec: float = 0.35,
+    ) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """AI 분석 직전, 공개 표면(KIN/blog) 타겟의 실제 본문을 취득하고 게이트 재검사.
+
+        검색 API snippet(~150자)만으로는 UNIFIED_ANALYSIS_PREVIEW_CHARS(700자)의
+        설계 의도가 무력하다 — KIN 광고성 답변과 blog 광고 본문 신호는 대부분
+        snippet 밖에 있다(라이브 검증: pending 큐의 blog 광고글 2건, KIN 업체
+        답변 다수가 snippet 이후 구간에서만 식별 가능). enrichment 후 최종
+        게이트를 다시 통과시켜 드러난 광고를 AI 예산 소모 전에 제거한다.
+        cafe는 공개 카페만 article API로 취득(멤버 전용 401 → 빈 결과 fail-soft);
+        로그인 필요한 카페는 scripts/enrich_cafe_bodies.py(Selenium) 수동 경로 유지.
+        """
+        stats = {
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
+        if not ai_targets or max_fetch <= 0:
+            return ai_targets, stats
+
+        started = time.time()
+        for target in ai_targets:
+            if stats["fetched"] >= max_fetch or (time.time() - started) > time_budget_sec:
+                break
+            if (target.platform or "").lower() not in self.ENRICHABLE_BODY_PLATFORMS:
+                continue
+            if len(target.content_preview or "") >= min_existing_chars:
+                continue
+            if not target.url:
+                continue
+            stats["fetched"] += 1
+            detail = fetch_naver_post_detail(target.url, target.platform, fetcher=fetcher)
+            if fetcher is None and sleep_sec:
+                time.sleep(sleep_sec)
+
+            # 게시일/참여 지표는 본문 개선 여부와 무관하게 채운다 — 검색 API가
+            # KIN/cafe 게시일을 주지 않아 타이밍 게이트가 장님이었던 지점.
+            if detail["posted_date"] and not target.date_str:
+                target.date_str = detail["posted_date"]
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "post_date_enriched": detail["posted_date"],
+                }
+                stats["dated"] += 1
+            for key in ("comment_count", "view_count"):
+                value = detail.get(key)
+                if value is not None:
+                    setattr(target, key, max(int(getattr(target, key, 0) or 0), int(value)))
+
+            body = detail["body"]
+            if len(body) <= len(target.content_preview or ""):
+                continue
+            target.content_preview = body
+            target.score_breakdown = {
+                **(target.score_breakdown or {}),
+                "body_enriched": target.platform,
+            }
+            stats["enriched"] += 1
+
+        # enrichment 으로 실제 참여 지표(comment/view)가 밝혀진 타겟은 worksite 포화/미답변
+        # 신호를 실제 수치로 보정한다 — 선택 시점엔 0이라 死코드였다(no-op when counts=0).
+        for target in ai_targets:
+            if self._resaturate_worksite_after_enrichment(target):
+                stats["worksite_resaturated"] = stats.get("worksite_resaturated", 0) + 1
+
+        # 보강된 타겟만 게이트 재검사 — 미보강 타겟은 같은 증거로 이미 통과했다.
+        # KIN [기존답변] 분리는 final_reject_reason 본체가 모든 호출 경로에서
+        # 일관되게 수행한다 (여기서 별도 분리하지 않는다).
+        kept: List[ViralTarget] = []
+        for target in ai_targets:
+            breakdown = target.score_breakdown or {}
+            if not (breakdown.get("body_enriched") or breakdown.get("post_date_enriched")):
+                kept.append(target)
+                continue
+            if breakdown.get("body_enriched"):
+                reject_reason = CommentableFilter.apply_final_reject(target)
+                if reject_reason:
+                    if reject_reason == "stale_window":
+                        stats["stale_rejected"] += 1
+                    else:
+                        stats["regate_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(target.to_dict())
+                    except Exception as e:
+                        logger.warning(f"enrichment 게이트 제외 상태 저장 실패: {e}")
+                    continue
+            # 게시일이 새로 밝혀진 타겟은 타이밍 윈도우를 실제 날짜로 재판정.
+            # 발견 시점에는 no_post_date 경로로 '발견 직후 신선' 보너스를 받았다.
+            if breakdown.get("post_date_enriched") and not self._timing_regate_keep(target):
+                stats["stale_rejected"] += 1
+                try:
+                    self.db.insert_viral_target(target.to_dict())
+                except Exception as e:
+                    logger.warning(f"enrichment 타이밍 제외 상태 저장 실패: {e}")
+                continue
+            kept.append(target)
+        return kept, stats
+
+    def _refill_ai_targets_after_enrichment(
+        self,
+        ai_targets: List[ViralTarget],
+        rest_targets: List[ViralTarget],
+        *,
+        target_count: int,
+        max_fetch: int = 0,
+        fetcher=None,
+    ) -> Tuple[List[ViralTarget], List[ViralTarget], Dict[str, int]]:
+        """Backfill AI budget after enrichment/regate removes selected candidates."""
+        stats = {
+            "attempted": 0, "kept": 0, "rejected": 0,
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
+        if target_count <= 0 or len(ai_targets) >= target_count or not rest_targets:
+            return ai_targets, rest_targets, stats
+
+        selected_keys = {
+            canonicalize_viral_url(target.url) or target.url or target.id
+            for target in ai_targets
+        }
+        pool = [
+            target for target in sorted(rest_targets, key=_ai_target_sort_key, reverse=True)
+            if (canonicalize_viral_url(target.url) or target.url or target.id) not in selected_keys
+        ]
+        attempted_keys: set[str] = set()
+        fetch_budget = max(0, int(max_fetch or 0))
+
+        while len(ai_targets) < target_count and pool:
+            candidate = pool.pop(0)
+            key = canonicalize_viral_url(candidate.url) or candidate.url or candidate.id
+            if not key or key in attempted_keys or key in selected_keys:
+                continue
+            attempted_keys.add(key)
+            stats["attempted"] += 1
+
+            batch = [candidate]
+            if fetch_budget > 0:
+                kept_batch, enrich_stats = self._enrich_and_regate_ai_targets(
+                    batch,
+                    max_fetch=fetch_budget,
+                    fetcher=fetcher,
+                    sleep_sec=0.0 if fetcher is not None else 0.35,
+                )
+                for stat_key in ("fetched", "enriched", "dated", "regate_rejected", "stale_rejected"):
+                    value = int(enrich_stats.get(stat_key, 0) or 0)
+                    stats[stat_key] += value
+                fetch_budget = max(0, fetch_budget - int(enrich_stats.get("fetched", 0) or 0))
+            else:
+                kept_batch = batch
+
+            if kept_batch:
+                kept = kept_batch[0]
+                ai_targets.append(kept)
+                selected_keys.add(key)
+                stats["kept"] += 1
+            else:
+                stats["rejected"] += 1
+
+        remaining_rest = [
+            target for target in rest_targets
+            if (canonicalize_viral_url(target.url) or target.url or target.id) not in attempted_keys
+        ]
+        ai_targets.sort(key=_ai_target_sort_key, reverse=True)
+        return ai_targets, remaining_rest, stats
+
+    def _refill_ai_targets_from_discarded_after_enrichment(
+        self,
+        ai_targets: List[ViralTarget],
+        *,
+        target_count: int,
+        source_scan_run_id: Optional[int] = None,
+        exclude_urls: Optional[set] = None,
+        max_fetch: int = 0,
+        fetcher=None,
+    ) -> Tuple[List[ViralTarget], Dict[str, int]]:
+        """Refill depleted AI budget from strict backlog/discarded retry lanes.
+
+        Enrichment can reveal stale dates or full-body ad signals after the normal
+        top-N/backlog lanes have already spent their supply. This late refill keeps
+        the same final gates, but gives execution-ready discarded rows one more
+        chance to consume the AI budget that would otherwise go unused.
+        """
+        stats = {
+            "attempted": 0, "kept": 0, "rejected": 0, "gate_rejected": 0, "timing_rejected": 0,
+            "signature_attempted": 0, "signature_kept": 0, "signature_rejected": 0,
+            "general_attempted": 0, "general_kept": 0, "general_rejected": 0,
+            "fetched": 0, "enriched": 0, "dated": 0,
+            "regate_rejected": 0, "stale_rejected": 0,
+        }
+        if target_count <= 0 or len(ai_targets) >= target_count:
+            return ai_targets, stats
+
+        selected_keys = {
+            canonicalize_viral_url(target.url) or target.url or target.id
+            for target in ai_targets
+        }
+        selected_keys.update(str(url) for url in (exclude_urls or set()) if str(url))
+        fetch_budget = max(0, int(max_fetch or 0))
+
+        def _try_add(candidates: List[ViralTarget], lane: str) -> None:
+            nonlocal fetch_budget
+            for candidate in candidates:
+                if len(ai_targets) >= target_count:
+                    break
+                key = canonicalize_viral_url(candidate.url) or candidate.url or candidate.id
+                if not key or key in selected_keys:
+                    continue
+                selected_keys.add(key)
+                stats["attempted"] += 1
+                stats[f"{lane}_attempted"] += 1
+
+                prior_status = self._rescue_prior_status(candidate)
+                breakdown = candidate.score_breakdown if isinstance(candidate.score_breakdown, dict) else {}
+                candidate.score_breakdown = {
+                    **breakdown,
+                    "rescued_from": prior_status,
+                    "post_enrichment_rescue_lane": True,
+                }
+                if lane == "signature":
+                    candidate.score_breakdown["signature_backlog_lane"] = True
+
+                reject_reason = CommentableFilter.apply_final_reject(candidate)
+                if reject_reason:
+                    stats["gate_rejected"] += 1
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(candidate.to_dict())
+                    except Exception as e:
+                        logger.warning(f"post-enrichment 레스큐 게이트 제외 상태 저장 실패: {e}")
+                    continue
+
+                has_known_post_date = bool(
+                    getattr(candidate, "date_str", "") or getattr(candidate, "posted_at", "")
+                )
+                if (prior_status == "filtered_out_stale_window" or has_known_post_date) and not (
+                    self._timing_regate_keep(candidate)
+                ):
+                    stats["timing_rejected"] += 1
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+                    try:
+                        self.db.insert_viral_target(candidate.to_dict())
+                    except Exception as e:
+                        logger.warning(f"post-enrichment 레스큐 타이밍 제외 상태 저장 실패: {e}")
+                    continue
+
+                candidate.comment_status = "pending"
+                batch = [candidate]
+                if fetch_budget > 0:
+                    kept_batch, enrich_stats = self._enrich_and_regate_ai_targets(
+                        batch,
+                        max_fetch=fetch_budget,
+                        fetcher=fetcher,
+                        sleep_sec=0.0 if fetcher is not None else 0.35,
+                    )
+                    for stat_key in ("fetched", "enriched", "dated", "regate_rejected", "stale_rejected"):
+                        value = int(enrich_stats.get(stat_key, 0) or 0)
+                        stats[stat_key] += value
+                    fetch_budget = max(0, fetch_budget - int(enrich_stats.get("fetched", 0) or 0))
+                else:
+                    kept_batch = batch
+
+                if kept_batch:
+                    ai_targets.append(kept_batch[0])
+                    stats["kept"] += 1
+                    stats[f"{lane}_kept"] += 1
+                else:
+                    stats["rejected"] += 1
+                    stats[f"{lane}_rejected"] += 1
+
+        deficit = target_count - len(ai_targets)
+        try:
+            signature_candidates = self._load_backlog_rescue_targets(
+                deficit,
+                selected_keys,
+                days=SIGNATURE_BACKLOG_RESCUE_DAYS,
+                categories=SIGNATURE_BACKLOG_AXES,
+                source_scan_run_id=source_scan_run_id,
+            )
+            _try_add(signature_candidates, "signature")
+        except Exception as e:
+            logger.warning(f"post-enrichment 시그니처 레스큐 후보 로드 실패: {e}")
+
+        if len(ai_targets) < target_count:
+            try:
+                general_candidates = self._load_backlog_rescue_targets(
+                    target_count - len(ai_targets),
+                    selected_keys,
+                    source_scan_run_id=source_scan_run_id,
+                )
+                _try_add(general_candidates, "general")
+            except Exception as e:
+                logger.warning(f"post-enrichment 일반 레스큐 후보 로드 실패: {e}")
+
+        ai_targets.sort(key=_ai_target_sort_key, reverse=True)
+        return ai_targets, stats
+
+    @staticmethod
+    def _resaturate_worksite_after_enrichment(target: ViralTarget) -> bool:
+        """enrichment 으로 실제 comment_count/view_count 가 밝혀진 뒤, 선택 시점엔 0으로
+        계산돼 死코드였던 worksite '미답변/포화' 신호를 실제 수치로 보정한다.
+
+        선택 게이트에서는 모든 글이 comment_count=0 → unanswered_thread(+16)을 받아
+        포화(답변 多)·미답변 스레드가 동일 점수였다(라이브: 골든큐 노후/포화 오염, 0건
+        최근발견). worksite_efficiency_score 는 골든큐 1차 정렬키이므로 보정 가치가 크다.
+        같은 인자로 (실수치) vs (0) 두 번 호출해 count 기여분 델타만 정확히 떼어
+        점수·priority 에 반영한다 — count 분기가 standalone 이라 다른 항은 상쇄돼 인자
+        복원 불완전성과 무관하게 정확하다. 포화 스레드는 정렬 하향 + priority 컷(>=80)
+        탈락이 가능해진다. 반환값=보정 적용 여부(테스트/감사용).
+        """
+        breakdown = target.score_breakdown or {}
+        if "worksite_efficiency_score" not in breakdown:
+            return False
+        if breakdown.get("worksite_saturation_regated_after_enrichment"):
+            return False  # 재실행(refill 경로) 중복 적용 방지
+        real_cc = max(0, int(getattr(target, "comment_count", 0) or 0))
+        real_vc = max(0, int(getattr(target, "view_count", 0) or 0))
+        if real_cc == 0 and real_vc == 0:
+            return False  # 밝혀진 참여 지표 없음 → 선택 시점과 동일, 보정 불필요
+
+        def _csv(key: str) -> List[str]:
+            return [s for s in str(breakdown.get(key, "") or "").split(",") if s]
+
+        def _ival(key: str) -> int:
+            try:
+                return int(float(breakdown.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        args = (
+            _ival("clinic_treatment_fit_score"),
+            _ival("viral_need_score"),
+            _csv("viral_need_signals"),
+            _ival("reply_opportunity_score"),
+            _csv("reply_opportunity_signals"),
+            _ival("timing_window_score"),
+            _csv("timing_window_signals"),
+            _ival("journey_fit_score"),
+            str(breakdown.get("journey_stage", "") or ""),
+            _ival("qualification_fit_score"),
+            _csv("reply_risk_flags"),
+        )
+        real_score = CommentableFilter._assess_worksite_efficiency(target, *args)[0]
+        orig_cc, orig_vc = getattr(target, "comment_count", 0), getattr(target, "view_count", 0)
+        target.comment_count, target.view_count = 0, 0
+        try:
+            zero_score = CommentableFilter._assess_worksite_efficiency(target, *args)[0]
+        finally:
+            target.comment_count, target.view_count = orig_cc, orig_vc
+
+        delta = float(real_score) - float(zero_score)
+        old_wk = float(breakdown.get("worksite_efficiency_score", 0) or 0)
+        old_adj = float(breakdown.get("worksite_efficiency_adjustment", 0) or 0)
+        new_wk = old_wk + delta
+        # priority 합성과 동일한 공식(filter): clamp((wk-55)*0.35, -20, 20)
+        new_adj = max(-20.0, min(20.0, (new_wk - 55.0) * 0.35))
+        target.priority_score = max(
+            0.0, float(getattr(target, "priority_score", 0) or 0) + (new_adj - old_adj)
+        )
+        target.score_breakdown = {
+            **breakdown,
+            "worksite_efficiency_score": new_wk,
+            "worksite_efficiency_adjustment": new_adj,
+            "worksite_saturation_regated_after_enrichment": True,
+        }
+        return True
+
+    @staticmethod
+    def _timing_regate_keep(target: ViralTarget) -> bool:
+        """게시일 enrichment 후 타이밍 윈도우 재판정. 미달이면 타겟을 만료 상태로 바꾼다.
+
+        viral_need/reply_opportunity 신호는 발견 시점 score_breakdown에 콤마 문자열로
+        남아 있어 그대로 복원한다 (rescue 경로 등 신호가 없으면 빈 리스트 fail-soft).
+        """
+        breakdown = target.score_breakdown or {}
+        need_signals = [s for s in str(breakdown.get("viral_need_signals", "")).split(",") if s]
+        reply_signals = [s for s in str(breakdown.get("reply_opportunity_signals", "")).split(",") if s]
+        score, tier, signals = CommentableFilter._assess_timing_window(
+            target, need_signals, reply_signals
+        )
+        target.score_breakdown = {
+            **breakdown,
+            "timing_window_score": float(score),
+            "timing_window_tier": tier,
+            "timing_window_signals": ",".join(signals),
+            "timing_regated_after_date_enrichment": True,
+        }
+        if score >= CommentableFilter.MIN_TIMING_WINDOW_SCORE:
+            return True
+        target.is_commentable = False
+        target.comment_status = "filtered_out_stale_window"
+        return False
+
     @staticmethod
     def _noise_key(text: str) -> str:
         normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
@@ -4359,6 +13923,235 @@ class ViralHunter:
                     urls.append(target.url)
         return urls
 
+    def _load_existing_viral_statuses_by_urls(self, urls: List[str]) -> Dict[str, str]:
+        """Return stored workflow status for input URLs matched by raw or canonical URL."""
+        compact_urls = [u for u in dict.fromkeys(urls) if u]
+        if not compact_urls:
+            return {}
+
+        url_to_canonical = {
+            url: canonicalize_viral_url(url)
+            for url in compact_urls
+        }
+        found_by_key: Dict[str, str] = {}
+
+        db_path = str(getattr(getattr(self, "db", None), "db_path", "") or "")
+        if not db_path:
+            return {}
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                for start in range(0, len(compact_urls), 500):
+                    raw_chunk = compact_urls[start:start + 500]
+                    canonical_chunk = [
+                        value
+                        for value in dict.fromkeys(url_to_canonical.get(url) for url in raw_chunk)
+                        if value
+                    ]
+                    where_parts: List[str] = []
+                    params: List[str] = []
+                    if raw_chunk:
+                        where_parts.append(f"url IN ({','.join('?' for _ in raw_chunk)})")
+                        params.extend(raw_chunk)
+                    if canonical_chunk:
+                        where_parts.append(f"canonical_url IN ({','.join('?' for _ in canonical_chunk)})")
+                        params.extend(canonical_chunk)
+                    if not where_parts:
+                        continue
+                    rows = cur.execute(
+                        f"""
+                        SELECT url, canonical_url, comment_status
+                        FROM viral_targets
+                        WHERE {' OR '.join(where_parts)}
+                        """,
+                        params,
+                    ).fetchall()
+                    for row in rows:
+                        status = str(row["comment_status"] or "pending").strip() or "pending"
+                        raw_url = str(row["url"] or "").strip()
+                        canonical_url = str(row["canonical_url"] or "").strip()
+                        if raw_url:
+                            found_by_key[raw_url] = status
+                        if canonical_url:
+                            found_by_key[canonical_url] = status
+        except Exception as e:
+            logger.warning(f"Rediscovered status lookup failed: {e}")
+            return {}
+
+        return {
+            url: found_by_key.get(url) or found_by_key.get(url_to_canonical.get(url, "")) or ""
+            for url in compact_urls
+        }
+
+    @classmethod
+    def _rediscovered_retry_candidate_ready(cls, target: ViralTarget, prior_status: str) -> bool:
+        """Only revive eligible generic rediscoveries for another AI pass.
+
+        A stale-window decision is terminal for the same URL.  A new SERP
+        observation must not silently turn it into a fresh AI candidate.
+        """
+        status = str(prior_status or "").strip().lower()
+        if status not in cls.REDISCOVERED_RETRY_STATUSES:
+            return False
+
+        breakdown = target.score_breakdown or {}
+        if not isinstance(breakdown, dict):
+            breakdown = {}
+        prior_reject = str(
+            breakdown.get("final_reject_reason")
+            or breakdown.get("pathfinder_fit_reject_reason")
+            or ""
+        ).strip()
+        if prior_reject:
+            return False
+        if CommentableFilter.final_reject_reason(target):
+            return False
+        timing_tier = _ai_target_breakdown_text(target, "timing_window_tier").lower()
+        timing_signals = set(_ai_target_breakdown_terms(target, "timing_window_signals"))
+        timing_score_known = "timing_window_score" in breakdown
+        timing_score = _ai_target_breakdown_float(target, "timing_window_score")
+        if breakdown.get("timing_regated_after_date_enrichment") and (
+            timing_tier == "stale"
+            or (
+                timing_score_known
+                and timing_score < CommentableFilter.MIN_TIMING_WINDOW_SCORE
+            )
+        ):
+            return False
+        if "post_age_exceeds_ttl" in timing_signals:
+            return False
+
+        priority = float(getattr(target, "priority_score", 0.0) or 0.0)
+        if priority < cls.REDISCOVERED_RETRY_MIN_PRIORITY:
+            return False
+        if _ai_target_breakdown_float(target, "pathfinder_axis_fit_score") < cls.REDISCOVERED_RETRY_MIN_AXIS_FIT:
+            return False
+        if _ai_target_breakdown_float(target, "pathfinder_lens_fit_score") < cls.REDISCOVERED_RETRY_MIN_LENS_FIT:
+            return False
+        if _ai_target_breakdown_float(target, "reply_opportunity_score") < cls.REDISCOVERED_RETRY_MIN_REPLY_SCORE:
+            return False
+        if _ai_target_breakdown_terms(target, "reply_risk_flags"):
+            return False
+        if _ai_target_breakdown_float(target, "manual_review") > 0:
+            return False
+        if _ai_target_breakdown_float(target, "reply_risk_penalty") <= -40.0:
+            return False
+        return _ai_target_selection_score(target) >= cls.REDISCOVERED_RETRY_MIN_SELECTION_SCORE
+
+    def _select_rediscovered_retry_targets(self, duplicate_targets: List[ViralTarget]) -> List[ViralTarget]:
+        if not duplicate_targets:
+            return []
+
+        statuses = self._load_existing_viral_statuses_by_urls([t.url for t in duplicate_targets if t.url])
+        candidates: List[ViralTarget] = []
+        for target in duplicate_targets:
+            prior_status = statuses.get(target.url, "")
+            if not self._rediscovered_retry_candidate_ready(target, prior_status):
+                continue
+            target.comment_status = "pending"
+            target.score_breakdown = {
+                **(target.score_breakdown or {}),
+                "rediscovered_retry_lane": True,
+                "rediscovered_prior_status": prior_status,
+            }
+            candidates.append(target)
+
+        candidates.sort(key=_ai_target_sort_key, reverse=True)
+        return candidates[: self.REDISCOVERED_RETRY_MAX_CANDIDATES]
+
+    def _hydrate_known_post_dates(self, targets: List[ViralTarget]) -> int:
+        """Reuse a valid stored post date when the current SERP result omits one.
+
+        Rediscovered URLs are deliberately evaluated again before their existing
+        workflow state is refreshed.  The search API often omits a KIN/cafe post
+        date, though, which used to make a previously dated old post look like a
+        newly discovered no-date post at the timing gate.  Only fill a missing or
+        unparseable incoming value; a valid current search date remains primary.
+        """
+        if not targets:
+            return 0
+
+        target_by_key: Dict[str, List[ViralTarget]] = {}
+        for target in targets:
+            for key in (target.url, canonicalize_viral_url(target.url)):
+                if key:
+                    target_by_key.setdefault(key, []).append(target)
+        if not target_by_key:
+            return 0
+
+        db_path = os.path.join(self.cfg.root_dir, "db", "marketing_data.db")
+        if not os.path.exists(db_path):
+            return 0
+
+        known_dates: Dict[str, str] = {}
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            if not {"url", "posted_at"}.issubset(columns):
+                conn.close()
+                return 0
+
+            keys = list(target_by_key)
+            has_canonical_url = "canonical_url" in columns
+            for start in range(0, len(keys), 400):
+                chunk = keys[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                where = [f"url IN ({placeholders})"]
+                params: List[str] = list(chunk)
+                if has_canonical_url:
+                    where.append(f"canonical_url IN ({placeholders})")
+                    params.extend(chunk)
+                rows = conn.execute(
+                    "SELECT url, "
+                    + ("canonical_url, " if has_canonical_url else "")
+                    + "posted_at FROM viral_targets WHERE "
+                    + " OR ".join(where),
+                    params,
+                ).fetchall()
+                for row in rows:
+                    posted_at = str(row["posted_at"] or "").strip()
+                    if not CommentableFilter._parse_datetime(posted_at, datetime.now()):
+                        continue
+                    for key in (row["url"], row["canonical_url"] if has_canonical_url else ""):
+                        if key:
+                            known_dates[key] = posted_at
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Known post-date hydration skipped: {e}")
+            return 0
+
+        hydrated = 0
+        now = datetime.now()
+        updated_ids: set[str] = set()
+        for key, targets_for_key in target_by_key.items():
+            stored_date = known_dates.get(key)
+            if not stored_date:
+                continue
+            for target in targets_for_key:
+                if target.id in updated_ids:
+                    continue
+                incoming_date = str(target.date_str or "").strip()
+                if CommentableFilter._parse_datetime(incoming_date, now):
+                    continue
+                target.date_str = stored_date
+                target.score_breakdown = {
+                    **(target.score_breakdown or {}),
+                    "post_date_reused_from_db": stored_date,
+                }
+                updated_ids.add(target.id)
+                hydrated += 1
+        if hydrated:
+            logger.info("Hydrated stored post dates for %s rediscovered targets", hydrated)
+        return hydrated
+
     def _exclude_existing_targets_before_ai(
         self,
         targets: List[ViralTarget],
@@ -4397,6 +14190,13 @@ class ViralHunter:
 
         duplicate_targets = [t for t in targets if t.url in existing_urls]
         fresh_targets = [t for t in targets if t.url not in existing_urls]
+        retry_targets = self._select_rediscovered_retry_targets(duplicate_targets)
+        if retry_targets:
+            fresh_targets = fresh_targets + retry_targets
+            print(
+                f"   Rediscovered retry lane: {len(retry_targets)} eligible "
+                f"generic-filter targets re-entered AI candidates"
+            )
 
         refreshed = 0
         try:
@@ -4413,11 +14213,452 @@ class ViralHunter:
         )
         return fresh_targets, len(duplicate_targets) + in_batch_duplicates
 
+    def _persist_viral_discovery_audit(
+        self,
+        run_started_at: str,
+        *,
+        source_scan_run_id: Optional[int] = None,
+        keyword_count: int = 0,
+        execution_queue_stats: Optional[Dict[str, int]] = None,
+        run_funnel: Optional[Dict[str, int]] = None,
+        db_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist this run's funnel yield by axis, query variant, and query structure.
+
+        Console funnel stats vanish with the terminal; this keeps per-category and
+        per-structure discovery quality queryable (viral_scan_audits) so seed review
+        and the next exploration pass can see where SERP budget actually converted
+        into workable targets.
+        """
+        import sqlite3
+
+        path = db_path or os.path.join(self.cfg.root_dir, 'db', 'marketing_data.db')
+        conn = sqlite3.connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            target_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(viral_targets)").fetchall()
+            }
+            time_filters: List[str] = []
+            time_params: List[str] = []
+            if "discovered_at" in target_columns:
+                time_filters.append("REPLACE(COALESCE(discovered_at, ''), 'T', ' ') >= ?")
+                time_params.append(run_started_at)
+            if "last_scanned_at" in target_columns:
+                time_filters.append("REPLACE(COALESCE(last_scanned_at, ''), 'T', ' ') >= ?")
+                time_params.append(run_started_at)
+            if not time_filters:
+                return None
+
+            timestamp_selects = []
+            for column in ("discovered_at", "last_scanned_at"):
+                if column in target_columns:
+                    timestamp_selects.append(column)
+                else:
+                    timestamp_selects.append(f"'' AS {column}")
+            where_sql = f"({' OR '.join(time_filters)})"
+            query_params: List[Any] = list(time_params)
+            if source_scan_run_id is not None and "source_scan_run_id" in target_columns:
+                where_sql += " AND COALESCE(source_scan_run_id, 0) = ?"
+                query_params.append(int(source_scan_run_id or 0))
+            rows = conn.execute(
+                f"""
+                SELECT category, comment_status, matched_keyword, matched_keywords,
+                       matched_keyword_category, score_breakdown,
+                       {", ".join(timestamp_selects)}
+                FROM viral_targets
+                WHERE {where_sql}
+                """,
+                tuple(query_params),
+            ).fetchall()
+
+            def _bucket_status(status: str) -> str:
+                if status in AUDIT_ACTIONABLE_STATUSES:
+                    return 'pending'
+                if status == 'raw_backlog':
+                    return 'raw_backlog'
+                if status == 'filtered_out_ad':
+                    return 'ad_filtered'
+                if status.startswith('filtered_out'):
+                    return 'rejected'
+                return 'other'
+
+            empty_entry = {
+                'discovered': 0, 'fresh_discovered': 0,
+                'pending': 0, 'fresh_pending': 0, 'rediscovered_pending': 0,
+                'open_pending': 0, 'ai_filtered': 0,
+                'raw_backlog': 0, 'ad_filtered': 0, 'rejected': 0,
+                'other': 0, 'rediscovered': 0,
+                'current_rejected_legacy_actionable': 0,
+                'current_rejected_legacy_survivor': 0,
+            }
+            per_category: Dict[str, Dict[str, int]] = {}
+            per_variant: Dict[str, Dict[str, int]] = {}
+            per_category_lens: Dict[str, Dict[str, int]] = {}
+            per_category_lens_variant: Dict[str, Dict[str, int]] = {}
+            per_structure: Dict[str, Dict[str, int]] = {}
+            per_seed: Dict[str, Dict[str, int]] = {}
+            # 축별×거절사유 퍼널 분해 — '어느 진료축이 어느 사유로 발견을 잃는가'를 상시
+            # 측정해 수동 SQL 포렌식을 시스템 역량으로 만든다(예: 흉터가 region_mismatch
+            # 31%·off_domain 29% 로 잃음 → 게이트 버그가 아니라 로컬 키워드 검색의 본질,
+            # 또는 안면비대칭이 domain_mismatch 로 잃으면 의미 구제 enable 신호).
+            per_category_reject_reason: Dict[str, Dict[str, int]] = {}
+            for row in rows:
+                try:
+                    breakdown = json.loads(row['score_breakdown'] or '{}')
+                except (TypeError, ValueError):
+                    breakdown = {}
+                if not isinstance(breakdown, dict):
+                    breakdown = {}
+                source_keyword = str(breakdown.get('pathfinder_source_keyword') or '').strip()
+                if not source_keyword:
+                    try:
+                        parsed = json.loads(row['matched_keywords'] or '[]')
+                    except (TypeError, ValueError):
+                        parsed = []
+                    if isinstance(parsed, list) and parsed:
+                        source_keyword = str(parsed[0] or '').strip()
+                if not source_keyword:
+                    source_keyword = str(row['matched_keyword'] or '').strip() or '(unknown)'
+                raw_category = str(row['matched_keyword_category'] or row['category'] or '기타')
+                category = canonical_category_for_keyword(source_keyword, raw_category)
+                variant = str(breakdown.get('pathfinder_query_variant') or '(none)')
+                lens = str(breakdown.get('pathfinder_execution_lens') or '').strip().lower()
+                if not lens:
+                    lens = self._inferred_execution_lens_for_keyword(source_keyword, {"category": category})
+                lens = lens or "service"
+                category_lens_key = f"{category}::{lens}"
+                category_lens_variant_key = f"{category_lens_key}::{variant}"
+                stored_status_text = str(row['comment_status'] or 'pending').strip() or 'pending'
+                status_text = _audit_effective_current_status(stored_status_text, breakdown)
+                status_bucket = _bucket_status(status_text)
+                legacy_current_reject = (
+                    status_text != stored_status_text
+                    and stored_status_text in AUDIT_SURVIVED_STATUSES
+                    and status_text.startswith('filtered_out')
+                )
+                discovered_current = (
+                    str(row['discovered_at'] or '').replace('T', ' ') >= run_started_at
+                )
+                scanned_current = (
+                    str(row['last_scanned_at'] or '').replace('T', ' ') >= run_started_at
+                )
+                rediscovered_current = bool(scanned_current and not discovered_current)
+                structure_key = str(
+                    keyword_structure_features(source_keyword, category)['structure_key']
+                )
+                for table, key in (
+                    (per_category, category),
+                    (per_variant, variant),
+                    (per_category_lens, category_lens_key),
+                    (per_category_lens_variant, category_lens_variant_key),
+                    (per_structure, structure_key),
+                    (per_seed, source_keyword),
+                ):
+                    entry = table.setdefault(key, dict(empty_entry))
+                    entry['discovered'] += 1
+                    if discovered_current:
+                        entry['fresh_discovered'] += 1
+                    entry[status_bucket] += 1
+                    if status_text == 'pending':
+                        entry['open_pending'] += 1
+                    if status_text == 'filtered_out_ai':
+                        entry['ai_filtered'] += 1
+                    if status_bucket == 'pending':
+                        if discovered_current:
+                            entry['fresh_pending'] += 1
+                        elif rediscovered_current:
+                            entry['rediscovered_pending'] += 1
+                    if legacy_current_reject:
+                        entry['current_rejected_legacy_survivor'] += 1
+                        if stored_status_text in AUDIT_ACTIONABLE_STATUSES:
+                            entry['current_rejected_legacy_actionable'] += 1
+                    if rediscovered_current:
+                        entry['rediscovered'] += 1
+
+                if status_text.startswith('filtered_out'):
+                    reason = _audit_current_reject_reason(breakdown)
+                    if not reason:
+                        reason = status_text[len('filtered_out'):].lstrip('_') or '(unspecified)'
+                    cat_reasons = per_category_reject_reason.setdefault(category, {})
+                    cat_reasons[reason] = cat_reasons.get(reason, 0) + 1
+
+            discovered_total = sum(e['discovered'] for e in per_category.values())
+            fresh_total = sum(e['fresh_discovered'] for e in per_category.values())
+            pending_total = sum(e['pending'] for e in per_category.values())
+            fresh_pending_total = sum(e['fresh_pending'] for e in per_category.values())
+            open_pending_total = sum(e['open_pending'] for e in per_category.values())
+            ai_filtered_total = sum(e['ai_filtered'] for e in per_category.values())
+            raw_backlog_total = sum(e['raw_backlog'] for e in per_category.values())
+            rejected_total = sum(e['rejected'] for e in per_category.values())
+            ad_total = sum(e['ad_filtered'] for e in per_category.values())
+            rediscovered_total = sum(e.get('rediscovered', 0) for e in per_category.values())
+            rediscovered_pending_total = sum(e.get('rediscovered_pending', 0) for e in per_category.values())
+            current_rejected_legacy_actionable_total = sum(
+                e.get('current_rejected_legacy_actionable', 0) for e in per_category.values()
+            )
+            current_rejected_legacy_survivor_total = sum(
+                e.get('current_rejected_legacy_survivor', 0) for e in per_category.values()
+            )
+            post_ai_total = pending_total + ai_filtered_total
+            # 제로수율 시드: 이번 런에 실제 신규 SERP 영역을 탐색하고(fresh_discovered)
+            # 작업 가능 타겟을 0건 산출한(pending 버킷=posted 포함, 0) 시드만.
+            # 전체 discovered 가 아니라 신규 발견으로 게이트해, 옛 URL만 재발견한
+            # rediscovery 잡음(런의 ~88%)과 재발견-posted 로 이미 가치를 실현한 성숙
+            # 시드를 제로수율로 오분류하지 않는다. 이 목록은 자문/가시성 신호다
+            # (구조/카테고리 수요 게이트가 실제 예산 차단을 담당).
+            zero_yield_seeds = sorted(
+                (
+                    {
+                        'seed': seed,
+                        'discovered': entry['discovered'],
+                        'fresh_discovered': entry['fresh_discovered'],
+                        'rediscovered': entry['rediscovered'],
+                        'ad_filtered': entry['ad_filtered'],
+                    }
+                    for seed, entry in per_seed.items()
+                    if entry['fresh_discovered'] >= ZERO_YIELD_MIN_FRESH_DISCOVERED
+                    and entry['pending'] == 0
+                ),
+                key=lambda item: -item['fresh_discovered'],
+            )[:20]
+            focus_categories = [
+                GYULIM_KEYWORD_PROFILE.normalize_category(category)
+                for category in getattr(GYULIM_KEYWORD_PROFILE, "focus_categories", ())
+            ]
+            focus_categories = list(dict.fromkeys(category for category in focus_categories if category))
+            focus_axis_rows: Dict[str, Dict[str, Any]] = {}
+            for category in focus_categories:
+                entry = dict(per_category.get(category) or empty_entry)
+                discovered = int(entry.get('discovered') or 0)
+                pending = int(entry.get('pending') or 0)
+                open_pending = int(entry.get('open_pending') or 0)
+                ai_filtered = int(entry.get('ai_filtered') or 0)
+                focus_axis_rows[category] = {
+                    **entry,
+                    'actionable_rate': (pending / discovered) if discovered else 0.0,
+                    'open_pending_rate': (open_pending / discovered) if discovered else 0.0,
+                    'ai_filtered_rate': (ai_filtered / discovered) if discovered else 0.0,
+                }
+            covered_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('discovered') or 0) > 0
+            ]
+            actionable_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('pending') or 0) > 0
+            ]
+            open_pending_focus = [
+                category for category, entry in focus_axis_rows.items()
+                if int(entry.get('open_pending') or 0) > 0
+            ]
+            focus_axis_coverage = {
+                'total_focus_categories': len(focus_categories),
+                'covered_focus_categories': len(covered_focus),
+                'actionable_focus_categories': len(actionable_focus),
+                'open_pending_focus_categories': len(open_pending_focus),
+                'discovery_coverage_rate': (len(covered_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'actionable_coverage_rate': (len(actionable_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'open_pending_coverage_rate': (len(open_pending_focus) / len(focus_categories)) if focus_categories else 0.0,
+                'missing_discovery_categories': [
+                    category for category in focus_categories
+                    if category not in covered_focus
+                ],
+                'missing_actionable_categories': [
+                    category for category in focus_categories
+                    if category not in actionable_focus
+                ],
+                'missing_open_pending_categories': [
+                    category for category in focus_categories
+                    if category not in open_pending_focus
+                ],
+                'priority_focus_categories': [
+                    category for category in AI_CATEGORY_FLOOR_PRIORITY
+                    if category in focus_categories
+                ],
+                'by_category': focus_axis_rows,
+            }
+
+            # 디스커버리 정직성: 지금까지 stdout 으로만 흘러가 사라지던 "조용한 경계"
+            # (퍼널 거절 사유·변형/플랫폼/구조 수율 차단·키워드 한도 절단)을 영속화해
+            # 다음 탐색 패스가 "무엇을 발견조차 못 했는지"를 질의할 수 있게 한다.
+            filter_obj = getattr(self, "filter", None)
+            funnel_rejections = {
+                reason: int(count)
+                for reason, count in (getattr(filter_obj, "cumulative_reject_stats", {}) or {}).items()
+                if int(count or 0) > 0
+            }
+            filter_input_count = int(getattr(filter_obj, "filter_input_count", 0) or 0)
+            filter_survivor_count = int(getattr(filter_obj, "filter_survivor_count", 0) or 0)
+            funnel_rejected_total = sum(funnel_rejections.values())
+            coverage_bounds = {
+                'funnel_rejections': funnel_rejections,
+                'funnel_rejected_total': funnel_rejected_total,
+                'filter_input_count': filter_input_count,
+                'filter_survivor_count': filter_survivor_count,
+                'filter_survival_rate': (filter_survivor_count / filter_input_count) if filter_input_count else 0.0,
+                'variant_yield_drops': {k: int(v) for k, v in (getattr(self, "_variant_drop_counts", {}) or {}).items()},
+                'variant_quality_drops': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_variant_quality_drop_counts", {}) or {}).items()
+                },
+                'variant_quality_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_variant_quality_budget_scale_counts", {}) or {}).items()
+                },
+                'handoff_repair_companions': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_handoff_repair_companion_counts", {}) or {}).items()
+                },
+                'base_variant_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_base_variant_budget_scale_counts", {}) or {}).items()
+                },
+                'platform_yield_drops': {k: int(v) for k, v in (getattr(self, "_platform_drop_counts", {}) or {}).items()},
+                'platform_surface_budget_scales': {
+                    k: int(v)
+                    for k, v in (getattr(self, "_platform_surface_budget_scale_counts", {}) or {}).items()
+                },
+                'handoff_playbook_auto_boosts': getattr(
+                    self,
+                    "_handoff_playbook_auto_boosts",
+                    {"categories": [], "lenses": [], "category_lenses": [], "sources": []},
+                ),
+                'structure_blocked': {
+                    k: int(v)
+                    for k, v in (getattr(getattr(self, "seed_builder", None), "_structure_blocked_buckets", {}) or {}).items()
+                },
+                'keyword_limit_dropped': int(getattr(self, "_keyword_limit_dropped", 0) or 0),
+            }
+
+            # `summary` below is intentionally a DB-state snapshot: it includes
+            # rediscovered records whose source_scan_run_id was refreshed during
+            # this run.  That makes it valuable for queue health and historical
+            # query feedback, but it is not a faithful denominator for the
+            # current run's search funnel.  Persist the in-memory stage counts
+            # separately while they are still immutable, so operators never
+            # mistake a refreshed DB population for newly searched candidates.
+            run_funnel_snapshot: Dict[str, int] = {}
+            for key, value in (run_funnel or {}).items():
+                try:
+                    run_funnel_snapshot[str(key)] = max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    continue
+
+            audit: Dict[str, Any] = {
+                'metric_scopes': {
+                    'summary': 'persisted_target_snapshot',
+                    'run_funnel': 'immutable_in_memory_run_counts',
+                },
+                'run_funnel': run_funnel_snapshot,
+                'summary': {
+                    'discovered': discovered_total,
+                    'fresh_discovered': fresh_total,
+                    'pending': pending_total,
+                    'actionable': pending_total,
+                    # Legacy aliases above are kept for DB compatibility.  New
+                    # consumers must use these explicit queue semantics.
+                    'actionable_cumulative': pending_total,
+                    'fresh_pending': fresh_pending_total,
+                    'open_pending': open_pending_total,
+                    'open_execution_queue': open_pending_total,
+                    'fresh_open_queue': fresh_pending_total,
+                    'pending_rate': (pending_total / discovered_total) if discovered_total else 0.0,
+                    'actionable_rate': (pending_total / discovered_total) if discovered_total else 0.0,
+                    'fresh_pending_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
+                    'fresh_actionable_rate': (fresh_pending_total / fresh_total) if fresh_total else 0.0,
+                    'open_pending_rate': (open_pending_total / discovered_total) if discovered_total else 0.0,
+                    'fresh_discovery_rate': (fresh_total / discovered_total) if discovered_total else 0.0,
+                    'ai_filtered': ai_filtered_total,
+                    'ai_filtered_rate': (ai_filtered_total / discovered_total) if discovered_total else 0.0,
+                    'post_ai_survival_rate': (pending_total / post_ai_total) if post_ai_total else 0.0,
+                    'raw_backlog': raw_backlog_total,
+                    'rejected': rejected_total,
+                    'ad_filtered': ad_total,
+                    'ad_rate': (ad_total / discovered_total) if discovered_total else 0.0,
+                    'rediscovered': rediscovered_total,
+                    'rediscovered_pending': rediscovered_pending_total,
+                    'rediscovered_rate': (rediscovered_total / discovered_total) if discovered_total else 0.0,
+                    'current_rejected_legacy_actionable': current_rejected_legacy_actionable_total,
+                    'current_rejected_legacy_survivor': current_rejected_legacy_survivor_total,
+                    'keyword_count': int(keyword_count or 0),
+                },
+                'per_category': per_category,
+                'per_query_variant': per_variant,
+                'per_category_lens': per_category_lens,
+                'per_category_lens_query_variant': per_category_lens_variant,
+                'per_structure': per_structure,
+                'per_category_reject_reason': per_category_reject_reason,
+                'zero_yield_seeds': zero_yield_seeds,
+                'focus_axis_coverage': focus_axis_coverage,
+                'execution_queue': dict(execution_queue_stats or {}),
+                'category_demand': {
+                    'adjustments': getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {},
+                    'boosts': getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {},
+                },
+                'coverage_bounds': coverage_bounds,
+                'suggested_handoff_audit_command': _handoff_audit_command_for_run(
+                    run_started_at,
+                    source_scan_run_id=source_scan_run_id,
+                    sample_per_lane=2,
+                ),
+            }
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS viral_scan_audits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_started_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    source_scan_run_id INTEGER,
+                    keyword_count INTEGER DEFAULT 0,
+                    discovered_count INTEGER DEFAULT 0,
+                    pending_count INTEGER DEFAULT 0,
+                    pending_rate REAL DEFAULT 0,
+                    ad_filtered_count INTEGER DEFAULT 0,
+                    audit_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO viral_scan_audits (
+                    run_started_at, source_scan_run_id, keyword_count,
+                    discovered_count, pending_count, pending_rate,
+                    ad_filtered_count, audit_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_started_at,
+                    source_scan_run_id,
+                    int(keyword_count or 0),
+                    discovered_total,
+                    pending_total,
+                    audit['summary']['pending_rate'],
+                    ad_total,
+                    json.dumps(audit, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+            audit['audit_id'] = cursor.lastrowid
+            return audit
+        finally:
+            conn.close()
+
     def hunt(self, keywords: List[str] = None, limit_keywords: int = None,
              max_per_platform: int = 100, progress_callback=None,
              fresh: bool = False, checkpoint_every: int = 20,
              top_n_for_ai: int = 300, ai_parallel: int = 5,
-             use_latest_legion: bool = True) -> List[ViralTarget]:
+             use_latest_legion: bool = True,
+             source_scan_run_id: Optional[int] = None,
+             boost_categories: Optional[Iterable[str]] = None,
+             boost_lenses: Optional[Iterable[str]] = None,
+             boost_category_lenses: Optional[Iterable[str]] = None,
+             rescue_backlog: Optional[int] = None,
+             rescue_signature: int = 40,
+             enrich_bodies: int = 120,
+             expire_pending: bool = True) -> List[ViralTarget]:
         """
         바이럴 타겟 발굴
 
@@ -4432,25 +14673,118 @@ class ViralHunter:
         Returns:
             발견된 ViralTarget 리스트
         """
-        if keywords is None:
-            keywords = self._load_keywords(use_latest_legion=use_latest_legion)
-        else:
-            self._load_keyword_context(keywords)
+        run_started_at = time.strftime('%Y-%m-%d %H:%M:%S')
 
+        # Resolve a pinned source before TTL cleanup. A source-specific handoff
+        # must not mutate unrelated rows or fall back to legacy keywords when its
+        # completed generation has no eligible Viral seeds.
+        if keywords is None:
+            keywords = self._load_keywords(
+                use_latest_legion=use_latest_legion,
+                source_scan_run_id=source_scan_run_id,
+            )
+
+        # pending 큐 TTL 정리 — 직원이 손대지 않은 채 댓글 적시성 윈도우가 지난
+        # 행을 만료시킨다. 큐가 죽은 재고로 차면 골든큐/우선순위가 모두 오염된다.
+        if expire_pending:
+            try:
+                expiry = expire_stale_pending_targets(self.db.db_path)
+                if expiry["expired"]:
+                    platform_summary = ", ".join(
+                        f"{p} {n}" for p, n in sorted(expiry["by_platform"].items())
+                    )
+                    print(
+                        f"🧽 pending TTL 정리: {expiry['expired']}건 만료 "
+                        f"(체류초과 {expiry['expired_dwell']}, 게시물노후 {expiry['expired_post_age']}) / "
+                        f"검사 {expiry['checked']}건 ({platform_summary})"
+                    )
+            except Exception as e:
+                logger.warning(f"pending TTL 정리 실패 (계속 진행): {e}")
+
+        # 변형/플랫폼 수율 캐시·차단 집계는 런 단위로 재계산한다 (직전 런 결과 반영).
+        self._variant_yield_cache = None
+        self._variant_quality_feedback_cache = None
+        self._variant_drop_counts = {}
+        self._variant_quality_drop_counts = {}
+        self._variant_quality_budget_scale_counts = {}
+        self._handoff_repair_companion_counts = {}
+        self._platform_yield_cache = None
+        self._platform_drop_counts = {}
+        self._platform_surface_feedback_cache = None
+        self._platform_surface_budget_scale_counts = {}
+        self._handoff_playbook_boost_cache = None
+        self._handoff_playbook_rescue_cache = None
+        self._handoff_playbook_auto_boosts = {"categories": [], "lenses": [], "category_lenses": [], "sources": []}
+        self._handoff_playbook_auto_rescue = {
+            "rescue_backlog": 0,
+            "sources": [],
+            "configured": None,
+            "effective": int(self.DEFAULT_RESCUE_BACKLOG),
+            "applied": False,
+        }
+
+        self._load_keyword_context(keywords)
+        effective_boost_categories, effective_boost_lenses, effective_boost_category_lenses = (
+            self._merge_handoff_playbook_boosts(
+                boost_categories=boost_categories,
+                boost_lenses=boost_lenses,
+                boost_category_lenses=boost_category_lenses,
+            )
+        )
+        rescue_backlog = self._effective_rescue_backlog(rescue_backlog)
+        keywords = self._order_keywords_for_handoff_coverage(
+            keywords,
+            boost_categories=effective_boost_categories,
+            boost_lenses=effective_boost_lenses,
+            boost_category_lenses=effective_boost_category_lenses,
+        )
+
+        keyword_total_before_limit = len(keywords)
         if limit_keywords:
             keywords = keywords[:limit_keywords]
+        self._keyword_limit_dropped = max(0, keyword_total_before_limit - len(keywords))
 
         self._load_keyword_context(keywords)
 
-        # 키워드 세트 해시 (순서 무관)
-        kw_hash = hashlib.md5(
-            ('|'.join(sorted(keywords))).encode('utf-8')
-        ).hexdigest()[:16]
+        # Checkpoint scope includes scan lineage, boost lanes, ordered queries, and platform limits.
+        kw_hash = self._checkpoint_hash_for_run(
+            keywords,
+            max_per_platform=max_per_platform,
+            source_scan_run_id=source_scan_run_id,
+            boost_categories=effective_boost_categories,
+            boost_lenses=effective_boost_lenses,
+            boost_category_lenses=effective_boost_category_lenses,
+        )
+        # 해시 계산이 플랜을 한 번 더 생성하므로 차단 집계는 검색 패스 기준으로 리셋
+        self._variant_drop_counts = {}
+        self._variant_quality_drop_counts = {}
+        self._variant_quality_budget_scale_counts = {}
+        self._handoff_repair_companion_counts = {}
+        self._platform_drop_counts = {}
+        self._platform_surface_budget_scale_counts = {}
+        self._novelty_backfill_stats = {
+            "eligible_plans": 0,
+            "triggered_plans": 0,
+            "initial_results": 0,
+            "overlapping_results": 0,
+            "returned_candidates": 0,
+            "api_requests": 0,
+        }
+        existing_viral_url_keys = self._load_existing_viral_url_keys()
+        # 퍼널 거절 누적도 런 단위로 리셋 (같은 헌터 객체 재사용 시 직전 런 누수 방지).
+        if getattr(self, "filter", None) is not None:
+            self.filter.cumulative_reject_stats = {}
+            self.filter.filter_input_count = 0
+            self.filter.filter_survivor_count = 0
 
         # 체크포인트 복원
         all_targets: List[ViralTarget] = []
         seen_urls: set = set()
         processed_set: set = set()
+        targets_by_url: Dict[str, ViralTarget] = {}
+        search_plan_cache: Dict[Tuple[str, bool, Tuple[Tuple[str, int], ...]], List[ViralTarget]] = {}
+        self._search_plan_cache_hits = 0
+        self._search_plan_cache_misses = 0
 
         if not fresh:
             cp = self._load_checkpoint(kw_hash)
@@ -4464,6 +14798,11 @@ class ViralHunter:
                     self._viral_target_from_dict(d)
                     for d in (cp.get('all_targets') or [])
                 ]
+                targets_by_url = {
+                    canonicalize_viral_url(target.url) or target.url: target
+                    for target in all_targets
+                    if target.url
+                }
                 print(f"\n♻️  체크포인트 복원: 처리 완료 {len(processed_set)}/{len(keywords)}, "
                       f"수집 {len(all_targets)}개 (저장 시각 {cp.get('saved_at')})")
 
@@ -4490,7 +14829,135 @@ class ViralHunter:
                 progress_callback("검색중", i, len(keywords), f"'{kw}' 검색 | 수집: {len(all_targets)}개")
 
             try:
-                results = self.searcher.search_all(kw, max_per_platform)
+                results = []
+                for search_plan in self._search_queries_for_keyword(kw, max_per_platform):
+                    query = search_plan["query"]
+                    limits = search_plan["platform_limits"]
+                    logger.info(
+                        "[search-plan] %s query=%s variant=%s readiness=%.1f risk=%.1f surface=%s type=%s limits=%s",
+                        kw,
+                        query,
+                        search_plan.get("variant") or "base",
+                        search_plan["readiness"],
+                        search_plan["medical_risk"],
+                        search_plan["preferred_surface"] or "-",
+                        search_plan["recommended_content_type"] or "-",
+                        limits,
+                    )
+                    cache_key = self._search_plan_cache_key(
+                        search_plan,
+                        max_per_platform=max_per_platform,
+                    )
+                    if cache_key in search_plan_cache:
+                        query_results = self._clone_search_targets(search_plan_cache[cache_key])
+                        self._search_plan_cache_hits += 1
+                        logger.info(
+                            "[search-plan-cache-hit] query=%s variant=%s reused=%d",
+                            query,
+                            search_plan.get("variant") or "base",
+                            len(query_results),
+                        )
+                    else:
+                        query_results = self.searcher.search_all(
+                            query,
+                            max_per_platform=max_per_platform,
+                            include_blog=bool(search_plan["include_blog"]),
+                            platform_limits=limits,
+                        )
+                        plan_exclusion_urls = set(existing_viral_url_keys)
+                        plan_exclusion_urls.update(seen_urls)
+                        for prior_target in results:
+                            plan_exclusion_urls.update(
+                                self._viral_url_identity_keys(getattr(prior_target, "url", ""))
+                            )
+                        should_backfill, overlap_stats = self._should_novelty_backfill(
+                            query_results,
+                            plan_exclusion_urls,
+                        )
+                        novelty_search = getattr(
+                            self.searcher,
+                            "search_all_novelty_backfill",
+                            None,
+                        )
+                        if should_backfill:
+                            self._novelty_backfill_stats["eligible_plans"] += 1
+                        if (
+                            should_backfill
+                            and callable(novelty_search)
+                            and self._novelty_backfill_stats["triggered_plans"]
+                            < self.NOVELTY_BACKFILL_MAX_PLANS
+                        ):
+                            backfill_exclusions = set(plan_exclusion_urls)
+                            for initial_target in query_results:
+                                backfill_exclusions.update(
+                                    self._viral_url_identity_keys(
+                                        getattr(initial_target, "url", "")
+                                    )
+                                )
+                            self._novelty_backfill_stats["triggered_plans"] += 1
+                            self._novelty_backfill_stats["initial_results"] += int(
+                                overlap_stats["valid"]
+                            )
+                            self._novelty_backfill_stats["overlapping_results"] += int(
+                                overlap_stats["overlapping"]
+                            )
+                            requests_before_backfill = int(
+                                getattr(self.searcher, "_request_count", 0) or 0
+                            )
+                            try:
+                                backfill_results = novelty_search(
+                                    query,
+                                    include_blog=bool(search_plan["include_blog"]),
+                                    platform_limits=limits,
+                                    exclude_urls=backfill_exclusions,
+                                    per_platform_limit=self.NOVELTY_BACKFILL_PER_PLATFORM_LIMIT,
+                                    max_pages_per_sort=self.NOVELTY_BACKFILL_MAX_PAGES_PER_SORT,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "[novelty-backfill] query=%s failed; keeping first pass: %s",
+                                    query,
+                                    exc,
+                                )
+                                backfill_results = []
+                            requests_after_backfill = int(
+                                getattr(self.searcher, "_request_count", 0) or 0
+                            )
+                            self._novelty_backfill_stats["api_requests"] += max(
+                                0,
+                                requests_after_backfill - requests_before_backfill,
+                            )
+                            for backfill_target in backfill_results:
+                                backfill_target.score_breakdown = {
+                                    **(backfill_target.score_breakdown or {}),
+                                    "novelty_backfill": 1.0,
+                                }
+                            query_results.extend(backfill_results)
+                            self._novelty_backfill_stats["returned_candidates"] += len(
+                                backfill_results
+                            )
+                            logger.info(
+                                "[novelty-backfill] query=%s overlap=%d/%d (%.1f%%) returned=%d plan=%d/%d",
+                                query,
+                                int(overlap_stats["overlapping"]),
+                                int(overlap_stats["valid"]),
+                                float(overlap_stats["overlap_rate"]) * 100.0,
+                                len(backfill_results),
+                                self._novelty_backfill_stats["triggered_plans"],
+                                self.NOVELTY_BACKFILL_MAX_PLANS,
+                            )
+                        search_plan_cache[cache_key] = self._clone_search_targets(query_results)
+                        self._search_plan_cache_misses += 1
+                    for target in query_results:
+                        self._attach_search_query_lineage(
+                            target,
+                            source_keyword=kw,
+                            search_query=query,
+                            query_variant=search_plan.get("variant") or "base",
+                            quality_feedback_action=search_plan.get("handoff_variant_quality_action") or "",
+                            quality_feedback_factor=float(search_plan.get("handoff_variant_quality_factor") or 1.0),
+                        )
+                    results.extend(query_results)
             except Exception as e:
                 logger.error(f"'{kw}' 검색 중 예외: {e} — 다음 키워드로 진행")
                 results = []
@@ -4498,10 +14965,16 @@ class ViralHunter:
             # 중복 제거
             for target in results:
                 canonical_key = canonicalize_viral_url(target.url) or target.url
+                existing_target = targets_by_url.get(canonical_key)
+                if existing_target:
+                    self._merge_duplicate_search_target(existing_target, target)
+                    self._apply_keyword_context(existing_target)
+                    continue
                 if canonical_key not in seen_urls:
                     seen_urls.add(canonical_key)
                     self._apply_keyword_context(target)
                     all_targets.append(target)
+                    targets_by_url[canonical_key] = target
 
             processed_set.add(kw)
             checkpoint_counter += 1
@@ -4523,20 +14996,51 @@ class ViralHunter:
             kw_hash, list(processed_set), all_targets, seen_urls
         )
 
+        # 재발견된 기존 pending 광고글도 상태가 갱신되도록 강한 최종 게이트를 먼저 적용한다.
+        search_collected_count = len(all_targets)
+        pre_gate_removed = 0
+        pre_gate_saved = 0
+        if all_targets:
+            hydrated_post_dates = self._hydrate_known_post_dates(all_targets)
+            if hydrated_post_dates:
+                print(f"   \U0001f4c5 기존 게시일 복원: {hydrated_post_dates}개 (타이밍 게이트 적용)")
+            gate_keep: List[ViralTarget] = []
+            for target in all_targets:
+                reject_reason = CommentableFilter.apply_final_reject(target)
+                if reject_reason:
+                    pre_gate_removed += 1
+                    try:
+                        if self.db.insert_viral_target(target.to_dict()):
+                            pre_gate_saved += 1
+                    except Exception as e:
+                        logger.warning(f"사전 최종 게이트 제외 상태 저장 실패: {e}")
+                    continue
+                gate_keep.append(target)
+            if pre_gate_removed:
+                print(
+                    f"   🧹 사전 광고/노이즈 게이트: {pre_gate_removed}개 제외 "
+                    f"(상태 저장 {pre_gate_saved}개)"
+                )
+            all_targets = gate_keep
+
         # 필터링
         print(f"\n🔍 필터링 중...")
         if progress_callback:
             progress_callback("필터링중", len(keywords), len(keywords), f"{len(all_targets)}개 타겟 필터링 중...")
         filtered = self.filter.filter(all_targets)
         filtered = self._apply_batch_quality_gate(filtered)
+        filter_input_count = len(all_targets)
+        filter_survivor_count = len(filtered)
+        existing_before_ai = 0
 
         # 기존 URL은 scan_count/source_scan_run_id만 갱신하고 AI 판별 전 제외한다.
         if filtered:
             print(f"\n🔄 중복 체크 중...")
             try:
-                filtered, _existing_before_ai = self._exclude_existing_targets_before_ai(filtered)
+                filtered, existing_before_ai = self._exclude_existing_targets_before_ai(filtered)
             except Exception as e:
                 logger.warning(f"중복 체크 실패 (계속 진행): {e}")
+        discovery_candidates_after_dedup = len(filtered)
 
         # [D2] Adaptive penalty 적용 — 반복 skip된 도메인/작성자 감점
         if filtered:
@@ -4566,36 +15070,286 @@ class ViralHunter:
             except Exception as e:
                 logger.debug(f"adaptive penalty skip: {e}")
 
+        # 직원 실작업 결과 prior — 같은 카테고리/레인이라도 직원 승인율이 낮은 시드의
+        # 타겟은 AI 예산·pending 큐 순서에서 소폭 뒤로 보낸다 (카테고리 floor가 있어
+        # 소수 축이 굶지는 않는다).
+        if filtered:
+            staff_adjusted = 0
+            for t in filtered:
+                breakdown = t.score_breakdown or {}
+                staff_adj = float(breakdown.get('pathfinder_staff_outcome_adjustment') or 0.0)
+                if not staff_adj:
+                    continue
+                delta = max(-8.0, min(8.0, staff_adj * 0.5))
+                t.priority_score = max(0.0, (t.priority_score or 0.0) + delta)
+                staff_adjusted += 1
+            if staff_adjusted:
+                filtered.sort(key=lambda x: x.priority_score, reverse=True)
+                print(f"   👤 직원 결과 prior 적용: {staff_adjusted}개 타겟 점수 조정")
+
         # 상위 N개만 AI 분석 대상, 나머지는 raw 저장.
         # 단, 전역 점수순만 쓰면 피부/교통사고 물량이 많은 날 비대칭/교정 같은
         # 핵심 소수 카테고리가 전부 raw_backlog로 밀린다.
+        ai_category_quotas = _boosted_ai_category_quotas(
+            effective_boost_categories,
+            top_n=top_n_for_ai,
+        )
+        ai_priority_categories = _normalized_ai_priority_categories(effective_boost_categories)
+        ai_preferred_lenses = _normalized_ai_preferred_lenses(effective_boost_lenses)
         ai_targets, rest_targets = split_ai_targets_with_category_floor(
             filtered,
             top_n_for_ai,
+            category_min_quotas=ai_category_quotas,
+            priority_categories=ai_priority_categories,
+            preferred_lenses=ai_preferred_lenses,
         )
+        if ai_category_quotas or ai_preferred_lenses:
+            quota_text = ", ".join(
+                f"{category} {quota}"
+                for category, quota in sorted(
+                    (ai_category_quotas or _normalized_ai_category_quotas(AI_CATEGORY_MIN_QUOTAS)).items()
+                )
+            )
+            lens_text = ", ".join(ai_preferred_lenses) or "-"
+            print(f"   🎯 AI boost 적용: categories=({quota_text}) lenses=({lens_text})")
+
+        # 백로그 레스큐 — AI 예산에 밀려 raw_backlog/needs_ai_retry로 사장된 최근
+        # 타겟을 매 런 일정량 재심사한다. 직접 pending 승격은 금지(광고/적합성 AI
+        # 게이트를 그대로 통과시켜야 하므로) — AI 분석 큐에 추가 투입만 한다.
+        rescued_count = 0
+        if rescue_backlog and top_n_for_ai > 0:
+            try:
+                run_urls = {
+                    canonicalize_viral_url(t.url) or t.url
+                    for t in filtered
+                    if t.url
+                }
+                rescue_quota = min(int(rescue_backlog), int(top_n_for_ai))
+                rescue_candidates = self._load_backlog_rescue_targets(
+                    rescue_quota,
+                    run_urls,
+                    source_scan_run_id=source_scan_run_id,
+                )
+                rescue_gate_rejected = 0
+                rescue_kept: List[ViralTarget] = []
+                for t in rescue_candidates:
+                    prior_status = self._rescue_prior_status(t)
+                    breakdown = t.score_breakdown if isinstance(t.score_breakdown, dict) else {}
+                    t.score_breakdown = {
+                        **breakdown,
+                        "rescued_from": prior_status,
+                    }
+                    reject_reason = CommentableFilter.apply_final_reject(t)
+                    if reject_reason:
+                        # 게이트가 진화했으므로 과거 backlog도 최신 게이트로 재탈락 영속화
+                        rescue_gate_rejected += 1
+                        try:
+                            self.db.insert_viral_target(t.to_dict())
+                        except Exception as e:
+                            logger.warning(f"레스큐 게이트 제외 상태 저장 실패: {e}")
+                        continue
+                    # AI 적합 판정 시 upsert CASE가 raw_backlog → pending 승격을 처리한다.
+                    t.comment_status = "pending"
+                    rescue_kept.append(t)
+                if rescue_kept:
+                    rescued_count = len(rescue_kept)
+                    ai_targets = ai_targets + rescue_kept
+                    print(
+                        f"   ♻️ 백로그 레스큐: {rescued_count}개 AI 재심사 투입 "
+                        f"(최신 게이트 재탈락 {rescue_gate_rejected}개)"
+                    )
+                elif rescue_gate_rejected:
+                    print(f"   ♻️ 백로그 레스큐: 최신 게이트 재탈락 {rescue_gate_rejected}개, 투입 0개")
+            except Exception as e:
+                logger.warning(f"백로그 레스큐 실패 (계속 진행): {e}")
+
+        # 시그니처 백로그 레인 — 로컬 환자글이 구조적으로 희소한 흉터/안면비대칭은 일반
+        # 레스큐(category-blind·21일)에서 피부/다이어트 물량에 밀려 굶는다. 확장 윈도우
+        # (180일)+카테고리 우선으로 raw_backlog(이미 commentable 통과·예산 기아)를 별도
+        # 공급한다. 일반 레스큐와 동일한 최종 게이트를 통과시켜 자동 승격은 없다.
+        sig_rescued_count = 0
+        if rescue_signature and top_n_for_ai > 0:
+            try:
+                exclude = {
+                    canonicalize_viral_url(t.url) or t.url
+                    for t in ai_targets
+                    if t.url
+                }
+                sig_quota = min(int(rescue_signature), int(top_n_for_ai))
+                sig_candidates = self._load_backlog_rescue_targets(
+                    sig_quota,
+                    exclude,
+                    days=SIGNATURE_BACKLOG_RESCUE_DAYS,
+                    categories=SIGNATURE_BACKLOG_AXES,
+                    source_scan_run_id=source_scan_run_id,
+                )
+                sig_gate_rejected = 0
+                sig_kept: List[ViralTarget] = []
+                for t in sig_candidates:
+                    prior_status = self._rescue_prior_status(t)
+                    breakdown = t.score_breakdown if isinstance(t.score_breakdown, dict) else {}
+                    t.score_breakdown = {
+                        **breakdown,
+                        "rescued_from": prior_status,
+                        "signature_backlog_lane": True,
+                    }
+                    reject_reason = CommentableFilter.apply_final_reject(t)
+                    if reject_reason:
+                        sig_gate_rejected += 1
+                        try:
+                            self.db.insert_viral_target(t.to_dict())
+                        except Exception as e:
+                            logger.warning(f"시그니처 레스큐 게이트 제외 상태 저장 실패: {e}")
+                        continue
+                    t.comment_status = "pending"
+                    sig_kept.append(t)
+                if sig_kept:
+                    sig_rescued_count = len(sig_kept)
+                    ai_targets = ai_targets + sig_kept
+                    print(
+                        f"   🎯 시그니처 백로그 레인: {sig_rescued_count}개 AI 재심사 투입 "
+                        f"(흉터/안면비대칭, 최신 게이트 재탈락 {sig_gate_rejected}개)"
+                    )
+                elif sig_gate_rejected:
+                    print(
+                        f"   🎯 시그니처 백로그 레인: 최신 게이트 재탈락 {sig_gate_rejected}개, 투입 0개"
+                    )
+            except Exception as e:
+                logger.warning(f"시그니처 백로그 레인 실패 (계속 진행): {e}")
+
+        # 본문 enrichment — AI가 snippet(~150자)이 아닌 실제 본문/답변을 보고
+        # 판정하도록 KIN/blog 공개 표면을 보강하고, 드러난 광고는 즉시 재탈락.
+        ai_candidates_before_enrichment = len(ai_targets)
+        enrichment_fetched = 0
+        enrichment_regate_rejected = 0
+        enrichment_stale_rejected = 0
+        # Keep the first enrichment pass separate from refill attempts.  The
+        # final count can legitimately be higher than a simple subtraction
+        # because both normal and discarded-backlog candidates may replenish
+        # the AI queue after the initial pass.
+        enrichment_initial_survivors = ai_candidates_before_enrichment
+        enrichment_refill_stats: Dict[str, int] = {}
+        discarded_refill_stats: Dict[str, int] = {}
+        if ai_targets and enrich_bodies:
+            try:
+                before_enrich = len(ai_targets)
+                pre_enrich_ai_keys = {
+                    canonicalize_viral_url(t.url) or t.url or t.id
+                    for t in ai_targets
+                    if t.url or t.id
+                }
+                ai_targets, enrich_stats = self._enrich_and_regate_ai_targets(
+                    ai_targets,
+                    max_fetch=int(enrich_bodies),
+                )
+                enrichment_fetched = int(enrich_stats.get("fetched", 0) or 0)
+                enrichment_regate_rejected = int(enrich_stats.get("regate_rejected", 0) or 0)
+                enrichment_stale_rejected = int(enrich_stats.get("stale_rejected", 0) or 0)
+                enrichment_initial_survivors = len(ai_targets)
+                if enrich_stats["fetched"]:
+                    print(
+                        f"   📄 본문 enrichment: fetch {enrich_stats['fetched']}건 → "
+                        f"보강 {enrich_stats['enriched']}건, 게시일 복원 {enrich_stats['dated']}건, "
+                        f"게이트 재탈락 {enrich_stats['regate_rejected']}건, "
+                        f"타이밍 만료 {enrich_stats['stale_rejected']}건 "
+                        f"(AI 후보 {before_enrich} → {len(ai_targets)})"
+                    )
+                if len(ai_targets) < before_enrich and rest_targets:
+                    refill_fetch_budget = max(
+                        0,
+                        int(enrich_bodies) - int(enrich_stats.get("fetched", 0) or 0),
+                    )
+                    ai_targets, rest_targets, enrichment_refill_stats = self._refill_ai_targets_after_enrichment(
+                        ai_targets,
+                        rest_targets,
+                        target_count=before_enrich,
+                        max_fetch=refill_fetch_budget,
+                    )
+                    if enrichment_refill_stats["attempted"]:
+                        print(
+                            f"   🔁 AI 후보 보충: 후보 {enrichment_refill_stats['attempted']}개 검토 → "
+                            f"{enrichment_refill_stats['kept']}개 보충, 재탈락 {enrichment_refill_stats['rejected']}개 "
+                            f"(fetch {enrichment_refill_stats['fetched']}건, 보강 {enrichment_refill_stats['enriched']}건)"
+                        )
+                if len(ai_targets) < before_enrich:
+                    discarded_fetch_budget = max(
+                        0,
+                        int(enrich_bodies)
+                        - int(enrich_stats.get("fetched", 0) or 0)
+                        - int(enrichment_refill_stats.get("fetched", 0) or 0),
+                    )
+                    post_enrich_exclude = set(pre_enrich_ai_keys)
+                    post_enrich_exclude.update(
+                        canonicalize_viral_url(t.url) or t.url or t.id
+                        for t in rest_targets
+                        if t.url or t.id
+                    )
+                    ai_targets, discarded_refill_stats = (
+                        self._refill_ai_targets_from_discarded_after_enrichment(
+                            ai_targets,
+                            target_count=before_enrich,
+                            source_scan_run_id=source_scan_run_id,
+                            exclude_urls=post_enrich_exclude,
+                            max_fetch=discarded_fetch_budget,
+                        )
+                    )
+                    if discarded_refill_stats["attempted"]:
+                        print(
+                            f"   🔁 폐기 후보 보충: 후보 {discarded_refill_stats['attempted']}개 검토 → "
+                            f"{discarded_refill_stats['kept']}개 보충 "
+                            f"(시그니처 {discarded_refill_stats['signature_kept']}개, "
+                            f"일반 {discarded_refill_stats['general_kept']}개, "
+                            f"게이트/재검증 탈락 {discarded_refill_stats['rejected']}개, "
+                            f"타이밍 제외 {discarded_refill_stats['timing_rejected']}개, "
+                            f"fetch {discarded_refill_stats['fetched']}건)"
+                        )
+            except Exception as e:
+                logger.warning(f"본문 enrichment 실패 (계속 진행): {e}")
+        ai_candidates_after_enrichment = len(ai_targets)
+
         if ai_targets:
             ai_category_counts: Dict[str, int] = {}
+            ai_category_lens_counts: Dict[str, int] = {}
             for target in ai_targets:
                 category = _ai_quota_category(target)
+                lens = _ai_target_execution_lens(target)
                 ai_category_counts[category] = ai_category_counts.get(category, 0) + 1
+                category_lens = f"{category}::{lens}"
+                ai_category_lens_counts[category_lens] = ai_category_lens_counts.get(category_lens, 0) + 1
             quota_summary = ", ".join(
                 f"{category} {count}"
                 for category, count in sorted(ai_category_counts.items())
             )
+            lens_summary = ", ".join(
+                f"{lane} {count}"
+                for lane, count in sorted(ai_category_lens_counts.items())
+            )
             print(f"   🎛️ AI 분석 카테고리 배분: {quota_summary}")
+            if lens_summary:
+                print(f"   🎚️ AI 분석 렌즈 배분: {lens_summary}")
 
         # 나머지(raw)는 먼저 DB에 저장하여 즉시 보존
         raw_saved = 0
         if rest_targets:
-            before_final_gate = len(rest_targets)
-            rest_targets = [
-                t for t in rest_targets
-                if not CommentableFilter.final_reject_reason(t)
-            ]
-            final_gate_removed = before_final_gate - len(rest_targets)
+            final_gate_removed = 0
+            final_gate_saved = 0
+            raw_keep: List[ViralTarget] = []
+            for t in rest_targets:
+                reject_reason = CommentableFilter.apply_final_reject(t)
+                if reject_reason:
+                    final_gate_removed += 1
+                    try:
+                        if self.db.insert_viral_target(t.to_dict()):
+                            final_gate_saved += 1
+                    except Exception as e:
+                        logger.warning(f"Raw 최종 게이트 제외 상태 저장 실패: {e}")
+                    continue
+                raw_keep.append(t)
+            rest_targets = raw_keep
+
             print(f"\n💾 Raw 백로그 저장 (AI 제외 {len(rest_targets)}개, pending 큐 제외)...")
             if final_gate_removed:
-                print(f"   🧹 최종 게이트 제외: {final_gate_removed}개")
+                print(f"   🧹 최종 게이트 제외: {final_gate_removed}개 (상태 저장 {final_gate_saved}개)")
             for t in rest_targets:
                 t.comment_status = "raw_backlog"
                 if self.db.insert_viral_target(t.to_dict()):
@@ -4669,15 +15423,71 @@ class ViralHunter:
         # 총 저장 수: raw + AI로 분석되어 이미 저장된 것
         saved = raw_saved + len(analyzed_targets)
         filtered = analyzed_targets + rest_targets  # 리포팅용 (정렬 순서 유지 안 됨)
+        filtered, execution_queue_stats = self._finalize_execution_queue(filtered)
+        execution_queue_updated = 0
+        suppressed_after_persistence = 0
+        if filtered:
+            try:
+                execution_queue_updated = self.db.update_viral_execution_queue(
+                    [target.to_dict() for target in filtered]
+                )
+            except Exception as e:
+                logger.warning(f"Final execution queue persistence failed: {e}")
+
+            # A rediscovered URL can collide with an existing target that the
+            # AI/final gate has already rejected.  The in-memory candidate may
+            # still look pending, so reload its authoritative DB state before
+            # sending alerts or building execution CSV files.
+            persisted_targets = self._load_existing_targets_by_urls(
+                [target.url for target in filtered if target.url]
+            )
+            if persisted_targets:
+                reconciled_targets = [
+                    target
+                    for target in persisted_targets
+                    if (
+                        str(getattr(target, "comment_status", "") or "").strip().lower()
+                        in self.EXECUTION_ACTIONABLE_STATUSES
+                        or self._is_manual_review_target(target)
+                    )
+                ]
+                suppressed_after_persistence = len(persisted_targets) - len(reconciled_targets)
+                if suppressed_after_persistence:
+                    logger.info(
+                        "Final execution queue reconciliation removed %s DB-rejected targets "
+                        "from alerts and CSV exports",
+                        suppressed_after_persistence,
+                    )
+                filtered, execution_queue_stats = self._finalize_execution_queue(
+                    reconciled_targets
+                )
+                if filtered:
+                    try:
+                        execution_queue_updated = self.db.update_viral_execution_queue(
+                            [target.to_dict() for target in filtered]
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Reconciled execution queue persistence failed: {e}"
+                        )
+        print(
+            "   Final execution queue: "
+            f"auto-ready {execution_queue_stats['auto_ready']} · "
+            f"manual-review {execution_queue_stats['manual_review']} · "
+            f"needs-enrichment {execution_queue_stats['needs_enrichment']} · "
+            f"quality-missing {execution_queue_stats['quality_missing']} · "
+            f"persisted {execution_queue_updated}"
+        )
 
         # HOT LEAD 즉시 알림 (Telegram) — Tier 구분
         # Tier 1 (점수 120+ 또는 경쟁사 탐지): 즉시 상위 10건 푸시
         # Tier 2 (100~119): daily_brief.py가 오전 09:00 요약
         # Tier 3 (그 외): 대시보드에서만 확인
-        if analyzed_targets:
+        if filtered:
             tier1 = [
-                t for t in analyzed_targets
-                if (t.priority_score or 0) >= 120 or getattr(t, 'category', '') == '경쟁사_역공략'
+                t for t in filtered
+                if self._execution_export_bucket(t) == "auto_ready"
+                and (t.priority_score or 0) >= 120
             ]
             if tier1:
                 try:
@@ -4697,7 +15507,7 @@ class ViralHunter:
                         message += f"   {lead.title[:60]}\n"
                         message += f"   {lead.url}\n\n"
 
-                    total_rest = len(analyzed_targets) - len(tier1)
+                    total_rest = len(filtered) - len(tier1)
                     if total_rest > 0:
                         message += f"ℹ️ Tier 2/3 {total_rest}건은 오전 Daily Brief로 요약 전송됩니다."
 
@@ -4720,57 +15530,147 @@ class ViralHunter:
 
         # CSV 자동 저장
         csv_path = None
+        manual_review_csv_path = None
+        enrichment_csv_path = None
         if filtered:
             import csv
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             csv_path = os.path.join(self.cfg.root_dir, 'reports', f'viral_targets_{timestamp}.csv')
             os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            export_buckets = self._partition_execution_export_targets(filtered)
+            csv_headers = [
+                'rank', 'execution_bucket', 'comment_status', 'platform', 'title', 'priority_score',
+                'exposure_score', 'workability_score', 'conversion_fit_score',
+                'execution_data_quality_score', 'execution_data_quality_tier',
+                'execution_data_quality_missing', 'execution_auto_ready', 'viral_need_score',
+                'execution_quality_contract', 'execution_priority_cap',
+                'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
+                'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
+                'timing_window_tier', 'timing_window_signals', 'journey_fit_score', 'journey_stage',
+                'journey_signals', 'qualification_fit_score', 'qualification_tier',
+                'qualification_signals', 'manual_review', 'reply_risk_flags', 'search_sort',
+                'search_rank', 'keyword', 'url'
+            ]
 
-            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'rank', 'platform', 'title', 'priority_score', 'exposure_score',
-                    'workability_score', 'conversion_fit_score', 'viral_need_score',
-                    'viral_need_tier', 'viral_need_signals', 'reply_opportunity_score',
-                    'reply_opportunity_tier', 'reply_opportunity_signals', 'timing_window_score',
-                    'timing_window_tier', 'timing_window_signals', 'journey_fit_score',
-                    'journey_stage', 'journey_signals', 'qualification_fit_score',
-                    'qualification_tier', 'qualification_signals', 'manual_review',
-                    'reply_risk_flags', 'search_sort', 'search_rank', 'keyword', 'url'
-                ])
-                for i, t in enumerate(filtered, 1):
-                    breakdown = t.score_breakdown or {}
-                    writer.writerow([
-                        i,
-                        t.platform,
-                        t.title,
-                        t.priority_score,
-                        t.exposure_score,
-                        t.workability_score,
-                        t.conversion_fit_score,
-                        breakdown.get('viral_need_score', 0),
-                        breakdown.get('viral_need_tier', ''),
-                        breakdown.get('viral_need_signals', ''),
-                        breakdown.get('reply_opportunity_score', 0),
-                        breakdown.get('reply_opportunity_tier', ''),
-                        breakdown.get('reply_opportunity_signals', ''),
-                        breakdown.get('timing_window_score', 0),
-                        breakdown.get('timing_window_tier', ''),
-                        breakdown.get('timing_window_signals', ''),
-                        breakdown.get('journey_fit_score', 0),
-                        breakdown.get('journey_stage', ''),
-                        breakdown.get('journey_signals', ''),
-                        breakdown.get('qualification_fit_score', 0),
-                        breakdown.get('qualification_tier', ''),
-                        breakdown.get('qualification_signals', ''),
-                        breakdown.get('manual_review', 0),
-                        breakdown.get('reply_risk_flags', ''),
-                        t.search_sort,
-                        t.search_rank,
-                        ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '',
-                        t.url
-                    ])
+            def write_export(path: str, rows: List[ViralTarget], bucket: str) -> None:
+                with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(csv_headers)
+                    for i, t in enumerate(rows, 1):
+                        breakdown = t.score_breakdown or {}
+                        writer.writerow([
+                            i, bucket, t.comment_status, t.platform, t.title, t.priority_score,
+                            t.exposure_score, t.workability_score, t.conversion_fit_score,
+                            breakdown.get('execution_data_quality_score', 0),
+                            breakdown.get('execution_data_quality_tier', ''),
+                            breakdown.get('execution_data_quality_missing', ''),
+                            breakdown.get('execution_auto_ready', False),
+                            breakdown.get('viral_need_score', 0),
+                            breakdown.get('execution_quality_contract', ''),
+                            breakdown.get('execution_priority_cap', 0),
+                            breakdown.get('viral_need_tier', ''),
+                            breakdown.get('viral_need_signals', ''),
+                            breakdown.get('reply_opportunity_score', 0),
+                            breakdown.get('reply_opportunity_tier', ''),
+                            breakdown.get('reply_opportunity_signals', ''),
+                            breakdown.get('timing_window_score', 0),
+                            breakdown.get('timing_window_tier', ''),
+                            breakdown.get('timing_window_signals', ''),
+                            breakdown.get('journey_fit_score', 0),
+                            breakdown.get('journey_stage', ''),
+                            breakdown.get('journey_signals', ''),
+                            breakdown.get('qualification_fit_score', 0),
+                            breakdown.get('qualification_tier', ''),
+                            breakdown.get('qualification_signals', ''),
+                            breakdown.get('manual_review', 0),
+                            breakdown.get('reply_risk_flags', ''),
+                            t.search_sort, t.search_rank,
+                            ', '.join(t.matched_keywords[:3]) if t.matched_keywords else '', t.url,
+                        ])
+
+            # The legacy-named CSV is now safe for downstream execution: it only
+            # contains verified, non-review candidates. Other candidates remain
+            # visible, but cannot be mistaken for automatic work.
+            write_export(csv_path, export_buckets['auto_ready'], 'auto_ready')
+            manual_review_csv_path = os.path.join(
+                self.cfg.root_dir, 'reports', f'viral_targets_manual_review_{timestamp}.csv'
+            )
+            enrichment_csv_path = os.path.join(
+                self.cfg.root_dir, 'reports', f'viral_targets_needs_enrichment_{timestamp}.csv'
+            )
+            write_export(manual_review_csv_path, export_buckets['manual_review'], 'manual_review')
+            write_export(enrichment_csv_path, export_buckets['needs_enrichment'], 'needs_enrichment')
+            print(
+                "   CSV 큐 분리: "
+                f"자동실행 {len(export_buckets['auto_ready'])}건 · "
+                f"검수 {len(export_buckets['manual_review'])}건 · "
+                f"보강필요 {len(export_buckets['needs_enrichment'])}건"
+            )
+
+        # 디스커버리 감사: 이번 런의 카테고리/쿼리구조별 수율을 영속화
+        audit_summary = None
+        try:
+            audit_summary = self._persist_viral_discovery_audit(
+                run_started_at,
+                source_scan_run_id=source_scan_run_id,
+                keyword_count=len(keywords),
+                execution_queue_stats=execution_queue_stats,
+                run_funnel={
+                    'search_collected': search_collected_count,
+                    'pre_gate_rejected': pre_gate_removed,
+                    'pre_gate_persisted': pre_gate_saved,
+                    'filter_input': filter_input_count,
+                    'filter_survivors': filter_survivor_count,
+                    'existing_url_excluded': existing_before_ai,
+                    'discovery_candidates_after_dedup': discovery_candidates_after_dedup,
+                    'novelty_backfill_eligible_plans': int(
+                        self._novelty_backfill_stats.get('eligible_plans', 0) or 0
+                    ),
+                    'novelty_backfill_triggered_plans': int(
+                        self._novelty_backfill_stats.get('triggered_plans', 0) or 0
+                    ),
+                    'novelty_backfill_initial_results': int(
+                        self._novelty_backfill_stats.get('initial_results', 0) or 0
+                    ),
+                    'novelty_backfill_overlapping_results': int(
+                        self._novelty_backfill_stats.get('overlapping_results', 0) or 0
+                    ),
+                    'novelty_backfill_returned_candidates': int(
+                        self._novelty_backfill_stats.get('returned_candidates', 0) or 0
+                    ),
+                    'novelty_backfill_api_requests': int(
+                        self._novelty_backfill_stats.get('api_requests', 0) or 0
+                    ),
+                    'backlog_rescued': rescued_count,
+                    'signature_backlog_rescued': sig_rescued_count,
+                    'ai_candidates_before_enrichment': ai_candidates_before_enrichment,
+                    'enrichment_fetched': enrichment_fetched,
+                    'enrichment_regate_rejected': enrichment_regate_rejected,
+                    'enrichment_stale_rejected': enrichment_stale_rejected,
+                    'enrichment_initial_survivors': enrichment_initial_survivors,
+                    'enrichment_refill_attempted': int(enrichment_refill_stats.get('attempted', 0) or 0),
+                    'enrichment_refill_kept': int(enrichment_refill_stats.get('kept', 0) or 0),
+                    'enrichment_refill_rejected': int(enrichment_refill_stats.get('rejected', 0) or 0),
+                    'enrichment_refill_fetched': int(enrichment_refill_stats.get('fetched', 0) or 0),
+                    'discarded_refill_attempted': int(discarded_refill_stats.get('attempted', 0) or 0),
+                    'discarded_refill_kept': int(discarded_refill_stats.get('kept', 0) or 0),
+                    'discarded_refill_rejected': int(discarded_refill_stats.get('rejected', 0) or 0),
+                    'discarded_refill_timing_rejected': int(discarded_refill_stats.get('timing_rejected', 0) or 0),
+                    'discarded_refill_fetched': int(discarded_refill_stats.get('fetched', 0) or 0),
+                    'ai_candidates_after_enrichment': ai_candidates_after_enrichment,
+                    'ai_suitable': len(analyzed_targets),
+                    'raw_backlog_saved': raw_saved,
+                    'db_saved_total': saved,
+                    'db_rejected_during_reconciliation': suppressed_after_persistence,
+                    'final_execution_candidates': len(filtered),
+                    'auto_ready': int(execution_queue_stats.get('auto_ready', 0) or 0),
+                    'manual_review': int(execution_queue_stats.get('manual_review', 0) or 0),
+                    'needs_enrichment': int(execution_queue_stats.get('needs_enrichment', 0) or 0),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"디스커버리 감사 저장 실패: {e}")
 
         # API 통계
         api_stats = self.searcher.get_stats()
@@ -4780,6 +15680,80 @@ class ViralHunter:
         print(f"   총 발견: {len(all_targets)}개")
         print(f"   필터링 후: {len(filtered)}개")
         print(f"   DB 저장: {saved}개")
+        if rescued_count:
+            print(f"   ♻️ 백로그 레스큐 재심사: {rescued_count}개")
+        novelty_stats = getattr(self, "_novelty_backfill_stats", {}) or {}
+        if int(novelty_stats.get("triggered_plans", 0) or 0):
+            initial_count = int(novelty_stats.get("initial_results", 0) or 0)
+            overlap_count = int(novelty_stats.get("overlapping_results", 0) or 0)
+            overlap_rate = (overlap_count / initial_count) if initial_count else 0.0
+            print(
+                "   Novelty backfill: "
+                f"{int(novelty_stats.get('triggered_plans', 0) or 0)} plans, "
+                f"initial overlap {overlap_count}/{initial_count} ({overlap_rate:.1%}), "
+                f"returned {int(novelty_stats.get('returned_candidates', 0) or 0)} candidates, "
+                f"extra API requests {int(novelty_stats.get('api_requests', 0) or 0)}"
+            )
+        dropped_variants = getattr(self, "_variant_drop_counts", {}) or {}
+        if dropped_variants:
+            drop_summary = ", ".join(
+                f"{name}x{count}" for name, count in sorted(dropped_variants.items())
+            )
+            print(f"   ✂️ 제로수율 변형 차단: {drop_summary}")
+        dropped_platforms = getattr(self, "_platform_drop_counts", {}) or {}
+        if dropped_platforms:
+            factors = self._load_platform_yield_factors()
+            plat_summary = ", ".join(
+                f"{p} -{n}(가중 {factors.get(p, 1.0):.2f})"
+                for p, n in sorted(dropped_platforms.items(), key=lambda kv: -kv[1])
+            )
+            print(f"   ⚖️ 플랫폼 수율 예산 절감: {plat_summary}")
+        blocked_structures = getattr(getattr(self, "seed_builder", None), "_structure_blocked_buckets", {}) or {}
+        if blocked_structures:
+            struct_summary = ", ".join(
+                f"{b}x{n}" for b, n in sorted(blocked_structures.items(), key=lambda kv: -kv[1])[:8]
+            )
+            print(f"   🚫 제로수율 구조 시드 차단: {struct_summary}")
+        demand_adjustments = getattr(getattr(self, "seed_builder", None), "_category_demand_adjustments", {}) or {}
+        if demand_adjustments:
+            demand_summary = ", ".join(
+                f"{cat} {info['original']}→{info['adjusted']}({info['accept_rate'] * 100:.1f}%)"
+                for cat, info in sorted(demand_adjustments.items(), key=lambda kv: kv[1]["original"] - kv[1]["adjusted"], reverse=True)[:8]
+            )
+            print(f"   📉 저수요 진료축 예산 절감: {demand_summary}")
+        demand_boosts = getattr(getattr(self, "seed_builder", None), "_category_demand_boosts", {}) or {}
+        if demand_boosts:
+            boost_summary = ", ".join(f"{cat} +{n}" for cat, n in sorted(demand_boosts.items(), key=lambda kv: -kv[1]))
+            print(f"   📈 시그니처 축 예산 재투입: {boost_summary}")
+        if audit_summary:
+            audit_totals = audit_summary['summary']
+            print(
+                f"   🧭 디스커버리 감사 #{audit_summary.get('audit_id')}: "
+                f"발견 {audit_totals['discovered']}개(신규 {audit_totals.get('fresh_discovered', 0)}개) "
+                f"→ actionable {audit_totals['pending']}개(실대기 {audit_totals.get('open_pending', 0)}개, "
+                f"신규 {audit_totals.get('fresh_pending', 0)}개) "
+                f"({audit_totals['pending_rate']:.1%}, 신규 {audit_totals.get('fresh_pending_rate', 0.0):.1%}), "
+                f"AI탈락 {audit_totals.get('ai_filtered', 0)}개, 광고필터 {audit_totals['ad_rate']:.0%}, "
+                f"제로수율 시드 {len(audit_summary['zero_yield_seeds'])}개"
+            )
+            focus_coverage = audit_summary.get('focus_axis_coverage') or {}
+            if focus_coverage:
+                total_focus = int(focus_coverage.get('total_focus_categories') or 0)
+                print(
+                    f"   🧩 핵심축 커버리지: 발견 "
+                    f"{focus_coverage.get('covered_focus_categories', 0)}/{total_focus}, "
+                    f"actionable {focus_coverage.get('actionable_focus_categories', 0)}/{total_focus}, "
+                    f"실대기 {focus_coverage.get('open_pending_focus_categories', 0)}/{total_focus}"
+                )
+                priority_missing = [
+                    category for category in (focus_coverage.get('missing_actionable_categories') or [])
+                    if category in set(focus_coverage.get('priority_focus_categories') or [])
+                ]
+                if priority_missing:
+                    print(f"   ⚠️ actionable 누락 핵심축: {', '.join(priority_missing[:8])}")
+            audit_command = audit_summary.get("suggested_handoff_audit_command")
+            if audit_command:
+                print(f"   🔎 이번 런 handoff audit: {audit_command}")
         if csv_path:
             print(f"   📁 CSV: {csv_path}")
         print(f"\n📊 API 통계:")
@@ -4890,9 +15864,27 @@ def main():
     parser.add_argument('--no-db', action='store_true', help='DB 저장 없이 결과만 출력 (WSL 호환)')
     parser.add_argument('--fresh', action='store_true', help='체크포인트 무시하고 처음부터 스캔')
     parser.add_argument('--legacy-keywords', action='store_true', help='최신 Legion curated seed 대신 기존 누적 키워드 로더 사용')
+    parser.add_argument('--source-scan-id', type=int, default=None, help='특정 Pathfinder/Legion scan_run_id 기반 seed로 실행')
     parser.add_argument('--checkpoint-every', type=int, default=20, help='N개 키워드마다 체크포인트 저장 (기본 20)')
+    parser.add_argument(
+        '--max-per-platform',
+        type=int,
+        default=100,
+        help='적응형 배율 적용 전 플랫폼별 기본 검색 깊이 (기본 100)',
+    )
     parser.add_argument('--top-n-for-ai', type=int, default=300, help='AI 분석 대상 상위 N개 (나머지는 raw_backlog 저장, 기본 300)')
     parser.add_argument('--ai-parallel', type=int, default=5, help='AI 병렬 호출 수 (기본 5)')
+    parser.add_argument('--rescue-backlog', type=int, default=None,
+                        help='최근 raw_backlog/needs_ai_retry 타겟을 추가로 AI 재심사할 최대 수 (0=비활성, 기본 60)')
+    parser.add_argument('--rescue-signature', type=int, default=40,
+                        help='시그니처 축(흉터/안면비대칭) raw_backlog를 확장 윈도우(180일)+카테고리 우선으로 재심사할 최대 수 (0=비활성, 기본 40)')
+    parser.add_argument('--enrich-bodies', type=int, default=120,
+                        help='AI 분석 전 KIN/blog 본문을 HTTP로 보강할 최대 fetch 수 (0=비활성, 기본 120)')
+    parser.add_argument('--skip-pending-expiry', action='store_true',
+                        help='스캔 시작 시 pending TTL 만료 정리를 건너뜀 (기본: 실행)')
+    parser.add_argument('--boost-category', action='append', default=[], help='먼저 실행할 Pathfinder 진료축 lane')
+    parser.add_argument('--boost-lens', action='append', default=[], help='먼저 실행할 Pathfinder 실행렌즈 lane')
+    parser.add_argument('--boost-category-lens', action='append', default=[], help='먼저 실행할 Pathfinder 진료축::실행렌즈 lane')
 
     args = parser.parse_args()
 
@@ -4932,7 +15924,7 @@ def main():
         generator = AICommentGenerator()
 
         # 키워드 로드
-        seeds = ViralSeedBuilder().build()
+        seeds = ViralSeedBuilder().build(scan_run_id=args.source_scan_id)
         keywords = [seed.keyword for seed in seeds] or ["청주 한의원", "청주 다이어트"]
         if args.limit_keywords:
             keywords = keywords[:args.limit_keywords]
@@ -5062,8 +16054,17 @@ def main():
         keywords = [args.keyword] if args.keyword else None
         hunter.hunt(keywords=keywords, limit_keywords=args.limit_keywords,
                     fresh=args.fresh, checkpoint_every=args.checkpoint_every,
+                    max_per_platform=max(1, args.max_per_platform),
                     top_n_for_ai=args.top_n_for_ai, ai_parallel=args.ai_parallel,
-                    use_latest_legion=not args.legacy_keywords)
+                    use_latest_legion=not args.legacy_keywords,
+                    source_scan_run_id=args.source_scan_id,
+                    boost_categories=args.boost_category,
+                    boost_lenses=args.boost_lens,
+                    boost_category_lenses=args.boost_category_lens,
+                    rescue_backlog=args.rescue_backlog,
+                    rescue_signature=args.rescue_signature,
+                    enrich_bodies=args.enrich_bodies,
+                    expire_pending=not args.skip_pending_expiry)
         return
 
     if args.generate:

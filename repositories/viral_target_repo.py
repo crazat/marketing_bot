@@ -21,6 +21,18 @@ from typing import Any, Dict, Iterator, List, Optional
 from core_services.viral_url_canonicalizer import canonicalize_viral_url
 
 
+FINAL_SCAN_RESULT_STATUSES = (
+    "pending",
+    "generated",
+    "approved",
+    "posted",
+    "ai_approved",
+    "raw_backlog",
+    "manual_review",
+    "needs_ai_retry",
+)
+
+
 class ViralTargetRepository:
     """viral_targets 테이블 접근 전담 Repository."""
 
@@ -61,8 +73,8 @@ class ViralTargetRepository:
 
     def count(self, filters: Optional[Dict[str, Any]] = None) -> int:
         """필터 조건에 맞는 레코드 총 개수."""
-        where, params = self._build_where(filters or {})
         with self._conn() as conn:
+            where, params = self._build_where(filters or {}, self._columns_for_conn(conn))
             cur = conn.cursor()
             cur.execute(f"SELECT COUNT(*) FROM {self.TABLE} {where}", params)
             return int(cur.fetchone()[0])
@@ -75,9 +87,10 @@ class ViralTargetRepository:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """필터·정렬·페이지네이션된 목록 조회."""
-        where, params = self._build_where(filters or {})
-        order_by = self._build_order_by(sort)
         with self._conn() as conn:
+            columns = self._columns_for_conn(conn)
+            order_by = self._build_order_by(sort, columns)
+            where, params = self._build_where(filters or {}, columns)
             cur = conn.cursor()
             cur.execute(
                 f"SELECT * FROM {self.TABLE} {where} {order_by} LIMIT ? OFFSET ?",
@@ -92,6 +105,8 @@ class ViralTargetRepository:
         returns: 성공 여부.
         """
         keywords_json = json.dumps(data.get("matched_keywords", []), ensure_ascii=False)
+        score_breakdown_json = json.dumps(data.get("score_breakdown") or {}, ensure_ascii=False)
+        sort_appearances_json = json.dumps(data.get("sort_appearances") or [], ensure_ascii=False)
         url = data.get("url", "")
         canonical_url = data.get("canonical_url") or canonicalize_viral_url(url)
         content_hash = self._content_hash(
@@ -147,6 +162,25 @@ class ViralTargetRepository:
                     "matched_keyword_kei": data.get("matched_keyword_kei", 0),
                     "matched_keyword_priority": data.get("matched_keyword_priority", 0),
                     "matched_keyword_category": data.get("matched_keyword_category"),
+                    "author": data.get("author"),
+                    "posted_at": data.get("posted_at") or data.get("date_str"),
+                    "like_count": data.get("like_count", 0),
+                    "comment_count": data.get("comment_count", 0),
+                    "view_count": data.get("view_count", 0),
+                    "exposure_score": data.get("exposure_score", 0),
+                    "workability_score": data.get("workability_score", 0),
+                    "conversion_fit_score": data.get("conversion_fit_score", 0),
+                    "score_breakdown": score_breakdown_json,
+                    "search_sort": data.get("search_sort"),
+                    "search_rank": data.get("search_rank", 0),
+                    "search_start": data.get("search_start", 0),
+                    "search_total": data.get("search_total", 0),
+                    "sort_appearances": sort_appearances_json,
+                    "ai_reviewed": 1 if data.get("ai_reviewed") else 0,
+                    "ai_infiltration_score": data.get("ai_infiltration_score", 0),
+                    "ai_post_type": data.get("ai_post_type"),
+                    "ai_competitor": 1 if data.get("ai_competitor") else 0,
+                    "ai_competitor_name": data.get("ai_competitor_name"),
                 }
                 insert_columns = [
                     column for column in insert_values
@@ -169,6 +203,30 @@ class ViralTargetRepository:
                     "matched_keyword_kei": f"matched_keyword_kei = COALESCE(NULLIF(excluded.matched_keyword_kei, 0), {self.TABLE}.matched_keyword_kei)",
                     "matched_keyword_priority": f"matched_keyword_priority = COALESCE(NULLIF(excluded.matched_keyword_priority, 0), {self.TABLE}.matched_keyword_priority)",
                     "matched_keyword_category": f"matched_keyword_category = COALESCE(excluded.matched_keyword_category, {self.TABLE}.matched_keyword_category)",
+                    "author": f"author = COALESCE(excluded.author, {self.TABLE}.author)",
+                    "posted_at": f"posted_at = COALESCE(excluded.posted_at, {self.TABLE}.posted_at)",
+                    "like_count": f"like_count = MAX(COALESCE({self.TABLE}.like_count, 0), COALESCE(excluded.like_count, 0))",
+                    "comment_count": f"comment_count = MAX(COALESCE({self.TABLE}.comment_count, 0), COALESCE(excluded.comment_count, 0))",
+                    "view_count": f"view_count = MAX(COALESCE({self.TABLE}.view_count, 0), COALESCE(excluded.view_count, 0))",
+                    "exposure_score": f"exposure_score = MAX(COALESCE({self.TABLE}.exposure_score, 0), COALESCE(excluded.exposure_score, 0))",
+                    "workability_score": f"workability_score = COALESCE(NULLIF(excluded.workability_score, 0), {self.TABLE}.workability_score)",
+                    "conversion_fit_score": f"conversion_fit_score = COALESCE(NULLIF(excluded.conversion_fit_score, 0), {self.TABLE}.conversion_fit_score)",
+                    "score_breakdown": f"score_breakdown = COALESCE(NULLIF(excluded.score_breakdown, '{{}}'), {self.TABLE}.score_breakdown)",
+                    "search_sort": f"search_sort = COALESCE(NULLIF(excluded.search_sort, ''), {self.TABLE}.search_sort)",
+                    "search_rank": (
+                        "search_rank = CASE "
+                        "WHEN COALESCE(excluded.search_rank, 0) > 0 "
+                        f"AND (COALESCE({self.TABLE}.search_rank, 0) = 0 OR excluded.search_rank < {self.TABLE}.search_rank) "
+                        f"THEN excluded.search_rank ELSE {self.TABLE}.search_rank END"
+                    ),
+                    "search_start": f"search_start = COALESCE(NULLIF(excluded.search_start, 0), {self.TABLE}.search_start)",
+                    "search_total": f"search_total = MAX(COALESCE({self.TABLE}.search_total, 0), COALESCE(excluded.search_total, 0))",
+                    "sort_appearances": f"sort_appearances = COALESCE(NULLIF(excluded.sort_appearances, '[]'), {self.TABLE}.sort_appearances)",
+                    "ai_reviewed": f"ai_reviewed = MAX(COALESCE({self.TABLE}.ai_reviewed, 0), COALESCE(excluded.ai_reviewed, 0))",
+                    "ai_infiltration_score": f"ai_infiltration_score = MAX(COALESCE({self.TABLE}.ai_infiltration_score, 0), COALESCE(excluded.ai_infiltration_score, 0))",
+                    "ai_post_type": f"ai_post_type = COALESCE(NULLIF(excluded.ai_post_type, ''), {self.TABLE}.ai_post_type)",
+                    "ai_competitor": f"ai_competitor = MAX(COALESCE({self.TABLE}.ai_competitor, 0), COALESCE(excluded.ai_competitor, 0))",
+                    "ai_competitor_name": f"ai_competitor_name = COALESCE(NULLIF(excluded.ai_competitor_name, ''), {self.TABLE}.ai_competitor_name)",
                 }
                 updates.extend(
                     update_sql for column, update_sql in optional_updates.items()
@@ -218,6 +276,14 @@ class ViralTargetRepository:
             safe_changes["matched_keywords"] = json.dumps(
                 safe_changes["matched_keywords"], ensure_ascii=False
             )
+        if "score_breakdown" in safe_changes and isinstance(safe_changes["score_breakdown"], (dict, list)):
+            safe_changes["score_breakdown"] = json.dumps(
+                safe_changes["score_breakdown"], ensure_ascii=False
+            )
+        if "sort_appearances" in safe_changes and isinstance(safe_changes["sort_appearances"], list):
+            safe_changes["sort_appearances"] = json.dumps(
+                safe_changes["sort_appearances"], ensure_ascii=False
+            )
         try:
             with self._conn() as conn:
                 table_columns = self._columns_for_conn(conn)
@@ -251,8 +317,8 @@ class ViralTargetRepository:
         if matched > max_affected:
             raise ValueError(f"매칭 {matched}건이 max_affected({max_affected}) 초과")
 
-        where, params = self._build_where(filters)
         with self._conn() as conn:
+            where, params = self._build_where(filters, self._columns_for_conn(conn))
             cur = conn.cursor()
             cur.execute(
                 f"UPDATE {self.TABLE} SET comment_status = ? {where}",
@@ -294,15 +360,65 @@ class ViralTargetRepository:
         return d
 
     @staticmethod
-    def _build_where(filters: Dict[str, Any]) -> tuple[str, list]:
+    def _category_columns(table_columns: Optional[set[str]]) -> List[str]:
+        columns = ["category"]
+        if table_columns and "matched_keyword_category" in table_columns:
+            columns.append("matched_keyword_category")
+        return columns
+
+    @staticmethod
+    def _append_category_in_clause(
+        clauses: List[str],
+        params: List[Any],
+        categories: List[str],
+        table_columns: Optional[set[str]],
+    ) -> None:
+        if not categories:
+            return
+        placeholders = ",".join(["?"] * len(categories))
+        category_columns = ViralTargetRepository._category_columns(table_columns)
+        clauses.append(
+            "(" + " OR ".join(f"{column} IN ({placeholders})" for column in category_columns) + ")"
+        )
+        for _ in category_columns:
+            params.extend(categories)
+
+    @staticmethod
+    def _append_category_not_in_clause(
+        clauses: List[str],
+        params: List[Any],
+        categories: List[str],
+        table_columns: Optional[set[str]],
+    ) -> None:
+        if not categories:
+            return
+        placeholders = ",".join(["?"] * len(categories))
+        category_columns = ViralTargetRepository._category_columns(table_columns)
+        clauses.append(
+            " AND ".join(
+                f"COALESCE({column}, '') NOT IN ({placeholders})" for column in category_columns
+            )
+        )
+        for _ in category_columns:
+            params.extend(categories)
+
+    @staticmethod
+    def _build_where(filters: Dict[str, Any], table_columns: Optional[set[str]] = None) -> tuple[str, list]:
         """GET /targets와 동일한 필터 규칙."""
         clauses: List[str] = ["1=1"]
         params: List[Any] = []
 
+        scan_batch = filters.get("scan_batch")
         effective_status = filters.get("comment_status") or filters.get("status")
         if effective_status:
-            clauses.append("comment_status = ?")
-            params.append(effective_status)
+            normalized_status = str(effective_status).strip().lower()
+            if normalized_status in {"final", "final_scan_result", "scan_result", "survived"}:
+                placeholders = ",".join(["?"] * len(FINAL_SCAN_RESULT_STATUSES))
+                clauses.append(f"COALESCE(NULLIF(comment_status, ''), 'pending') IN ({placeholders})")
+                params.extend(FINAL_SCAN_RESULT_STATUSES)
+            elif normalized_status not in {"all", "any", "*"}:
+                clauses.append("comment_status = ?")
+                params.append(effective_status)
 
         platforms = filters.get("platforms")
         if platforms:
@@ -321,30 +437,33 @@ class ViralTargetRepository:
             # 콤마 구분 다중값 지원 (골든큐: 다이어트,피부,비대칭/교정,교통사고,통증/디스크)
             if isinstance(category, str) and "," in category:
                 cats = [c.strip() for c in category.split(",") if c.strip()]
-                placeholders = ",".join(["?"] * len(cats))
-                clauses.append(f"category IN ({placeholders})")
-                params.extend(cats)
             else:
-                clauses.append("category = ?")
-                params.append(category)
+                cats = [str(category).strip()]
+            ViralTargetRepository._append_category_in_clause(clauses, params, cats, table_columns)
 
         include_categories = filters.get("include_categories")
         if include_categories and not category:
             if isinstance(include_categories, str):
                 include_categories = [c.strip() for c in include_categories.split(",") if c.strip()]
             if include_categories:
-                placeholders = ",".join(["?"] * len(include_categories))
-                clauses.append(f"category IN ({placeholders})")
-                params.extend(include_categories)
+                ViralTargetRepository._append_category_in_clause(
+                    clauses,
+                    params,
+                    [str(c).strip() for c in include_categories if str(c).strip()],
+                    table_columns,
+                )
 
         exclude_categories = filters.get("exclude_categories")
         if exclude_categories:
             if isinstance(exclude_categories, str):
                 exclude_categories = [c.strip() for c in exclude_categories.split(",") if c.strip()]
             if exclude_categories:
-                placeholders = ",".join(["?"] * len(exclude_categories))
-                clauses.append(f"COALESCE(category, '') NOT IN ({placeholders})")
-                params.extend(exclude_categories)
+                ViralTargetRepository._append_category_not_in_clause(
+                    clauses,
+                    params,
+                    [str(c).strip() for c in exclude_categories if str(c).strip()],
+                    table_columns,
+                )
 
         source_scan_run_id = filters.get("source_scan_run_id")
         if source_scan_run_id is not None:
@@ -370,6 +489,22 @@ class ViralTargetRepository:
             except (TypeError, ValueError):
                 pass
 
+        min_clinic_fit = filters.get("min_clinic_fit")
+        if min_clinic_fit is not None and not hasattr(min_clinic_fit, "default"):
+            try:
+                clauses.append(f"{ViralTargetRepository._score_breakdown_number_expr('clinic_treatment_fit_score')} >= ?")
+                params.append(float(min_clinic_fit))
+            except (TypeError, ValueError):
+                pass
+
+        min_worksite_efficiency = filters.get("min_worksite_efficiency")
+        if min_worksite_efficiency is not None and not hasattr(min_worksite_efficiency, "default"):
+            try:
+                clauses.append(f"{ViralTargetRepository._score_breakdown_number_expr('worksite_efficiency_score')} >= ?")
+                params.append(float(min_worksite_efficiency))
+            except (TypeError, ValueError):
+                pass
+
         commentable_only = filters.get("commentable_only")
         if isinstance(commentable_only, str):
             commentable_only = commentable_only.strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -378,16 +513,29 @@ class ViralTargetRepository:
 
         scan_batch = filters.get("scan_batch")
         date_filter = filters.get("date_filter")
+        scanned_expr = (
+            "COALESCE(last_scanned_at, discovered_at)"
+            if table_columns and "last_scanned_at" in table_columns
+            else "discovered_at"
+        )
         if scan_batch:
-            clauses.append("strftime('%Y-%m-%d %H', discovered_at) = ?")
-            params.append(scan_batch)
+            batch = str(scan_batch).strip()
+            if batch.startswith("run:") and table_columns and "source_scan_run_id" in table_columns:
+                try:
+                    clauses.append("source_scan_run_id = ?")
+                    params.append(int(batch.split(":", 1)[1]))
+                except (TypeError, ValueError):
+                    pass
+            else:
+                clauses.append(f"strftime('%Y-%m-%d %H', {scanned_expr}) = ?")
+                params.append(batch)
         elif date_filter:
             if date_filter == "오늘":
-                clauses.append("DATE(discovered_at) = DATE('now', 'localtime')")
+                clauses.append(f"DATE({scanned_expr}) = DATE('now', 'localtime')")
             elif date_filter == "최근 7일":
-                clauses.append("discovered_at >= datetime('now', '-7 days')")
+                clauses.append(f"{scanned_expr} >= datetime('now', '-7 days')")
             elif date_filter == "최근 30일":
-                clauses.append("discovered_at >= datetime('now', '-30 days')")
+                clauses.append(f"{scanned_expr} >= datetime('now', '-30 days')")
 
         min_scan_count = filters.get("min_scan_count")
         if min_scan_count and min_scan_count > 0:
@@ -451,20 +599,56 @@ class ViralTargetRepository:
         return ("WHERE " + " AND ".join(clauses), params)
 
     @staticmethod
-    def _build_order_by(sort: str) -> str:
+    def _build_order_by(sort: str, columns: Optional[set] = None) -> str:
+        # columns가 주어지면 score_breakdown/특정 컬럼 의존 정렬을 컬럼 존재 여부로 가드
+        # (구 스키마/최소 테이블에서 'no such column' 회피). None이면 전부 있다고 가정.
+        has_breakdown = columns is None or "score_breakdown" in columns
+        scanned_expr = (
+            "COALESCE(last_scanned_at, discovered_at)"
+            if columns is None or "last_scanned_at" in columns
+            else "discovered_at"
+        )
+
+        def _bd(key: str) -> str:
+            return ViralTargetRepository._score_breakdown_number_expr(key)
+
         if sort == "date":
-            return "ORDER BY discovered_at DESC"
+            return f"ORDER BY {scanned_expr} DESC"
         if sort == "scan_count":
-            return "ORDER BY scan_count DESC, discovered_at DESC"
+            return f"ORDER BY scan_count DESC, {scanned_expr} DESC"
         if sort == "exposure":
-            return "ORDER BY exposure_score DESC, priority_score DESC, discovered_at DESC"
+            return f"ORDER BY exposure_score DESC, priority_score DESC, {scanned_expr} DESC"
         if sort == "workability":
-            return "ORDER BY workability_score DESC, priority_score DESC, discovered_at DESC"
-        if sort == "specialty":
+            return f"ORDER BY workability_score DESC, priority_score DESC, {scanned_expr} DESC"
+        if sort == "clinic_fit" and has_breakdown:
+            return f"ORDER BY {_bd('clinic_treatment_fit_score')} DESC, priority_score DESC, {scanned_expr} DESC"
+        if sort == "worksite_efficiency" and has_breakdown:
+            return f"ORDER BY {_bd('worksite_efficiency_score')} DESC, priority_score DESC, {scanned_expr} DESC"
+        if sort == "specialty" and (columns is None or "specialty_match" in columns):
             # 미용 특화 우선: high > medium > low > NULL, 그 안에서 신뢰도 → 우선순위
             return ("ORDER BY CASE specialty_match "
                     "WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
                     "ai_ad_confidence DESC, priority_score DESC")
-        if sort == "ai_confidence":
+        if sort == "ai_confidence" and (columns is None or "ai_ad_confidence" in columns):
             return "ORDER BY ai_ad_confidence DESC, priority_score DESC"
-        return "ORDER BY priority_score DESC, discovered_at DESC"
+        # 기본(priority) 정렬: priority_score는 150에서 캡되어 큐 상단(54건+ 동점)에서
+        # 변별력을 잃는다 — 동점 묶음이 recency로만 깨지면 고볼륨 commodity 축(다이어트,
+        # clinic_fit 34.8)이 시그니처 축(흉터/안면비대칭, clinic_fit 82~89)을 큐 상단에서
+        # 밀어낸다. todays-queue(골든큐)와 동일한 전략 신호(worksite→clinic_fit)로 동점을
+        # 깨서 두 화면의 순서를 일치시킨다. priority는 여전히 1차 키라 HOT LEAD 임계는 보존.
+        if has_breakdown:
+            return (
+                f"ORDER BY priority_score DESC, {_bd('worksite_efficiency_score')} DESC, "
+                f"{_bd('clinic_treatment_fit_score')} DESC, {scanned_expr} DESC"
+            )
+        return f"ORDER BY priority_score DESC, {scanned_expr} DESC"
+
+    @staticmethod
+    def _score_breakdown_number_expr(key: str) -> str:
+        safe_key = "".join(ch for ch in key if ch.isalnum() or ch == "_")
+        return (
+            "COALESCE("
+            "CASE WHEN json_valid(score_breakdown) "
+            f"THEN CAST(json_extract(score_breakdown, '$.{safe_key}') AS REAL) "
+            "ELSE 0 END, 0)"
+        )
